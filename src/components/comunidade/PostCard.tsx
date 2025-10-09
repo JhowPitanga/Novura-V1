@@ -1,185 +1,200 @@
-import { useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Heart, MessageSquare, Repeat, Pin, Bookmark } from "lucide-react";
-import type { Post } from "./types";
+// src/components/comunidade/PostCard.tsx
 
-type Props = {
-  post: Post;
-  onUpdate: (post: Post) => void;
-  onRepost?: (original: Post) => void;
-};
+import React, { useState } from 'react';
+// Ícones (usando Lucide como exemplo, ajuste conforme sua biblioteca de ícones)
+import { Heart, MessageCircle, Share, Verified } from 'lucide-react';
+// Importe seus componentes de UI.
+import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { User as UserIcon } from 'lucide-react';
+// Importe as tipagens que definimos
+import { Post, User } from '@/components/comunidade/types'; 
 
-export function PostCard({ post, onUpdate, onRepost }: Props) {
-  const [commentText, setCommentText] = useState("");
-
-  const handleLike = () => {
-    if (post.likedByUser) return;
-    onUpdate({ ...post, likes: post.likes + 1, likedByUser: true });
-  };
-
-  const handleRepost = () => {
-    if (post.repostedByUser) return;
-    const updated = { ...post, reposts: post.reposts + 1, repostedByUser: true };
-    onUpdate(updated);
-    onRepost?.(updated);
-  };
-
-  const handleTogglePin = () => {
-    onUpdate({ ...post, pinned: !post.pinned });
-  };
-
-  const handleToggleSave = () => {
-    onUpdate({ ...post, saved: !post.saved });
-  };
-
-  const handleAddComment = () => {
-    const trimmed = commentText.trim();
-    if (!trimmed) return;
-    const newComment = {
-      id: Math.random().toString(36).slice(2),
-      author: "Você",
-      text: trimmed,
-      createdAt: new Date().toISOString(),
-    };
-    onUpdate({ ...post, comments: [...post.comments, newComment] });
-    setCommentText("");
-  };
-
-  const voted = post.poll?.hasVoted;
-
-  const handleVote = (index: number) => {
-    if (!post.poll || voted) return;
-    const chosenId = post.poll.options[index].id;
-    const options = post.poll.options.map((opt, i) => ({
-      ...opt,
-      votes: i === index ? opt.votes + 1 : opt.votes,
-    }));
-    onUpdate({ ...post, poll: { ...post.poll, options, hasVoted: true, selectedOptionId: chosenId } });
-  };
-
-  return (
-    <Card className="mb-6 border-gray-100">
-      <CardHeader className="pb-2">
-        <div className="flex items-start justify-between">
-          <div>
-            <CardTitle className="text-base text-gray-900 flex items-center gap-3">
-              <div className="w-10 h-10 bg-novura-primary rounded-xl flex items-center justify-center text-white">
-                {post.author.charAt(0)}
-              </div>
-              <div>
-                <div className="font-semibold">{post.author}</div>
-                <div className="text-xs text-gray-500">{new Date(post.createdAt).toLocaleString()}</div>
-              </div>
-            </CardTitle>
-          </div>
-          <div className="flex items-center gap-2">
-            {post.pinned && <Badge className="bg-gray-100 text-gray-700">Fixado</Badge>}
-            <Button variant="ghost" size="sm" onClick={handleTogglePin}>
-              <Pin className="w-4 h-4 mr-2" />
-              {post.pinned ? "Desafixar" : "Fixar"}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={handleToggleSave}>
-              <Bookmark className={`w-4 h-4 mr-2 ${post.saved ? "text-novura-primary" : "text-gray-600"}`} />
-              {post.saved ? "Salvo" : "Salvar"}
-            </Button>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {post.title && <div className="text-lg font-semibold text-gray-900">{post.title}</div>}
-        {post.repostOf && (
-          <div className="text-xs text-gray-500">Republicado de <span className="font-medium">{post.repostOf.author}</span></div>
-        )}
-        <p className="text-gray-700 whitespace-pre-wrap">{post.content}</p>
-
-        {post.images && post.images.length > 0 && (
-          <div className="grid grid-cols-2 gap-3">
-            {post.images.map((img, i) => (
-              <div key={i} className="rounded-lg overflow-hidden border border-gray-100">
-                <img src={img} alt="imagem" className="w-full h-48 object-cover" />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {post.poll && (
-          <div className="rounded-lg border border-gray-100 p-4">
-            <div className="font-medium text-gray-900 mb-2">{post.poll.question}</div>
-            <div className="space-y-3">
-              {post.poll.options.map((opt, i) => {
-                const total = post.poll!.options.reduce((sum, o) => sum + o.votes, 0) || 0;
-                const percent = total ? Math.round((opt.votes / total) * 100) : 0;
-                const isSelected = !!voted && post.poll!.selectedOptionId === opt.id;
-                return (
-                  <div key={opt.id} className="w-full">
-                    <button
-                      className={`w-full text-left px-3 py-2 rounded-md border border-gray-100 ${voted ? "cursor-default" : "cursor-pointer"}`}
-                      onClick={() => handleVote(i)}
-                      disabled={!!voted}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-gray-800">{opt.text}</span>
-                        <span className="text-sm text-gray-600">{percent}%</span>
-                      </div>
-                      <div className="mt-2 h-2 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className={`h-2 rounded-full transition-all duration-500 ${isSelected ? "bg-novura-primary" : "bg-gray-300"}`}
-                          style={{ width: `${percent}%` }}
-                        />
-                      </div>
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={handleLike} disabled={!!post.likedByUser} className="gap-2">
-            <Heart className={`w-4 h-4 transition-transform duration-200 ${post.likedByUser ? "text-red-500 scale-110" : "text-gray-600"}`} />
-            <span className="text-sm">{post.likes}</span>
-          </Button>
-          <Button variant="ghost" size="sm" className="gap-2">
-            <MessageSquare className="w-4 h-4 text-gray-600" />
-            <span className="text-sm">{post.comments.length}</span>
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleRepost} disabled={!!post.repostedByUser} className="gap-2">
-            <Repeat className="w-4 h-4 text-gray-600" />
-            <span className="text-sm">{post.reposts}</span>
-          </Button>
-        </div>
-
-        <div className="mt-4">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-novura-primary rounded-lg flex items-center justify-center text-white">V</div>
-            <Input
-              placeholder="Escreva um comentário..."
-              value={commentText}
-              onChange={(e) => setCommentText(e.target.value)}
-            />
-            <Button onClick={handleAddComment} className="bg-novura-primary text-white">Comentar</Button>
-          </div>
-          {post.comments.length > 0 && (
-            <div className="mt-3 space-y-3">
-              {post.comments.map((c) => (
-                <div key={c.id} className="flex items-start gap-3">
-                  <div className="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center text-gray-600">
-                    {c.author.charAt(0)}
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium text-gray-900">{c.author}</div>
-                    <div className="text-sm text-gray-700">{c.text}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
+interface PostCardProps {
+    post: Post;
+    currentUser: User;
 }
+
+export const PostCard: React.FC<PostCardProps> = ({ post, currentUser }) => {
+    // Estado para controlar a visibilidade do bloco de comentários
+    const [showComments, setShowComments] = useState(false);
+    const [commentText, setCommentText] = useState('');
+
+    // Comentários: lista e curtidas
+    const comments = post.comments ?? [];
+    const [showAllComments, setShowAllComments] = useState(false);
+    const [commentLikes, setCommentLikes] = useState<number[]>(comments.map(c => c.likes));
+    const [commentLiked, setCommentLiked] = useState<boolean[]>(comments.map(() => false));
+    const visibleComments = showAllComments ? comments : comments.slice(0, 3);
+    const handleCommentLike = (idx: number) => {
+        setCommentLikes(prev => prev.map((v, i) => (i === idx ? (commentLiked[idx] ? Math.max(v - 1, 0) : v + 1) : v)));
+        setCommentLiked(prev => prev.map((v, i) => (i === idx ? !v : v)));
+    };
+
+    // Curtidas: ícone fica roxo quando clicado e contador atualiza
+    const [liked, setLiked] = useState(false);
+    const [likesCount, setLikesCount] = useState(post.likes);
+    const handleLike = () => {
+        setLikesCount(prev => (liked ? Math.max(prev - 1, 0) : prev + 1));
+        setLiked(prev => !prev);
+    };
+
+    // Enquete
+    const hasPoll = Array.isArray(post.pollOptions) && post.pollOptions.length > 0;
+    const [pollSelected, setPollSelected] = useState<number | null>(null);
+    const [pollVoted, setPollVoted] = useState(false);
+    const [pollVotes, setPollVotes] = useState<number[]>(hasPoll ? Array(post.pollOptions!.length).fill(0) : []);
+    const handleVote = () => {
+        if (pollSelected === null) return;
+        setPollVotes(prev => prev.map((v, i) => (i === pollSelected ? v + 1 : v)));
+        setPollVoted(true);
+    };
+
+    return (
+        <Card className="mb-6 p-4 md:p-6 shadow-lg rounded-xl border border-gray-100 bg-white">
+            {/* 1. Header da Postagem */}
+            <div className="flex flex-col">
+                <div className="flex items-start">
+                    <Avatar className="w-10 h-10 mr-3">
+                        <AvatarImage src={post.user.avatarUrl} alt={post.user.name} />
+                        <AvatarFallback>
+                            <UserIcon className="w-5 h-5 text-gray-400" />
+                        </AvatarFallback>
+                    </Avatar>
+                    <div>
+                        <div className="flex items-center">
+                            <p className="font-semibold text-gray-800 mr-1">{post.user.name}</p>
+                            {post.user.isVerified && <Verified size={16} className="text-purple-600" />}
+                        </div>
+                        <p className="text-sm text-gray-500">{post.timestamp}</p>
+                    </div>
+                </div>
+
+                {/* 2. Título e descrição */}
+                {post.title && (
+                    <h3 className="mt-3 text-lg font-semibold text-gray-900">{post.title}</h3>
+                )}
+                <p className="mt-2 text-gray-700 whitespace-pre-wrap">{post.text}</p>
+
+                {/* 3. Mídia (Opcional) */}
+                {post.mediaUrl && post.mediaType === 'image' && (
+                    <div className="mt-3 rounded-lg w-full overflow-hidden aspect-square">
+                        <img src={post.mediaUrl} alt="Post media" className="w-full h-full object-cover" />
+                    </div>
+                )}
+
+                {/* 4. Enquete (Opcional) */}
+                {hasPoll && (
+                    !pollVoted ? (
+                        <div className="mt-4 space-y-3">
+                            {post.pollOptions!.map((opt, i) => (
+                                <label
+                                    key={i}
+                                    className="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:border-purple-600"
+                                    onClick={() => {
+                                        setPollSelected(i);
+                                        setPollVotes(prev => prev.map((v, idx) => (idx === i ? v + 1 : v)));
+                                        setPollVoted(true);
+                                    }}
+                                >
+                                    <span className="text-gray-800">{opt}</span>
+                                </label>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="mt-4 space-y-3">
+                            {post.pollOptions!.map((opt, i) => {
+                                const total = pollVotes.reduce((a, b) => a + b, 0);
+                                const percent = total > 0 ? Math.round((pollVotes[i] / total) * 100) : 0;
+                                return (
+                                    <div key={i} className="p-3 border rounded-lg">
+                                        <div className="flex justify-between text-sm mb-1">
+                                            <span className="text-gray-800">{opt}</span>
+                                            <span className="text-purple-700 font-semibold">{percent}%</span>
+                                        </div>
+                                        <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                                            <div className="h-2 bg-purple-600 rounded-full" style={{ width: `${percent}%` }} />
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                            <p className="text-xs text-gray-500">{pollVotes.reduce((a, b) => a + b, 0)} votos</p>
+                        </div>
+                    )
+                )}
+
+                {/* 5. Ações da Postagem (horizontal) */}
+                <div className="mt-4 flex flex-row items-center gap-4 text-sm text-gray-600">
+                    <button onClick={handleLike} className={`inline-flex items-center hover:text-purple-700`}>
+                        <Heart size={18} className="text-purple-600" fill={liked ? 'currentColor' : 'none'} />
+                        <span className="ml-2">{likesCount}</span>
+                    </button>
+                    <button className={`inline-flex items-center hover:text-purple-700`} onClick={() => setShowComments(!showComments)}>
+                        <MessageCircle size={18} className="text-purple-600" />
+                        <span className="ml-2">{post.commentsCount}</span>
+                    </button>
+                    <button className={`inline-flex items-center hover:text-purple-700`}>
+                        <Share size={18} className="text-purple-600" />
+                        <span className="ml-2">{post.shareCount}</span>
+                    </button>
+                </div>
+
+                {/* 6. Comentários: listar os principais e carregar mais */}
+                {showComments && (
+                    <div className="mt-4 border-t pt-4">
+                        <div className="space-y-4">
+                            {visibleComments.map((c, idx) => (
+                                <div key={c.id} className="flex items-start">
+                                    <Avatar className="w-8 h-8 mr-2">
+                                        <AvatarImage src={c.user.avatarUrl} alt={c.user.name} />
+                                        <AvatarFallback>
+                                            <UserIcon className="w-4 h-4 text-gray-400" />
+                                        </AvatarFallback>
+                                    </Avatar>
+                                    <div className="flex-1">
+                                        <div className="flex items-center justify-between">
+                                            <p className="text-sm text-gray-800">
+                                                <span className="font-semibold">{c.user.name}</span>
+                                                <span className="text-gray-500 text-xs ml-2">{c.timestamp}</span>
+                                            </p>
+                                            <button onClick={() => handleCommentLike(idx)} className="inline-flex items-center text-xs text-gray-600 hover:text-purple-700">
+                                                <Heart size={14} className="text-purple-600" fill={commentLiked[idx] ? 'currentColor' : 'none'} />
+                                                <span className="ml-1">{commentLikes[idx]}</span>
+                                            </button>
+                                        </div>
+                                        <p className="text-sm text-gray-700 mt-1">{c.content}</p>
+                                    </div>
+                                </div>
+                            ))}
+                            {comments.length > 3 && !showAllComments && (
+                                <div className="text-center">
+                                    <button className="text-purple-600 hover:text-purple-700 font-semibold transition" onClick={() => setShowAllComments(true)}>
+                                        Carregar mais comentários
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Campo para novo comentário */}
+                        <div className="flex items-center mt-4">
+                            <Avatar className="w-8 h-8 mr-2">
+                                <AvatarImage src={currentUser.avatarUrl} alt={currentUser.name} />
+                                <AvatarFallback>
+                                    <UserIcon className="w-4 h-4 text-gray-400" />
+                                </AvatarFallback>
+                            </Avatar>
+                            <input
+                                value={commentText}
+                                onChange={(e) => setCommentText(e.target.value)}
+                                placeholder="Escreva um comentário..."
+                                className="flex-1 border border-gray-300 rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            />
+                            <Button className="ml-2 bg-purple-600 hover:bg-purple-700 text-white">Comentar</Button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </Card>
+    );
+};

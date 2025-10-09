@@ -4,9 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, BarChart, Bar } from "recharts";
-import { MessageSquare, AlertTriangle, Sparkles, User, Clock, BadgePercent, ArrowUpRight, Tag, Send, Shuffle, Smile } from "lucide-react";
+import { MessageSquare, AlertTriangle, Sparkles, User, Clock, BadgePercent, Tag, Send, Shuffle, Smile, Phone, Video, MoreVertical, Paperclip } from "lucide-react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
+import { GlobalHeader } from "@/components/GlobalHeader";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
 
 // Tipos básicos
 type TicketType = "pergunta" | "reclamacao" | "pos_venda";
@@ -140,14 +144,12 @@ function RiskBadge({ risco }: { risco: Ticket["riscoPRR"] }) {
 function SACTicketInbox({
   tickets,
   onSelect,
-  onAssign,
   titulo,
   prioridadeInteligenteAtiva,
   setPrioridadeInteligenteAtiva,
 }: {
   tickets: Ticket[];
   onSelect: (t: Ticket) => void;
-  onAssign: (id: string, user: string) => void;
   titulo: string;
   prioridadeInteligenteAtiva: boolean;
   setPrioridadeInteligenteAtiva: (v: boolean) => void;
@@ -175,13 +177,15 @@ function SACTicketInbox({
           <div className="col-span-2">Classificação (IA)</div>
           <div className="col-span-1">Volatilidade</div>
           <div className="col-span-2">Risco / SLA</div>
-          <div className="col-span-2">Pedido / Atribuição</div>
         </div>
         {sorted.map((t) => (
           <button key={t.id} onClick={() => onSelect(t)} className="grid grid-cols-12 w-full px-4 py-3 text-sm text-left hover:bg-gray-50">
             <div className="col-span-2">
-              <div className="font-medium text-gray-900">{t.cliente}</div>
-              <div className="text-xs text-gray-500">#{t.id}</div>
+              <div className="font-medium text-gray-900 flex items-center gap-2">
+                {t.cliente}
+                <span className="text-xs text-gray-500">#{t.id}</span>
+              </div>
+              <div className="text-xs text-gray-500">Pedido: {t.pedidoId ?? "-"}</div>
             </div>
             <div className="col-span-3">
               <div className="text-gray-800">{t.assunto}</div>
@@ -204,19 +208,6 @@ function SACTicketInbox({
               <RiskBadge risco={t.riscoPRR} />
               <Clock className="w-4 h-4 text-gray-500" />
               <span className="text-xs text-gray-600">SLA 2h</span>
-            </div>
-            <div className="col-span-2 flex items-center gap-2">
-              <span className="text-xs text-gray-700">{t.pedidoId || "-"}</span>
-              <select
-                value={t.atribuidoA || ""}
-                onChange={(e) => onAssign(t.id, e.target.value)}
-                className="text-xs border rounded px-2 py-1"
-              >
-                <option value="">Atribuir...</option>
-                {membrosEquipe.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
             </div>
           </button>
         ))}
@@ -245,32 +236,73 @@ function SACChatPanel({ ticket }: { ticket?: Ticket }) {
   }
 
   return (
-    <div className="h-full rounded-lg border bg-white p-4 flex flex-col">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <MessageSquare className="w-5 h-5 text-novura-primary" />
-          <span className="font-medium">Chat com {ticket ? ticket.cliente : "Cliente"}</span>
-          {ticket?.pedidoId && <span className="text-xs text-gray-600">Pedido {ticket.pedidoId}</span>}
+    <div className="h-full rounded-lg border bg-white flex flex-col">
+      <header className="flex items-center justify-between p-4 border-b bg-white">
+        <div className="flex items-center space-x-3">
+          <div className="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center text-white relative">
+            <User className="w-6 h-6" />
+            <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full ring-2 ring-white" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">{ticket ? ticket.cliente : "Cliente"}</h2>
+            <p className="text-sm text-gray-600">{ticket?.canal ?? "SAC"}</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={gerarRespostaIA}><Sparkles className="w-4 h-4 mr-2" /> Gerar Resposta (IA)</Button>
-          <Button variant="outline" size="sm"><BadgePercent className="w-4 h-4 mr-2" /> Cross-Selling</Button>
+        <div className="flex items-center space-x-2">
+          <Button variant="ghost" size="icon" className="text-gray-600 hover:bg-gray-100">
+            <Phone className="w-5 h-5" />
+          </Button>
+          <Button variant="ghost" size="icon" className="text-gray-600 hover:bg-gray-100">
+            <Video className="w-5 h-5" />
+          </Button>
+          <Button variant="ghost" size="icon" className="text-gray-600 hover:bg-gray-100">
+            <MoreVertical className="w-5 h-5" />
+          </Button>
         </div>
-      </div>
-      <div className="flex-1 overflow-auto space-y-4">
+      </header>
+
+      <div className="flex-1 overflow-y-auto p-6 space-y-3 bg-gray-50">
         {mensagens.map((m, i) => (
-          <div key={i} className={`max-w-[70%] p-3 rounded-lg ${m.from === "cliente" ? "bg-gray-100 text-gray-800" : "bg-novura-primary/10 text-gray-900 ml-auto"}`}>
-            <div className="text-xs text-gray-500 mb-1">{m.time}</div>
-            <div className="text-sm">{m.text}</div>
+          <div key={i} className={`flex mb-2 ${m.from === "equipe" ? "justify-end" : "justify-start"}`}>
+            <div className={`max-w-xs lg:max-w-md p-3 rounded-xl shadow-sm ${m.from === "equipe" 
+              ? "bg-purple-600 text-white rounded-br-none" 
+              : "bg-gray-200 text-gray-800 rounded-tl-none"
+            }`}>
+              <p className="text-sm">{m.text}</p>
+              <span className={`block mt-1 text-xs ${m.from === "equipe" ? "text-purple-100/80" : "text-gray-500"} text-right`}>
+                {m.time}
+              </span>
+            </div>
           </div>
         ))}
       </div>
-      <div className="mt-3 flex items-center gap-2">
-        <Input placeholder="Digite sua mensagem..." value={texto} onChange={(e) => setTexto(e.target.value)} />
-        <Button onClick={() => { if (texto.trim()) { setMensagens([...mensagens, { from: "equipe", text: texto.trim(), time: "agora" }]); setTexto(""); } }}>
-          <Send className="w-4 h-4 mr-2" /> Enviar
-        </Button>
-      </div>
+
+      <footer className="p-4 border-t bg-white">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={gerarRespostaIA}><Sparkles className="w-4 h-4 mr-2" /> Gerar Resposta (IA)</Button>
+            <Button variant="outline" size="sm"><BadgePercent className="w-4 h-4 mr-2" /> Cross-Selling</Button>
+          </div>
+          {ticket?.pedidoId && <span className="text-xs text-gray-600">Pedido {ticket.pedidoId}</span>}
+        </div>
+        <form onSubmit={(e) => { e.preventDefault(); if (texto.trim()) { setMensagens([...mensagens, { from: "equipe", text: texto.trim(), time: "agora" }]); setTexto(""); } }} className="flex items-center space-x-3">
+          <Button type="button" variant="ghost" size="icon" className="text-gray-500 hover:bg-gray-100">
+            <Paperclip className="w-5 h-5" />
+          </Button>
+          <Button type="button" variant="ghost" size="icon" className="text-gray-500 hover:bg-gray-100">
+            <Smile className="w-5 h-5" />
+          </Button>
+          <Input
+            className="flex-1 h-12 rounded-full px-6 bg-gray-100 border-gray-200 focus:border-purple-500 transition-colors"
+            placeholder="Escreva uma mensagem..."
+            value={texto}
+            onChange={(e) => setTexto(e.target.value)}
+          />
+          <Button type="submit" className="w-12 h-12 rounded-full bg-purple-600 hover:bg-purple-700" size="icon" disabled={!texto.trim()}>
+            <Send className="w-5 h-5" />
+          </Button>
+        </form>
+      </footer>
     </div>
   );
 }
@@ -287,48 +319,90 @@ function MetricsTab() {
   ];
 
   return (
-    <div className="grid grid-cols-12 gap-6">
-      <div className="col-span-12 lg:col-span-7">
-        <div className="rounded-lg border bg-white p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-lg font-semibold text-gray-900">Sentimento Médio Diário</h3>
-            <span className="text-xs text-gray-600">Monitoramento Contínuo</span>
-          </div>
-          <ChartContainer config={{ value: { label: "Sentimento", color: "hsl(var(--chart-1))" } }}>
-            <ResponsiveContainer width="100%" height={280}>
-              <LineChart data={sentimentData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="day" />
-                <YAxis domain={[0, 100]} />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Line type="monotone" dataKey="value" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartContainer>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="min-w-[220px]">
+          <Select>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Todos os marketplaces" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="todos">Todos</SelectItem>
+              <SelectItem value="mercado-livre">Mercado Livre</SelectItem>
+              <SelectItem value="shopee">Shopee</SelectItem>
+              <SelectItem value="magalu">Magalu</SelectItem>
+              <SelectItem value="amazon">Amazon</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" className="flex items-center gap-2">
+              <Clock className="w-4 h-4" /> Selecionar datas
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="p-2 w-auto">
+            <Calendar />
+          </PopoverContent>
+        </Popover>
       </div>
-      <div className="col-span-12 lg:col-span-5 grid gap-4">
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="rounded-lg border bg-white p-4">
-          <div className="flex items-center gap-2 mb-2"><ArrowUpRight className="w-4 h-4 text-emerald-600" /><span className="text-sm font-medium">Valor Financeiro Salvo por Atendimento Proativo (PRR)</span></div>
-          <div className="text-2xl font-bold">R$ 12.450,00</div>
+          <div className="flex items-center gap-2 mb-2"><Sparkles className="w-4 h-4 text-purple-600" /><span className="text-sm font-medium">Valor financeiro gerado por IA</span></div>
+          <div className="text-2xl font-bold">R$ 18.920,00</div>
           <div className="text-xs text-gray-600">Últimos 30 dias</div>
         </div>
         <div className="rounded-lg border bg-white p-4">
-          <div className="flex items-center gap-2 mb-2"><AlertTriangle className="w-4 h-4 text-red-600" /><span className="text-sm font-medium">Custo da Insatisfação por Marketplace</span></div>
-          <div className="space-y-2 text-sm">
-            <div className="flex items-center justify-between"><ChannelBadge canal="Mercado Livre" /><span>R$ 4.300</span></div>
-            <div className="flex items-center justify-between"><ChannelBadge canal="Shopee" /><span>R$ 3.100</span></div>
-            <div className="flex items-center justify-between"><ChannelBadge canal="Magalu" /><span>R$ 2.000</span></div>
-            <div className="flex items-center justify-between"><ChannelBadge canal="Amazon" /><span>R$ 1.050</span></div>
+          <div className="flex items-center gap-2 mb-2"><MessageSquare className="w-4 h-4 text-emerald-600" /><span className="text-sm font-medium">Quantidade de Perguntas respondidas</span></div>
+          <div className="text-2xl font-bold">1.247</div>
+          <div className="text-xs text-gray-600">No período selecionado</div>
+        </div>
+        <div className="rounded-lg border bg-red-50 p-4 border-red-200">
+          <div className="flex items-center gap-2 mb-2"><AlertTriangle className="w-4 h-4 text-red-600" /><span className="text-sm font-medium text-red-800">Mensagens esperando</span></div>
+          <div className="text-2xl font-bold text-red-700">37</div>
+          <div className="text-xs text-red-600">Ação recomendada: priorizar alto risco</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-12 gap-6">
+        <div className="col-span-12 lg:col-span-7">
+          <div className="rounded-lg border bg-white p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold text-gray-900">Sentimento Médio Diário</h3>
+              <span className="text-xs text-gray-600">Monitoramento Contínuo</span>
+            </div>
+            <ChartContainer config={{ value: { label: "Sentimento", color: "hsl(var(--chart-1))" } }}>
+              <ResponsiveContainer width="100%" height={280}>
+                <LineChart data={sentimentData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day" />
+                  <YAxis domain={[0, 100]} />
+                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <Line type="monotone" dataKey="value" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartContainer>
           </div>
         </div>
-        <div className="rounded-lg border bg-white p-4">
-          <div className="flex items-center gap-2 mb-2"><Tag className="w-4 h-4 text-purple-600" /><span className="text-sm font-medium">Causas Raiz Mais Frequentes (IA)</span></div>
-          <ul className="text-sm text-gray-700 list-disc pl-5 space-y-1">
-            <li>Produto Quebrado: Lote 37-B (falha na embalagem)</li>
-            <li>Atraso de Transporte: Hub SP-02 (pico às segundas)</li>
-            <li>Prazo Divergente: Config. ML vs Shopee</li>
-          </ul>
+        <div className="col-span-12 lg:col-span-5 grid gap-4">
+          <div className="rounded-lg border bg-white p-4">
+            <div className="flex items-center gap-2 mb-2"><AlertTriangle className="w-4 h-4 text-red-600" /><span className="text-sm font-medium">Custo da Insatisfação por Marketplace</span></div>
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center justify-between"><ChannelBadge canal="Mercado Livre" /><span>R$ 4.300</span></div>
+              <div className="flex items-center justify-between"><ChannelBadge canal="Shopee" /><span>R$ 3.100</span></div>
+              <div className="flex items-center justify-between"><ChannelBadge canal="Magalu" /><span>R$ 2.000</span></div>
+              <div className="flex items-center justify-between"><ChannelBadge canal="Amazon" /><span>R$ 1.050</span></div>
+            </div>
+          </div>
+          <div className="rounded-lg border bg-white p-4">
+            <div className="flex items-center gap-2 mb-2"><Tag className="w-4 h-4 text-purple-600" /><span className="text-sm font-medium">Causas mais frequentes (IA)</span></div>
+            <ul className="text-sm text-gray-700 list-disc pl-5 space-y-1">
+              <li>Produto Quebrado: Lote 37-B (falha na embalagem)</li>
+              <li>Atraso de Transporte: Hub SP-02 (pico às segundas)</li>
+              <li>Prazo Divergente: Config. ML vs Shopee</li>
+            </ul>
+          </div>
         </div>
       </div>
     </div>
@@ -337,104 +411,104 @@ function MetricsTab() {
 
 export default function SAC() {
   const [prioridadeInteligenteAtiva, setPrioridadeInteligenteAtiva] = useState(true);
-  const [tickets, setTickets] = useState<Ticket[]>(mockTickets);
-  const [selectedTicket, setSelectedTicket] = useState<Ticket | undefined>(tickets[0]);
+  const [tickets] = useState<Ticket[]>(mockTickets);
+  const [selectedTicket, setSelectedTicket] = useState<Ticket | undefined>(mockTickets[0]);
   const perguntas = tickets.filter((t) => t.tipo === "pergunta");
   const reclamacoes = tickets.filter((t) => t.tipo === "reclamacao");
   const posVenda = tickets.filter((t) => t.tipo === "pos_venda");
 
-  function handleAssign(id: string, user: string) {
-    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, atribuidoA: user } : t)));
-  }
-
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold text-gray-900 flex items-center"><MessageSquare className="w-6 h-6 mr-2" /> Central de SAC</h1>
-          <p className="text-sm text-gray-600">Integração Multi-Canal • Priorização Inteligente • Classificação Automática • PRR</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm"><User className="w-4 h-4 mr-2" /> Minha Fila</Button>
-          <Button variant="default" size="sm" className="bg-novura-primary text-white">Novo Ticket</Button>
+    <SidebarProvider>
+      <div className="min-h-screen flex w-full bg-gray-50">
+        <AppSidebar />
+        <div className="flex-1 flex flex-col">
+          <GlobalHeader />
+          <main className="flex-1 p-6 overflow-auto">
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <h1 className="text-2xl font-semibold text-gray-900 flex items-center"><MessageSquare className="w-6 h-6 mr-2" /> Central de SAC</h1>
+                <p className="text-sm text-gray-600">Integração Multi-Canal • Priorização Inteligente • Classificação Automática • PRR</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm"><User className="w-4 h-4 mr-2" /> Minha Fila</Button>
+                <Button variant="default" size="sm" className="bg-novura-primary text-white">Novo Ticket</Button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border bg-amber-50 border-amber-200 p-3 flex items-center gap-3 mt-4">
+              <AlertTriangle className="w-5 h-5 text-amber-600" />
+              <div>
+                <p className="text-sm font-medium text-amber-800">Alerta de Potencial Problema</p>
+                <p className="text-xs text-amber-700">Cliente X: Risco Alto de Atraso. Sugestão: Enviar mensagem proativa agora.</p>
+              </div>
+            </div>
+
+            <Tabs defaultValue="metricas" className="w-full mt-4">
+              <TabsList className="bg-white p-1 rounded-xl border shadow-sm">
+                <TabsTrigger value="metricas">Métricas</TabsTrigger>
+                <TabsTrigger value="perguntas">Perguntas</TabsTrigger>
+                <TabsTrigger value="reclamacoes">Reclamações</TabsTrigger>
+                <TabsTrigger value="posvenda">Pós-venda</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="metricas" className="mt-6">
+                <MetricsTab />
+              </TabsContent>
+
+              <TabsContent value="perguntas" className="mt-6">
+                <div className="grid grid-cols-12 gap-6">
+                  <div className="col-span-12 lg:col-span-7">
+                    <SACTicketInbox
+                      tickets={perguntas}
+                      titulo="Perguntas"
+                      onSelect={setSelectedTicket}
+                      prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
+                      setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
+                    />
+                  </div>
+                  <div className="col-span-12 lg:col-span-5">
+                    <SACChatPanel ticket={selectedTicket} />
+                  </div>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="reclamacoes" className="mt-6">
+                <div className="grid grid-cols-12 gap-6">
+                  <div className="col-span-12 lg:col-span-7">
+                    <SACTicketInbox
+                      tickets={reclamacoes}
+                      titulo="Reclamações"
+                      onSelect={setSelectedTicket}
+                      prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
+                      setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
+                    />
+                  </div>
+                  <div className="col-span-12 lg:col-span-5">
+                    <SACChatPanel ticket={selectedTicket} />
+                  </div>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="posvenda" className="mt-6">
+                <div className="grid grid-cols-12 gap-6">
+                  <div className="col-span-12 lg:col-span-7">
+                    <SACTicketInbox
+                      tickets={posVenda}
+                      titulo="Pós-venda"
+                      onSelect={setSelectedTicket}
+                      prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
+                      setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
+                    />
+                  </div>
+                  <div className="col-span-12 lg:col-span-5">
+                    <SACChatPanel ticket={selectedTicket} />
+                  </div>
+                </div>
+              </TabsContent>
+            </Tabs>
+          </main>
         </div>
       </div>
-      {/* Alerta Proativo (PRR) */}
-      <div className="rounded-lg border bg-amber-50 border-amber-200 p-3 flex items-center gap-3">
-        <AlertTriangle className="w-5 h-5 text-amber-600" />
-        <div>
-          <p className="text-sm font-medium text-amber-800">Alerta de Potencial Problema</p>
-          <p className="text-xs text-amber-700">Cliente X: Risco Alto de Atraso. Sugestão: Enviar mensagem proativa agora.</p>
-        </div>
-      </div>
-      {/* Conteúdo por abas */}
-      <Tabs defaultValue="metricas" className="w-full">
-        <TabsList className="bg-gray-100 p-1 rounded-xl border-0 shadow-sm">
-          <TabsTrigger value="metricas">Métricas</TabsTrigger>
-          <TabsTrigger value="perguntas">Perguntas</TabsTrigger>
-          <TabsTrigger value="reclamacoes">Reclamações</TabsTrigger>
-          <TabsTrigger value="posvenda">Pós-venda</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="metricas" className="mt-6">
-          <MetricsTab />
-        </TabsContent>
-
-        <TabsContent value="perguntas" className="mt-6">
-          <div className="grid grid-cols-12 gap-6">
-            <div className="col-span-12 lg:col-span-7">
-              <SACTicketInbox
-                tickets={perguntas}
-                titulo="Perguntas"
-                onSelect={setSelectedTicket}
-                onAssign={handleAssign}
-                prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
-                setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
-              />
-            </div>
-            <div className="col-span-12 lg:col-span-5">
-              <SACChatPanel ticket={selectedTicket} />
-            </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="reclamacoes" className="mt-6">
-          <div className="grid grid-cols-12 gap-6">
-            <div className="col-span-12 lg:col-span-7">
-              <SACTicketInbox
-                tickets={reclamacoes}
-                titulo="Reclamações"
-                onSelect={setSelectedTicket}
-                onAssign={handleAssign}
-                prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
-                setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
-              />
-            </div>
-            <div className="col-span-12 lg:col-span-5">
-              <SACChatPanel ticket={selectedTicket} />
-            </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="posvenda" className="mt-6">
-          <div className="grid grid-cols-12 gap-6">
-            <div className="col-span-12 lg:col-span-7">
-              <SACTicketInbox
-                tickets={posVenda}
-                titulo="Pós-venda"
-                onSelect={setSelectedTicket}
-                onAssign={handleAssign}
-                prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
-                setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
-              />
-            </div>
-            <div className="col-span-12 lg:col-span-5">
-              <SACChatPanel ticket={selectedTicket} />
-            </div>
-          </div>
-        </TabsContent>
-      </Tabs>
-    </div>
+    </SidebarProvider>
   );
 }

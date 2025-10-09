@@ -16,6 +16,7 @@ import {
   BarChart2,
   LogOut,
   ChevronLeft,
+  Award,
 } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -53,6 +54,7 @@ const toolsModules = [
   { title: "Recursos Seller", url: "/recursos-seller", icon: ShoppingBag },
   { title: "Aplicativos", url: "/aplicativos", icon: Puzzle },
   { title: "Comunidade", url: "/comunidade", icon: MessageSquare },
+  { title: "Novura Academy", url: "/novura-academy", icon: Award },
 ];
 
 export function AppSidebar() {

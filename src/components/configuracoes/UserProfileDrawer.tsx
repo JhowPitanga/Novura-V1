@@ -95,7 +95,7 @@ export function UserProfileDrawer({ children, isAdmin }: UserProfileDrawerProps)
   const handleSaveProfile = async () => {
     try {
       const { error } = await supabase.auth.updateUser({
-        data: { name: profileName, full_name: profileName },
+        data: { name: profileName, full_name: profileName, display_name: profileName },
       });
       if (error) {
         toast.error("Falha ao atualizar perfil");
