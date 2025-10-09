@@ -108,13 +108,13 @@ export function UserProfileDrawer({ children, isAdmin }: UserProfileDrawerProps)
   };
 
   return (
-    <Drawer open={open} onOpenChange={setOpen} direction="right">
+    <Drawer open={open} onOpenChange={setOpen} direction="right" shouldScaleBackground={false}>
       <DrawerTrigger asChild>
         {children}
       </DrawerTrigger>
       <DrawerContent
         ref={contentRef}
-        className="h-full w-[45%] p-4 overflow-y-auto"
+        className="w-[45%] p-6 overflow-y-auto overflow-x-hidden fixed right-0 shadow-none"
         aria-describedby={descriptionId}
         aria-labelledby={titleId}
         role="dialog"

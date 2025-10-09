@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfiguracoesFiscais } from "@/components/configuracoes/ConfiguracoesFiscais";
 import { ConfiguracoesUsuarios } from "@/components/configuracoes/ConfiguracoesUsuarios";
@@ -14,7 +14,10 @@ export function ConfiguracoesModal({ open, onOpenChange }: ConfiguracoesModalPro
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl max-h-[90vh] overflow-hidden">
+      <DialogContent className="max-w-6xl max-h-[90vh] overflow-hidden" aria-labelledby="configuracoes-title">
+        <DialogHeader>
+          <DialogTitle id="configuracoes-title">Configurações</DialogTitle>
+        </DialogHeader>
         <div className="p-6">
           <div className="mb-6">
             <h1 className="text-3xl font-bold text-gray-900 mb-2">Configurações</h1>
