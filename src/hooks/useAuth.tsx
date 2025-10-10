@@ -1,7 +1,7 @@
-import { useState, useEffect, createContext, useContext, ReactNode } from 'react';
-import { User, Session } from '@supabase/supabase-js';
-import { supabase } from '../integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { Session, User } from '@supabase/supabase-js';
+import { ReactNode, createContext, useContext, useEffect, useState } from 'react';
+import { supabase } from '../integrations/supabase/client';
 
 interface AuthContextType {
     user: User | null;
@@ -11,6 +11,8 @@ interface AuthContextType {
     signIn: (email: string, password: string) => Promise<{ error: any }>;
     signOut: () => Promise<void>;
     organizationId: string | null;
+    permissions: Record<string, Record<string, boolean>> | null;
+    userRole: string | null;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -23,16 +25,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [loading, setLoading] = useState(true);
     const { toast } = useToast();
     const [organizationId, setOrganizationId] = useState<string | null>(null);
+    const [permissions, setPermissions] = useState<Record<string, Record<string, boolean>> | null>(null);
+    const [userRole, setUserRole] = useState<string | null>(null);
 
     async function resolveOrganizationId(u: User | null) {
         try {
             if (!u) {
                 setOrganizationId(null);
+                setPermissions(null);
+                setUserRole(null);
                 return;
             }
             const metaOrg = (u.user_metadata as any)?.organization_id as string | undefined;
             if (metaOrg) {
                 setOrganizationId(metaOrg);
+                await loadUserPermissionsAndRole(u.id, metaOrg);
                 return;
             }
             const { data } = await supabase
@@ -40,10 +47,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 .select('organization_id')
                 .eq('id', u.id)
                 .maybeSingle();
-            setOrganizationId((data as any)?.organization_id ?? null);
+            const orgId = (data as any)?.organization_id;
+            setOrganizationId(orgId ?? null);
+            if (orgId) {
+                await loadUserPermissionsAndRole(u.id, orgId);
+            } else {
+                setPermissions(null);
+                setUserRole(null);
+            }
         } catch (e) {
             console.warn('Falha ao resolver organization_id do usuário', e);
             setOrganizationId(null);
+            setPermissions(null);
+            setUserRole(null);
+        }
+    }
+
+    async function loadUserPermissionsAndRole(userId: string, orgId: string) {
+        try {
+            const { data: memberData, error } = await supabase
+                .from('organization_members')
+                .select('permissions, role')
+                .eq('organization_id', orgId)
+                .eq('user_id', userId)
+                .single();
+
+            if (error) {
+                console.warn('Erro ao carregar permissões do usuário:', error);
+                setPermissions({});
+                setUserRole('member');
+                return;
+            }
+
+            setPermissions(memberData?.permissions || {});
+            setUserRole(memberData?.role || 'member');
+        } catch (e) {
+            console.warn('Falha ao carregar permissões e role do usuário', e);
+            setPermissions({});
+            setUserRole('member');
         }
     }
 
@@ -165,6 +206,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 description: "Você foi desconectado com sucesso.",
             });
             setOrganizationId(null);
+            setPermissions(null);
+            setUserRole(null);
         } catch (err) {
             console.error('SignOut error:', err);
             toast({
@@ -183,6 +226,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signIn,
         signOut,
         organizationId,
+        permissions,
+        userRole,
     };
 
     return (
