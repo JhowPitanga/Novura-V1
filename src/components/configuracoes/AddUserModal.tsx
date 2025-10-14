@@ -1,30 +1,34 @@
 
-import { useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
 
 const steps = [
   { id: 1, title: "Dados", description: "Informações básicas" },
   { id: 2, title: "Permissões", description: "Acessos do sistema" }
 ];
 
-const systemModules = [
-  { id: "desempenho", name: "Desempenho" },
-  { id: "produtos", name: "Produtos" },
-  { id: "anuncios", name: "Central de Anúncios" },
-  { id: "pedidos", name: "Pedidos" },
-  { id: "estoque", name: "Estoque" },
-  { id: "notas_fiscais", name: "Notas Fiscais" },
-  { id: "aplicativos", name: "Aplicativos" },
-  { id: "recursos_seller", name: "Recursos Seller" },
-  { id: "gerenciar_usuarios", name: "Gerenciar Usuários" }
-];
+interface SystemModule {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  actions: ModuleAction[];
+}
+
+interface ModuleAction {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+}
 
 interface AddUserModalProps {
   open: boolean;
@@ -46,99 +50,106 @@ function generateInvitationToken(bytesLength: number = 32) {
 export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalProps) {
   const [currentStep, setCurrentStep] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [modules, setModules] = useState<SystemModule[]>([]);
+  const { organizationId } = useAuth();
   const [userData, setUserData] = useState({
     email: "",
     nome: "",
     telefone: ""
   });
-  const [permissions, setPermissions] = useState<Record<string, boolean>>({});
+  const [permissions, setPermissions] = useState<Record<string, Record<string, boolean>>>({});
+
+  useEffect(() => {
+    if (open) {
+      loadModules();
+    }
+  }, [open]);
+
+  const loadModules = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('system_modules')
+        .select(`
+          id,
+          name,
+          display_name,
+          description,
+          module_actions (
+            id,
+            name,
+            display_name,
+            description
+          )
+        `)
+        .order('name');
+
+      if (error) throw error;
+
+      const formattedModules: SystemModule[] = data.map(module => ({
+        id: module.id,
+        name: module.name,
+        display_name: module.display_name,
+        description: module.description,
+        actions: module.module_actions.map((action: any) => ({
+          id: action.id,
+          name: action.name,
+          display_name: action.display_name,
+          description: action.description,
+        }))
+      }));
+
+      setModules(formattedModules);
+    } catch (error) {
+      console.error('Erro ao carregar módulos:', error);
+      toast.error('Erro ao carregar módulos do sistema');
+    }
+  };
 
   const handleSave = async () => {
+    if (!organizationId) {
+      toast.error('Erro: organização não encontrada');
+      return;
+    }
+
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Usuário não autenticado');
+      const response = await fetch(`/functions/v1/manage-users?action=invite_user`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: userData.email,
+          name: userData.nome,
+          phone: userData.telefone,
+          permissions: permissions,
+        }),
+      });
 
-      // Gerar token e expiração de 10 minutos
-      const token = generateInvitationToken(32);
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-
-      const commonFields = {
-        email: userData.email,
-        nome: userData.nome,
-        telefone: userData.telefone || null,
-        permissions: permissions,
-        invited_by_user_id: user.id,
-        status: 'pendente'
-      };
-
-      // 1) Tentar com invitation_token + expires_at
-      const { error: e1 } = await supabase
-        .from('user_invitations')
-        .insert([{ 
-          ...commonFields,
-          invitation_token: token,
-          expires_at: expiresAt
-        }]);
-
-      if (e1) {
-        const isMissingInvitationToken = (
-          typeof e1.message === 'string' && e1.message.includes("Could not find the 'invitation_token' column")
-        ) || e1.code === 'PGRST204';
-
-        if (isMissingInvitationToken) {
-          // 2) Tentar com token + expires_at
-          const { error: e2 } = await supabase
-            .from('user_invitations')
-            .insert([{ 
-              ...(commonFields as any),
-              token: token,
-              expires_at: expiresAt
-            } as any]);
-
-          if (e2) {
-            const isMissingExpiresAt = (
-              typeof e2.message === 'string' && e2.message.includes("Could not find the 'expires_at' column")
-            ) || e2.code === 'PGRST204';
-
-            if (isMissingExpiresAt) {
-              // 3) Tentar com token apenas
-              const { error: e3 } = await supabase
-                .from('user_invitations')
-                .insert([{ 
-                  ...(commonFields as any),
-                  token: token
-                } as any]);
-
-              if (e3) throw e3;
-
-              toast.info('Aviso: coluna expires_at não existe na base atual. O convite foi criado sem prazo armazenado.');
-            } else {
-              throw e2;
-            }
-          }
-        } else {
-          throw e1;
-        }
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Erro ao convidar usuário');
       }
 
-      const invitationLink = `${window.location.origin}/convite-permissoes?token=${token}`;
+      const result = await response.json();
 
       // Copiar o link para a área de transferência
       try {
-        await navigator.clipboard.writeText(invitationLink);
-      } catch {}
+        await navigator.clipboard.writeText(result.invitation_link);
+      } catch { }
 
       // Enviar email via cliente padrão (fallback)
       const subject = encodeURIComponent('Convite de acesso - Novura');
       const body = encodeURIComponent(
         `Olá${userData.nome ? ' ' + userData.nome : ''},%0D%0A%0D%0AVocê foi convidado(a) para acessar o sistema Novura.%0D%0A` +
-        `Use o link abaixo para concluir seu acesso e definir suas permissões.%0D%0A%0D%0A` +
-        `${invitationLink}%0D%0A%0D%0A` +
+        `Use o link abaixo para concluir seu acesso.%0D%0A%0D%0A` +
+        `${result.invitation_link}%0D%0A%0D%0A` +
         `Atenção: este convite expira em 10 minutos.%0D%0A%0D%0A` +
         `Se você não solicitou este convite, ignore este email.`
       );
       const mailtoUrl = `mailto:${encodeURIComponent(userData.email)}?subject=${subject}&body=${body}`;
+
       // Tentar abrir o cliente de email
       window.open(mailtoUrl, '_blank');
 
@@ -150,9 +161,9 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
       setCurrentStep(1);
       setUserData({ email: "", nome: "", telefone: "" });
       setPermissions({});
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erro ao convidar usuário:', error);
-      toast.error('Erro ao gerar convite do usuário');
+      toast.error(error.message || 'Erro ao gerar convite do usuário');
     } finally {
       setLoading(false);
     }
@@ -176,8 +187,14 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
     }
   };
 
-  const handlePermissionChange = (moduleId: string, checked: boolean) => {
-    setPermissions(prev => ({ ...prev, [moduleId]: checked }));
+  const handlePermissionChange = (moduleName: string, actionName: string, checked: boolean) => {
+    setPermissions(prev => ({
+      ...prev,
+      [moduleName]: {
+        ...prev[moduleName],
+        [actionName]: checked
+      }
+    }));
   };
 
   const renderCurrentStep = () => {
@@ -236,25 +253,44 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
                 Selecione as permissões do usuário
               </h3>
               <p className="text-xs text-gray-500 mb-4">Um convite será enviado por email com um token de acesso que expira em 10 minutos.</p>
-              <div className="grid grid-cols-1 gap-3">
-                {systemModules.map((module) => (
-                  <div key={module.id} className="flex items-center space-x-3">
-                    <Checkbox
-                      id={module.id}
-                      checked={permissions[module.id] || false}
-                      onCheckedChange={(checked) => 
-                        handlePermissionChange(module.id, checked as boolean)
-                      }
-                    />
-                    <Label 
-                      htmlFor={module.id} 
-                      className="text-sm font-medium text-gray-700 cursor-pointer"
-                    >
-                      {module.name}
-                    </Label>
-                  </div>
-                ))}
-              </div>
+
+              {modules.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-gray-500">Carregando módulos...</p>
+                </div>
+              ) : (
+                <div className="space-y-6 max-h-96 overflow-y-auto">
+                  {modules.map((module) => (
+                    <div key={module.name} className="border rounded-lg p-4">
+                      <h4 className="font-medium text-gray-900 mb-2">{module.display_name}</h4>
+                      <p className="text-sm text-gray-600 mb-3">{module.description}</p>
+
+                      <div className="grid grid-cols-1 gap-2">
+                        {module.actions.map((action) => (
+                          <div key={action.name} className="flex items-center space-x-3">
+                            <Checkbox
+                              id={`${module.name}-${action.name}`}
+                              checked={permissions[module.name]?.[action.name] || false}
+                              onCheckedChange={(checked) =>
+                                handlePermissionChange(module.name, action.name, checked as boolean)
+                              }
+                            />
+                            <div className="flex-1">
+                              <Label
+                                htmlFor={`${module.name}-${action.name}`}
+                                className="text-sm font-medium text-gray-700 cursor-pointer"
+                              >
+                                {action.display_name}
+                              </Label>
+                              <p className="text-xs text-gray-500">{action.description}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         );
