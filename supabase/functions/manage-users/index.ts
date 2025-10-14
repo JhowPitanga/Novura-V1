@@ -67,7 +67,16 @@ serve(async (req) => {
     }
 
     const url = new URL(req.url);
-    const action = url.searchParams.get("action");
+    let action = url.searchParams.get("action");
+    // Allow action via JSON body when not provided in query (so clients can use supabase.functions.invoke)
+    if (!action && (req.method === "POST" || req.method === "PUT" || req.method === "DELETE")) {
+      try {
+        const maybeJson = await req.clone().json().catch(() => null);
+        action = (maybeJson && typeof maybeJson.action === 'string') ? maybeJson.action : action;
+      } catch (_) {
+        // ignore body parse issues here; handlers will parse again as needed
+      }
+    }
 
     switch (action) {
       case "list_users":
@@ -84,8 +93,11 @@ serve(async (req) => {
         return jsonResponse({ error: "Invalid action" }, 400);
     }
   } catch (e) {
-    const message = e instanceof Error ? e.message : "Unknown error";
-    return jsonResponse({ error: message }, 500);
+    const err: any = e as any;
+    const message = err?.message || "Unknown error";
+    const details = err?.details || err?.hint || err?.error;
+    const code = err?.code;
+    return jsonResponse({ error: message, details, code }, 500);
   }
 });
 
@@ -100,7 +112,7 @@ async function handleListUsers(admin: any, organizationId: string, userRole: str
       created_at,
       updated_at,
       user_id,
-      users!inner(id, email, name, last_login)
+      users!inner(id, email)
     `)
     .eq("organization_id", organizationId);
 
