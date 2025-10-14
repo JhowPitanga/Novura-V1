@@ -62,9 +62,13 @@ serve(async (req) => {
     const url = new URL(req.url);
     const method = req.method;
 
-    const code = method === "GET" ? url.searchParams.get("code") : (await req.json())?.code ?? null;
-    const stateStr = method === "GET" ? url.searchParams.get("state") : (await req.json())?.state ?? null;
-    const errorParam = method === "GET" ? url.searchParams.get("error") : null;
+    const body = method === "GET" ? null : await req.json();
+    console.log("[meli-callback] request", { method, url: req.url });
+
+    const code = method === "GET" ? url.searchParams.get("code") : body?.code ?? null;
+    const stateStr = method === "GET" ? url.searchParams.get("state") : body?.state ?? null;
+    const errorParam = method === "GET" ? url.searchParams.get("error") : body?.error ?? null;
+    console.log("[meli-callback] params", { hasCode: !!code, hasState: !!stateStr, hasError: !!errorParam });
 
     if (errorParam) return jsonResponse({ error: errorParam }, 400);
     if (!code || !stateStr) return jsonResponse({ error: "Missing code or state" }, 400);
@@ -72,11 +76,14 @@ serve(async (req) => {
     let state: any;
     try {
       state = JSON.parse(atob(stateStr));
+      console.log("[meli-callback] state parsed", { keys: Object.keys(state || {}) });
     } catch (_) {
+      console.error("[meli-callback] invalid state", { stateStrLength: stateStr?.length || 0 });
       return jsonResponse({ error: "Invalid state" }, 400);
     }
 
-    const { organizationId, marketplaceName = "Mercado Livre", storeName, connectedByUserId } = state || {};
+    const { organizationId, marketplaceName = "Mercado Livre", storeName, connectedByUserId, pkce_verifier, redirect_uri: stateRedirect } = state || {};
+    console.log("[meli-callback] org/app", { organizationId, marketplaceName, hasPkceVerifier: !!pkce_verifier, stateRedirect: stateRedirect || null });
     if (!organizationId) return jsonResponse({ error: "Missing organizationId in state" }, 400);
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
@@ -97,11 +104,15 @@ serve(async (req) => {
       .eq("name", marketplaceName)
       .single();
 
-    if (appErr || !appRow) return jsonResponse({ error: appErr?.message || "App not found" }, 404);
+    if (appErr || !appRow) {
+      console.error("[meli-callback] app not found", { appErr });
+      return jsonResponse({ error: appErr?.message || "App not found" }, 404);
+    }
 
     const clientId = appRow.client_id || Deno.env.get("MERCADO_LIVRE_CLIENT_ID") || null;
     const clientSecret = appRow.client_secret || Deno.env.get("MERCADO_LIVRE_CLIENT_SECRET") || null;
-    const redirectUri = Deno.env.get("MERCADO_LIVRE_REDIRECT_URI") || Deno.env.get("MERCADO_LIVRE_CALLBACK_URL") || null;
+    const redirectEnv = Deno.env.get("MERCADO_LIVRE_REDIRECT_URI") || Deno.env.get("MERCADO_LIVRE_CALLBACK_URL") || null;
+    const redirectUri = stateRedirect || redirectEnv;
 
     if (!clientId || !clientSecret) return jsonResponse({ error: "Missing client credentials (DB or env)" }, 400);
 
@@ -111,6 +122,7 @@ serve(async (req) => {
     form.append("client_secret", clientSecret);
     form.append("code", code);
     if (redirectUri) form.append("redirect_uri", redirectUri);
+    if (pkce_verifier) form.append("code_verifier", pkce_verifier);
 
     const resp = await fetch("https://api.mercadolibre.com/oauth/token", {
       method: "POST",
@@ -118,8 +130,19 @@ serve(async (req) => {
       body: form.toString(),
     });
 
+    console.log("[meli-callback] meli token response status", resp.status);
     const json = await resp.json();
-    if (!resp.ok) return jsonResponse({ error: json?.error_description || "Token exchange failed", details: json }, resp.status);
+    const safePreview = {
+      hasAccessToken: !!json?.access_token,
+      hasRefreshToken: !!json?.refresh_token,
+      expires_in: json?.expires_in,
+      user_id: json?.user_id,
+      error: json?.error,
+      error_description: json?.error_description,
+    };
+    console.log("[meli-callback] meli token preview", safePreview);
+
+    if (!resp.ok) return jsonResponse({ error: json?.error_description || "Token exchange failed", details: safePreview }, resp.status);
 
     const { access_token, refresh_token, expires_in, user_id } = json;
 
@@ -131,7 +154,11 @@ serve(async (req) => {
       .limit(1)
       .single();
 
-    if (companyError || !company?.id) return jsonResponse({ error: companyError?.message || "Company not found" }, 404);
+    if (companyError || !company?.id) {
+      console.error("[meli-callback] company not found", { companyError });
+      return jsonResponse({ error: companyError?.message || "Company not found" }, 404);
+    }
+    console.log("[meli-callback] company resolved", { companyId: company.id });
 
     const now = new Date();
     const config = {
@@ -157,7 +184,11 @@ serve(async (req) => {
         config,
       }]);
 
-    if (insertError) return jsonResponse({ error: insertError.message }, 500);
+    if (insertError) {
+      console.error("[meli-callback] insert error", { insertError });
+      return jsonResponse({ error: insertError.message }, 500);
+    }
+    console.log("[meli-callback] insert ok", { companyId: company.id, marketplaceName });
 
     // Resposta: JSON para POST (rota front-end), HTML para GET (popup)
     if (method === "POST") {
@@ -167,6 +198,7 @@ serve(async (req) => {
     const siteUrl = Deno.env.get("SITE_URL") || "http://127.0.0.1:5174/aplicativos/conectados";
     return htmlPostMessageSuccess(siteUrl, { ok: true });
   } catch (e) {
+    console.error("[meli-callback] error", e);
     const message = e instanceof Error ? e.message : "Unknown error";
     return jsonResponse({ error: message }, 500);
   }

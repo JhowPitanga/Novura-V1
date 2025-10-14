@@ -68,26 +68,33 @@ ALTER TABLE public.user_organization_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_activity_log ENABLE ROW LEVEL SECURITY;
 
 -- Usuário pode ver/editar apenas seu próprio perfil
+DROP POLICY IF EXISTS "Users can view their own profile" ON public.user_profiles;
 CREATE POLICY "Users can view their own profile" ON public.user_profiles
   FOR SELECT USING (auth.uid() = id);
 
+DROP POLICY IF EXISTS "Users can update their own profile" ON public.user_profiles;
 CREATE POLICY "Users can update their own profile" ON public.user_profiles
   FOR UPDATE USING (auth.uid() = id);
 
+DROP POLICY IF EXISTS "Users can insert their own profile" ON public.user_profiles;
 CREATE POLICY "Users can insert their own profile" ON public.user_profiles
   FOR INSERT WITH CHECK (auth.uid() = id);
 
 -- Configurações por organização - usuários podem ver apenas suas próprias configurações
+DROP POLICY IF EXISTS "Users can view their org settings" ON public.user_organization_settings;
 CREATE POLICY "Users can view their org settings" ON public.user_organization_settings
   FOR SELECT USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update their org settings" ON public.user_organization_settings;
 CREATE POLICY "Users can update their org settings" ON public.user_organization_settings
   FOR UPDATE USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert their org settings" ON public.user_organization_settings;
 CREATE POLICY "Users can insert their org settings" ON public.user_organization_settings
   FOR INSERT WITH CHECK (auth.uid() = user_id);
 
 -- Apenas usuários com permissão de auditoria podem ver logs
+DROP POLICY IF EXISTS "Users with audit permission can view logs" ON public.user_activity_log;
 CREATE POLICY "Users with audit permission can view logs" ON public.user_activity_log
   FOR SELECT USING (
     public.current_user_has_permission('usuarios', 'manage_permissions')

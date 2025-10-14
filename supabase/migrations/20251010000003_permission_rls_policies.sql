@@ -357,11 +357,24 @@ CREATE POLICY "Users with aplicativos.view can view apps" ON public.apps
   );
 
 DROP POLICY IF EXISTS "Users with aplicativos.configure can manage apps" ON public.apps;
-CREATE POLICY "Users with aplicativos.configure can manage apps" ON public.apps
-  FOR ALL USING (
-    -- Política básica: usuários podem gerenciar seus próprios aplicativos
-    auth.uid() = user_id
-  );
+DO $$
+BEGIN
+  -- Criar política somente se a coluna user_id existir na tabela apps
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'apps'
+      AND column_name = 'user_id'
+  ) THEN
+    CREATE POLICY "Users with aplicativos.configure can manage apps" ON public.apps
+      FOR ALL USING (
+        -- Política básica: usuários podem gerenciar seus próprios aplicativos
+        auth.uid() = user_id
+      );
+  ELSE
+    RAISE NOTICE 'Skipping policy "Users with aplicativos.configure can manage apps" because public.apps.user_id does not exist';
+  END IF;
+END $$;
 
 -- Políticas para tabela marketplace_integrations
 DROP POLICY IF EXISTS "Users can view marketplace_integrations" ON public.marketplace_integrations;
@@ -436,6 +449,7 @@ CREATE POLICY "Users can update their own profile" ON public.users
   FOR UPDATE USING (auth.uid() = id);
 
 -- Política especial para organização atual - usuários podem ver dados da própria organização
+DROP POLICY IF EXISTS "Users can view their organization data" ON public.organizations;
 CREATE POLICY "Users can view their organization data" ON public.organizations
   FOR SELECT USING (
     id = public.get_current_user_organization_id()

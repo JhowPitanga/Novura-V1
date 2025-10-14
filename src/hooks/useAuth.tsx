@@ -65,24 +65,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function loadUserPermissionsAndRole(userId: string, orgId: string) {
         try {
-            const { data: memberData, error } = await supabase
-                .from('organization_members')
-                .select('permissions, role')
-                .eq('organization_id', orgId)
-                .eq('user_id', userId)
-                .single();
+            // Usa RPC com SECURITY DEFINER para evitar recursão/RLS complexa
+            const { data, error } = await supabase.rpc('rpc_get_member_permissions', {
+                p_user_id: userId,
+                p_organization_id: orgId,
+            });
 
             if (error) {
-                console.warn('Erro ao carregar permissões do usuário:', error);
+                console.warn('Erro ao carregar permissões do usuário (RPC):', error);
                 setPermissions({});
                 setUserRole('member');
                 return;
             }
 
-            setPermissions(memberData?.permissions || {});
-            setUserRole(memberData?.role || 'member');
+            const row = Array.isArray(data) ? (data[0] as any) : (data as any);
+            setPermissions(row?.permissions || {});
+            setUserRole(row?.role || 'member');
         } catch (e) {
-            console.warn('Falha ao carregar permissões e role do usuário', e);
+            console.warn('Falha ao carregar permissões e role do usuário (RPC)', e);
             setPermissions({});
             setUserRole('member');
         }

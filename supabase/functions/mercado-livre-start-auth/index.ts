@@ -52,6 +52,10 @@ serve(async (req) => {
     const authUrl = appRow.auth_url || Deno.env.get("MERCADO_LIVRE_AUTH_URL") || "https://auth.mercadolivre.com.br/authorization";
     if (!clientId || !authUrl) return jsonResponse({ error: "App missing client_id or auth_url (DB or env)" }, 400);
 
+    // Determine redirect URI (env fallback if not provided)
+    const envRedirect = Deno.env.get("MERCADO_LIVRE_REDIRECT_URI") || Deno.env.get("MERCADO_LIVRE_CALLBACK_URL") || null;
+    const finalRedirect = redirect_uri || envRedirect;
+
     // Generate state for CSRF protection and pass-through context
     const csrf = crypto.randomUUID();
     const statePayload = {
@@ -62,10 +66,6 @@ serve(async (req) => {
       connectedByUserId: connectedByUserId ?? null,
     };
     const state = btoa(JSON.stringify(statePayload));
-
-    // Determine redirect URI (env fallback if not provided)
-    const envRedirect = Deno.env.get("MERCADO_LIVRE_REDIRECT_URI") || Deno.env.get("MERCADO_LIVRE_CALLBACK_URL") || null;
-    const finalRedirect = redirect_uri || envRedirect;
 
     // Build authorization URL
     const base = new URL(authUrl);
