@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Search, Filter, Settings, FileText, Printer, Bot, TrendingUp, Zap, QrCode, Check, Calendar, Download, X, ChevronDown, ChevronUp, Package, Truck, MinusCircle, CheckCircle2, Box, Scan, FileBadge, StickyNote, AudioWaveform, TextSelect, ListChecks, Table } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +39,8 @@ import { ptBR } from "date-fns/locale";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { Reorder } from "framer-motion";
 import { PedidoDetailsDrawer } from "@/components/pedidos/PedidoDetailsDrawer";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 // --- Mockup de PDF de Lista de Separação (Novo Componente) ---
 const PickingListPDFMockup = ({ pedidos, settings, onPrint }) => {
@@ -309,27 +311,7 @@ const generateFunctionalLabelPDF = (pedidos, settings) => {
 };
 
 
-// --- Dados Mock (Temporário) ---
-const mockPedidos = [
-    { id: "PED001", marketplace: "Mercado Livre", produto: "iPhone 15 Pro Max 256GB", sku: "IPH15PM-256", cliente: "João Silva Santos", valor: 8999.99, data: "2024-01-15", status: "Pendente", tipoEnvio: "ML Envios", idPlataforma: "MLB123456789", quantidadeTotal: 1, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A1", nome: "iPhone 15 Pro Max 256GB", sku: "IPH15PM-256", quantidade: 1, valor: 8999.99, vinculado: true, marketplace: "Mercado Livre" }], financeiro: { valorPedido: 8999.99, taxaFrete: 75.00, taxaMarketplace: 1200.00, cupom: 50.00, impostos: 150.00, liquido: 7674.99, margem: 20 }, impressoEtiqueta: false, impressoLista: false },
-    { id: "PED002", marketplace: "Amazon", produto: "MacBook Air M3 16GB 512GB", sku: null, cliente: "Maria Santos Costa", valor: 12999.99, data: "2024-01-15", status: "A vincular", tipoEnvio: "Amazon Prime", idPlataforma: "AMZ987654321", quantidadeTotal: 1, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A2", nome: "MacBook Air M3 16GB 512GB", sku: null, quantidade: 1, valor: 12999.99, vinculado: false, marketplace: "Amazon" }], financeiro: { valorPedido: 12999.99, taxaFrete: 80.00, taxaMarketplace: 1500.00, cupom: 0.00, impostos: 200.00, liquido: 11219.99, margem: 18 }, impressoEtiqueta: false, impressoLista: false },
-    { id: "PED003", marketplace: "Shopee", produto: "Samsung Galaxy S24 Ultra", sku: "SGS24U-256", cliente: "Carlos Oliveira", valor: 6999.99, data: "2024-01-14", status: "Emissao NF", tipoEnvio: "Shopee Xpress", idPlataforma: "SHP789123456", quantidadeTotal: 1, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A3", nome: "Samsung Galaxy S24 Ultra", sku: "SGS24U-256", quantidade: 1, valor: 6999.99, vinculado: true, marketplace: "Shopee" }], financeiro: { valorPedido: 6999.99, taxaFrete: 50.00, taxaMarketplace: 900.00, cupom: 20.00, impostos: 100.00, liquido: 5929.99, margem: 22 }, impressoEtiqueta: false, impressoLista: false },
-    { id: "PED004", marketplace: "Magazine Luiza", produto: "Nintendo Switch OLED", sku: "NSW-OLED", cliente: "Ana Paula Lima", valor: 2299.99, data: "2024-01-14", status: "NF Emitida", tipoEnvio: "Magalu Entrega", idPlataforma: "MAG456789123", quantidadeTotal: 1, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A4", nome: "Nintendo Switch OLED", sku: "NSW-OLED", quantidade: 1, valor: 2299.99, bipado: false, imagem: "/placeholder.svg" }], financeiro: { valorPedido: 2299.99, taxaFrete: 30.00, taxaMarketplace: 350.00, cupom: 0.00, impostos: 50.00, liquido: 1869.99, margem: 15 }, impressoEtiqueta: true, impressoLista: true },
-    { id: "PED005", marketplace: "Americanas", produto: "iPad Air 5ª Geração", sku: "IPAD-AIR5", cliente: "Roberto Ferreira", valor: 4199.99, data: "2024-01-13", status: "Aguardando Coleta", tipoEnvio: "B2W Entrega", idPlataforma: "AME321654987", quantidadeTotal: 1, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A5", nome: "iPad Air 5ª Geração", sku: "IPAD-AIR5", quantidade: 1, valor: 4199.99, vinculado: true, marketplace: "Americanas" }], financeiro: { valorPedido: 4199.99, taxaFrete: 40.00, taxaMarketplace: 500.00, cupom: 0.00, impostos: 80.00, liquido: 3579.99, margem: 18 }, impressoEtiqueta: true, impressoLista: false },
-    { id: "PED006", marketplace: "Shopee", produto: "Fone Bluetooth", sku: "FB-001", cliente: "Mariana Costa", valor: 150.00, data: "2024-01-12", status: "Enviado", tipoEnvio: "Shopee Xpress", idPlataforma: "SHP999888777", quantidadeTotal: 1, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A6", nome: "Fone Bluetooth", sku: "FB-001", quantidade: 1, valor: 150.00, vinculado: true, marketplace: "Shopee" }], financeiro: { valorPedido: 150.00, taxaFrete: 10.00, taxaMarketplace: 20.00, cupom: 0.00, impostos: 5.00, liquido: 115.00, margem: 30 }, impressoEtiqueta: true, impressoLista: true },
-    { id: "PED007", marketplace: "Mercado Livre", produto: "Produto Cancelado", sku: "PC-001", cliente: "Cliente Cancelado", valor: 200.00, data: "2024-01-08", status: "Cancelado", tipoEnvio: "ML Envios", idPlataforma: "CAN123456789", quantidadeTotal: 1, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A7", nome: "Produto Cancelado", sku: "PC-001", quantidade: 1, valor: 200.00, vinculado: true, marketplace: "Mercado Livre" }], financeiro: { valorPedido: 200.00, taxaFrete: 0.00, taxaMarketplace: 25.00, cupom: 0.00, impostos: 10.00, liquido: 165.00, margem: 15 }, impressoEtiqueta: false, impressoLista: false },
-    { id: "PED008", marketplace: "Mercado Livre", produto: "Smartphone e Fone", sku: null, cliente: "Julia Mendes", valor: 3500.00, data: "2024-01-16", status: "A vincular", tipoEnvio: "ML Envios Flex", idPlataforma: "MLB998877665", quantidadeTotal: 2, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A8", nome: "Smartphone X", sku: null, quantidade: 1, valor: 3000.00, vinculado: false, marketplace: "Mercado Livre" }, { id: "ITEM-A9", nome: "Fone Bluetooth Y", sku: null, quantidade: 1, valor: 500.00, vinculado: false, marketplace: "Mercado Livre" }], financeiro: { valorPedido: 3500.00, taxaFrete: 45.00, taxaMarketplace: 450.00, cupom: 0.00, impostos: 100.00, liquido: 2905.00, margem: 25 }, impressoEtiqueta: false, impressoLista: false },
-    { id: "PED009", marketplace: "Shopee", produto: "Produto Com Falha", sku: "FAIL-001", cliente: "Cliente Com Falha", valor: 1000.00, data: "2024-01-16", status: "Emissao NF", subStatus: "Falha na emissao", tipoEnvio: "Shopee Xpress", idPlataforma: "SHP111222333", quantidadeTotal: 1, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A10", nome: "Produto Com Falha", sku: "FAIL-001", quantidade: 1, valor: 1000.00, vinculado: true, marketplace: "Shopee" }], financeiro: { valorPedido: 1000.00, taxaFrete: 15.00, taxaMarketplace: 130.00, cupom: 0.00, impostos: 30.00, liquido: 825.00, margem: 10 }, impressoEtiqueta: false, impressoLista: false },
-    { id: "PED010", marketplace: "Amazon", produto: "Produto Com Falha no Envio", sku: "FAIL-002", cliente: "Cliente Com Falha", valor: 1500.00, data: "2024-01-16", status: "Emissao NF", subStatus: "Falha ao enviar", tipoEnvio: "Amazon Prime", idPlataforma: "AMZ111222333", quantidadeTotal: 1, imagem: "/placeholder.svg", itens: [{ id: "ITEM-A11", nome: "Produto Com Falha no Envio", sku: "FAIL-002", quantidade: 1, valor: 1500.00, vinculado: true, marketplace: "Amazon" }], financeiro: { valorPedido: 1500.00, taxaFrete: 20.00, taxaMarketplace: 180.00, cupom: 0.00, impostos: 40.00, liquido: 1260.00, margem: 12 }, impressoEtiqueta: false, impressoLista: false },
-    { id: "PED011", marketplace: "Mercado Livre", produto: "Smartphone e Fone", sku: "SMART-FONE", cliente: "Fernanda Lemos", valor: 3500.00, data: "2024-01-17", status: "NF Emitida", tipoEnvio: "ML Envios", idPlataforma: "MLB1122334455", quantidadeTotal: 2, imagem: "/placeholder.svg", itens: [
-        { id: "ITEM-B1", nome: "Smartphone X", sku: "SMART-X", quantidade: 1, valor: 3000.00, bipado: false, imagem: "/placeholder.svg" },
-        { id: "ITEM-B2", nome: "Fone Bluetooth Y", sku: "FONE-Y", quantidade: 1, valor: 500.00, bipado: false, imagem: "/placeholder.svg" },
-    ], financeiro: { valorPedido: 3500.00, taxaFrete: 45.00, taxaMarketplace: 450.00, cupom: 0.00, impostos: 100.00, liquido: 2905.00, margem: 25 }, impressoEtiqueta: false, impressoLista: true },
-    { id: "PED012", marketplace: "Mercado Livre", produto: "Câmera e Lente", sku: null, cliente: "Lucas Santos", valor: 5000.00, data: "2024-01-18", status: "Pendente", tipoEnvio: "ML Envios Flex", idPlataforma: "MLB000111222", quantidadeTotal: 2, imagem: "/placeholder.svg", itens: [
-        { id: "ITEM-C1", nome: "Câmera DSLR", sku: null, quantidade: 1, valor: 4000.00, vinculado: false, marketplace: "Mercado Livre" },
-        { id: "ITEM-C2", nome: "Lente 50mm", sku: null, quantidade: 1, valor: 1000.00, vinculado: false, marketplace: "Mercado Livre" },
-    ], financeiro: { valorPedido: 5000.00, taxaFrete: 60.00, taxaMarketplace: 600.00, cupom: 0.00, impostos: 150.00, liquido: 4190.00, margem: 20 }, impressoEtiqueta: false, impressoLista: false },
-];
+
 
 function Pedidos() {
     const [activeStatus, setActiveStatus] = useState("todos");
@@ -345,7 +327,7 @@ function Pedidos() {
     const [isPrintConfigOpen, setIsPrintConfigOpen] = useState(false);
     const [isPickingListModalOpen, setIsPickingListModalOpen] = useState(false);
     const [searchTerm, setSearchTerm] = useState("");
-    const [pedidos, setPedidos] = useState<any[]>(mockPedidos);
+    const [pedidos, setPedidos] = useState<any[]>([]);
     const [isEmitting, setIsEmitting] = useState(false);
     const [emissionProgress, setEmissionProgress] = useState(0);
     const [emittedCount, setEmittedCount] = useState(0);
@@ -362,6 +344,90 @@ function Pedidos() {
     const [activeFilterStatus, setActiveFilterStatus] = useState("todos");
     const [selectedPedidos, setSelectedPedidos] = useState<string[]>([]);
     const [isDatePopoverOpen, setIsDatePopoverOpen] = useState(false);
+
+    const { user } = useAuth();
+
+    useEffect(() => {
+        const fetchPedidos = async () => {
+            try {
+                if (!user) {
+                    setPedidos([]);
+                    return;
+                }
+
+                const { data, error } = await supabase
+                    .from("orders")
+                    .select(`
+                        id,
+                        marketplace_order_id,
+                        customer_name,
+                        order_total,
+                        status,
+                        created_at,
+                        marketplace,
+                        platform_id,
+                        shipping_type,
+                        order_items (
+                            product_name,
+                            quantity,
+                            sku
+                        )
+                    `);
+
+                if (error) throw error;
+
+                const parsed = (data || []).map((o: any) => {
+                    const items = (o.order_items || []).map((it: any, idx: number) => ({
+                        id: `${o.id || o.marketplace_order_id}-ITEM-${idx + 1}`,
+                        nome: it.product_name,
+                        sku: it.sku || null,
+                        quantidade: it.quantity || 0,
+                        valor: 0,
+                        bipado: false,
+                        vinculado: !!it.sku,
+                        imagem: "/placeholder.svg",
+                        marketplace: o.marketplace,
+                    }));
+
+                    const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
+
+                    return {
+                        id: o.marketplace_order_id || o.id,
+                        marketplace: o.marketplace || "Desconhecido",
+                        produto: items[0]?.nome || "",
+                        sku: items[0]?.sku || null,
+                        cliente: o.customer_name || "",
+                        valor: orderTotal,
+                        data: o.created_at,
+                        status: o.status || "Pendente",
+                        tipoEnvio: o.shipping_type || "",
+                        idPlataforma: o.platform_id || o.marketplace_order_id || "",
+                        quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
+                        imagem: "/placeholder.svg",
+                        itens: items,
+                        financeiro: {
+                            valorPedido: orderTotal,
+                            taxaFrete: 0,
+                            taxaMarketplace: 0,
+                            cupom: 0,
+                            impostos: 0,
+                            liquido: orderTotal,
+                            margem: 0,
+                        },
+                        impressoEtiqueta: false,
+                        impressoLista: false,
+                    };
+                });
+
+                setPedidos(parsed);
+            } catch (err) {
+                console.error("Erro ao buscar pedidos:", err);
+                setPedidos([]);
+            }
+        };
+
+        fetchPedidos();
+    }, [user]);
 
 
     // Definição das colunas da tabela
@@ -671,13 +737,13 @@ function Pedidos() {
     };
 
     const statusBlocks = [
-        { id: "todos", title: "Todos os Pedidos", count: mockPedidos.length, description: "Sincronizados com marketplaces" },
-        { id: "a-vincular", title: "A Vincular", count: mockPedidos.filter(p => p.status === 'A vincular').length, description: "Pedidos sem vínculo de SKU" },
-        { id: "emissao-nf", title: "Emissão de NF", count: mockPedidos.filter(p => p.status === 'Emissao NF').length, description: "Aguardando emissão" },
-        { id: "impressao", title: "Impressão", count: mockPedidos.filter(p => p.status === 'NF Emitida').length, description: "NF e etiqueta" },
-        { id: "aguardando-coleta", title: "Aguardando Coleta", count: mockPedidos.filter(p => p.status === 'Aguardando Coleta').length, description: "Prontos para envio" },
-        { id: "enviado", title: "Enviado", count: mockPedidos.filter(p => p.status === 'Enviado').length, description: "Pedidos em trânsito" },
-        { id: "cancelado", title: "Cancelados", count: mockPedidos.filter(p => p.status === 'Cancelado').length, description: "Pedidos cancelados/devolvidos" },
+        { id: "todos", title: "Todos os Pedidos", count: pedidos.length, description: "Sincronizados com marketplaces" },
+        { id: "a-vincular", title: "A Vincular", count: pedidos.filter(p => p.status === 'A vincular').length, description: "Pedidos sem vínculo de SKU" },
+        { id: "emissao-nf", title: "Emissão de NF", count: pedidos.filter(p => p.status === 'Emissao NF').length, description: "Aguardando emissão" },
+        { id: "impressao", title: "Impressão", count: pedidos.filter(p => p.status === 'NF Emitida').length, description: "NF e etiqueta" },
+        { id: "aguardando-coleta", title: "Aguardando Coleta", count: pedidos.filter(p => p.status === 'Aguardando Coleta').length, description: "Prontos para envio" },
+        { id: "enviado", title: "Enviado", count: pedidos.filter(p => p.status === 'Enviado').length, description: "Pedidos em trânsito" },
+        { id: "cancelado", title: "Cancelados", count: pedidos.filter(p => p.status === 'Cancelado').length, description: "Pedidos cancelados/devolvidos" },
     ];
 
     const handlePrintPickingList = () => {
@@ -927,7 +993,7 @@ function Pedidos() {
                                     </table>
                                 </div>
                                 <div className="py-4 px-6 flex justify-between items-center text-sm text-gray-600">
-                                    <div>Exibindo {filteredPedidos.length} de {mockPedidos.length} pedido(s)</div>
+                                    <div>Exibindo {filteredPedidos.length} de {pedidos.length} pedido(s)</div>
                                 </div>
                             </div>
                         </main>
@@ -1330,7 +1396,7 @@ function Pedidos() {
                             </div>
                             <div className="flex justify-between items-center text-sm font-medium text-gray-700">
                                 <span>Progresso: {Math.round(emissionProgress)}%</span>
-                                <span>{emittedCount + failedCount} de {mockPedidos.filter(p => p.status === 'Emissao NF').length}</span>
+                                <span>{emittedCount + failedCount} de {pedidos.filter(p => p.status === 'Emissao NF').length}</span>
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="p-4 rounded-lg bg-green-50 border border-green-200 flex items-center space-x-2">

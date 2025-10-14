@@ -9,6 +9,8 @@ interface NavigationButtonsProps {
   productType: string;
   variationEtapa?: VariationStep;
   canProceedVariation?: () => boolean;
+  // Adicionado: lógica externa para fluxo de empresa
+  canProceedCompany?: () => boolean;
   loading?: boolean;
   onNext: () => void;
   onBack: () => void;
@@ -22,6 +24,7 @@ export function NavigationButtons({
   productType, 
   variationEtapa,
   canProceedVariation,
+  canProceedCompany,
   loading = false,
   onNext, 
   onBack,
@@ -40,6 +43,11 @@ export function NavigationButtons({
     // For kit products in step 3, always allow navigation
     if (currentStep === 3 && productType === "kit") {
       return true;
+    }
+
+    // Para fluxo de empresa, permitir lógica externa de validação
+    if (productType === "company" && typeof canProceedCompany === "function") {
+      return canProceedCompany();
     }
     
     return true;
@@ -82,20 +90,19 @@ export function NavigationButtons({
   };
 
   return (
-    <div className="flex justify-between items-center pt-4">
+    <div className="flex justify-end items-center pt-4">
       {/* Back Button */}
       {shouldShowBackButton() && (
         <Button 
           onClick={onBack} 
           variant="outline"
           size="lg"
+          className="mr-3"
         >
           <ArrowLeft className="w-5 h-5 mr-2" />
           Voltar
         </Button>
       )}
-
-      <div className="flex-1" />
 
       {/* Next/Save Buttons */}
       {((currentStep < 5 && productType !== "kit" && productType !== "company") || 

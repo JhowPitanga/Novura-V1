@@ -6,29 +6,30 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
-import Index from "./pages/Index";
-import Desempenho from "./pages/Desempenho";
-import PesquisaMercado from "./pages/PesquisaMercado";
-import Produtos from "./pages/Produtos";
-import Anuncios from "./pages/Anuncios";
-import RecursosSeller from "./pages/RecursosSeller";
-import Aplicativos from "./pages/Aplicativos";
-import Estoque from "./pages/Estoque";
-import NotasFiscais from "./pages/NotasFiscais";
-import Pedidos from "./pages/Pedidos";
-import Equipe from "./pages/Equipe";
-import Landing from "./pages/Landing";
-import Login from "./pages/Login";
-import Cadastro from "./pages/Cadastro";
-import NotFound from "./pages/NotFound";
-import NovuraAcademy from "./pages/NovuraAcademy";
-import ProductDetailsPage from "./pages/ProductDetailsPage";
-
-import Configuracoes from "./pages/Configuracoes";
-import { NovaEmpresa } from "./pages/NovaEmpresa";
-import SAC from "./pages/SAC";
-import Comunidade from "./pages/Comunidade";
-import Auth from "./pages/Auth";
+import { Suspense, lazy } from "react";
+const Index = lazy(() => import("./pages/Index"));
+const Desempenho = lazy(() => import("./pages/Desempenho"));
+const PesquisaMercado = lazy(() => import("./pages/PesquisaMercado"));
+const Produtos = lazy(() => import("./pages/Produtos"));
+const Anuncios = lazy(() => import("./pages/Anuncios"));
+const RecursosSeller = lazy(() => import("./pages/RecursosSeller"));
+const Aplicativos = lazy(() => import("./pages/Aplicativos"));
+const Estoque = lazy(() => import("./pages/Estoque"));
+const NotasFiscais = lazy(() => import("./pages/NotasFiscais"));
+const Pedidos = lazy(() => import("./pages/Pedidos"));
+const Equipe = lazy(() => import("./pages/Equipe"));
+const Landing = lazy(() => import("./pages/Landing"));
+const Login = lazy(() => import("./pages/Login"));
+const Cadastro = lazy(() => import("./pages/Cadastro"));
+const NotFound = lazy(() => import("./pages/NotFound"));
+const NovuraAcademy = lazy(() => import("./pages/NovuraAcademy"));
+const ProductDetailsPage = lazy(() => import("./pages/ProductDetailsPage"));
+const Configuracoes = lazy(() => import("./pages/Configuracoes"));
+const NovaEmpresa = lazy(() => import("./pages/NovaEmpresa"));
+const SAC = lazy(() => import("./pages/SAC"));
+const Comunidade = lazy(() => import("./pages/Comunidade"));
+const Auth = lazy(() => import("./pages/Auth"));
+const MercadoLivreCallback = lazy(() => import("./pages/MercadoLivreCallback"));
 
 const queryClient = new QueryClient();
 
@@ -41,30 +42,210 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             {/* Public routes */}
-            <Route path="/landing" element={<Landing />} />
-            <Route path="/auth" element={<Auth />} />
-            
+            <Route
+              path="/landing"
+              element={
+                <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                  <Landing />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/auth"
+              element={
+                <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                  <Auth />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/oauth/mercado-livre/callback"
+              element={
+                <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                  <MercadoLivreCallback />
+                </Suspense>
+              }
+            />
             {/* Protected dashboard routes */}
-            <Route path="/" element={<ProtectedRoute><Index /></ProtectedRoute>} />
-            <Route path="/desempenho/*" element={<ProtectedRoute><Desempenho /></ProtectedRoute>} />
-            <Route path="/pesquisa-mercado" element={<ProtectedRoute><PesquisaMercado /></ProtectedRoute>} />
-            <Route path="/produtos/*" element={<ProtectedRoute><Produtos /></ProtectedRoute>} />
-            <Route path="/anuncios/*" element={<ProtectedRoute><Anuncios /></ProtectedRoute>} />
-            <Route path="/recursos-seller/*" element={<ProtectedRoute><RecursosSeller /></ProtectedRoute>} />
-            <Route path="/recursos-seller/produto/:id" element={<ProtectedRoute><ProductDetailsPage /></ProtectedRoute>} />
-            <Route path="/equipe/*" element={<ProtectedRoute><Equipe /></ProtectedRoute>} />
-            <Route path="/aplicativos" element={<ProtectedRoute><Aplicativos /></ProtectedRoute>} />
-            <Route path="/sac" element={<ProtectedRoute><SAC /></ProtectedRoute>} />
-            <Route path="/pedidos" element={<ProtectedRoute><Pedidos /></ProtectedRoute>} />
-            <Route path="/estoque" element={<ProtectedRoute><Estoque /></ProtectedRoute>} />
-            <Route path="/notas-fiscais" element={<ProtectedRoute><NotasFiscais /></ProtectedRoute>} />
-            <Route path="/configuracoes" element={<ProtectedRoute><Configuracoes /></ProtectedRoute>} />
-            <Route path="/configuracoes/notas-fiscais/nova-empresa" element={<ProtectedRoute><NovaEmpresa /></ProtectedRoute>} />
-            <Route path="/novura-academy/*" element={<ProtectedRoute><NovuraAcademy /></ProtectedRoute>} />
-            <Route path="/comunidade/*" element={<ProtectedRoute><Comunidade /></ProtectedRoute>} />
-            
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Index />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/desempenho/*"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Desempenho />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/pesquisa-mercado"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <PesquisaMercado />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/produtos/*"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Produtos />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/*"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Anuncios />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/recursos-seller/*"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <RecursosSeller />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/recursos-seller/produto/:id"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <ProductDetailsPage />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/equipe/*"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Equipe />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/aplicativos/*"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Aplicativos />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/sac"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <SAC />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/pedidos"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Pedidos />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/estoque"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Estoque />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/notas-fiscais"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <NotasFiscais />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/configuracoes"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Configuracoes />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/configuracoes/notas-fiscais/nova-empresa"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <NovaEmpresa />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/novura-academy/*"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <NovuraAcademy />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/comunidade/*"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Comunidade />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
             {/* Catch-all route */}
-            <Route path="*" element={<NotFound />} />
+            <Route
+              path="*"
+              element={
+                <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                  <NotFound />
+                </Suspense>
+              }
+            />
           </Routes>
         </BrowserRouter>
       </TooltipProvider>

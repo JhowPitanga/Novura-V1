@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { CleanNavigation } from "@/components/CleanNavigation";
 
 interface Company {
   id: string;
@@ -22,6 +23,12 @@ export function ConfiguracoesFiscais() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const [activeSubTab, setActiveSubTab] = useState("empresas");
+
+  const subNavItems = [
+    { title: "Empresas", path: "empresas", description: "Cadastro e gestão de empresas emissoras" },
+    { title: "Configurações de Impostos", path: "impostos", description: "Regras, CFOP, CST e alíquotas" },
+  ];
 
   useEffect(() => {
     loadCompanies();
@@ -54,7 +61,7 @@ export function ConfiguracoesFiscais() {
       <div className="space-y-4">
         <div className="flex justify-between items-center">
           <div>
-            <h2 className="text-2xl font-bold text-gray-900">Notas Fiscais</h2>
+            <h2 className="text-2xl font-bold text-gray-900">Empresas</h2>
             <p className="text-gray-600 mt-1">Configurações sobre emissão de notas fiscais</p>
           </div>
         </div>
@@ -76,7 +83,7 @@ export function ConfiguracoesFiscais() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Notas Fiscais</h2>
+          <h2 className="text-2xl font-bold text-gray-900">Empresas</h2>
           <p className="text-gray-600 mt-1">Configurações sobre emissão de notas fiscais</p>
         </div>
         <Button 
@@ -89,60 +96,92 @@ export function ConfiguracoesFiscais() {
         </Button>
       </div>
 
-      {companies.length === 0 ? (
-        <Card className="p-8 text-center">
-          <div className="max-w-sm mx-auto">
-            <h3 className="text-lg font-medium text-gray-900 mb-2">
-              Nenhuma empresa cadastrada
-            </h3>
-            <p className="text-gray-600 mb-4">
-              Adicione uma empresa para começar a emitir notas fiscais
-            </p>
-            <Button 
-              onClick={handleAddCompany}
-              className="bg-novura-primary hover:bg-novura-primary/90"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Adicionar Primeira Empresa
-            </Button>
-          </div>
-        </Card>
-      ) : (
-        <div className="grid gap-4">
-          {companies.map((company) => (
-            <Card key={company.id} className="p-6 hover:shadow-md transition-shadow">
-              <div className="flex justify-between items-start">
-                <div className="space-y-2">
-                  <div className="flex items-center gap-3">
-                    <h3 className="text-lg font-semibold text-gray-900">
-                      {company.razao_social}
-                    </h3>
-                    <Badge variant="secondary" className="text-xs">
-                      {company.tipo_empresa}
-                    </Badge>
-                  </div>
-                  <p className="text-gray-600">CNPJ: {company.cnpj}</p>
-                  <p className="text-gray-600">Email: {company.email}</p>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-gray-500">Tributação:</span>
-                    <Badge variant="outline" className="text-xs">
-                      {company.tributacao}
-                    </Badge>
-                  </div>
-                  {company.inscricao_estadual && (
-                    <p className="text-sm text-gray-500">
-                      IE: {company.inscricao_estadual}
-                    </p>
-                  )}
-                </div>
-                <div className="text-right">
-                  <p className="text-sm text-gray-500">
-                    Criado em {new Date(company.created_at).toLocaleDateString('pt-BR')}
-                  </p>
-                </div>
+      {/* Sub navegação para Configurações Fiscais */}
+      <CleanNavigation items={subNavItems} activePath={activeSubTab} onNavigate={setActiveSubTab} />
+
+      {activeSubTab === "empresas" ? (
+        <>
+          {companies.length === 0 ? (
+            <Card className="p-8 text-center">
+              <div className="max-w-sm mx-auto">
+                <h3 className="text-lg font-medium text-gray-900 mb-2">
+                  Nenhuma empresa cadastrada
+                </h3>
+                <p className="text-gray-600 mb-4">
+                  Adicione uma empresa para começar a emitir notas fiscais
+                </p>
+                <Button 
+                  onClick={handleAddCompany}
+                  className="bg-novura-primary hover:bg-novura-primary/90"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Adicionar Primeira Empresa
+                </Button>
               </div>
             </Card>
-          ))}
+          ) : (
+            <div className="grid gap-4">
+              {companies.map((company) => (
+                <Card key={company.id} className="p-6 hover:shadow-md transition-shadow">
+                  <div className="flex justify-between items-start">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-3">
+                        <h3 className="text-lg font-semibold text-gray-900">
+                          {company.razao_social}
+                        </h3>
+                        <Badge variant="secondary" className="text-xs">
+                          {company.tipo_empresa}
+                        </Badge>
+                      </div>
+                      <p className="text-gray-600">CNPJ: {company.cnpj}</p>
+                      <p className="text-gray-600">Email: {company.email}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-gray-500">Tributação:</span>
+                        <Badge variant="outline" className="text-xs">
+                          {company.tributacao}
+                        </Badge>
+                      </div>
+                      {company.inscricao_estadual && (
+                        <p className="text-sm text-gray-500">
+                          IE: {company.inscricao_estadual}
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm text-gray-500">
+                        Criado em {new Date(company.created_at).toLocaleDateString('pt-BR')}
+                      </p>
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="space-y-4">
+          <h3 className="text-xl font-semibold text-gray-900">Configurações de Impostos</h3>
+          <p className="text-gray-600">Defina regras fiscais, CFOP, CST e alíquotas aplicáveis às operações.</p>
+          <Card className="p-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <p className="text-sm text-gray-500">CFOP padrão</p>
+                <p className="text-gray-800">Em breve</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">CST padrão</p>
+                <p className="text-gray-800">Em breve</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Alíquota ICMS</p>
+                <p className="text-gray-800">Em breve</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Regra de substituição tributária</p>
+                <p className="text-gray-800">Em breve</p>
+              </div>
+            </div>
+          </Card>
         </div>
       )}
     </div>

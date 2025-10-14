@@ -1,3 +1,4 @@
+import type { ChangeEvent } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,20 +16,63 @@ interface EmpresaData {
   endereco: string;
   numero: string;
   bairro: string;
-}
+  complemento?: string;
+ }
 
-interface EmpresaStep1Props {
-  data: EmpresaData;
-  updateData: (data: Partial<EmpresaData>) => void;
-}
+ interface EmpresaStep1Props {
+   data: EmpresaData;
+   updateData: (data: Partial<EmpresaData>) => void;
+   showErrors?: boolean;
+   cnpjBlocked?: boolean;
+ }
 
-export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
+ export function EmpresaStep1({ data, updateData, showErrors, cnpjBlocked }: EmpresaStep1Props) {
+   const formatCNPJ = (value: string) => {
+    const digits = value.replace(/\D/g, "").slice(0, 14);
+    const parts = [
+      digits.slice(0, 2),
+      digits.slice(2, 5),
+      digits.slice(5, 8),
+      digits.slice(8, 12),
+      digits.slice(12, 14),
+    ];
+    let formatted = parts[0] || "";
+    if (digits.length > 2) formatted += "." + parts[1];
+    if (digits.length > 5) formatted += "." + parts[2];
+    if (digits.length > 8) formatted += "/" + parts[3];
+    if (digits.length > 12) formatted += "-" + parts[4];
+    return formatted;
+  };
+
+  const handleCnpjChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const masked = formatCNPJ(e.target.value);
+    updateData({ cnpj: masked });
+  };
+
+  const requiredClass = (value?: string) => showErrors && !value ? "border-red-500 focus-visible:ring-red-500" : "";
+
+  const cnpjClass = cnpjBlocked ? "border-red-600 focus-visible:ring-red-600" : requiredClass(data.cnpj);
+
   return (
     <div className="space-y-6">
       <div>
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Configuração da Empresa</h3>
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <Label htmlFor="cnpj">CNPJ *</Label>
+            <Input
+              id="cnpj"
+              value={data.cnpj}
+              onChange={handleCnpjChange}
+              placeholder="00.000.000/0000-00"
+              inputMode="numeric"
+              maxLength={18}
+              required
+              className={`mt-1 ${cnpjClass}`}
+            />
+          </div>
+
           <div className="space-y-2">
             <Label htmlFor="razao_social">Razão Social *</Label>
             <Input
@@ -37,24 +81,14 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
               onChange={(e) => updateData({ razao_social: e.target.value })}
               placeholder="Digite a razão social"
               required
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="cnpj">CNPJ *</Label>
-            <Input
-              id="cnpj"
-              value={data.cnpj}
-              onChange={(e) => updateData({ cnpj: e.target.value })}
-              placeholder="00.000.000/0000-00"
-              required
+              className={`mt-1 ${requiredClass(data.razao_social)}`}
             />
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="tipo_empresa">Tipo de Empresa *</Label>
             <Select value={data.tipo_empresa} onValueChange={(value) => updateData({ tipo_empresa: value })}>
-              <SelectTrigger>
+              <SelectTrigger className={`mt-1 ${requiredClass(data.tipo_empresa)}`}>
                 <SelectValue placeholder="Selecione o tipo" />
               </SelectTrigger>
               <SelectContent>
@@ -67,7 +101,7 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
           <div className="space-y-2">
             <Label htmlFor="tributacao">Tributação *</Label>
             <Select value={data.tributacao} onValueChange={(value) => updateData({ tributacao: value })}>
-              <SelectTrigger>
+              <SelectTrigger className={`mt-1 ${requiredClass(data.tributacao)}`}>
                 <SelectValue placeholder="Selecione a tributação" />
               </SelectTrigger>
               <SelectContent>
@@ -86,6 +120,7 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
               value={data.inscricao_estadual}
               onChange={(e) => updateData({ inscricao_estadual: e.target.value })}
               placeholder="000.000.000.000"
+              className="mt-1"
             />
           </div>
 
@@ -98,6 +133,7 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
               onChange={(e) => updateData({ email: e.target.value })}
               placeholder="empresa@email.com"
               required
+              className={`mt-1 ${requiredClass(data.email)}`}
             />
           </div>
         </div>
@@ -115,6 +151,7 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
               onChange={(e) => updateData({ cep: e.target.value })}
               placeholder="00000-000"
               required
+              className={`mt-1 ${requiredClass(data.cep)}`}
             />
           </div>
 
@@ -126,6 +163,7 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
               onChange={(e) => updateData({ cidade: e.target.value })}
               placeholder="Digite a cidade"
               required
+              className={`mt-1 ${requiredClass(data.cidade)}`}
             />
           </div>
 
@@ -137,6 +175,7 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
               onChange={(e) => updateData({ estado: e.target.value })}
               placeholder="Digite o estado"
               required
+              className={`mt-1 ${requiredClass(data.estado)}`}
             />
           </div>
 
@@ -148,6 +187,7 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
               onChange={(e) => updateData({ endereco: e.target.value })}
               placeholder="Rua, Avenida..."
               required
+              className={`mt-1 ${requiredClass(data.endereco)}`}
             />
           </div>
 
@@ -159,6 +199,7 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
               onChange={(e) => updateData({ numero: e.target.value })}
               placeholder="123"
               required
+              className={`mt-1 ${requiredClass(data.numero)}`}
             />
           </div>
 
@@ -170,16 +211,27 @@ export function EmpresaStep1({ data, updateData }: EmpresaStep1Props) {
               onChange={(e) => updateData({ bairro: e.target.value })}
               placeholder="Digite o bairro"
               required
+              className={`mt-1 ${requiredClass(data.bairro)}`}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="complemento">Complemento</Label>
+            <Input
+              id="complemento"
+              value={data.complemento || ""}
+              onChange={(e) => updateData({ complemento: e.target.value })}
+              placeholder="Apartamento, Bloco, Referência"
+              className="mt-1"
             />
           </div>
         </div>
       </div>
 
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <p className="text-sm text-blue-800">
+      <div className="bg-novura-primary/10 border border-novura-primary/20 rounded-lg p-4">
+        <p className="text-sm text-novura-primary">
           <strong>Atenção:</strong> Todos os campos marcados com (*) são obrigatórios para prosseguir.
         </p>
       </div>
     </div>
   );
-}
+ }

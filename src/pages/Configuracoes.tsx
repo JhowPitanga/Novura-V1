@@ -6,9 +6,15 @@ import { ConfiguracoesUsuarios } from "@/components/configuracoes/ConfiguracoesU
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
+import { CleanNavigation } from "@/components/CleanNavigation";
 
 export default function Configuracoes() {
-  const [activeTab, setActiveTab] = useState("fiscais");
+  const [activeTab, setActiveTab] = useState("usuarios");
+
+  const navItems = [
+    { title: "Usuários", path: "usuarios", description: "Gerencie usuários e permissões" },
+    { title: "Configurações Fiscais", path: "fiscais", description: "Parâmetros e regras fiscais" },
+  ];
 
   return (
     <SidebarProvider>
@@ -26,28 +32,17 @@ export default function Configuracoes() {
                 <p className="text-gray-600">Gerencie as configurações do sistema</p>
               </div>
 
-              <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-                <TabsList className="grid w-full grid-cols-2 max-w-md mb-8 h-12 bg-gray-100">
-                  <TabsTrigger 
-                    value="fiscais" 
-                    className="text-sm font-medium data-[state=active]:bg-white data-[state=active]:text-novura-primary data-[state=active]:shadow-sm"
-                  >
-                    Configurações Fiscais
-                  </TabsTrigger>
-                  <TabsTrigger 
-                    value="usuarios"
-                    className="text-sm font-medium data-[state=active]:bg-white data-[state=active]:text-novura-primary data-[state=active]:shadow-sm"
-                  >
-                    Usuários
-                  </TabsTrigger>
-                </TabsList>
+              {/* Clean Navigation padrão do sistema */}
+              <CleanNavigation items={navItems} activePath={activeTab} onNavigate={setActiveTab} />
+
+              {/* Conteúdo por abas controladas */}
+              <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full mt-6">
+                <TabsContent value="usuarios">
+                  <ConfiguracoesUsuarios />
+                </TabsContent>
 
                 <TabsContent value="fiscais">
                   <ConfiguracoesFiscais />
-                </TabsContent>
-
-                <TabsContent value="usuarios">
-                  <ConfiguracoesUsuarios />
                 </TabsContent>
               </Tabs>
             </div>
