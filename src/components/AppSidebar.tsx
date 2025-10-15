@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { 
   Home, 
   TrendingUp, 
@@ -33,28 +33,32 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useAuth } from "@/hooks/useAuth";
+import { usePermissions } from "@/hooks/usePermissions";
+import { supabase } from "@/integrations/supabase/client";
 
 const startModule = [
   { title: "Início", url: "/", icon: Home },
 ];
 
-const managementModules = [
-  { title: "Desempenho", url: "/desempenho", icon: TrendingUp },
-  { title: "Pesquisa de Mercado", url: "/pesquisa-mercado", icon: BarChart2 },
-  { title: "Produtos", url: "/produtos", icon: Package },
-  { title: "Central de Anúncios", url: "/anuncios", icon: Megaphone },
-  { title: "SAC", url: "/sac", icon: MessageSquare },
-  { title: "Pedidos", url: "/pedidos", icon: ShoppingCart },
-  { title: "Equipe", url: "/equipe", icon: Users },
-  { title: "Estoque", url: "/estoque", icon: Store },
-  { title: "Notas Fiscais", url: "/notas-fiscais", icon: FileText },
+type ModuleItem = { title: string; url: string; icon: any; module?: string };
+
+const managementModules: ModuleItem[] = [
+  { title: "Desempenho", url: "/desempenho", icon: TrendingUp, module: "desempenho" },
+  { title: "Pesquisa de Mercado", url: "/pesquisa-mercado", icon: BarChart2, module: "pesquisa_mercado" },
+  { title: "Produtos", url: "/produtos", icon: Package, module: "produtos" },
+  { title: "Central de Anúncios", url: "/anuncios", icon: Megaphone, module: "anuncios" },
+  { title: "SAC", url: "/sac", icon: MessageSquare, module: "sac" },
+  { title: "Pedidos", url: "/pedidos", icon: ShoppingCart, module: "pedidos" },
+  { title: "Equipe", url: "/equipe", icon: Users, module: "equipe" },
+  { title: "Estoque", url: "/estoque", icon: Store, module: "estoque" },
+  { title: "Notas Fiscais", url: "/notas-fiscais", icon: FileText, module: "notas_fiscais" },
 ];
 
-const toolsModules = [
-  { title: "Recursos Seller", url: "/recursos-seller", icon: ShoppingBag },
-  { title: "Aplicativos", url: "/aplicativos", icon: Puzzle },
-  { title: "Comunidade", url: "/comunidade", icon: MessageSquare },
-  { title: "Novura Academy", url: "/novura-academy", icon: Award },
+const toolsModules: ModuleItem[] = [
+  { title: "Recursos Seller", url: "/recursos-seller", icon: ShoppingBag, module: "recursos_seller" },
+  { title: "Aplicativos", url: "/aplicativos", icon: Puzzle, module: "aplicativos" },
+  { title: "Comunidade", url: "/comunidade", icon: MessageSquare, module: "comunidade" },
+  { title: "Novura Academy", url: "/novura-academy", icon: Award, module: "novura_academy" },
 ];
 
 export function AppSidebar() {
@@ -64,7 +68,53 @@ export function AppSidebar() {
   const currentPath = location.pathname;
   const isCollapsed = state === "collapsed";
   const { user, signOut } = useAuth();
+  const { hasModuleAccess, userRole } = usePermissions();
+  const [dbName, setDbName] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchDbName = async () => {
+      try {
+        if (!user?.id) {
+          if (mounted) setDbName(null);
+          return;
+        }
+        // 1) Tenta pegar do perfil (display_name)
+        const { data: profile, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('display_name')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (profileError) {
+          console.error('Erro ao buscar display_name em user_profiles:', profileError.message);
+        }
+
+        if (profile && (profile as any)?.display_name) {
+          if (mounted) setDbName((profile as any).display_name);
+          return;
+        }
+
+        // 2) Fallback: pega de users.name
+        const { data: userRow, error: userError } = await supabase
+          .from('users')
+          .select('name')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (userError) {
+          console.error('Erro ao buscar nome do usuário em users:', userError.message);
+        }
+        if (mounted) setDbName((userRow as any)?.name ?? null);
+      } catch (e) {
+        console.error('Falha ao carregar nome do usuário:', e);
+        if (mounted) setDbName(null);
+      }
+    };
+    fetchDbName();
+    return () => { mounted = false; };
+  }, [user?.id]);
+
   const displayName =
+    dbName ||
     (user?.user_metadata as any)?.full_name ||
     (user?.user_metadata as any)?.name ||
     user?.email ||
@@ -131,7 +181,13 @@ export function AppSidebar() {
               {!isCollapsed && <SidebarGroupLabel className="px-1 text-gray-500 text-sm">Gerenciamento</SidebarGroupLabel>}
               <SidebarGroupContent>
                 <SidebarMenu className="space-y-1">
-                  {managementModules.map((item) => (
+                  {managementModules
+                    .filter((m) => {
+                      // Donos têm acesso a tudo; membros filtram por permissão do módulo
+                      if (userRole === "owner") return true;
+                      return m.module ? hasModuleAccess(m.module) : true;
+                    })
+                    .map((item) => (
                     <SidebarMenuItem key={item.title}>
                       <SidebarMenuButton tooltip={item.title} asChild>
                         <NavLink
@@ -161,7 +217,12 @@ export function AppSidebar() {
               {!isCollapsed && <SidebarGroupLabel className="px-1 text-gray-500 text-sm">Ferramentas</SidebarGroupLabel>}
               <SidebarGroupContent>
                 <SidebarMenu className="space-y-1">
-                  {toolsModules.map((item) => (
+                  {toolsModules
+                    .filter((m) => {
+                      if (userRole === "owner") return true;
+                      return m.module ? hasModuleAccess(m.module) : true;
+                    })
+                    .map((item) => (
                     <SidebarMenuItem key={item.title}>
                       <SidebarMenuButton tooltip={item.title} asChild>
                         <NavLink
@@ -199,7 +260,7 @@ export function AppSidebar() {
                     </div>
                     <div>
                       <span className="text-sm font-semibold text-gray-900">{displayName}</span>
-                      <p className="text-xs text-gray-600">Admin</p>
+                      <p className="text-xs text-gray-600">{userRole === 'admin' ? 'admin' : 'membro'}</p>
                     </div>
                   </div>
                   <button 

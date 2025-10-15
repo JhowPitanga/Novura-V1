@@ -4,37 +4,90 @@ export function usePermissions() {
     const { permissions, userRole, organizationId } = useAuth();
 
     const hasPermission = (module: string, action: string): boolean => {
+        // Módulo público: sempre permitido
+        if (module === 'novura_academy') return true;
+
         if (!permissions || !organizationId) return false;
 
         // Owners have all permissions
         if (userRole === 'owner') return true;
 
-        return permissions[module]?.[action] === true;
+        const mod = (permissions as any)[module];
+        if (!mod) return false;
+
+        // Suporta três formatos possíveis:
+        // 1) Objeto de ações: { view: true, edit: false }
+        if (typeof mod === 'object' && mod !== null && !Array.isArray(mod)) {
+            return (mod as Record<string, boolean>)[action] === true;
+        }
+        // 2) Booleano agregador: true significa acesso total ao módulo
+        if (typeof mod === 'boolean') {
+            return mod === true;
+        }
+        // 3) Lista de ações: ['view','edit']
+        if (Array.isArray(mod)) {
+            return (mod as string[]).includes(action);
+        }
+        return false;
     };
 
     const hasModuleAccess = (module: string): boolean => {
+        // Módulo público: sempre visível
+        if (module === 'novura_academy') return true;
+
         if (!permissions || !organizationId) return false;
 
         // Owners have all permissions
         if (userRole === 'owner') return true;
 
-        return Object.keys(permissions[module] || {}).length > 0;
+        const mod = (permissions as any)[module];
+        if (!mod) return false;
+
+        // 1) Booleano agregador (qualquer valor true habilita o módulo)
+        if (typeof mod === 'boolean') return mod === true;
+
+        // 2) Objeto de ações: exibe se houver ao menos UMA ação verdadeira
+        if (typeof mod === 'object' && mod !== null && !Array.isArray(mod)) {
+            return Object.values(mod as Record<string, boolean>).some((v) => v === true);
+        }
+
+        // 3) Lista de ações: exibe se houver pelo menos uma ação
+        if (Array.isArray(mod)) {
+            return (mod as any[]).length > 0;
+        }
+        return false;
     };
 
     const hasAnyPermission = (module: string, actions: string[]): boolean => {
+        // Módulo público: sempre permitido
+        if (module === 'novura_academy') return true;
+
         if (!permissions || !organizationId) return false;
 
         // Owners have all permissions
         if (userRole === 'owner') return true;
 
-        const modulePermissions = permissions[module];
-        if (!modulePermissions) return false;
+        const mod = (permissions as any)[module];
+        if (!mod) return false;
 
-        return actions.some(action => modulePermissions[action] === true);
+        // 1) Booleano agregador: tem qualquer permissão no módulo
+        if (typeof mod === 'boolean') return mod === true;
+
+        // 2) Objeto de ações
+        if (typeof mod === 'object' && mod !== null && !Array.isArray(mod)) {
+            return actions.some((action) => (mod as Record<string, boolean>)[action] === true);
+        }
+
+        // 3) Lista de ações
+        if (Array.isArray(mod)) {
+            const list = mod as string[];
+            return actions.some((a) => list.includes(a));
+        }
+        return false;
     };
 
     const canManageUsers = (): boolean => {
-        return hasPermission('usuarios', 'manage_permissions') || userRole === 'owner';
+        return hasPermission('usuarios', 'manage_permissions') || userRole === 'owner' || userRole === 'admin';
     };
 
     const canInviteUsers = (): boolean => {

@@ -36,22 +36,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 setUserRole(null);
                 return;
             }
+
+            // 1) Tenta via metadados do usuário
             const metaOrg = (u.user_metadata as any)?.organization_id as string | undefined;
             if (metaOrg) {
                 setOrganizationId(metaOrg);
                 await loadUserPermissionsAndRole(u.id, metaOrg);
                 return;
             }
+
+            // 2) Tenta via tabela public.users
             const { data } = await supabase
                 .from('users')
                 .select('organization_id')
                 .eq('id', u.id)
                 .maybeSingle();
-            const orgId = (data as any)?.organization_id;
-            setOrganizationId(orgId ?? null);
+            const orgId = (data as any)?.organization_id as string | undefined;
             if (orgId) {
+                setOrganizationId(orgId);
                 await loadUserPermissionsAndRole(u.id, orgId);
+                return;
+            }
+
+            // 3) Fallback seguro: RPC que resolve organização atual por membership (evita criar org indevida)
+            const { data: rpcOrgId, error: rpcErr } = await supabase.rpc('get_current_user_organization_id');
+            if (rpcErr) {
+                console.warn('Falha ao obter organização via RPC get_current_user_organization_id:', rpcErr);
+            }
+            const orgIdFromRpc = Array.isArray(rpcOrgId) ? (rpcOrgId?.[0] as string | undefined) : (rpcOrgId as string | undefined);
+            if (orgIdFromRpc) {
+                setOrganizationId(orgIdFromRpc);
+                await loadUserPermissionsAndRole(u.id, orgIdFromRpc);
+                return;
+            }
+
+            // 4) Último recurso: bootstrap (somente quando nenhum contexto de organização foi encontrado)
+            const { data: boot, error: bootErr } = await supabase.rpc('rpc_bootstrap_user_org', {
+                p_user_id: u.id,
+            });
+
+            if (bootErr) {
+                console.warn('Falha ao bootstrapar organização do usuário:', bootErr);
+                setOrganizationId(null);
+                setPermissions(null);
+                setUserRole(null);
+                return;
+            }
+
+            const bootRow = Array.isArray(boot) ? (boot[0] as any) : (boot as any);
+            const newOrgId = bootRow?.organization_id as string | undefined;
+
+            if (newOrgId) {
+                setOrganizationId(newOrgId);
+                await loadUserPermissionsAndRole(u.id, newOrgId);
             } else {
+                setOrganizationId(null);
                 setPermissions(null);
                 setUserRole(null);
             }
@@ -88,24 +127,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
     }
 
+    // Atualiza permissões/role em tempo real quando houver alterações no registro de membership
+    useEffect(() => {
+        if (!user || !organizationId) return;
+
+        const channel = supabase
+            .channel(`org-membership-${user.id}`)
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'organization_members',
+                    filter: `user_id=eq.${user.id}`,
+                },
+                (payload) => {
+                    try {
+                        const newOrg = (payload.new as any)?.organization_id ?? (payload.old as any)?.organization_id;
+                        if (newOrg === organizationId) {
+                            loadUserPermissionsAndRole(user.id, organizationId);
+                        }
+                    } catch (e) {
+                        console.warn('Falha ao processar atualização de permissões em tempo real:', e);
+                    }
+                }
+            )
+            .subscribe();
+
+        return () => {
+            try { supabase.removeChannel(channel); } catch { /* noop */ }
+        };
+    }, [user?.id, organizationId]);
+
     useEffect(() => {
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             (event, session) => {
-                // Removido log de debug: console.log('Auth state changed:', event, session?.user?.email);
+                // Atualiza sessão e usuário, e só libera loading após resolver organização
                 setSession(session);
                 const currentUser = session?.user ?? null;
                 setUser(currentUser);
-                resolveOrganizationId(currentUser);
-                setLoading(false);
+                (async () => {
+                    await resolveOrganizationId(currentUser);
+                    setLoading(false);
+                })();
             }
         );
 
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            // Removido log de debug: console.log('Initial session:', session?.user?.email);
+        supabase.auth.getSession().then(async ({ data: { session } }) => {
             setSession(session);
             const currentUser = session?.user ?? null;
             setUser(currentUser);
-            resolveOrganizationId(currentUser);
+            await resolveOrganizationId(currentUser);
             setLoading(false);
         });
 

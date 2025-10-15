@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Plus } from "lucide-react";
+import { Plus, MoreHorizontal } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -7,6 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { CleanNavigation } from "@/components/CleanNavigation";
+import { AdicionarImpostoModal, TaxRecord, CompanyOption } from "@/components/configuracoes/impostos/AdicionarImpostoModal";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 interface Company {
   id: string;
@@ -24,6 +27,9 @@ export function ConfiguracoesFiscais() {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const [activeSubTab, setActiveSubTab] = useState("empresas");
+  const [isTaxModalOpen, setIsTaxModalOpen] = useState(false);
+  const [taxes, setTaxes] = useState<TaxRecord[]>([]);
+  const [editingTax, setEditingTax] = useState<TaxRecord | null>(null);
 
   const subNavItems = [
     { title: "Empresas", path: "empresas", description: "Cadastro e gestão de empresas emissoras" },
@@ -32,6 +38,13 @@ export function ConfiguracoesFiscais() {
 
   useEffect(() => {
     loadCompanies();
+    // Carregar impostos salvos (persistência local por enquanto)
+    try {
+      const saved: TaxRecord[] = JSON.parse(localStorage.getItem("impostos") || "[]");
+      setTaxes(Array.isArray(saved) ? saved : []);
+    } catch {
+      setTaxes([]);
+    }
   }, []);
 
   const loadCompanies = async () => {
@@ -56,15 +69,51 @@ export function ConfiguracoesFiscais() {
     navigate('/configuracoes/notas-fiscais/nova-empresa');
   };
 
+  const handleAddTax = () => {
+    setEditingTax(null);
+    setIsTaxModalOpen(true);
+  };
+
+  const handleSaveTax = (record: TaxRecord) => {
+    setTaxes(prev => {
+      let next = prev.filter(t => t.id !== record.id);
+      // garantir exclusividade de padrão por empresa
+      if (record.isDefault && record.companyId) {
+        next = next.map(t => t.companyId === record.companyId ? { ...t, isDefault: false } : t);
+      }
+      next.push(record);
+      // manter ordenação por data
+      next.sort((a, b) => (a.createdAt > b.createdAt ? -1 : 1));
+      return next;
+    });
+  };
+
+  const handleDefinirPadrao = (tax: TaxRecord) => {
+    setTaxes(prev => {
+      const next = prev.map(t => t.companyId === tax.companyId ? { ...t, isDefault: t.id === tax.id } : t);
+      localStorage.setItem("impostos", JSON.stringify(next));
+      toast.success("Imposto definido como padrão");
+      return next;
+    });
+  };
+
+  const handleExcluirTax = (tax: TaxRecord) => {
+    setTaxes(prev => {
+      const next = prev.filter(t => t.id !== tax.id);
+      localStorage.setItem("impostos", JSON.stringify(next));
+      toast.success("Imposto excluído");
+      return next;
+    });
+  };
+
+  const handleEditarTax = (tax: TaxRecord) => {
+    setEditingTax(tax);
+    setIsTaxModalOpen(true);
+  };
+
   if (loading) {
     return (
       <div className="space-y-4">
-        <div className="flex justify-between items-center">
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900">Empresas</h2>
-            <p className="text-gray-600 mt-1">Configurações sobre emissão de notas fiscais</p>
-          </div>
-        </div>
         <div className="grid gap-4">
           {[1, 2, 3].map((i) => (
             <Card key={i} className="p-6">
@@ -81,21 +130,6 @@ export function ConfiguracoesFiscais() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Empresas</h2>
-          <p className="text-gray-600 mt-1">Configurações sobre emissão de notas fiscais</p>
-        </div>
-        <Button 
-          onClick={handleAddCompany}
-          className="bg-novura-primary hover:bg-novura-primary/90"
-          size="lg"
-        >
-          <Plus className="w-5 h-5 mr-2" />
-          Adicionar Empresa
-        </Button>
-      </div>
-
       {/* Sub navegação para Configurações Fiscais */}
       <CleanNavigation items={subNavItems} activePath={activeSubTab} onNavigate={setActiveSubTab} />
 
@@ -160,28 +194,96 @@ export function ConfiguracoesFiscais() {
         </>
       ) : (
         <div className="space-y-4">
-          <h3 className="text-xl font-semibold text-gray-900">Configurações de Impostos</h3>
-          <p className="text-gray-600">Defina regras fiscais, CFOP, CST e alíquotas aplicáveis às operações.</p>
           <Card className="p-6">
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="flex items-center justify-between mb-4">
               <div>
-                <p className="text-sm text-gray-500">CFOP padrão</p>
-                <p className="text-gray-800">Em breve</p>
+                <h3 className="text-lg font-semibold">Configurações de Impostos</h3>
+                <p className="text-sm text-gray-500">Gerencie regras fiscais por empresa</p>
               </div>
-              <div>
-                <p className="text-sm text-gray-500">CST padrão</p>
-                <p className="text-gray-800">Em breve</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500">Alíquota ICMS</p>
-                <p className="text-gray-800">Em breve</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500">Regra de substituição tributária</p>
-                <p className="text-gray-800">Em breve</p>
-              </div>
+              <Button onClick={handleAddTax} className="bg-novura-primary hover:bg-novura-primary/90" size="sm">
+                <Plus className="w-4 h-4 mr-2" />
+                Adicionar Imposto
+              </Button>
             </div>
+
+            {taxes.length === 0 ? (
+              <div className="p-8 text-center border rounded-md">
+                <p className="text-gray-600 mb-4">Nenhum imposto cadastrado ainda.</p>
+                <Button onClick={handleAddTax} className="bg-novura-primary hover:bg-novura-primary/90">
+                  <Plus className="w-4 h-4 mr-2" />Cadastrar Primeiro Imposto
+                </Button>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Código do imposto</TableHead>
+                      <TableHead>Empresa</TableHead>
+                      <TableHead>Observação</TableHead>
+                      <TableHead className="text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {taxes.map((t) => (
+                      <TableRow key={t.id} className="hover:bg-gray-50">
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{t.id}</span>
+                            {t.isDefault && (
+                              <Badge variant="secondary" className="text-xs">Padrão</Badge>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span className="font-medium">{t.companyName || "—"}</span>
+                            <span className="text-xs text-gray-500">{t.cnpj || ""}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <span>{t.observacao || "—"}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="outline" size="icon">
+                                <MoreHorizontal className="w-4 h-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleDefinirPadrao(t)}>Definir como padrão</DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleEditarTax(t)}>Editar</DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleExcluirTax(t)}>Excluir</DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </Card>
+
+          <AdicionarImpostoModal
+            open={isTaxModalOpen}
+            onOpenChange={(open) => {
+              setIsTaxModalOpen(open);
+              if (!open) setEditingTax(null);
+            }}
+            companies={companies as unknown as CompanyOption[]}
+            initialData={editingTax}
+            onSave={(rec) => {
+              handleSaveTax(rec);
+              // garantir persistência local
+              try {
+                const arr: TaxRecord[] = JSON.parse(localStorage.getItem("impostos") || "[]");
+                const merged = [...arr.filter(a => a.id !== rec.id), rec];
+                localStorage.setItem("impostos", JSON.stringify(merged));
+              } catch {}
+            }}
+          />
         </div>
       )}
     </div>

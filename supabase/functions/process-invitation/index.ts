@@ -132,11 +132,8 @@ serve(async (req) => {
   }
 
   try {
-    const { token, password, name } = await req.json();
-
-    if (!token || !password) {
-      return jsonResponse({ error: "Token and password are required" }, 400);
-    }
+    const body = await req.json();
+    const { token, password, name, invitation_id } = body || {};
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -147,20 +144,119 @@ serve(async (req) => {
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-    // Find the invitation by token
-    const { data: invitation, error: invitationError } = await admin
+    // New path: accept Supabase Auth invitation after email click/redirect
+    // Client is expected to be authenticated already (exchangeCodeForSession ran)
+    if (invitation_id && !password && !token) {
+      const authHeader = req.headers.get("Authorization")?.replace("Bearer ", "");
+      const { data: { user: currentUser }, error: getUserErr } = await admin.auth.getUser(authHeader);
+      if (getUserErr || !currentUser) {
+        return jsonResponse({ error: "Unauthorized or missing session" }, 401);
+      }
+
+      // Load invitation
+      const { data: invitation, error: invErr } = await admin
+        .from("user_invitations")
+        .select("*")
+        .eq("id", invitation_id)
+        // Somente convites pendentes podem ser aceitos
+        .eq("status", "pendente")
+        .single();
+      if (invErr || !invitation) {
+        return jsonResponse({ error: "Invalid or expired invitation" }, 400);
+      }
+
+      // Ensure invited email matches current user email
+      const invitedEmail = (invitation.email || "").toLowerCase();
+      const currentEmail = (currentUser.email || "").toLowerCase();
+      if (!invitedEmail || invitedEmail !== currentEmail) {
+        return jsonResponse({ error: "Email does not match invitation" }, 403);
+      }
+
+      // Ensure membership exists
+      const { data: existingMember } = await admin
+        .from("organization_members")
+        .select("user_id")
+        .eq("organization_id", invitation.organization_id)
+        .eq("user_id", currentUser.id)
+        .maybeSingle();
+
+      if (!existingMember) {
+        await admin
+          .from("organization_members")
+          .insert({
+            organization_id: invitation.organization_id,
+            user_id: currentUser.id,
+            role: invitation.role || 'member',
+            permissions: invitation.permissions || {},
+          });
+      }
+
+      // Mark invitation as accepted
+      await admin
+        .from("user_invitations")
+        // Status aceito/alocado na org usa 'ativo' conforme convenção do banco
+        .update({ status: 'ativo', user_id: currentUser.id })
+        .eq("id", invitation.id);
+
+      // Persist current organization for the user to help the app resolve orgId quickly
+      try {
+        // Update public.users with the active organization
+        await admin
+          .from('users')
+          .update({ organization_id: invitation.organization_id })
+          .eq('id', currentUser.id);
+      } catch (_) {
+        // ignore if table/column does not exist
+      }
+
+      try {
+        // Update auth user metadata with organization_id to speed up client-side resolution
+        const newMetadata = { ...(currentUser.user_metadata || {}), organization_id: invitation.organization_id } as Record<string, unknown>;
+        await admin.auth.admin.updateUserById(currentUser.id, {
+          user_metadata: newMetadata,
+        });
+      } catch (_) {
+        // ignore metadata update failures; fallback RPC resolver will still work
+      }
+
+      return jsonResponse({ ok: true, organization_id: invitation.organization_id });
+    }
+
+    // Legacy/manual token flow: create account and membership using token/password
+    if (!token || !password) {
+      return jsonResponse({ error: "Token and password are required" }, 400);
+    }
+
+    // Find the invitation by token (support both 'invitation_token' and legacy 'token')
+    let { data: invitation, error: invitationError } = await admin
       .from("user_invitations")
       .select("*")
-      .eq("token", token)
-      .eq("status", "pending")
+      .eq("invitation_token", token)
+      .eq("status", "pendente")
       .single();
+
+    if (invitationError || !invitation) {
+      const msg = String(invitationError?.message || '').toLowerCase();
+      const isNoRows = invitationError && (invitationError.code === 'PGRST116' || msg.includes('no rows'));
+      const columnMissing = msg.includes('column "invitation_token"') && msg.includes('does not exist');
+      if (isNoRows || columnMissing || !invitation) {
+        const alt = await admin
+          .from("user_invitations")
+          .select("*")
+          .eq("token", token)
+          .eq("status", "pendente")
+          .single();
+        invitation = alt.data;
+        invitationError = alt.error;
+      }
+    }
 
     if (invitationError || !invitation) {
       return jsonResponse({ error: "Invalid or expired invitation token" }, 400);
     }
 
     // Check if invitation has expired
-    if (new Date() > new Date(invitation.expires_at)) {
+    if (invitation.expires_at && new Date() > new Date(invitation.expires_at)) {
       return jsonResponse({ error: "Invitation has expired" }, 400);
     }
 
@@ -179,7 +275,7 @@ serve(async (req) => {
     // Update invitation status to accepted
     await admin
       .from("user_invitations")
-      .update({ status: 'accepted', user_id: result.userId })
+      .update({ status: 'ativo', user_id: result.userId })
       .eq("id", invitation.id);
 
     return jsonResponse({

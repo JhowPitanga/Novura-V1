@@ -1,20 +1,36 @@
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfiguracoesFiscais } from "@/components/configuracoes/ConfiguracoesFiscais";
 import { ConfiguracoesUsuarios } from "@/components/configuracoes/ConfiguracoesUsuarios";
+import { ConfiguracoesPessoais } from "@/components/configuracoes/ConfiguracoesPessoais";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { CleanNavigation } from "@/components/CleanNavigation";
+import { usePermissions } from "@/hooks/usePermissions";
 
 export default function Configuracoes() {
+  const { userRole } = usePermissions();
   const [activeTab, setActiveTab] = useState("usuarios");
 
-  const navItems = [
-    { title: "Usuários", path: "usuarios", description: "Gerencie usuários e permissões" },
-    { title: "Configurações Fiscais", path: "fiscais", description: "Parâmetros e regras fiscais" },
-  ];
+  useEffect(() => {
+    if (userRole === 'member') {
+      setActiveTab('pessoais');
+    }
+  }, [userRole]);
+
+  const navItems = useMemo(() => {
+    if (userRole === 'member') {
+      return [
+        { title: "Pessoais", path: "pessoais", description: "Altere seu nome e notificações" },
+      ];
+    }
+    return [
+      { title: "Usuários", path: "usuarios", description: "Gerencie usuários e permissões" },
+      { title: "Configurações Fiscais", path: "fiscais", description: "Parâmetros e regras fiscais" },
+    ];
+  }, [userRole]);
 
   return (
     <SidebarProvider>
@@ -37,13 +53,21 @@ export default function Configuracoes() {
 
               {/* Conteúdo por abas controladas */}
               <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full mt-6">
-                <TabsContent value="usuarios">
-                  <ConfiguracoesUsuarios />
-                </TabsContent>
+                {userRole === 'member' ? (
+                  <TabsContent value="pessoais">
+                    <ConfiguracoesPessoais />
+                  </TabsContent>
+                ) : (
+                  <>
+                    <TabsContent value="usuarios">
+                      <ConfiguracoesUsuarios />
+                    </TabsContent>
 
-                <TabsContent value="fiscais">
-                  <ConfiguracoesFiscais />
-                </TabsContent>
+                    <TabsContent value="fiscais">
+                      <ConfiguracoesFiscais />
+                    </TabsContent>
+                  </>
+                )}
               </Tabs>
             </div>
           </main>

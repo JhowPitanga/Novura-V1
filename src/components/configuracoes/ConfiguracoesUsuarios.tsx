@@ -20,6 +20,7 @@ import { Mail, Phone, Plus, Settings2, Shield, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { AddUserModal } from "./AddUserModal";
+import { EditPermissionsModal } from "./EditPermissionsModal";
 import { UserProfileDrawer } from "./UserProfileDrawer";
 
 interface OrganizationMember {
@@ -45,8 +46,11 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
   const [users, setUsers] = useState<OrganizationMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddUserModal, setShowAddUserModal] = useState(false);
-  const { user, organizationId } = useAuth();
-  const { canManageUsers, canInviteUsers } = usePermissions();
+  const [showEditPermissionsModal, setShowEditPermissionsModal] = useState(false);
+  const [selectedUserForEdit, setSelectedUserForEdit] = useState<OrganizationMember | null>(null);
+  const { user, organizationId, loading: authLoading } = useAuth();
+  const { canManageUsers, canInviteUsers, userRole, permissions } = usePermissions();
+  const [doubleConfirmUser, setDoubleConfirmUser] = useState<{ id: string; label: string } | null>(null);
   const [currentUserData, setCurrentUserData] = useState({
     id: '',
     nome: '',
@@ -56,20 +60,31 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
     permissions: { admin: true }
   });
 
+  const canManage = canManageUsers();
+
   useEffect(() => {
+    // Aguarda auth resolver para evitar toasts prematuros
+    if (authLoading) return;
+
     if (!organizationId) {
+      setLoading(false);
       toast.error('Você precisa estar em uma organização para gerenciar usuários');
       return;
     }
 
-    if (!canManageUsers() && !canInviteUsers()) {
+    // Aguarda role estar disponível
+    if (!userRole) return;
+
+    // Acesso alinhado à permissão granular ou owner/admin
+    if (!canManage) {
+      setLoading(false);
       toast.error('Você não tem permissão para acessar esta página');
       return;
     }
 
     loadUsers();
     loadCurrentUser();
-  }, [user, organizationId, canManageUsers, canInviteUsers]);
+  }, [authLoading, user, organizationId, userRole, canManage]);
 
   const loadCurrentUser = async () => {
     if (user) {
@@ -91,22 +106,42 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
     }
 
     try {
-      const response = await fetch(`/functions/v1/manage-users?action=list_users`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to load users');
+      const session = await supabase.auth.getSession();
+      if (!session.data.session) {
+        toast.error('Sessão expirada. Faça login novamente.');
+        throw new Error('No active session');
       }
 
-      const result = await response.json();
-      setUsers(result.users || []);
+      const { data, error } = await supabase.functions.invoke('manage-users', {
+        body: { action: 'list_users' },
+      });
+      if (error) {
+        const ctx: any = (error as any).context || {};
+        let details = error.message;
+        try {
+          const body = ctx?.body;
+          if (body) {
+            const text = await new Response(body).text();
+            try {
+              const json = JSON.parse(text);
+              details = json.error || json.message || text;
+            } catch {
+              details = text;
+            }
+          }
+        } catch {}
+        console.error('manage-users list_users error:', {
+          message: error.message,
+          status: ctx.status,
+          details,
+        });
+        throw new Error(details);
+      }
+      setUsers((data as any)?.users || []);
     } catch (error) {
       console.error('Erro ao carregar usuários:', error);
-      toast.error('Erro ao carregar usuários');
+      const msg = (error as any)?.message || 'Erro desconhecido';
+      toast.error(`Erro ao carregar usuários: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -121,26 +156,43 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
   };
 
   const handleDeleteUser = async (userId: string) => {
-    if (!canManageUsers()) {
+    if (userRole !== 'owner' && userRole !== 'admin') {
       toast.error('Você não tem permissão para remover usuários');
       return;
     }
 
     try {
-      const response = await fetch(`/functions/v1/manage-users?action=remove_user`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ user_id: userId }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to remove user');
+      const session = await supabase.auth.getSession();
+      if (!session.data.session) {
+        toast.error('Sessão expirada. Faça login novamente.');
+        return;
       }
 
+      const { data, error } = await supabase.functions.invoke('manage-users', {
+        body: { action: 'remove_user', user_id: userId },
+      });
+      if (error) {
+        const ctx: any = (error as any).context || {};
+        let details = error.message;
+        try {
+          const body = ctx?.body;
+          if (body) {
+            const text = await new Response(body).text();
+            try {
+              const json = JSON.parse(text);
+              details = json.error || json.message || text;
+            } catch {
+              details = text;
+            }
+          }
+        } catch {}
+        console.error('manage-users remove_user error:', {
+          message: error.message,
+          status: ctx.status,
+          details,
+        });
+        throw new Error(details);
+      }
       toast.success('Usuário removido com sucesso');
       loadUsers();
     } catch (error: any) {
@@ -208,14 +260,16 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
           <h2 className="text-2xl font-bold text-gray-900">Usuários</h2>
           <p className="text-gray-600 mt-1">Gerencie usuários e permissões do sistema</p>
         </div>
-        <Button
-          onClick={handleAddUser}
-          className="bg-novura-primary hover:bg-novura-primary/90"
-          size="lg"
-        >
-          <Plus className="w-5 h-5 mr-2" />
-          Adicionar Usuário
-        </Button>
+        {canInviteUsers() && (
+          <Button
+            onClick={handleAddUser}
+            className="bg-novura-primary hover:bg-novura-primary/90"
+            size="lg"
+          >
+            <Plus className="w-5 h-5 mr-2" />
+            Adicionar Usuário
+          </Button>
+        )}
       </div>
 
       {/* Usuário Atual */}
@@ -294,7 +348,9 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
         </Card>
       ) : (
         <div className="grid gap-4">
-          {users.map((user) => (
+          {users
+            .filter((u) => u.user_id !== currentUserData.id)
+            .map((user) => (
             <Card key={user.id} className="p-6 hover:shadow-md transition-shadow">
               <div className="flex justify-between items-start">
                 <div className="space-y-3">
@@ -328,11 +384,24 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <p className="text-sm text-gray-500 mr-4">
-                    Membro desde {new Date(user.created_at).toLocaleDateString('pt-BR')}
-                  </p>
+                  {/* Removido: informação de "Membro desde" conforme solicitado */}
 
+                  {/* Editar: permitido para owner, admin ou permissão granular */}
                   {canManageUsers() && user.user_id !== currentUserData.id && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setSelectedUserForEdit(user);
+                        setShowEditPermissionsModal(true);
+                      }}
+                    >
+                      <Settings2 className="w-4 h-4 mr-2" />
+                      Editar
+                    </Button>
+                  )}
+
+                  {(['owner', 'admin'].includes(userRole)) && user.user_id !== currentUserData.id && (
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700 hover:bg-red-50">
@@ -350,7 +419,7 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancelar</AlertDialogCancel>
                           <AlertDialogAction
-                            onClick={() => handleDeleteUser(user.user_id)}
+                            onClick={() => setDoubleConfirmUser({ id: user.user_id, label: user.users?.name || user.users?.email || 'usuário' })}
                             className="bg-red-600 hover:bg-red-700"
                           >
                             Remover
@@ -371,6 +440,38 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
         onOpenChange={setShowAddUserModal}
         onUserAdded={loadUsers}
       />
+
+      <EditPermissionsModal
+        open={showEditPermissionsModal}
+        onOpenChange={(open) => {
+          setShowEditPermissionsModal(open);
+          if (!open) setSelectedUserForEdit(null);
+        }}
+        userId={selectedUserForEdit?.user_id}
+        initialPermissions={selectedUserForEdit?.permissions || {}}
+        onSaved={loadUsers}
+      />
+
+      {/* Segunda confirmação para exclusão */}
+      <AlertDialog open={!!doubleConfirmUser} onOpenChange={(open) => { if (!open) setDoubleConfirmUser(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta é a segunda confirmação. Tem certeza que deseja excluir definitivamente {doubleConfirmUser?.label}? Esta ação removerá os dados do membro da organização e não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDoubleConfirmUser(null)}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => { if (doubleConfirmUser) handleDeleteUser(doubleConfirmUser.id); setDoubleConfirmUser(null); }}
+            >
+              Confirmar exclusão
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -36,13 +36,51 @@ export function UserProfileDrawer({ children, isAdmin }: UserProfileDrawerProps)
   const { user } = useAuth();
 
   useEffect(() => {
-    if (user) {
+    const loadProfile = async () => {
+      if (!user?.id) return;
       setProfileEmail(user.email ?? "");
-      const meta: any = user.user_metadata || {};
-      const nameFromMeta = meta.name ?? meta.full_name ?? meta.display_name ?? "";
-      setProfileName(nameFromMeta);
-    }
-  }, [user]);
+
+      try {
+        // 1) Tenta pegar do perfil (display_name e notificações)
+        const { data: profile, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('display_name, notifications_enabled, email_notifications')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (!profileError && profile) {
+          if (profile.display_name) setProfileName(profile.display_name);
+          if (typeof profile.notifications_enabled === 'boolean') setNotifSystem(!!profile.notifications_enabled);
+          if (typeof profile.email_notifications === 'boolean') {
+            setNotifEmail(!!profile.email_notifications);
+            setNotifSecurity(!!profile.email_notifications);
+          }
+          if (profile.display_name) return;
+        }
+
+        // 2) Fallback: pega de users.name
+        const { data: userRow, error: userError } = await supabase
+          .from('users')
+          .select('name')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (!userError && userRow?.name) {
+          setProfileName(userRow.name);
+          return;
+        }
+
+        // 3) Últimos fallbacks: metadata e e-mail
+        const meta: any = user.user_metadata || {};
+        const nameFromMeta = meta.name ?? meta.full_name ?? meta.display_name ?? "";
+        setProfileName(nameFromMeta || user.email || "");
+      } catch (e) {
+        const meta: any = user.user_metadata || {};
+        const nameFromMeta = meta.name ?? meta.full_name ?? meta.display_name ?? "";
+        setProfileName(nameFromMeta || user.email || "");
+      }
+    };
+
+    loadProfile();
+  }, [user?.id]);
 
   useEffect(() => {
     if (open) {
@@ -93,17 +131,50 @@ export function UserProfileDrawer({ children, isAdmin }: UserProfileDrawerProps)
   };
 
   const handleSaveProfile = async () => {
+    if (!user?.id) return;
     try {
-      const { error } = await supabase.auth.updateUser({
+      // 1) Atualiza/insere no perfil público (display_name)
+      const { error: profileError } = await supabase
+        .from('user_profiles')
+        .upsert({ id: user.id, display_name: profileName }, { onConflict: 'id' });
+      if (profileError) throw profileError;
+
+      // 2) Mantém tabela users.name alinhada
+      const { error: usersError } = await supabase
+        .from('users')
+        .update({ name: profileName })
+        .eq('id', user.id);
+      if (usersError) throw usersError;
+
+      // 3) Mantém metadata alinhada (opcional, útil para fluxos legados)
+      const { error: authError } = await supabase.auth.updateUser({
         data: { name: profileName, full_name: profileName, display_name: profileName },
       });
-      if (error) {
-        toast.error("Falha ao atualizar perfil");
-        return;
-      }
+      if (authError) throw authError;
+
       toast.success("Perfil atualizado");
     } catch (e) {
+      console.error('Erro ao salvar perfil:', e);
       toast.error("Erro ao salvar perfil");
+    }
+  };
+
+  const handleSaveNotifications = async () => {
+    if (!user?.id) return;
+    try {
+      const { error: profileError } = await supabase
+        .from('user_profiles')
+        .upsert({
+          id: user.id,
+          notifications_enabled: notifSystem,
+          email_notifications: notifEmail || notifSecurity,
+        }, { onConflict: 'id' });
+      if (profileError) throw profileError;
+
+      toast.success("Preferências de notificações atualizadas");
+    } catch (e) {
+      console.error('Erro ao salvar preferências:', e);
+      toast.error("Erro ao salvar preferências");
     }
   };
 
@@ -185,7 +256,7 @@ export function UserProfileDrawer({ children, isAdmin }: UserProfileDrawerProps)
                 <Switch checked={notifSecurity} onCheckedChange={setNotifSecurity} />
               </div>
               <div className="flex justify-end">
-                <Button onClick={() => toast.success("Preferências de notificações atualizadas")}>
+                <Button onClick={handleSaveNotifications}>
                   Salvar preferências
                 </Button>
               </div>

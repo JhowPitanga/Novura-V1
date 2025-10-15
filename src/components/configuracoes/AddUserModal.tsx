@@ -2,7 +2,7 @@
 import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerFooter, DrawerClose } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/useAuth";
@@ -36,14 +36,7 @@ interface AddUserModalProps {
   onUserAdded: () => void;
 }
 
-// Gera um token único seguro (base64url) para convite
-function generateInvitationToken(bytesLength: number = 32) {
-  const bytes = new Uint8Array(bytesLength);
-  crypto.getRandomValues(bytes);
-  // Converter para base64url
-  const base64 = btoa(String.fromCharCode(...bytes));
-  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
+// (token generator removido - convite agora via Supabase Auth)
 
 // handleNext e handleBack movidos para dentro do componente AddUserModal
 
@@ -105,6 +98,7 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
     }
   };
 
+
   const handleSave = async () => {
     if (!organizationId) {
       toast.error('Erro: organização não encontrada');
@@ -113,47 +107,25 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
 
     setLoading(true);
     try {
-      const response = await fetch(`/functions/v1/manage-users?action=invite_user`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const session = await supabase.auth.getSession();
+      if (!session.data.session) {
+        toast.error('Sessão expirada. Faça login novamente.');
+        setLoading(false);
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke('manage-users', {
+        body: {
+          action: 'invite_user',
           email: userData.email,
           name: userData.nome,
           phone: userData.telefone,
           permissions: permissions,
-        }),
+        },
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erro ao convidar usuário');
-      }
-
-      const result = await response.json();
-
-      // Copiar o link para a área de transferência
-      try {
-        await navigator.clipboard.writeText(result.invitation_link);
-      } catch { }
-
-      // Enviar email via cliente padrão (fallback)
-      const subject = encodeURIComponent('Convite de acesso - Novura');
-      const body = encodeURIComponent(
-        `Olá${userData.nome ? ' ' + userData.nome : ''},%0D%0A%0D%0AVocê foi convidado(a) para acessar o sistema Novura.%0D%0A` +
-        `Use o link abaixo para concluir seu acesso.%0D%0A%0D%0A` +
-        `${result.invitation_link}%0D%0A%0D%0A` +
-        `Atenção: este convite expira em 10 minutos.%0D%0A%0D%0A` +
-        `Se você não solicitou este convite, ignore este email.`
-      );
-      const mailtoUrl = `mailto:${encodeURIComponent(userData.email)}?subject=${subject}&body=${body}`;
-
-      // Tentar abrir o cliente de email
-      window.open(mailtoUrl, '_blank');
-
-      toast.success('Convite gerado com sucesso! O link foi copiado e o email de convite foi preparado.');
+      if (error) throw error;
+      // Convite enviado via Supabase Auth
+      toast.success('Convite enviado por email com sucesso.');
       onUserAdded();
       onOpenChange(false);
 
@@ -162,8 +134,21 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
       setUserData({ email: "", nome: "", telefone: "" });
       setPermissions({});
     } catch (error: any) {
+      let message = error?.message || 'Erro ao enviar convite do usuário';
+      try {
+        const ctx: any = error?.context || {};
+        if (ctx.body) {
+          const text = await new Response(ctx.body).text();
+          try {
+            const json = JSON.parse(text);
+            message = json.error || json.message || text;
+          } catch {
+            message = text;
+          }
+        }
+      } catch {}
       console.error('Erro ao convidar usuário:', error);
-      toast.error(error.message || 'Erro ao gerar convite do usuário');
+      toast.error(message);
     } finally {
       setLoading(false);
     }
@@ -194,6 +179,16 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
         ...prev[moduleName],
         [actionName]: checked
       }
+    }));
+  };
+
+  const handleToggleAllModule = (moduleName: string, actionNames: string[], check: boolean) => {
+    setPermissions(prev => ({
+      ...prev,
+      [moduleName]: actionNames.reduce((acc, action) => {
+        acc[action] = check;
+        return acc;
+      }, {} as Record<string, boolean>)
     }));
   };
 
@@ -242,6 +237,8 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
                 placeholder="(11) 99999-9999"
               />
             </div>
+
+            
           </div>
         );
 
@@ -252,7 +249,9 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
               <h3 className="text-lg font-semibold text-gray-900 mb-2">
                 Selecione as permissões do usuário
               </h3>
-              <p className="text-xs text-gray-500 mb-4">Um convite será enviado por email com um token de acesso que expira em 10 minutos.</p>
+              <p className="text-xs text-gray-500 mb-4">Um convite será enviado por email usando o sistema de autenticação.</p>
+
+              
 
               {modules.length === 0 ? (
                 <div className="text-center py-8">
@@ -260,35 +259,95 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
                 </div>
               ) : (
                 <div className="space-y-6 max-h-96 overflow-y-auto">
-                  {modules.map((module) => (
-                    <div key={module.name} className="border rounded-lg p-4">
-                      <h4 className="font-medium text-gray-900 mb-2">{module.display_name}</h4>
-                      <p className="text-sm text-gray-600 mb-3">{module.description}</p>
+                  {modules.map((module) => {
+                    // Regras especiais por módulo
+                    let visibleActions = module.actions;
+                    const moduleKey = module.name;
 
-                      <div className="grid grid-cols-1 gap-2">
-                        {module.actions.map((action) => (
-                          <div key={action.name} className="flex items-center space-x-3">
-                            <Checkbox
-                              id={`${module.name}-${action.name}`}
-                              checked={permissions[module.name]?.[action.name] || false}
-                              onCheckedChange={(checked) =>
-                                handlePermissionChange(module.name, action.name, checked as boolean)
-                              }
-                            />
-                            <div className="flex-1">
-                              <Label
-                                htmlFor={`${module.name}-${action.name}`}
-                                className="text-sm font-medium text-gray-700 cursor-pointer"
-                              >
-                                {action.display_name}
-                              </Label>
-                              <p className="text-xs text-gray-500">{action.description}</p>
-                            </div>
+                    // Pesquisa de mercado: checkbox único "Acesso" agregando todas as ações
+                    const isPesquisa = moduleKey === 'pesquisa_mercado';
+                    // Recursos seller: apenas Visualizar e Comprar
+                    const isRecursosSeller = moduleKey === 'recursos_seller';
+
+                    if (isRecursosSeller) {
+                      visibleActions = module.actions.filter(a => ['view', 'buy'].includes(a.name));
+                    }
+
+                    // Para pesquisa de mercado, criamos uma ação virtual de acesso
+                    const pesquisaAllActionNames = module.actions.map(a => a.name);
+                    const isPesquisaChecked = isPesquisa
+                      ? pesquisaAllActionNames.length > 0 && pesquisaAllActionNames.every(a => permissions[moduleKey]?.[a])
+                      : false;
+
+                    const handlePesquisaToggle = (checked: boolean) => {
+                      handleToggleAllModule(moduleKey, pesquisaAllActionNames, checked);
+                    };
+
+                    // Para os demais módulos, botão Marcar todas
+                    const realVisibleActionNames = isPesquisa
+                      ? []
+                      : visibleActions.map(a => a.name);
+                    const allChecked = realVisibleActionNames.length > 0 && realVisibleActionNames.every(a => permissions[moduleKey]?.[a]);
+
+                    return (
+                      <div key={moduleKey} className="border rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <h4 className="font-medium text-gray-900">{module.display_name}</h4>
+                            <p className="text-sm text-gray-600">{module.description}</p>
                           </div>
-                        ))}
+                          {!isPesquisa && realVisibleActionNames.length > 1 && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleToggleAllModule(moduleKey, realVisibleActionNames, !allChecked)}
+                            >
+                              {allChecked ? 'Desmarcar todas' : 'Marcar todas'}
+                            </Button>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2 mt-2">
+                          {isPesquisa ? (
+                            <div className="flex items-center space-x-3">
+                              <Checkbox
+                                id={`${moduleKey}-acesso`}
+                                checked={isPesquisaChecked}
+                                onCheckedChange={(checked) => handlePesquisaToggle(!!checked)}
+                              />
+                              <div className="flex-1">
+                                <Label htmlFor={`${moduleKey}-acesso`} className="text-sm font-medium text-gray-700 cursor-pointer">
+                                  Acesso
+                                </Label>
+                                <p className="text-xs text-gray-500">Concede acesso total ao módulo de Pesquisa de Mercado.</p>
+                              </div>
+                            </div>
+                          ) : (
+                            visibleActions.map((action) => (
+                              <div key={action.name} className="flex items-center space-x-3">
+                                <Checkbox
+                                  id={`${moduleKey}-${action.name}`}
+                                  checked={permissions[moduleKey]?.[action.name] || false}
+                                  onCheckedChange={(checked) =>
+                                    handlePermissionChange(moduleKey, action.name, checked as boolean)
+                                  }
+                                />
+                                <div className="flex-1">
+                                  <Label
+                                    htmlFor={`${moduleKey}-${action.name}`}
+                                    className="text-sm font-medium text-gray-700 cursor-pointer"
+                                  >
+                                    {action.display_name}
+                                  </Label>
+                                  <p className="text-xs text-gray-500">{action.description}</p>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -301,15 +360,15 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="text-2xl font-bold text-gray-900">
+    <Drawer open={open} onOpenChange={onOpenChange} direction="right" shouldScaleBackground={false}>
+      <DrawerContent className="w-[45%] p-6 overflow-y-auto overflow-x-hidden fixed right-0 shadow-none">
+        <DrawerHeader>
+          <DrawerTitle className="text-2xl font-bold text-gray-900">
             Adicionar Usuário
-          </DialogTitle>
-        </DialogHeader>
+          </DrawerTitle>
+        </DrawerHeader>
 
-        <div className="space-y-6">
+        <div className="space-y-6 p-4">
           <StepIndicator steps={steps} currentStep={currentStep} />
 
           <div className="min-h-[300px]">
@@ -334,7 +393,15 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
             </Button>
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+
+        <DrawerFooter>
+          <DrawerClose asChild>
+            <Button variant="outline" data-autofocus>
+              Fechar
+            </Button>
+          </DrawerClose>
+        </DrawerFooter>
+      </DrawerContent>
+    </Drawer>
   );
 }
