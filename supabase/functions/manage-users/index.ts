@@ -47,20 +47,57 @@ serve(async (req) => {
       return jsonResponse({ error: "Unauthorized" }, 401);
     }
 
-    // Get user's organization
-    const { data: orgMember } = await admin
-      .from("organization_members")
-      .select("organization_id, role, permissions")
-      .eq("user_id", user.id)
-      .single();
+    // Resolve user's organization and permissions with robust fallbacks
+    let organizationId: string | null = null;
+    let userRole: string = 'member';
+    let memberPermissions: any = {};
 
-    if (!orgMember) {
-      return jsonResponse({ error: "User not found in any organization" }, 404);
+    // 1) Try RPC with fallback logic from DB helpers
+    try {
+      const { data: orgIdData, error: orgIdErr } = await admin.rpc('get_user_organization_id', {
+        p_user_id: user.id,
+      });
+      if (!orgIdErr && orgIdData) {
+        organizationId = Array.isArray(orgIdData) ? (orgIdData[0] as string) : (orgIdData as string);
+      }
+    } catch (_) {
+      // ignore and fallback to direct query
     }
 
-    const organizationId = orgMember.organization_id;
-    const userRole = orgMember.role;
-    const memberPermissions = orgMember.permissions || {};
+    // 2) If still unknown, read from organization_members (direct)
+    if (!organizationId) {
+      const { data: orgMember } = await admin
+        .from('organization_members')
+        .select('organization_id, role, permissions')
+        .eq('user_id', user.id)
+        .order('role', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (orgMember) {
+        organizationId = orgMember.organization_id;
+        userRole = orgMember.role || userRole;
+        memberPermissions = orgMember.permissions || memberPermissions;
+      }
+    }
+
+    if (!organizationId) {
+      return jsonResponse({ error: 'User not found in any organization' }, 404);
+    }
+
+    // 3) Try to load role/permissions via RPC (it has invite fallback semantics)
+    try {
+      const { data: permsRow, error: permsErr } = await admin.rpc('rpc_get_member_permissions', {
+        p_user_id: user.id,
+        p_organization_id: organizationId,
+      });
+      if (!permsErr && permsRow) {
+        const row = Array.isArray(permsRow) ? (permsRow[0] as any) : (permsRow as any);
+        userRole = row?.role || userRole;
+        memberPermissions = row?.permissions || memberPermissions || {};
+      }
+    } catch (_) {
+      // keep best-effort values
+    }
 
     const url = new URL(req.url);
     let action = url.searchParams.get("action");
