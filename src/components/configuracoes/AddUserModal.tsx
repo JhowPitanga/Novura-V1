@@ -122,6 +122,7 @@ export function AddUserModal({ open, onOpenChange, onUserAdded }: AddUserModalPr
           phone: userData.telefone,
           permissions: permissions,
         },
+        headers: { Authorization: `Bearer ${session.data.session.access_token}` },
       });
       if (error) throw error;
       // Convite enviado via Supabase Auth

@@ -114,7 +114,8 @@ export function EditPermissionsModal({ open, onOpenChange, userId, initialPermis
         body: {
           action: 'get_user_details',
           user_id: userId
-        }
+        },
+        headers: { Authorization: `Bearer ${session.data.session.access_token}` },
       });
       if (error) throw error;
       const email = (data as any)?.email || "";
@@ -186,6 +187,7 @@ export function EditPermissionsModal({ open, onOpenChange, userId, initialPermis
             user_id: userId,
             name: userData.nome,
           },
+          headers: { Authorization: `Bearer ${session.data.session.access_token}` },
         });
         if (identError) throw identError;
       }
@@ -196,6 +198,7 @@ export function EditPermissionsModal({ open, onOpenChange, userId, initialPermis
           user_id: userId,
           permissions,
         },
+        headers: { Authorization: `Bearer ${session.data.session.access_token}` },
       });
       if (permError) throw permError;
 
@@ -231,6 +234,7 @@ export function EditPermissionsModal({ open, onOpenChange, userId, initialPermis
           action: 'send_password_reset',
           user_id: userId,
         },
+        headers: { Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}` },
       });
       if (error) throw error;
       toast.success('Email de redefinição de senha enviado');

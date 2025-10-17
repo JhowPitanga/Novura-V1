@@ -114,6 +114,7 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
 
       const { data, error } = await supabase.functions.invoke('manage-users', {
         body: { action: 'list_users' },
+        headers: { Authorization: `Bearer ${session.data.session.access_token}` },
       });
       if (error) {
         const ctx: any = (error as any).context || {};
@@ -170,6 +171,7 @@ export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = 
 
       const { data, error } = await supabase.functions.invoke('manage-users', {
         body: { action: 'remove_user', user_id: userId },
+        headers: { Authorization: `Bearer ${session.data.session.access_token}` },
       });
       if (error) {
         const ctx: any = (error as any).context || {};

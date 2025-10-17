@@ -195,7 +195,7 @@ serve(async (req) => {
       return jsonResponse({ ok: true });
     }
 
-    const siteUrl = Deno.env.get("SITE_URL") || "http://127.0.0.1:5174/aplicativos/conectados";
+    const siteUrl = Deno.env.get("SITE_URL") || "http://novuraerp.com.br/aplicativos/conectados";
     return htmlPostMessageSuccess(siteUrl, { ok: true });
   } catch (e) {
     console.error("[meli-callback] error", e);
