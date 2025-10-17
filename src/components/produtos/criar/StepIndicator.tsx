@@ -5,14 +5,19 @@ import { ProductStep } from "@/types/products";
 interface StepIndicatorProps {
   steps: ProductStep[];
   currentStep: number;
+  clickable?: boolean;
+  onStepClick?: (stepId: number) => void;
 }
 
-export function StepIndicator({ steps, currentStep }: StepIndicatorProps) {
+export function StepIndicator({ steps, currentStep, clickable = false, onStepClick }: StepIndicatorProps) {
   return (
     <div className="flex items-center justify-between mb-10">
       {steps.map((step, index) => (
         <div key={step.id} className="flex items-center">
-          <div className="flex flex-col items-center">
+          <div
+            className={`flex flex-col items-center ${clickable ? "cursor-pointer" : ""}`}
+            onClick={() => clickable && onStepClick ? onStepClick(step.id) : undefined}
+          >
             <div
               className={`w-12 h-12 rounded-full flex items-center justify-center border-2 ${
                 currentStep >= step.id

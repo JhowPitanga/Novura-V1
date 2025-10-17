@@ -270,8 +270,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const signOut = async () => {
         try {
-            const { error } = await supabase.auth.signOut();
-            if (error) throw error;
+            // Verifica se existe sessão antes de deslogar globalmente
+            const { data: { session } } = await supabase.auth.getSession();
+
+            if (!session) {
+                // Sem sessão: limpa apenas armazenamento local
+                await supabase.auth.signOut({ scope: 'local' });
+            } else {
+                // Com sessão: encerra globalmente (revoga tokens) 
+                const { error } = await supabase.auth.signOut({ scope: 'global' });
+                if (error) throw error;
+            }
 
             toast({
                 title: "Logout realizado",
@@ -280,7 +289,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setOrganizationId(null);
             setPermissions(null);
             setUserRole(null);
-        } catch (err) {
+        } catch (err: any) {
+            // Trata caso específico: Auth session missing
+            const msg = String(err?.message || '').toLowerCase();
+            if (msg.includes('auth session missing')) {
+                try {
+                    await supabase.auth.signOut({ scope: 'local' });
+                } catch (_) { /* no-op */ }
+                toast({
+                    title: "Logout realizado",
+                    description: "Você foi desconectado com sucesso.",
+                });
+                setOrganizationId(null);
+                setPermissions(null);
+                setUserRole(null);
+                return;
+            }
+
             console.error('SignOut error:', err);
             toast({
                 title: "Erro",

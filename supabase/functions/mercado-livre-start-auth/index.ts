@@ -64,6 +64,8 @@ serve(async (req) => {
       marketplaceName: appRow.name,
       storeName: storeName ?? null,
       connectedByUserId: connectedByUserId ?? null,
+      // Include redirect used in auth to guarantee exact match in token exchange
+      redirect_uri: finalRedirect ?? null,
     };
     const state = btoa(JSON.stringify(statePayload));
 

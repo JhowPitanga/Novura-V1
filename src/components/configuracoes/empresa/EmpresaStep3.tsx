@@ -3,6 +3,7 @@ import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
+import { DialogTitle } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 
 interface EmpresaData {
@@ -12,20 +13,11 @@ interface EmpresaData {
 interface EmpresaStep3Props {
   data: EmpresaData;
   updateData: (data: Partial<EmpresaData>) => void;
+  connectedStores?: { id: string; name: string; marketplace: string; logo?: string }[];
+  loadingStores?: boolean;
 }
 
-const availableStores = [
-  { id: "mercado-livre", name: "Mercado Livre", logo: "🛒" },
-  { id: "shopee", name: "Shopee", logo: "🛍️" },
-  { id: "magalu", name: "Magazine Luiza", logo: "🏪" },
-  { id: "amazon", name: "Amazon", logo: "📦" },
-  { id: "americanas", name: "Americanas", logo: "🏬" },
-  { id: "casas-bahia", name: "Casas Bahia", logo: "🏠" },
-  { id: "extra", name: "Extra", logo: "🛒" },
-  { id: "submarino", name: "Submarino", logo: "🌊" }
-];
-
-export function EmpresaStep3({ data, updateData }: EmpresaStep3Props) {
+export function EmpresaStep3({ data, updateData, connectedStores = [], loadingStores = false }: EmpresaStep3Props) {
   const [selectedStores, setSelectedStores] = useState<string[]>(data.lojas_associadas);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -49,12 +41,18 @@ export function EmpresaStep3({ data, updateData }: EmpresaStep3Props) {
   };
 
   const getStoreName = (storeId: string) => {
-    return availableStores.find(store => store.id === storeId)?.name || storeId;
+    const byConn = connectedStores.find(s => s.id === storeId);
+    if (byConn) return `${byConn.name} (${byConn.marketplace})`;
+    return storeId;
   };
 
   const getStoreLogo = (storeId: string) => {
-    return availableStores.find(store => store.id === storeId)?.logo || "🏪";
+    const byConn = connectedStores.find(s => s.id === storeId);
+    if (byConn?.logo) return byConn.logo;
+    return "🏪";
   };
+
+  const storesToDisplay = connectedStores.map(s => ({ id: s.id, name: `${s.name} (${s.marketplace})`, logo: s.logo }));
 
   return (
     <div className="space-y-6">
@@ -65,7 +63,7 @@ export function EmpresaStep3({ data, updateData }: EmpresaStep3Props) {
         </p>
         
         <div className="space-y-4">
-          <Drawer open={drawerOpen} onOpenChange={setDrawerOpen}>
+          <Drawer open={drawerOpen} onOpenChange={setDrawerOpen} direction="right">
             <DrawerTrigger asChild>
               <Button 
                 variant="outline" 
@@ -77,30 +75,43 @@ export function EmpresaStep3({ data, updateData }: EmpresaStep3Props) {
               </Button>
             </DrawerTrigger>
             
-            <DrawerContent>
+            <DrawerContent className="h-full w-[45vw] fixed right-0" aria-labelledby="empresa-step3-dialog-title">
               <DrawerHeader>
-                <DrawerTitle>Selecionar Lojas Integradas</DrawerTitle>
+                <DrawerTitle id="empresa-step3-title">Selecionar Lojas Integradas</DrawerTitle>
+                <DialogTitle id="empresa-step3-dialog-title" className="sr-only">Selecionar Lojas Integradas</DialogTitle>
               </DrawerHeader>
               
               <div className="p-6 space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {availableStores.map((store) => (
-                    <div key={store.id} className="flex items-center space-x-3">
-                      <Checkbox 
-                        id={store.id}
-                        checked={selectedStores.includes(store.id)}
-                        onCheckedChange={() => handleStoreToggle(store.id)}
-                      />
-                      <label 
-                        htmlFor={store.id} 
-                        className="flex items-center space-x-2 cursor-pointer"
-                      >
-                        <span className="text-xl">{store.logo}</span>
-                        <span className="text-sm font-medium">{store.name}</span>
-                      </label>
-                    </div>
-                  ))}
-                </div>
+                {loadingStores ? (
+                  <div className="text-sm text-gray-600">Carregando lojas conectadas...</div>
+                ) : connectedStores.length === 0 ? (
+                  <div className="text-sm text-gray-600">
+                    Nenhuma loja conectada encontrada. Conecte pela aba "Aplicativos".
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {storesToDisplay.map((store) => (
+                      <div key={store.id} className="flex items-center space-x-3">
+                        <Checkbox 
+                          id={store.id}
+                          checked={selectedStores.includes(store.id)}
+                          onCheckedChange={() => handleStoreToggle(store.id)}
+                        />
+                        <label 
+                          htmlFor={store.id} 
+                          className="flex items-center space-x-2 cursor-pointer"
+                        >
+                          {store.logo && store.logo.startsWith('http') ? (
+                            <img src={store.logo} alt={store.name} className="h-5 w-5 rounded" />
+                          ) : (
+                            <span className="text-xl">{store.logo || '🏪'}</span>
+                          )}
+                          <span className="text-sm font-medium">{store.name}</span>
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 
                 <div className="flex justify-end space-x-3 pt-4 border-t">
                   <Button 
@@ -130,8 +141,13 @@ export function EmpresaStep3({ data, updateData }: EmpresaStep3Props) {
                     variant="secondary" 
                     className="flex items-center gap-2 px-3 py-1"
                   >
-                    <span>{getStoreLogo(storeId)}</span>
-                    <span>{getStoreName(storeId)}</span>
+                    {(() => {
+                      const logo = getStoreLogo(storeId);
+                      return logo && logo.startsWith('http')
+                        ? <img src={logo} alt="logo" className="h-4 w-4 rounded" />
+                        : <span>{logo}</span>;
+                    })()}
+                    <span className="truncate max-w-[220px]">{getStoreName(storeId)}</span>
                     <button
                       onClick={() => removeStore(storeId)}
                       className="ml-1 hover:text-red-600"

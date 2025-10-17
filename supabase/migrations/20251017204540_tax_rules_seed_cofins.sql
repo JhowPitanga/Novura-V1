@@ -1,0 +1,41 @@
+-- Seed COFINS (CST) codes into tax_rules_catalog based on previous frontend lists
+
+insert into public.tax_rules_catalog (code, title, scope, active, payload)
+values
+('01','Operação Tributável', 'COFINS', true, '{"type":"CST","code":"01"}'),
+('02','Operação Tributável com Alíquota por Unidade de Medida', 'COFINS', true, '{"type":"CST","code":"02"}'),
+('03','Operação Tributável – Pessoa Jurídica Importadora', 'COFINS', true, '{"type":"CST","code":"03"}'),
+('04','Operação Tributável – Tributação Monofásica', 'COFINS', true, '{"type":"CST","code":"04"}'),
+('06','Operação Tributável – Alíquota Zero', 'COFINS', true, '{"type":"CST","code":"06"}'),
+('07','Operação Isenta da Contribuição', 'COFINS', true, '{"type":"CST","code":"07"}'),
+('08','Operação sem Incidência', 'COFINS', true, '{"type":"CST","code":"08"}'),
+('09','Operação com Suspensão', 'COFINS', true, '{"type":"CST","code":"09"}'),
+('49','Outras Operações de Saída', 'COFINS', true, '{"type":"CST","code":"49"}'),
+('50','Operação com Direito a Crédito – Vinculada Exclusivamente a Receita Tributada', 'COFINS', true, '{"type":"CST","code":"50"}'),
+('51','Operação com Direito a Crédito – Vinculada Exclusivamente a Receita Não Tributada', 'COFINS', true, '{"type":"CST","code":"51"}'),
+('52','Operação com Direito a Crédito – Vinculada a Receitas Tributadas e Não Tributada', 'COFINS', true, '{"type":"CST","code":"52"}'),
+('53','Operação com Direito a Crédito – Vinculada a Receitas de Exportação', 'COFINS', true, '{"type":"CST","code":"53"}'),
+('54','Operação com Direito a Crédito – Aquisição de Estoque para Revenda', 'COFINS', true, '{"type":"CST","code":"54"}'),
+('55','Operação com Direito a Crédito – Aquisição de Bens para Ativo Imobilizado', 'COFINS', true, '{"type":"CST","code":"55"}'),
+('56','Operação com Direito a Crédito – Aquisição de Serviços', 'COFINS', true, '{"type":"CST","code":"56"}'),
+('60','Créditos Vinculados a Operaçõe de Distribuição e Revenda', 'COFINS', true, '{"type":"CST","code":"60"}'),
+('61','Créditos Vinculados a Operações de Imobilizado', 'COFINS', true, '{"type":"CST","code":"61"}'),
+('62','Créditos Vinculados a Operações de Serviços', 'COFINS', true, '{"type":"CST","code":"62"}'),
+('63','Créditos Vinculados a Operações de Estoques', 'COFINS', true, '{"type":"CST","code":"63"}'),
+('64','Créditos Vinculados a Operações de Outros Créditos', 'COFINS', true, '{"type":"CST","code":"64"}'),
+('65','Créditos por Aquisição de Bens de Capital', 'COFINS', true, '{"type":"CST","code":"65"}'),
+('66','Créditos por Exportação', 'COFINS', true, '{"type":"CST","code":"66"}'),
+('67','Créditos por Suspensão', 'COFINS', true, '{"type":"CST","code":"67"}'),
+('70','Operação de Aquisição com Isenção', 'COFINS', true, '{"type":"CST","code":"70"}'),
+('71','Operação de Aquisição com Suspensão', 'COFINS', true, '{"type":"CST","code":"71"}'),
+('72','Operação de Aquisição com Alíquota Zero', 'COFINS', true, '{"type":"CST","code":"72"}'),
+('73','Operação de Aquisição sem Incidência', 'COFINS', true, '{"type":"CST","code":"73"}'),
+('74','Operação de Aquisição por Substituição Tributária', 'COFINS', true, '{"type":"CST","code":"74"}'),
+('75','Operações de Aquisição por Pessoas Jurídicas Importadoras', 'COFINS', true, '{"type":"CST","code":"75"}'),
+('98','Outras Operações de Entrada', 'COFINS', true, '{"type":"CST","code":"98"}'),
+('99','Outras Operações','COFINS', true, '{"type":"CST","code":"99"}')
+ON CONFLICT (scope, code) DO UPDATE SET
+  title = excluded.title,
+  active = excluded.active,
+  payload = excluded.payload,
+  updated_at = now();

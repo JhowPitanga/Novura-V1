@@ -182,9 +182,13 @@ export function ConfiguracoesFiscais() {
                       )}
                     </div>
                     <div className="text-right">
-                      <p className="text-sm text-gray-500">
-                        Criado em {new Date(company.created_at).toLocaleDateString('pt-BR')}
-                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => navigate(`/configuracoes/notas-fiscais/nova-empresa?companyId=${company.id}&step=1`)}
+                      >
+                        Atualizar empresa
+                      </Button>
                     </div>
                   </div>
                 </Card>

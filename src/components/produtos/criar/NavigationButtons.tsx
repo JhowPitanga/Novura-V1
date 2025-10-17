@@ -16,6 +16,7 @@ interface NavigationButtonsProps {
   onBack: () => void;
   onSave: () => void;
   kitEtapa?: KitStep;
+  saveLabel?: string;
 }
 
 export function NavigationButtons({ 
@@ -29,7 +30,8 @@ export function NavigationButtons({
   onNext, 
   onBack,
   onSave,
-  kitEtapa
+  kitEtapa,
+  saveLabel
 }: NavigationButtonsProps) {
   // Check if we can proceed based on current step and product type
   const canProceed = () => {
@@ -135,7 +137,7 @@ export function NavigationButtons({
           disabled={loading}
         >
           <Check className="w-5 h-5 mr-2" />
-          {loading ? "Salvando..." : "Salvar Empresa"}
+          {loading ? "Salvando..." : (saveLabel || "Salvar Empresa")}
         </Button>
       ) : productType === "kit" && currentStep === 4 ? (
         <Button 

@@ -19,6 +19,19 @@ export function EmpresaStep4({ data, updateData }: EmpresaStep4Props) {
         <p className="text-gray-600 mb-6">
           Configure o número de série e a próxima numeração da NF-e
         </p>
+
+        {/* Tooltip moderno em roxo/branco acima dos campos */}
+        <div className="mb-6 rounded-xl bg-gradient-to-r from-novura-primary to-purple-600 text-white shadow-sm ring-1 ring-purple-300/40">
+          <div className="px-5 py-4 flex items-start gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/20">⚙️</div>
+            <div className="flex-1">
+              <div className="text-sm font-semibold tracking-wide">Quase pronto!</div>
+              <div className="text-sm/relaxed opacity-95">
+                Após salvar, a empresa estará configurada e pronta para emitir notas fiscais.
+              </div>
+            </div>
+          </div>
+        </div>
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-2">
@@ -39,11 +52,15 @@ export function EmpresaStep4({ data, updateData }: EmpresaStep4Props) {
             <Label htmlFor="proxima_nfe">Próxima NF-e *</Label>
             <Input
               id="proxima_nfe"
-              type="number"
-              min="1"
-              value={data.proxima_nfe}
-              onChange={(e) => updateData({ proxima_nfe: parseInt(e.target.value) || 1 })}
-              placeholder="1"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={data.proxima_nfe ? String(data.proxima_nfe) : ""}
+              onChange={(e) => {
+                const digits = e.target.value.replace(/\D/g, "");
+                updateData({ proxima_nfe: digits ? parseInt(digits, 10) : 0 });
+              }}
+              placeholder="Digite o próximo número"
               required
             />
             <p className="text-xs text-gray-500">
@@ -57,12 +74,6 @@ export function EmpresaStep4({ data, updateData }: EmpresaStep4Props) {
         <p className="text-sm text-yellow-800">
           <strong>Atenção:</strong> Verifique se o número de série e a próxima NF-e estão corretos. 
           Estes dados são essenciais para a emissão correta das notas fiscais.
-        </p>
-      </div>
-
-      <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-        <p className="text-sm text-green-800">
-          <strong>Quase pronto!</strong> Após salvar, a empresa estará configurada e pronta para emitir notas fiscais.
         </p>
       </div>
     </div>

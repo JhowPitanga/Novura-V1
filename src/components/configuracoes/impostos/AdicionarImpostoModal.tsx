@@ -9,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent } from "@/components/ui/card";
 import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 export interface CompanyOption {
   id: string;
@@ -48,81 +50,48 @@ const steps = [
   { id: 6, title: "Adicionais", description: "Observações" },
 ];
 
-const csosnICMS: CSOSNOption[] = [
-  { value: "101", label: "101 - Tributada com permissão de crédito" },
-  { value: "102", label: "102 - Tributada sem permissão de crédito" },
-  { value: "103", label: "103 - Isenção do ICMS para faixa de receita bruta" },
-  { value: "201", label: "201 - Tributada com ST e com permissão de crédito" },
-  { value: "203", label: "203 - Isenção com ST" },
-  { value: "300", label: "300 - Imune" },
-  { value: "400", label: "400 - Não tributada" },
-  { value: "500", label: "500 - ICMS cobrado anteriormente por ST" },
-  { value: "900", label: "900 - Outros" },
-];
-
-const cstIPI: CSOSNOption[] = [
-  { value: "00", label: "00 - Entrada com crédito" },
-  { value: "01", label: "01 - Tributada com alíquota zero" },
-  { value: "02", label: "02 - Entrada isenta" },
-  { value: "03", label: "03 - Entrada não-tributada" },
-  { value: "04", label: "04 - Imune" },
-  { value: "05", label: "05 - Suspensão" },
-  { value: "49", label: "49 - Outras entradas" },
-  { value: "50", label: "50 - Saída tributada" },
-  { value: "51", label: "51 - Saída tributada com alíquota zero" },
-  { value: "52", label: "52 - Saída isenta" },
-  { value: "53", label: "53 - Saída não-tributada" },
-  { value: "54", label: "54 - Saída imune" },
-  { value: "55", label: "55 - Saída com suspensão" },
-  { value: "99", label: "99 - Outras saídas" },
-];
-
-const cstPIS: CSOSNOption[] = [
-  { value: "01", label: "01 - Operação Tributável (Alíquota Normal)" },
-  { value: "04", label: "04 - Operação Tributável (Monofásica)" },
-  { value: "06", label: "06 - Alíquota Zero" },
-  { value: "07", label: "07 - Isenta" },
-  { value: "08", label: "08 - Não tributada" },
-  { value: "09", label: "09 - Suspensão" },
-  { value: "49", label: "49 - Outras Operações de Saída" },
-  { value: "50", label: "50 - Operação com Direito a Crédito - Vinculada Exclusivamente a Receita Tributada no Mercado Interno" },
-  { value: "51", label: "51 - Operação com Direito a Crédito - Vinculada Exclusivamente a Receita Não Tributada no Mercado Interno" },
-  { value: "52", label: "52 - Operação com Direito a Crédito - Vinculada Exclusivamente a Receita de Exportação" },
-  { value: "53", label: "53 - Operação com Direito a Crédito - Vinculada a Receitas Tributadas e Não Tributadas no Mercado Interno" },
-  { value: "54", label: "54 - Operação com Direito a Crédito - Vinculada a Receitas Tributadas no Mercado Interno e de Exportação" },
-  { value: "55", label: "55 - Operação com Direito a Crédito - Vinculada a Receitas Não Tributadas no Mercado Interno e de Exportação" },
-  { value: "56", label: "56 - Operação com Direito a Crédito - Vinculada a Receitas Tributadas e Não Tributadas no Mercado Interno, e de Exportação" },
-  { value: "60", label: "60 - Crédito Presumido - Operação de Aquisição Vinculada Exclusivamente a Receita Tributada no Mercado Interno" },
-  { value: "61", label: "61 - Crédito Presumido - Operação de Aquisição Vinculada Exclusivamente a Receita Não Tributada no Mercado Interno" },
-  { value: "62", label: "62 - Crédito Presumido - Operação de Aquisição Vinculada Exclusivamente a Receita de Exportação" },
-  { value: "63", label: "63 - Crédito Presumido - Operação de Aquisição Vinculada a Receitas Tributadas e Não Tributadas no Mercado Interno" },
-  { value: "64", label: "64 - Crédito Presumido - Operação de Aquisição Vinculada a Receitas Tributadas no Mercado Interno e de Exportação" },
-  { value: "65", label: "65 - Crédito Presumido - Operação de Aquisição Vinculada a Receitas Não Tributadas no Mercado Interno e de Exportação" },
-  { value: "66", label: "66 - Crédito Presumido - Operação de Aquisição Vinculada a Receitas Tributadas e Não Tributadas no Mercado Interno, e de Exportação" },
-  { value: "67", label: "67 - Crédito Presumido - Outras Operações" },
-  { value: "70", label: "70 - Operação de Aquisição sem Direito a Crédito" },
-  { value: "71", label: "71 - Operação de Aquisição com Isenção" },
-  { value: "72", label: "72 - Operação de Aquisição com Suspensão" },
-  { value: "73", label: "73 - Operação de Aquisição a Alíquota Zero" },
-  { value: "74", label: "74 - Operação de Aquisição sem Incidência da Contribuição" },
-  { value: "75", label: "75 - Operação de Aquisição por Substituição Tributária" },
-  { value: "98", label: "98 - Outras Operações de Entrada" },
-  { value: "99", label: "99 - Outras Operações" },
-];
-
-const cstCOFINS: CSOSNOption[] = cstPIS;
-
-function generateTaxId(existing: string[] = []): string {
-  let id = "";
-  do {
-    const rand = Math.floor(10000 + Math.random() * 90000);
-    id = `INVR${rand}`;
-  } while (existing.includes(id));
-  return id;
-}
+// Catálogo de regras tributárias é carregado dinamicamente do banco (tax_rules_catalog).
+// Removidos arrays estáticos (CSOSN ICMS, CST IPI, CST PIS/COFINS) e geração de ID local.
 
 export function AdicionarImpostoModal({ open, onOpenChange, companies, initialData, onSave }: AdicionarImpostoModalProps) {
   const [currentStep, setCurrentStep] = useState(1);
+  const { organizationId, user } = useAuth();
+
+  // Opções dinâmicas carregadas do catálogo de regras tributárias
+  const [csosnICMSOptions, setCsosnICMSOptions] = useState<CSOSNOption[]>([]);
+  const [cstIPIOptions, setCstIPIOptions] = useState<CSOSNOption[]>([]);
+  const [cstPISOptions, setCstPISOptions] = useState<CSOSNOption[]>([]);
+  const [cstCOFINSOptions, setCstCOFINSOptions] = useState<CSOSNOption[]>([]);
+
+  useEffect(() => {
+    const loadTaxRules = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('tax_rules_catalog')
+          .select('scope, code, title, active')
+          .eq('active', true)
+          .in('scope', ['ICMS','IPI','PIS','COFINS'])
+          .order('code', { ascending: true });
+        if (error) throw error;
+        const toOption = (r: any): CSOSNOption => ({
+          value: r.code,
+          label: `${r.code} - ${r.title}`,
+        });
+        const icms = (data || []).filter(r => r.scope === 'ICMS').map(toOption);
+        const ipi = (data || []).filter(r => r.scope === 'IPI').map(toOption);
+        const pis = (data || []).filter(r => r.scope === 'PIS').map(toOption);
+        const cofins = (data || []).filter(r => r.scope === 'COFINS').map(toOption);
+        setCsosnICMSOptions(icms);
+        setCstIPIOptions(ipi);
+        setCstPISOptions(pis);
+        setCstCOFINSOptions(cofins);
+      } catch (e: any) {
+        console.error('Erro ao carregar regras tributárias', e);
+        toast.error(e?.message || 'Falha ao carregar regras tributárias');
+      }
+    };
+    loadTaxRules();
+  }, []);
 
   // Step 1 - Básicas
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | undefined>(initialData?.companyId);
@@ -261,56 +230,83 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
   const handleNext = () => setCurrentStep((s) => Math.min(6, s + 1));
   const handleBack = () => setCurrentStep((s) => Math.max(1, s - 1));
 
-  const handleSave = () => {
+  const handleSave = async () => {
     try {
-      const existing: TaxRecord[] = JSON.parse(localStorage.getItem("impostos") || "[]");
-      const id = initialData?.id || generateTaxId(existing.map(e => e.id));
+      if (!organizationId) {
+        toast.error("Organização não encontrada. Faça login novamente.");
+        return;
+      }
 
-      const record: TaxRecord = {
-        id,
+      const recordPayload = {
+        basics: {
+          companyId: selectedCompany?.id,
+          tributacao: selectedCompany?.tributacao,
+          naturezaSaida,
+          naturezaEntrada,
+          observacao,
+          isDefault: isDefaultForCompany,
+        },
+        icms,
+        icmsExtras: {
+          saidaPF: (icmsSaidaExtras || []).filter(sc => (sc.pessoa || "PF") === "PF").map(({ pessoa, ...rest }) => rest),
+          saidaPJ: (icmsSaidaExtras || []).filter(sc => sc.pessoa === "PJ").map(({ pessoa, ...rest }) => rest),
+          entrada: icmsEntradaExtras,
+        },
+        ipi: { pf: ipiPF, pj: ipiPJ },
+        pis: { pf: pisPF, pj: pisPJ },
+        cofins: { pf: cofinsPF, pj: cofinsPJ },
+        adicionais: { infoFisco, infoComplementar },
+      } as const;
+
+      const dbPayload: any = {
+        organization_id: organizationId,
+        company_id: selectedCompany?.id,
+        observacao,
+        is_default: isDefaultForCompany,
+        payload: recordPayload,
+        created_by: user?.id,
+      };
+
+      if (!dbPayload.company_id) {
+        toast.error("Selecione uma empresa para vincular o imposto.");
+        return;
+      }
+
+      // Se marcado como padrão, desmarcar outros para a mesma empresa (garantindo unicidade)
+      if (dbPayload.is_default) {
+        await supabase
+          .from('company_tax_configs')
+          .update({ is_default: false })
+          .eq('company_id', dbPayload.company_id);
+      }
+
+      // Insere novo registro de configuração fiscal da empresa
+      const { data: inserted, error } = await supabase
+        .from('company_tax_configs')
+        .insert(dbPayload)
+        .select('id, company_id, organization_id, created_at')
+        .single();
+
+      if (error) throw error;
+
+      toast.success("Imposto salvo com sucesso no banco de dados");
+      const resultRecord = {
+        id: inserted.id,
         companyId: selectedCompany?.id,
         companyName: selectedCompany?.razao_social,
         cnpj: selectedCompany?.cnpj,
         isDefault: isDefaultForCompany,
         observacao,
-        payload: {
-          basics: {
-            companyId: selectedCompany?.id,
-            tributacao: selectedCompany?.tributacao,
-            naturezaSaida,
-            naturezaEntrada,
-            observacao,
-            isDefault: isDefaultForCompany,
-          },
-          icms,
-          icmsExtras: {
-            // Persistimos cenários de saída divididos por pessoa para compatibilidade
-            saidaPF: (icmsSaidaExtras || []).filter(sc => (sc.pessoa || "PF") === "PF").map(({ pessoa, ...rest }) => rest),
-            saidaPJ: (icmsSaidaExtras || []).filter(sc => sc.pessoa === "PJ").map(({ pessoa, ...rest }) => rest),
-            entrada: icmsEntradaExtras,
-          },
-          ipi: { pf: ipiPF, pj: ipiPJ },
-          pis: { pf: pisPF, pj: pisPJ },
-          cofins: { pf: cofinsPF, pj: cofinsPJ },
-          adicionais: { infoFisco, infoComplementar },
-        },
-        createdAt: initialData?.createdAt || new Date().toISOString(),
-      };
+        payload: recordPayload,
+        createdAt: inserted.created_at,
+      } as TaxRecord;
 
-      let next = existing.filter(e => e.id !== record.id);
-
-      // Se marcado como padrão, desmarcar outros para a mesma empresa
-      if (record.isDefault && record.companyId) {
-        next = next.map(e => e.companyId === record.companyId ? { ...e, isDefault: false } : e);
-      }
-      next.push(record);
-      localStorage.setItem("impostos", JSON.stringify(next));
-      toast.success("Imposto salvo com sucesso");
-      onSave(record);
+      onSave(resultRecord);
       onOpenChange(false);
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      toast.error("Não foi possível salvar o imposto");
+      const message = e?.message || "Não foi possível salvar o imposto";
+      toast.error(message);
     }
   };
 
@@ -366,7 +362,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
                       <SelectValue placeholder="Selecione" />
                     </SelectTrigger>
                     <SelectContent>
-                      {csosnICMS.map(opt => (
+                      {csosnICMSOptions.map(opt => (
                         <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                       ))}
                     </SelectContent>
@@ -515,7 +511,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
                                     <SelectValue placeholder="Selecione" />
                                   </SelectTrigger>
                                   <SelectContent>
-                                    {csosnICMS.map(opt => (
+                                    {csosnICMSOptions.map(opt => (
                                       <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                                     ))}
                                   </SelectContent>
@@ -580,7 +576,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
                                 <SelectValue placeholder="Selecione" />
                               </SelectTrigger>
                               <SelectContent>
-                                {csosnICMS.map(opt => (
+                                {csosnICMSOptions.map(opt => (
                                   <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                                 ))}
                               </SelectContent>
@@ -617,7 +613,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
                         <SelectValue placeholder="Selecione" />
                       </SelectTrigger>
                       <SelectContent>
-                        {cstIPI.map(opt => (
+                        {cstIPIOptions.map(opt => (
                           <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                         ))}
                       </SelectContent>
@@ -658,7 +654,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
                         <SelectValue placeholder="Selecione" />
                       </SelectTrigger>
                       <SelectContent>
-                        {cstIPI.map(opt => (
+                        {cstIPIOptions.map(opt => (
                           <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                         ))}
                       </SelectContent>
@@ -701,7 +697,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
                         <SelectValue placeholder="Selecione" />
                       </SelectTrigger>
                       <SelectContent>
-                        {cstPIS.map(opt => (
+                        {cstPISOptions.map(opt => (
                           <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                         ))}
                       </SelectContent>
@@ -736,7 +732,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
                         <SelectValue placeholder="Selecione" />
                       </SelectTrigger>
                       <SelectContent>
-                        {cstPIS.map(opt => (
+                        {cstPISOptions.map(opt => (
                           <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                         ))}
                       </SelectContent>
@@ -773,7 +769,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
                         <SelectValue placeholder="Selecione" />
                       </SelectTrigger>
                       <SelectContent>
-                        {cstCOFINS.map(opt => (
+                        {cstCOFINSOptions.map(opt => (
                           <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                         ))}
                       </SelectContent>
@@ -808,7 +804,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
                         <SelectValue placeholder="Selecione" />
                       </SelectTrigger>
                       <SelectContent>
-                        {cstCOFINS.map(opt => (
+                        {cstCOFINSOptions.map(opt => (
                           <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                         ))}
                       </SelectContent>

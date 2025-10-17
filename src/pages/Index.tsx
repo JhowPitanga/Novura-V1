@@ -6,9 +6,11 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Play, Clock, Star, ChevronLeft, ChevronRight } from "lucide-react";
+import { Play, Clock, Star, ChevronLeft, ChevronRight, AlertTriangle } from "lucide-react";
 import { Link } from "react-router-dom";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 const aulasData = [
   {
@@ -44,6 +46,71 @@ const Index = () => {
   const [currentSlide, setCurrentSlide] = useState(0);
   const itemsPerSlide = 3;
   const totalSlides = Math.ceil(aulasData.length / itemsPerSlide);
+  const { organizationId } = useAuth();
+
+  interface ExpiringCert {
+    id: string;
+    company_id: string;
+    valid_to: string; // YYYY-MM-DD
+    file_name?: string | null;
+    company_name?: string | null;
+    daysLeft: number;
+  }
+
+  const [expiringCerts, setExpiringCerts] = useState<ExpiringCert[]>([]);
+  const [loadingCerts, setLoadingCerts] = useState(false);
+
+  const today = useMemo(() => new Date(), []);
+  const toDateStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }, []);
+
+  useEffect(() => {
+    const fetchExpiring = async () => {
+      if (!organizationId) return;
+      setLoadingCerts(true);
+      try {
+        const { data, error } = await supabase
+          .from('company_certificates')
+          .select('id, company_id, organizations_id, valid_to, file_name, companies:company_id(razao_social)')
+          .eq('active', true)
+          .eq('organizations_id', organizationId)
+          .not('valid_to', 'is', null)
+          .lte('valid_to', toDateStr)
+          .order('valid_to', { ascending: true });
+
+        if (error) throw error;
+
+        const mapped: ExpiringCert[] = (data || []).map((row: any) => {
+          const vt = row.valid_to as string;
+          const vtDate = new Date(vt + 'T00:00:00');
+          const diffMs = vtDate.getTime() - today.getTime();
+          const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+          return {
+            id: row.id,
+            company_id: row.company_id,
+            valid_to: vt,
+            file_name: row.file_name ?? null,
+            company_name: row.companies?.razao_social ?? null,
+            daysLeft,
+          };
+        });
+
+        setExpiringCerts(mapped);
+      } catch (e) {
+        console.error('Falha ao carregar certificados a vencer:', e);
+        setExpiringCerts([]);
+      } finally {
+        setLoadingCerts(false);
+      }
+    };
+    fetchExpiring();
+  }, [organizationId, toDateStr, today]);
 
   const nextSlide = () => {
     setCurrentSlide((prev) => (prev + 1) % totalSlides);
@@ -68,6 +135,47 @@ const Index = () => {
 
           {/* Main Content */}
           <main className="flex-1 p-6 overflow-auto">
+            {/* Alerta de Certificados A1 a vencer */}
+            {expiringCerts.length > 0 && (
+              <Card className="mb-8 border-yellow-200 bg-yellow-50">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="w-5 h-5 text-yellow-700" />
+                      <h3 className="text-base font-semibold text-yellow-800">Certificados A1 vencendo em até 30 dias</h3>
+                    </div>
+                    {loadingCerts && (
+                      <span className="text-xs text-yellow-700">Atualizando...</span>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    {expiringCerts.map((c) => {
+                      const expired = c.daysLeft < 0;
+                      const critical = c.daysLeft <= 7;
+                      const dateFmt = new Date(c.valid_to + 'T00:00:00').toLocaleDateString('pt-BR');
+                      return (
+                        <div key={c.id} className="flex items-center justify-between p-3 rounded-md bg-white border border-yellow-200">
+                          <div className="flex items-center gap-3">
+                            <Badge variant={expired ? "destructive" : "secondary"}>
+                              {expired ? 'Vencido' : `${c.daysLeft} dia${Math.abs(c.daysLeft) === 1 ? '' : 's'}`}
+                            </Badge>
+                            <div className="text-sm text-gray-800">
+                              <span className="font-medium">{c.company_name || 'Empresa'}</span>
+                              <span className="text-gray-500"> • Validade: {dateFmt}</span>
+                            </div>
+                          </div>
+                          <Button asChild size="sm" className={critical || expired ? 'bg-red-600 hover:bg-red-700' : 'bg-novura-primary hover:bg-novura-primary/90'}>
+                            <Link to={`/configuracoes/notas-fiscais/nova-empresa?companyId=${c.company_id}&step=2&mode=edit`}>
+                              Renovar
+                            </Link>
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
             {/* Banner de Ofertas Recursos Seller */}
             <Card className="mb-8 gradient-purple text-white overflow-hidden relative">
               <CardContent className="p-6">
