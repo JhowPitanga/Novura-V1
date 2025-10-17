@@ -14,6 +14,28 @@ function jsonResponse(body: any, status = 200) {
   });
 }
 
+function base64UrlEncode(bytes: Uint8Array): string {
+  // @ts-ignore
+  const b64 = btoa(String.fromCharCode(...bytes));
+  return b64.replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+async function sha256(input: string): Promise<string> {
+  const enc = new TextEncoder();
+  const data = enc.encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+function generateCodeVerifier(length = 64): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  let out = "";
+  const rnd = new Uint8Array(length);
+  crypto.getRandomValues(rnd);
+  for (let i = 0; i < length; i++) out += chars[rnd[i] % chars.length];
+  return out;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -56,6 +78,10 @@ serve(async (req) => {
     const envRedirect = Deno.env.get("MERCADO_LIVRE_REDIRECT_URI") || Deno.env.get("MERCADO_LIVRE_CALLBACK_URL") || null;
     const finalRedirect = redirect_uri || envRedirect;
 
+    // Generate PKCE (optional if app enforces it). Always include for safety.
+    const codeVerifier = generateCodeVerifier(64);
+    const codeChallenge = await sha256(codeVerifier);
+
     // Generate state for CSRF protection and pass-through context
     const csrf = crypto.randomUUID();
     const statePayload = {
@@ -64,8 +90,8 @@ serve(async (req) => {
       marketplaceName: appRow.name,
       storeName: storeName ?? null,
       connectedByUserId: connectedByUserId ?? null,
-      // Include redirect used in auth to guarantee exact match in token exchange
       redirect_uri: finalRedirect ?? null,
+      pkce_verifier: codeVerifier,
     };
     const state = btoa(JSON.stringify(statePayload));
 
@@ -74,6 +100,8 @@ serve(async (req) => {
     base.searchParams.set("client_id", clientId);
     base.searchParams.set("response_type", "code");
     base.searchParams.set("state", state);
+    base.searchParams.set("code_challenge", codeChallenge);
+    base.searchParams.set("code_challenge_method", "S256");
     if (finalRedirect) {
       base.searchParams.set("redirect_uri", finalRedirect);
     }
