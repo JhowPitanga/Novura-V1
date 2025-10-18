@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, Search, Filter, ExternalLink, Edit, Pause, Play, TrendingUp, Eye, BarChart, ShoppingCart, Percent, Copy, MoreHorizontal, DollarSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,10 @@ import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, Dr
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { GlobalHeader } from "@/components/GlobalHeader";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/hooks/use-toast";
+import { fetchMercadoLivreItems, subscribeMercadoLivreItems, syncMercadoLivreItems } from "@/WebhooksAPI/marketplace/mercado-livre/items";
 
 // Dados de navegação para a CleanNavigation
 const navigationItems = [
@@ -21,81 +25,115 @@ const navigationItems = [
 ];
 
 // Dados simulados de anúncios - serão substituídos por dados do Supabase
-const mockAds = [
-    {
-        id: 1,
-        title: "Smartphone Galaxy S24 Ultra",
-        sku: "SM-S24U-001",
-        marketplace: "Mercado Livre",
-        price: 4999.99,
-        promoPrice: 4799.99,
-        status: "Ativo",
-        visits: 1245,
-        questions: 8,
-        sales: 23,
-        stock: 15,
-        marketplaceId: "MLB123456789",
-        image: "/placeholder.svg",
-        shipping: ["Flex", "Full"],
-        quality: 93,
-        margin: 25.50
-    },
-    {
-        id: 2,
-        title: "Notebook Dell Inspiron 15",
-        sku: "NB-DEL-002",
-        marketplace: "Amazon",
-        price: 3299.99,
-        promoPrice: null,
-        status: "Pausado",
-        visits: 892,
-        questions: 3,
-        sales: 12,
-        stock: 8,
-        marketplaceId: "ASIN-B08N5WRWNW",
-        image: "/placeholder.svg",
-        shipping: ["Envio Padrão"],
-        quality: 78,
-        margin: 15.20
-    },
-    {
-        id: 3,
-        title: "Fone JBL Tune 720BT",
-        sku: "FN-JBL-003",
-        marketplace: "Shopee",
-        price: 289.99,
-        promoPrice: 259.99,
-        status: "Ativo",
-        visits: 567,
-        questions: 12,
-        sales: 45,
-        stock: 32,
-        marketplaceId: "SPE789123456",
-        image: "/placeholder.svg",
-        shipping: ["Correios"],
-        quality: 98,
-        margin: 30.15
-    },
-];
+// const mockAds = [ /* removido: agora usamos dados reais do banco */ ];
 
 // Dados para o gráfico de vendas (simulados)
-const salesChartData = [
-    { name: 'Jan', ML: 65, Amazon: 45, Shopee: 25 },
-    { name: 'Fev', ML: 59, Amazon: 52, Shopee: 30 },
-    { name: 'Mar', ML: 80, Amazon: 48, Shopee: 35 },
-    { name: 'Abr', ML: 81, Amazon: 55, Shopee: 40 },
-    { name: 'Mai', ML: 56, Amazon: 60, Shopee: 45 },
-    { name: 'Jun', ML: 55, Amazon: 58, Shopee: 50 },
-];
+// const salesChartData = [ /* removido: gráfico será alimentado futuramente */ ];
 
 export default function Anuncios() {
     const [searchTerm, setSearchTerm] = useState("");
     const [activeTab, setActiveTab] = useState("todos");
+    const [items, setItems] = useState<any[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [syncing, setSyncing] = useState(false);
+    const { organizationId } = useAuth();
+    const { toast } = useToast();
 
-    const filteredAds = mockAds
+    const loadItems = async () => {
+        if (!organizationId) return;
+        setLoading(true);
+        try {
+            const rows = await fetchMercadoLivreItems(supabase as any, organizationId);
+            setItems(rows);
+        } catch (e: any) {
+            console.error("Erro ao buscar anúncios:", e);
+            toast({ title: "Falha ao carregar anúncios", description: e?.message || "", variant: "destructive" });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleSync = async () => {
+        if (!organizationId) {
+            toast({ title: "Sessão necessária", description: "Entre na sua conta para sincronizar.", variant: "destructive" });
+            return;
+        }
+        setSyncing(true);
+        try {
+            const res = await syncMercadoLivreItems(supabase as any, organizationId);
+            toast({ title: "Sincronização iniciada", description: `Itens sincronizados: ${res?.synced ?? 0}` });
+        } catch (e: any) {
+            console.error("Erro ao sincronizar Mercado Livre:", e);
+            toast({ title: "Falha na sincronização", description: e?.message || "", variant: "destructive" });
+        } finally {
+            setSyncing(false);
+        }
+    };
+
+    // Atualização inicial + assinatura realtime para refletir alterações automáticas
+    useEffect(() => {
+        if (!organizationId) return;
+        // Carrega itens ao entrar na página
+        loadItems();
+        // Assina mudanças na tabela marketplace_items
+        const { unsubscribe } = subscribeMercadoLivreItems(supabase as any, organizationId, (payload) => {
+            setItems((prev) => {
+                const evt = payload.eventType;
+                const n = payload.new;
+                const o = payload.old;
+                if (evt === 'INSERT' && n) {
+                    const exists = prev.some((r: any) => r.id === n.id);
+                    return exists ? prev.map((r: any) => r.id === n.id ? n : r) : [n, ...prev];
+                } else if (evt === 'UPDATE' && n) {
+                    return prev.map((r: any) => r.id === n.id ? n : r);
+                } else if (evt === 'DELETE' && o) {
+                    return prev.filter((r: any) => r.id !== o.id);
+                }
+                return prev;
+            });
+        });
+        return () => unsubscribe();
+    }, [organizationId]);
+
+    // Auto-sync em intervalos enquanto a página estiver aberta
+    const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
+    useEffect(() => {
+        if (!organizationId) return;
+        const id = setInterval(() => {
+            if (!syncing && !loading) {
+                handleSync();
+            }
+        }, AUTO_SYNC_INTERVAL_MS);
+        return () => clearInterval(id);
+    }, [organizationId, syncing, loading]);
+
+    const parsedAds = items.map((row) => {
+        const pics = Array.isArray(row?.pictures) ? row.pictures : [];
+        const firstPic = Array.isArray(pics) && pics.length > 0 ? (typeof pics[0] === 'string' ? pics[0] : (pics[0]?.url || "/placeholder.svg")) : (row?.thumbnail || "/placeholder.svg");
+        return {
+            id: row?.marketplace_item_id || row?.id,
+            title: row?.title || "Sem título",
+            sku: row?.sku || "",
+            marketplace: row?.marketplace_name || "Mercado Livre",
+            price: typeof row?.price === 'number' ? row.price : (Number(row?.price) || 0),
+            promoPrice: null,
+            status: row?.status || "",
+            visits: 0,
+            questions: 0,
+            sales: typeof row?.sold_quantity === 'number' ? row.sold_quantity : (Number(row?.sold_quantity) || 0),
+            stock: typeof row?.available_quantity === 'number' ? row.available_quantity : (Number(row?.available_quantity) || 0),
+            marketplaceId: row?.marketplace_item_id || "",
+            image: firstPic || "/placeholder.svg",
+            shipping: [],
+            quality: 0,
+            margin: 0,
+        };
+    });
+
+    const filteredAds = parsedAds
         .filter(ad => {
-            if (activeTab === "ativos" && ad.status !== "Ativo") return false;
-            if (activeTab === "pausados" && ad.status !== "Pausado") return false;
+            if (activeTab === "ativos") return ad.status?.toLowerCase() === "active";
+            if (activeTab === "pausados") return ad.status?.toLowerCase() === "paused";
             return true;
         })
         .filter(ad => {
@@ -106,22 +144,20 @@ export default function Anuncios() {
         });
 
     const getMarketplaceColor = (marketplace: string) => {
-        const colors = {
-            "Mercado Livre": "bg-yellow-500",
-            "Amazon": "bg-orange-500",
-            "Shopee": "bg-red-500",
-            "Magazine Luiza": "bg-blue-500",
-            "Casas Bahia": "bg-purple-500"
-        };
-        return colors[marketplace as keyof typeof colors] || "bg-gray-500";
+        switch (marketplace) {
+            case "Mercado Livre":
+                return "bg-yellow-500";
+            default:
+                return "bg-gray-500";
+        }
     };
 
     const copyToClipboard = (text: string) => {
         navigator.clipboard.writeText(text);
-        // Implementar um toast para feedback do usuário
         console.log("Copiado: ", text);
     };
 
+    // Adiciona botão de Sincronizar junto aos controles
     return (
         <SidebarProvider>
             <div className="min-h-screen flex w-full bg-gray-50">
@@ -163,6 +199,9 @@ export default function Anuncios() {
                                 <div className="flex items-center space-x-2">
                                     <Button variant="outline">Alterar em Massa</Button>
                                     <Button variant="outline">Gerar Relatório</Button>
+                                    <Button onClick={handleSync} disabled={syncing || loading} className="bg-novura-primary hover:bg-novura-primary/90">
+                                        {syncing ? "Sincronizando..." : "Sincronizar"}
+                                    </Button>
                                 </div>
                             </div>
 
@@ -193,16 +232,12 @@ export default function Anuncios() {
                                                                 <h3 className="font-semibold text-lg text-gray-900 line-clamp-2">{ad.title}</h3>
                                                                 <div className="mt-2 text-sm text-gray-500">
                                                                     <div className="flex items-center space-x-1">
-                                                                        <span>ID: {ad.marketplaceId}</span>
-                                                                        <Button variant="ghost" size="icon" className="w-6 h-6" onClick={() => copyToClipboard(ad.marketplaceId)}>
-                                                                            <Copy className="w-3 h-3 text-gray-400" />
-                                                                        </Button>
+                                                                        <span className="text-gray-500">SKU:</span>
+                                                                        <span className="font-medium">{ad.sku || '—'}</span>
                                                                     </div>
                                                                     <div className="flex items-center space-x-1">
-                                                                        <span>SKU: {ad.sku}</span>
-                                                                        <Button variant="ghost" size="icon" className="w-6 h-6" onClick={() => copyToClipboard(ad.sku)}>
-                                                                            <Copy className="w-3 h-3 text-gray-400" />
-                                                                        </Button>
+                                                                        <span className="text-gray-500">ID:</span>
+                                                                        <span className="font-medium">{ad.marketplaceId}</span>
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -257,30 +292,13 @@ export default function Anuncios() {
                                                             </div>
                                                             <div className="flex flex-col items-center">
                                                                 <Percent className="w-5 h-5 text-novura-primary" />
-                                                                <span className="font-bold text-lg text-gray-900">{((ad.sales / ad.visits) * 100).toFixed(1)}%</span>
-                                                                <span className="text-xs text-gray-500">Conversão</span>
+                                                                <span className="font-bold text-lg text-gray-900">{ad.quality}</span>
+                                                                <span className="text-xs text-gray-500">Qualidade</span>
                                                             </div>
                                                             <div className="flex flex-col items-center">
                                                                 <DollarSign className="w-5 h-5 text-novura-primary" />
                                                                 <span className="font-bold text-lg text-gray-900">{ad.margin}%</span>
                                                                 <span className="text-xs text-gray-500">Margem</span>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-
-                                                    {/* Coluna de Qualidade e Ações */}
-                                                    <div className="flex flex-col items-center justify-center">
-                                                        <div className="flex items-center space-x-2">
-                                                            <div className="relative w-12 h-12 flex items-center justify-center">
-                                                                <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                                                                    <path className="text-gray-200" d="M18 2.0845a15.9155 15.9155 0 0 1 0 31.831" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="100" strokeDashoffset="0"></path>
-                                                                    <path className={`text-novura-primary transition-all duration-500`} d="M18 2.0845a15.9155 15.9155 0 0 1 0 31.831" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="100" strokeDashoffset={100 - ad.quality}></path>
-                                                                </svg>
-                                                                <span className="absolute text-sm font-bold text-gray-800">{ad.quality}</span>
-                                                            </div>
-                                                            <div className="text-sm text-gray-600">
-                                                                <p className="font-semibold">Qualidade</p>
-                                                                <p>{ad.quality > 90 ? "Profissional" : ad.quality > 70 ? "Boa" : "Regular"}</p>
                                                             </div>
                                                         </div>
                                                         <div className="mt-4">

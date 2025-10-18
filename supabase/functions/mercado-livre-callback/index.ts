@@ -145,6 +145,7 @@ serve(async (req) => {
     if (!resp.ok) return jsonResponse({ error: json?.error_description || "Token exchange failed", details: safePreview }, resp.status);
 
     const { access_token, refresh_token, expires_in, user_id } = json;
+const expiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
 
     // Resolve company by organization
     const { data: company, error: companyError } = await admin
@@ -179,7 +180,7 @@ serve(async (req) => {
         marketplace_name: marketplaceName,
         access_token: access_token_enc,
         refresh_token: refresh_token_enc,
-        expires_in,
+        expires_in: expiresAtIso,
         meli_user_id: user_id,
         config,
       }]);

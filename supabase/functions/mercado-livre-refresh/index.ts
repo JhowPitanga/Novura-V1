@@ -14,6 +14,14 @@ function jsonResponse(body: any, status = 200) {
   });
 }
 
+// AES-GCM helpers (match callback format enc:gcm:<iv>:<ct>)
+function strToUint8(str: string): Uint8Array { return new TextEncoder().encode(str); }
+function uint8ToB64(bytes: Uint8Array): string { const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join(""); return btoa(bin); }
+function b64ToUint8(b64: string): Uint8Array { const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
+async function importAesGcmKey(base64Key: string): Promise<CryptoKey> { const keyBytes = b64ToUint8(base64Key); return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); }
+async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, strToUint8(plaintext)); const ctBytes = new Uint8Array(ct); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`; }
+async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> { const parts = encStr.split(":"); if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); const iv = b64ToUint8(parts[2]); const ct = b64ToUint8(parts[3]); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); return new TextDecoder().decode(pt); }
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -37,6 +45,10 @@ serve(async (req) => {
     const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
 
+    const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
+    if (!ENC_KEY_B64) return jsonResponse({ error: "Missing TOKENS_ENCRYPTION_KEY" }, 500);
+    const aesKey = await importAesGcmKey(ENC_KEY_B64);
+
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
     const { data: integ, error: getErr } = await admin
@@ -47,6 +59,15 @@ serve(async (req) => {
 
     if (getErr || !integ) return jsonResponse({ error: getErr?.message || "Integration not found" }, 404);
     if (!integ.refresh_token) return jsonResponse({ error: "Missing refresh_token" }, 400);
+
+    // Decrypt stored refresh_token
+    let refreshTokenPlain: string;
+    try {
+      refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integ.refresh_token);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ error: `Failed to decrypt refresh_token: ${msg}` }, 500);
+    }
 
     // Fetch app credentials from public.apps by marketplace_name
     const { data: appRow, error: appErr } = await admin
@@ -64,7 +85,7 @@ serve(async (req) => {
     form.append("grant_type", "refresh_token");
     form.append("client_id", appRow.client_id);
     form.append("client_secret", clientSecret);
-    form.append("refresh_token", integ.refresh_token);
+    form.append("refresh_token", refreshTokenPlain);
 
     const resp = await fetch("https://api.mercadolibre.com/oauth/token", {
       method: "POST",
@@ -76,15 +97,20 @@ serve(async (req) => {
     if (!resp.ok) return jsonResponse({ error: json?.error_description || "Refresh failed", details: json }, resp.status);
 
     const { access_token, refresh_token, expires_in, user_id } = json;
+    const expiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
+
+    // Re-encrypt tokens before saving
+    const access_token_enc = await aesGcmEncryptToString(aesKey, access_token);
+    const refresh_token_enc = await aesGcmEncryptToString(aesKey, refresh_token);
 
     const { error: updErr } = await admin
       .from("marketplace_integrations")
-      .update({ access_token, refresh_token, expires_in, meli_user_id: user_id })
+      .update({ access_token: access_token_enc, refresh_token: refresh_token_enc, expires_in: expiresAtIso, meli_user_id: user_id })
       .eq("id", integrationId);
 
     if (updErr) return jsonResponse({ error: updErr.message }, 500);
 
-    return jsonResponse({ ok: true, access_token, expires_in });
+    return jsonResponse({ ok: true, expires_in: expiresAtIso });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";
     return jsonResponse({ error: message }, 500);
