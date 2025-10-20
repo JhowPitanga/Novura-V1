@@ -310,8 +310,10 @@ authorization_url_path = "/oauth/consent"
 allow_dynamic_registration = false
 
 # Per-function configuration
-# Disable JWT verification for the admin-create-member helper to allow CLI invocation without user token.
 [functions.admin-create-member]
+verify_jwt = false
+
+[functions.mercado-livre-refresh]
 verify_jwt = false
 
 [functions.mercado-livre-sync-all]

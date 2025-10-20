@@ -38,7 +38,29 @@ serve(async (req) => {
   }
 
   try {
-    const { integrationId } = await req.json();
+    // Tolerant body parser: read text once, try JSON and form
+    let integrationId: string | undefined;
+    try {
+      const raw = await req.text();
+      if (raw && raw.trim().length > 0) {
+        try {
+          const parsed = JSON.parse(raw);
+          integrationId = (parsed as any)?.integrationId;
+        } catch (_) {
+          const params = new URLSearchParams(raw);
+          integrationId = params.get("integrationId") ?? undefined;
+        }
+      }
+    } catch (_) {
+      integrationId = undefined;
+    }
+    if (!integrationId) {
+      // Try query string fallback
+      try {
+        const u = new URL(req.url);
+        integrationId = u.searchParams.get("integrationId") ?? undefined;
+      } catch (_) {}
+    }
     if (!integrationId) return jsonResponse({ error: "Missing integrationId" }, 400);
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
