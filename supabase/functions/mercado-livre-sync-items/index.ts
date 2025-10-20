@@ -19,6 +19,7 @@ function strToUint8(str: string): Uint8Array { return new TextEncoder().encode(s
 function uint8ToB64(bytes: Uint8Array): string { const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join(""); return btoa(bin); }
 function b64ToUint8(b64: string): Uint8Array { const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
 async function importAesGcmKey(base64Key: string): Promise<CryptoKey> { const keyBytes = b64ToUint8(base64Key); return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); }
+async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, strToUint8(plaintext)); const ctBytes = new Uint8Array(ct); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`; }
 async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> { const parts = encStr.split(":"); if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); const iv = b64ToUint8(parts[2]); const ct = b64ToUint8(parts[3]); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); return new TextDecoder().decode(pt); }
 
 // Decode base64url (JWT payload) to bytes
@@ -143,25 +144,240 @@ serve(async (req) => {
     const sellerId = integration.meli_user_id;
     if (!sellerId) return jsonResponse({ error: "Missing meli_user_id" }, 400);
 
+    // Check if token is expired and refresh if necessary
+    const now = new Date();
+    const expiresAt = new Date(integration.expires_in);
+    const isExpired = now >= expiresAt;
+    
+    if (isExpired) {
+      console.log("[meli-sync-items] Token expired, attempting refresh...");
+      
+      // Get app credentials for refresh
+      const { data: appRow, error: appErr } = await admin
+        .from("apps")
+        .select("client_id, client_secret")
+        .eq("name", "Mercado Livre")
+        .single();
+
+      if (appErr || !appRow) {
+        return jsonResponse({ error: "App credentials not found for token refresh" }, 404);
+      }
+
+      // Decrypt refresh token
+      let refreshTokenPlain: string;
+      try {
+        refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return jsonResponse({ error: `Failed to decrypt refresh token: ${msg}` }, 500);
+      }
+
+      // Refresh the token
+      const form = new URLSearchParams();
+      form.append("grant_type", "refresh_token");
+      form.append("client_id", appRow.client_id);
+      form.append("client_secret", appRow.client_secret);
+      form.append("refresh_token", refreshTokenPlain);
+
+      const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
+        method: "POST",
+        headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
+        body: form.toString(),
+      });
+
+      const refreshJson = await refreshResp.json();
+      if (!refreshResp.ok) {
+        return jsonResponse({ 
+          error: "Token refresh failed", 
+          details: { 
+            meli: refreshJson,
+            original_error: "Token expired and refresh failed"
+          } 
+        }, refreshResp.status);
+      }
+
+      const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
+      const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
+
+      // Re-encrypt and save new tokens
+      const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
+      const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
+
+      const { error: updErr } = await admin
+        .from("marketplace_integrations")
+        .update({ 
+          access_token: newAccessTokenEnc, 
+          refresh_token: newRefreshTokenEnc, 
+          expires_in: newExpiresAtIso,
+          meli_user_id: user_id 
+        })
+        .eq("id", integration.id);
+
+      if (updErr) {
+        return jsonResponse({ error: `Failed to save refreshed tokens: ${updErr.message}` }, 500);
+      }
+
+      // Use the new access token
+      accessToken = newAccessToken;
+      console.log("[meli-sync-items] Token refreshed successfully");
+    }
+
+    // Resolve siteId from seller profile if not provided
+    if (!body?.siteId) {
+      try {
+        const profResp = await fetch(`https://api.mercadolibre.com/users/${sellerId}`, {
+          headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+        });
+        if (profResp.ok) {
+          const prof = await profResp.json();
+          if (typeof prof?.site_id === "string" && prof.site_id.length > 0) {
+            siteId = prof.site_id;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
     // Paginated fetch from Mercado Livre: /sites/{SITE_ID}/search?seller_id={SELLER_ID}
     const items: any[] = [];
     let offset = 0;
     const limit = 50;
+    let usePublicSearch = false;
     for (let page = 0; page < 200; page++) { // safety cap
       const urlMl = new URL(`https://api.mercadolibre.com/sites/${siteId}/search`);
       urlMl.searchParams.set("seller_id", String(sellerId));
       urlMl.searchParams.set("offset", String(offset));
       urlMl.searchParams.set("limit", String(limit));
 
-      const resp = await fetch(urlMl.toString(), {
-        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-      });
+      const headers = usePublicSearch
+        ? { Accept: "application/json" }
+        : { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
+
+      const resp = await fetch(urlMl.toString(), { headers });
       const json = await resp.json();
       if (!resp.ok) {
+        if (!usePublicSearch && resp.status === 403) {
+          // Try to refresh token if we get 403 with authenticated request
+          console.log("[meli-sync-items] Got 403, attempting token refresh...");
+          
+          try {
+            // Get app credentials for refresh
+            const { data: appRow, error: appErr } = await admin
+              .from("apps")
+              .select("client_id, client_secret")
+              .eq("name", "Mercado Livre")
+              .single();
+
+            if (!appErr && appRow) {
+              // Decrypt refresh token
+              let refreshTokenPlain: string;
+              try {
+                refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token);
+              } catch (e) {
+                console.log("[meli-sync-items] Failed to decrypt refresh token:", e);
+              }
+
+              if (refreshTokenPlain) {
+                // Refresh the token
+                const form = new URLSearchParams();
+                form.append("grant_type", "refresh_token");
+                form.append("client_id", appRow.client_id);
+                form.append("client_secret", appRow.client_secret);
+                form.append("refresh_token", refreshTokenPlain);
+
+                const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
+                  method: "POST",
+                  headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
+                  body: form.toString(),
+                });
+
+                const refreshJson = await refreshResp.json();
+                if (refreshResp.ok) {
+                  const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
+                  const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
+
+                  // Re-encrypt and save new tokens
+                  const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
+                  const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
+
+                  const { error: updErr } = await admin
+                    .from("marketplace_integrations")
+                    .update({ 
+                      access_token: newAccessTokenEnc, 
+                      refresh_token: newRefreshTokenEnc, 
+                      expires_in: newExpiresAtIso,
+                      meli_user_id: user_id 
+                    })
+                    .eq("id", integration.id);
+
+                  if (!updErr) {
+                    // Use the new access token and retry the request
+                    accessToken = newAccessToken;
+                    const newHeaders = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
+                    const retryResp = await fetch(urlMl.toString(), { headers: newHeaders });
+                    const retryJson = await retryResp.json();
+                    
+                    if (retryResp.ok) {
+                      console.log("[meli-sync-items] Token refreshed and request succeeded");
+                      const batch = Array.isArray(retryJson?.results) ? retryJson.results : [];
+                      items.push(...batch);
+                      const total = Number(retryJson?.paging?.total || 0);
+                      offset += batch.length;
+                      if (offset >= total || batch.length === 0) break;
+                      continue;
+                    }
+                  }
+                }
+              }
+            }
+          } catch (refreshErr) {
+            console.log("[meli-sync-items] Token refresh failed:", refreshErr);
+          }
+
+          // Fallback to public search if refresh failed
+          try {
+            const respPublic = await fetch(urlMl.toString(), { headers: { Accept: "application/json" } });
+            if (respPublic.ok) {
+              usePublicSearch = true;
+              const jsonPublic = await respPublic.json();
+              const batch = Array.isArray(jsonPublic?.results) ? jsonPublic.results : [];
+              items.push(...batch);
+              const total = Number(jsonPublic?.paging?.total || 0);
+              offset += batch.length;
+              if (offset >= total || batch.length === 0) break;
+              continue;
+            }
+          } catch { /* ignore */ }
+        }
+        // Enrich 403+ errors with diagnostics when cause is empty
+        let tokenUserId: string | null = null;
+        let sellerSiteId: string | null = null;
+        try {
+          const meResp = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
+          if (meResp.ok) {
+            const me = await meResp.json();
+            tokenUserId = me?.id ? String(me.id) : null;
+          }
+        } catch { /* ignore */ }
+        try {
+          const sellerResp = await fetch(`https://api.mercadolibre.com/users/${sellerId}`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" }});
+          if (sellerResp.ok) {
+            const seller = await sellerResp.json();
+            sellerSiteId = seller?.site_id || null;
+          }
+        } catch { /* ignore */ }
+        const diagnostics = {
+          token_user_id: tokenUserId,
+          integration_meli_user_id: String(sellerId),
+          seller_site_id: sellerSiteId,
+          requested_site_id: siteId,
+          site_mismatch: sellerSiteId ? (sellerSiteId !== siteId) : null,
+          token_user_mismatch: tokenUserId ? (String(tokenUserId) !== String(sellerId)) : null,
+        };
         const details = {
           meli: json,
           request: { siteId, sellerId: String(sellerId), offset, limit },
           context: { organizationId: organizationId as string, userIdFromJwt },
+          diagnostics,
         };
         return jsonResponse({ error: json?.error || json?.message || "Failed to fetch items", details }, resp.status);
       }
