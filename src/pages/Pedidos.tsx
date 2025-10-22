@@ -39,7 +39,7 @@ import { ptBR } from "date-fns/locale";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { Reorder } from "framer-motion";
 import { PedidoDetailsDrawer } from "@/components/pedidos/PedidoDetailsDrawer";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
 // --- Mockup de PDF de Lista de Separação (Novo Componente) ---
@@ -329,6 +329,7 @@ function Pedidos() {
     const [searchTerm, setSearchTerm] = useState("");
     const [pedidos, setPedidos] = useState<any[]>([]);
     const [isEmitting, setIsEmitting] = useState(false);
+    const [isSyncing, setIsSyncing] = useState(false);
     const [emissionProgress, setEmissionProgress] = useState(0);
     const [emittedCount, setEmittedCount] = useState(0);
     const [failedCount, setFailedCount] = useState(0);
@@ -347,87 +348,122 @@ function Pedidos() {
 
     const { user } = useAuth();
 
-    useEffect(() => {
-        const fetchPedidos = async () => {
-            try {
-                if (!user) {
-                    setPedidos([]);
-                    return;
-                }
-
-                const { data, error } = await supabase
-                    .from("orders")
-                    .select(`
-                        id,
-                        marketplace_order_id,
-                        customer_name,
-                        order_total,
-                        status,
-                        created_at,
-                        marketplace,
-                        platform_id,
-                        shipping_type,
-                        order_items (
-                            product_name,
-                            quantity,
-                            sku
-                        )
-                    `);
-
-                if (error) throw error;
-
-                const parsed = (data || []).map((o: any) => {
-                    const items = (o.order_items || []).map((it: any, idx: number) => ({
-                        id: `${o.id || o.marketplace_order_id}-ITEM-${idx + 1}`,
-                        nome: it.product_name,
-                        sku: it.sku || null,
-                        quantidade: it.quantity || 0,
-                        valor: 0,
-                        bipado: false,
-                        vinculado: !!it.sku,
-                        imagem: "/placeholder.svg",
-                        marketplace: o.marketplace,
-                    }));
-
-                    const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
-
-                    return {
-                        id: o.marketplace_order_id || o.id,
-                        marketplace: o.marketplace || "Desconhecido",
-                        produto: items[0]?.nome || "",
-                        sku: items[0]?.sku || null,
-                        cliente: o.customer_name || "",
-                        valor: orderTotal,
-                        data: o.created_at,
-                        status: o.status || "Pendente",
-                        tipoEnvio: o.shipping_type || "",
-                        idPlataforma: o.platform_id || o.marketplace_order_id || "",
-                        quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
-                        imagem: "/placeholder.svg",
-                        itens: items,
-                        financeiro: {
-                            valorPedido: orderTotal,
-                            taxaFrete: 0,
-                            taxaMarketplace: 0,
-                            cupom: 0,
-                            impostos: 0,
-                            liquido: orderTotal,
-                            margem: 0,
-                        },
-                        impressoEtiqueta: false,
-                        impressoLista: false,
-                    };
-                });
-
-                setPedidos(parsed);
-            } catch (err) {
-                console.error("Erro ao buscar pedidos:", err);
+    const loadPedidos = async () => {
+        try {
+            if (!user) {
                 setPedidos([]);
+                return;
             }
-        };
 
-        fetchPedidos();
+            const { data, error } = await supabase
+                .from("orders")
+                .select(`
+                    id,
+                    marketplace_order_id,
+                    customer_name,
+                    order_total,
+                    status,
+                    created_at,
+                    marketplace,
+                    platform_id,
+                    shipping_type,
+                    order_items (
+                        product_name,
+                        quantity,
+                        sku
+                    )
+                `);
+
+            if (error) throw error;
+
+            const parsed = (data || []).map((o: any) => {
+                const items = (o.order_items || []).map((it: any, idx: number) => ({
+                    id: `${o.id || o.marketplace_order_id}-ITEM-${idx + 1}`,
+                    nome: it.product_name,
+                    sku: it.sku || null,
+                    quantidade: it.quantity || 0,
+                    valor: 0,
+                    bipado: false,
+                    vinculado: !!it.sku,
+                    imagem: "/placeholder.svg",
+                    marketplace: o.marketplace,
+                }));
+
+                const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
+
+                return {
+                    id: o.marketplace_order_id || o.id,
+                    marketplace: o.marketplace || "Desconhecido",
+                    produto: items[0]?.nome || "",
+                    sku: items[0]?.sku || null,
+                    cliente: o.customer_name || "",
+                    valor: orderTotal,
+                    data: o.created_at,
+                    status: o.status || "Pendente",
+                    tipoEnvio: o.shipping_type || "",
+                    idPlataforma: o.platform_id || o.marketplace_order_id || "",
+                    quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
+                    imagem: "/placeholder.svg",
+                    itens: items,
+                    financeiro: {
+                        valorPedido: orderTotal,
+                        taxaFrete: 0,
+                        taxaMarketplace: 0,
+                        cupom: 0,
+                        impostos: 0,
+                        liquido: orderTotal,
+                        margem: 0,
+                    },
+                    impressoEtiqueta: false,
+                    impressoLista: false,
+                };
+            });
+
+            setPedidos(parsed);
+        } catch (err) {
+            console.error("Erro ao buscar pedidos:", err);
+            setPedidos([]);
+        }
+    };
+
+    useEffect(() => {
+        loadPedidos();
     }, [user]);
+
+    const handleSyncOrders = async () => {
+        try {
+            setIsSyncing(true);
+            const { data: sessionRes } = await (supabase as any).auth.getSession();
+            const token: string | undefined = sessionRes?.session?.access_token;
+            if (!token) throw new Error('Sessão expirada ou ausente. Faça login novamente.');
+
+            let organizationId: string | null = null;
+            try {
+                const { data: orgRes } = await supabase.rpc('get_user_organization_id');
+                if (orgRes) organizationId = String(orgRes);
+            } catch {}
+
+            const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-sync-orders`, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'apikey': SUPABASE_PUBLISHABLE_KEY,
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({ organizationId }),
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                const msg = json?.error ? String(json.error) : `HTTP ${resp.status}`;
+                throw new Error(msg);
+            }
+            await loadPedidos();
+        } catch (e) {
+            console.error('Falha ao sincronizar pedidos:', e);
+        } finally {
+            setIsSyncing(false);
+        }
+    };
 
 
     // Definição das colunas da tabela
@@ -768,6 +804,10 @@ function Pedidos() {
                         <main className="flex-1 overflow-auto p-6">
                             <div className="flex items-center justify-between mb-8">
                                 <h1 className="text-3xl font-bold text-gray-900">Gestão de Pedidos</h1>
+                                <Button className="h-10 px-4 rounded-xl bg-primary text-white shadow-lg disabled:opacity-50" onClick={handleSyncOrders} disabled={isSyncing}>
+                                    <Zap className="w-4 h-4 mr-2" />
+                                    {isSyncing ? 'Sincronizando...' : 'Sincronizar pedidos'}
+                                </Button>
                             </div>
 
                             <div className="grid grid-cols-7 gap-4 mb-8">

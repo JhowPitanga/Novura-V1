@@ -1,7 +1,7 @@
 // Equipe.tsx (Código Completo Atualizado)
 
 import { useState } from "react";
-import { MessageSquare, Kanban, Plus, Users, Trophy, User, Target, Zap, Clock, Calendar, CheckSquare, Filter, ChevronDown, ListPlus, Search } from "lucide-react";
+import { MessageSquare, Kanban, Plus, Users, Trophy, User, Target, Zap, Clock, Calendar, CheckSquare, Filter, ChevronDown, ListPlus, Search, MoreVertical } from "lucide-react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
@@ -22,6 +22,10 @@ import { TaskBacklog } from "@/components/equipe/TaskBacklog";
 import { TaskRoadmap } from "@/components/equipe/TaskRoadmap";
 import { TaskViews } from "@/components/equipe/TaskViews"; 
 import { TaskDetailModal } from "@/components/equipe/TaskDetailModal"; // NOVO
+import { useChatChannels, useOrgMemberSearch } from "@/hooks/useChat";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select as UiSelect, SelectTrigger as UiSelectTrigger, SelectContent as UiSelectContent, SelectItem as UiSelectItem, SelectValue as UiSelectValue } from "@/components/ui/select";
 
 // --- INTERFACE DE TAREFA ---
 // Usar o tipo compartilhado do CreateTaskModal para garantir compatibilidade
@@ -51,14 +55,7 @@ const teamMembers = [
     { id: 4, name: "João Santos", role: "Logística", avatar: "/placeholder.svg", points: 2950, level: 13, badges: ["📦", "🎯", "⚡"], activities: { tasksCompleted: 28, packagesShipped: 203, codeReviews: 0, bugs: 0 } }
 ];
 
-const mockChats = [
-    { id: 1, name: "Fushiguro Megumi", lastMsg: "você: enviou um anexo.", time: "9m", color: "purple", isStarred: true, isGroup: false },
-    { id: 2, name: "Yaga Masamichi", lastMsg: "você: Parece bom plano. Mal poss...", time: "25m", color: "purple", isStarred: false, isGroup: false },
-    { id: 3, name: "Nota Ninjas", lastMsg: "Parece bom. Vamos nos concentrar...", time: "44m", color: "green", isStarred: false, isGroup: true },
-    { id: 4, name: "Momo Nishimiya", lastMsg: "Obrigado. Isso significa muito para...", time: "44m", color: "orange", isStarred: false, isGroup: false },
-    { id: 5, name: "Equipe de Logística", lastMsg: "Cálculo do frete atualizado.", time: "1h", color: "blue", isStarred: false, isGroup: true },
-    { id: 6, name: "Suguru Geto", lastMsg: "Tenho uma dúvida no deploy.", time: "2h", color: "red", isStarred: false, isGroup: false },
-];
+// Real channels will be fetched via hook
 
 const ChatAvatar = ({ isGroup, color }: { isGroup: boolean, color: string }) => (
     <div className={`w-10 h-10 bg-${color}-200 rounded-full flex items-center justify-center mr-3`}>
@@ -69,114 +66,131 @@ const ChatAvatar = ({ isGroup, color }: { isGroup: boolean, color: string }) => 
 
 // --- 1. MÓDULO CHAT (Design dos Anexos) ---
 function ChatModule() {
-    const [selectedChatId, setSelectedChatId] = useState<number | null>(1); 
     const [searchTerm, setSearchTerm] = useState("");
     const [showStarred, setShowStarred] = useState(true);
     const [showDMs, setShowDMs] = useState(true);
     const [showTeams, setShowTeams] = useState(true);
+    const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+    const [createOpen, setCreateOpen] = useState(false);
+    const [teamName, setTeamName] = useState("");
+    const [teamCategory, setTeamCategory] = useState("Geral");
+    const [memberSearch, setMemberSearch] = useState("");
+    const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
 
-    const filteredChats = mockChats.filter(chat =>
-        chat.name.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-    
-    const starredChats = filteredChats.filter(chat => chat.isStarred);
-    const dmChats = filteredChats.filter(chat => !chat.isStarred && !chat.isGroup);
-    const teamChats = filteredChats.filter(chat => !chat.isStarred && chat.isGroup);
+    const { channels = [], directChannels = [], teamChannels = [], toggleStar, deleteChannel, startDirectMessage, createTeam } = useChatChannels();
+    const { results: memberResults } = useOrgMemberSearch(memberSearch);
 
-    const ChatListItem = ({ chat }: { chat: typeof mockChats[0] }) => {
-        const isActive = chat.id === selectedChatId;
+    const filtered = (list: any[]) => list.filter(c => (c.name || 'Direta').toLowerCase().includes(searchTerm.toLowerCase()));
+    const starred = filtered((channels || []).filter((c: any) => c.isStarred));
+    const dms = filtered(directChannels || []);
+    const teams = filtered(teamChannels || []);
 
+    const ChatListItem = ({ ch }: { ch: any }) => {
+        const isActive = ch.id === activeChannelId;
+        const isGroup = ch.type === 'team';
+        const color = isGroup ? 'purple' : 'gray';
         return (
             <div 
-                key={chat.id} 
-                className={`flex items-center p-3 rounded-lg transition-colors cursor-pointer 
-                            ${isActive ? 'bg-purple-50 border-l-4 border-purple-600' : 'hover:bg-gray-100'}`}
-                onClick={() => setSelectedChatId(chat.id)}
+                key={ch.id}
+                className={`flex items-center p-3 rounded-lg transition-colors cursor-pointer ${isActive ? 'bg-purple-50 border-l-4 border-purple-600' : 'hover:bg-gray-100'}`}
+                onClick={() => setActiveChannelId(ch.id)}
             >
-                <ChatAvatar isGroup={chat.isGroup} color={chat.color} />
-                
+                <ChatAvatar isGroup={isGroup} color={color} />
                 <div className="flex-1 min-w-0">
-                    <h4 className="font-semibold text-gray-900 truncate">{chat.name}</h4>
-                    <p className="text-xs text-gray-500 truncate">{chat.lastMsg}</p>
+                    <h4 className="font-semibold text-gray-900 truncate">{ch.name || 'Mensagem Direta'}</h4>
                 </div>
-                <span className="text-xs text-gray-400 ml-2">{chat.time}</span>
+                <div className="ml-2">
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="text-gray-500 hover:bg-gray-100" onClick={(e) => e.stopPropagation()}>
+                                <MoreVertical className="w-4 h-4" />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toggleStar(ch.id, !ch.isStarred); }}>
+                                {ch.isStarred ? 'Remover dos Estrelados' : 'Adicionar aos Estrelados'}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem className="text-red-600" onClick={(e) => { e.stopPropagation(); deleteChannel(ch.id); }}>
+                                Excluir conversa
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                </div>
             </div>
         );
-    }
+    };
 
     return (
+        <>
         <div className="flex h-[calc(100vh-140px)] bg-white border rounded-lg overflow-hidden shadow-lg">
-            
             <div className="w-80 border-r bg-gray-50 flex-shrink-0 flex flex-col">
                 <div className="p-4 border-b">
                     <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center space-x-2">
                             <span className="text-lg font-semibold text-gray-800">Mensagens</span>
-                            <Badge variant="secondary" className="bg-purple-100 text-purple-700">
-                                {mockChats.length}
-                            </Badge>
+                            <Badge variant="secondary" className="bg-purple-100 text-purple-700">{(channels || []).length}</Badge>
                         </div>
-                        <Button variant="ghost" size="icon" className="text-purple-600 hover:bg-purple-100">
+                        <Button variant="ghost" size="icon" className="text-purple-600 hover:bg-purple-100" onClick={() => setCreateOpen(true)}>
                             <Plus className="w-5 h-5" />
                         </Button>
                     </div>
-
                     <div className="relative">
                         <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                        <Input
-                            placeholder="Encontre um DM ou Equipe"
-                            className="pl-9 h-9 bg-white border-gray-300 focus:border-purple-600"
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-                        />
+                        <Input placeholder="Encontre um DM ou Equipe" className="pl-9 h-9 bg-white border-gray-300 focus:border-purple-600" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                        {(searchTerm.trim().length >= 2) && (
+                            <div className="absolute z-10 mt-1 w-full bg-white border rounded-md shadow-sm max-h-56 overflow-auto">
+                                {memberResults.map((u: any) => (
+                                    <div key={u.id} className="px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer" onClick={async () => {
+                                        const res = await startDirectMessage(u.id);
+                                        if ((res as any)?.channelId) setActiveChannelId((res as any).channelId);
+                                        setSearchTerm('');
+                                    }}>
+                                        {u.nome || u.email}
+                                    </div>
+                                ))}
+                                {memberResults.length === 0 && (
+                                    <div className="px-3 py-2 text-xs text-gray-500">Nenhum membro encontrado</div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 </div>
 
                 <div className="overflow-y-auto flex-1 p-2">
-                    
-                    {starredChats.length > 0 && (
+                    {starred.length > 0 && (
                         <>
-                            <div 
-                                className="px-2 py-2 text-sm font-semibold text-gray-500 flex items-center justify-between cursor-pointer hover:bg-gray-100 rounded-md"
-                                onClick={() => setShowStarred(!showStarred)}
-                            >
-                                Estrelado ({starredChats.length}) <ChevronDown className={`w-4 h-4 transform transition-transform ${showStarred ? 'rotate-180' : ''}`} />
+                            <div className="px-2 py-2 text-sm font-semibold text-gray-500 flex items-center justify-between cursor-pointer hover:bg-gray-100 rounded-md" onClick={() => setShowStarred(!showStarred)}>
+                                Estrelado ({starred.length}) <ChevronDown className={`w-4 h-4 transform transition-transform ${showStarred ? 'rotate-180' : ''}`} />
                             </div>
                             {showStarred && (
                                 <div className="space-y-1 mt-1">
-                                    {starredChats.map(chat => <ChatListItem key={chat.id} chat={chat} />)}
+                                    {starred.map((ch: any) => <ChatListItem key={ch.id} ch={ch} />)}
                                 </div>
                             )}
                         </>
                     )}
 
-                    {dmChats.length > 0 && (
+                    {dms.length > 0 && (
                         <>
-                            <div 
-                                className="px-2 py-4 text-sm font-semibold text-gray-500 flex items-center justify-between cursor-pointer hover:bg-gray-100 rounded-md"
-                                onClick={() => setShowDMs(!showDMs)}
-                            >
-                                Mensagens Diretas ({dmChats.length}) <ChevronDown className={`w-4 h-4 transform transition-transform ${showDMs ? 'rotate-180' : ''}`} />
+                            <div className="px-2 py-4 text-sm font-semibold text-gray-500 flex items-center justify-between cursor-pointer hover:bg-gray-100 rounded-md" onClick={() => setShowDMs(!showDMs)}>
+                                Mensagens Diretas ({dms.length}) <ChevronDown className={`w-4 h-4 transform transition-transform ${showDMs ? 'rotate-180' : ''}`} />
                             </div>
                             {showDMs && (
                                 <div className="space-y-1 mt-1">
-                                    {dmChats.map(chat => <ChatListItem key={chat.id} chat={chat} />)}
+                                    {dms.map((ch: any) => <ChatListItem key={ch.id} ch={ch} />)}
                                 </div>
                             )}
                         </>
                     )}
 
-                    {teamChats.length > 0 && (
+                    {teams.length > 0 && (
                         <>
-                            <div 
-                                className="px-2 py-4 text-sm font-semibold text-gray-500 flex items-center justify-between cursor-pointer hover:bg-gray-100 rounded-md"
-                                onClick={() => setShowTeams(!showTeams)}
-                            >
-                                Equipes ({teamChats.length}) <ChevronDown className={`w-4 h-4 transform transition-transform ${showTeams ? 'rotate-180' : ''}`} />
+                            <div className="px-2 py-4 text-sm font-semibold text-gray-500 flex items-center justify-between cursor-pointer hover:bg-gray-100 rounded-md" onClick={() => setShowTeams(!showTeams)}>
+                                Equipes ({teams.length}) <ChevronDown className={`w-4 h-4 transform transition-transform ${showTeams ? 'rotate-180' : ''}`} />
                             </div>
                             {showTeams && (
                                 <div className="space-y-1 mt-1">
-                                    {teamChats.map(chat => <ChatListItem key={chat.id} chat={chat} />)}
+                                    {teams.map((ch: any) => <ChatListItem key={ch.id} ch={ch} />)}
                                 </div>
                             )}
                         </>
@@ -185,21 +199,65 @@ function ChatModule() {
             </div>
 
             <div className="flex-1 flex items-center justify-center w-full">
-                {selectedChatId ? (
-                    <ChatTab /> 
+                {activeChannelId ? (
+                    <ChatTab channelId={activeChannelId as string} />
                 ) : (
                     <div className="flex flex-col items-center justify-center h-full w-full text-center text-gray-500 p-8">
                         <div className="w-40 h-40 bg-gray-100 rounded-full flex items-center justify-center mb-4">
                             <MessageSquare className="w-16 h-16 text-purple-400" />
                         </div>
                         <h3 className="text-xl font-semibold text-gray-700">Selecione uma conversa</h3>
-                        <p className="mt-2 text-sm max-w-sm">
-                            para visualizar suas mensagens.
-                        </p>
+                        <p className="mt-2 text-sm max-w-sm">para visualizar suas mensagens.</p>
                     </div>
                 )}
             </div>
         </div>
+        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+            <DialogContent>
+                <DialogHeader>
+                    <DialogTitle>Criar Equipe</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3">
+                    <Input placeholder="Nome da equipe" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
+                    <UiSelect value={teamCategory} onValueChange={setTeamCategory}>
+                        <UiSelectTrigger className="w-full"><UiSelectValue placeholder="Categoria" /></UiSelectTrigger>
+                        <UiSelectContent>
+                            {['Logística','Comercial','Financeiro','Marketing','Geral'].map((c) => (
+                                <UiSelectItem key={c} value={c}>{c}</UiSelectItem>
+                            ))}
+                        </UiSelectContent>
+                    </UiSelect>
+                    <div>
+                        <Input placeholder="Buscar membros da organização" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
+                        <div className="mt-2 max-h-40 overflow-auto border rounded-md">
+                            {(memberResults || []).map((u: any) => {
+                                const checked = selectedMembers.includes(u.id);
+                                return (
+                                    <div key={u.id} className={`px-3 py-2 text-sm cursor-pointer ${checked ? 'bg-purple-50' : 'hover:bg-gray-50'}`} onClick={() => setSelectedMembers(prev => checked ? prev.filter(id => id !== u.id) : [...prev, u.id])}>
+                                        {(u as any).nome || u.email}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                    <div className="flex justify-end space-x-2">
+                        <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancelar</Button>
+                        <Button onClick={async () => {
+                            if (!teamName.trim()) return;
+                            const res = await createTeam(teamName.trim(), teamCategory, selectedMembers);
+                            if ((res as any)?.data?.id) {
+                                setActiveChannelId((res as any).data.id);
+                            }
+                            setCreateOpen(false);
+                            setTeamName("");
+                            setSelectedMembers([]);
+                            setMemberSearch("");
+                        }}>Criar</Button>
+                    </div>
+                </div>
+            </DialogContent>
+        </Dialog>
+        </>
     );
 }
 

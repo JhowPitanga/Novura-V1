@@ -111,7 +111,7 @@ serve(async (req) => {
     // Get integration for Mercado Livre in this org
     const { data: integration, error: integErr } = await admin
       .from("marketplace_integrations")
-      .select("id, access_token, expires_in, meli_user_id, marketplace_name, organizations_id, company_id")
+      .select("id, access_token, refresh_token, expires_in, meli_user_id, marketplace_name, organizations_id, company_id")
       .eq("organizations_id", organizationId as string)
       .eq("marketplace_name", "Mercado Livre")
       .order("expires_in", { ascending: false })
@@ -237,162 +237,68 @@ serve(async (req) => {
       } catch { /* ignore */ }
     }
 
-    // Paginated fetch from Mercado Livre: /sites/{SITE_ID}/search?seller_id={SELLER_ID}
+    // New approach: list via /users/{USER_ID}/items/search and fetch details via /items?ids=
     const items: any[] = [];
     let offset = 0;
-    const limit = 50;
-    let usePublicSearch = false;
-    for (let page = 0; page < 200; page++) { // safety cap
-      const urlMl = new URL(`https://api.mercadolibre.com/sites/${siteId}/search`);
-      urlMl.searchParams.set("seller_id", String(sellerId));
-      urlMl.searchParams.set("offset", String(offset));
-      urlMl.searchParams.set("limit", String(limit));
+    const limit = 100;
+    const listHeaders = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } as const;
 
-      const headers = usePublicSearch
-        ? { Accept: "application/json" }
-        : { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
+    for (let page = 0; page < 500; page++) {
+      const listUrl = new URL(`https://api.mercadolibre.com/users/${sellerId}/items/search`);
+      listUrl.searchParams.set("offset", String(offset));
+      listUrl.searchParams.set("limit", String(limit));
 
-      const resp = await fetch(urlMl.toString(), { headers });
-      const json = await resp.json();
-      if (!resp.ok) {
-        if (!usePublicSearch && resp.status === 403) {
-          // Try to refresh token if we get 403 with authenticated request
-          console.log("[meli-sync-items] Got 403, attempting token refresh...");
-          
-          try {
-            // Get app credentials for refresh
-            const { data: appRow, error: appErr } = await admin
-              .from("apps")
-              .select("client_id, client_secret")
-              .eq("name", "Mercado Livre")
-              .single();
+      const listResp = await fetch(listUrl.toString(), { headers: listHeaders });
+      let listJson: any = null;
+      try { listJson = await listResp.json(); } catch { listJson = {}; }
 
-            if (!appErr && appRow) {
-              // Decrypt refresh token
-              let refreshTokenPlain: string;
-              try {
-                refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token);
-              } catch (e) {
-                console.log("[meli-sync-items] Failed to decrypt refresh token:", e);
-              }
-
-              if (refreshTokenPlain) {
-                // Refresh the token
-                const form = new URLSearchParams();
-                form.append("grant_type", "refresh_token");
-                form.append("client_id", appRow.client_id);
-                form.append("client_secret", appRow.client_secret);
-                form.append("refresh_token", refreshTokenPlain);
-
-                const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
-                  method: "POST",
-                  headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
-                  body: form.toString(),
-                });
-
-                const refreshJson = await refreshResp.json();
-                if (refreshResp.ok) {
-                  const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
-                  const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
-
-                  // Re-encrypt and save new tokens
-                  const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
-                  const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
-
-                  const { error: updErr } = await admin
-                    .from("marketplace_integrations")
-                    .update({ 
-                      access_token: newAccessTokenEnc, 
-                      refresh_token: newRefreshTokenEnc, 
-                      expires_in: newExpiresAtIso,
-                      meli_user_id: user_id 
-                    })
-                    .eq("id", integration.id);
-
-                  if (!updErr) {
-                    // Use the new access token and retry the request
-                    accessToken = newAccessToken;
-                    const newHeaders = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
-                    const retryResp = await fetch(urlMl.toString(), { headers: newHeaders });
-                    const retryJson = await retryResp.json();
-                    
-                    if (retryResp.ok) {
-                      console.log("[meli-sync-items] Token refreshed and request succeeded");
-                      const batch = Array.isArray(retryJson?.results) ? retryJson.results : [];
-                      items.push(...batch);
-                      const total = Number(retryJson?.paging?.total || 0);
-                      offset += batch.length;
-                      if (offset >= total || batch.length === 0) break;
-                      continue;
-                    }
-                  }
-                }
-              }
-            }
-          } catch (refreshErr) {
-            console.log("[meli-sync-items] Token refresh failed:", refreshErr);
-          }
-
-          // Fallback to public search if refresh failed
-          try {
-            const respPublic = await fetch(urlMl.toString(), { headers: { Accept: "application/json" } });
-            if (respPublic.ok) {
-              usePublicSearch = true;
-              const jsonPublic = await respPublic.json();
-              const batch = Array.isArray(jsonPublic?.results) ? jsonPublic.results : [];
-              items.push(...batch);
-              const total = Number(jsonPublic?.paging?.total || 0);
-              offset += batch.length;
-              if (offset >= total || batch.length === 0) break;
-              continue;
-            }
-          } catch { /* ignore */ }
-        }
-        // Enrich 403+ errors with diagnostics when cause is empty
+      if (!listResp.ok) {
+        // Enrich and return 4xx/5xx
         let tokenUserId: string | null = null;
-        let sellerSiteId: string | null = null;
         try {
-          const meResp = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
-          if (meResp.ok) {
-            const me = await meResp.json();
-            tokenUserId = me?.id ? String(me.id) : null;
-          }
+          const meResp = await fetch("https://api.mercadolibre.com/users/me", { headers: listHeaders });
+          if (meResp.ok) { const me = await meResp.json(); tokenUserId = me?.id ? String(me.id) : null; }
         } catch { /* ignore */ }
-        try {
-          const sellerResp = await fetch(`https://api.mercadolibre.com/users/${sellerId}`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" }});
-          if (sellerResp.ok) {
-            const seller = await sellerResp.json();
-            sellerSiteId = seller?.site_id || null;
-          }
-        } catch { /* ignore */ }
-        const diagnostics = {
-          token_user_id: tokenUserId,
-          integration_meli_user_id: String(sellerId),
-          seller_site_id: sellerSiteId,
-          requested_site_id: siteId,
-          site_mismatch: sellerSiteId ? (sellerSiteId !== siteId) : null,
-          token_user_mismatch: tokenUserId ? (String(tokenUserId) !== String(sellerId)) : null,
-        };
         const details = {
-          meli: json,
-          request: { siteId, sellerId: String(sellerId), offset, limit },
+          meli: listJson,
+          request: { sellerId: String(sellerId), offset, limit },
           context: { organizationId: organizationId as string, userIdFromJwt },
-          diagnostics,
+          diagnostics: { token_user_id: tokenUserId, integration_meli_user_id: String(sellerId) },
         };
-        return jsonResponse({ error: json?.error || json?.message || "Failed to fetch items", details }, resp.status);
+        return jsonResponse({ error: listJson?.error || listJson?.message || "Failed to list items", details }, listResp.status);
       }
 
-      const batch = Array.isArray(json?.results) ? json.results : [];
-      items.push(...batch);
-      const total = Number(json?.paging?.total || 0);
-      offset += batch.length;
-      if (offset >= total || batch.length === 0) break;
+      const ids: string[] = Array.isArray(listJson?.results) ? listJson.results : [];
+      if (!ids.length) break;
+
+      // Batch details by 20 ids
+      for (let i = 0; i < ids.length; i += 20) {
+        const batchIds = ids.slice(i, i + 20);
+        const detailsUrl = new URL("https://api.mercadolibre.com/items");
+        detailsUrl.searchParams.set("ids", batchIds.join(","));
+        const detResp = await fetch(detailsUrl.toString(), { headers: listHeaders });
+        let detJson: any = null;
+        try { detJson = await detResp.json(); } catch { detJson = []; }
+        if (!detResp.ok) {
+          const details = { meli: detJson, request: { ids: batchIds }, context: { organizationId: organizationId as string, userIdFromJwt } };
+          return jsonResponse({ error: "Failed to fetch item details", details }, detResp.status);
+        }
+        for (const entry of Array.isArray(detJson) ? detJson : []) {
+          if (entry?.code === 200 && entry?.body) items.push(entry.body);
+        }
+      }
+
+      const total = Number(listJson?.paging?.total || 0);
+      offset += ids.length;
+      if (offset >= total || ids.length === 0) break;
     }
 
     // Map items to marketplace_items rows
     const nowIso = new Date().toISOString();
     const upserts = items.map((it) => {
-      const pictures = it?.thumbnail ? [it.thumbnail] : (Array.isArray(it?.pictures) ? it.pictures : []);
+      const pictures = it?.thumbnail
+        ? [it.thumbnail]
+        : (Array.isArray(it?.pictures) ? it.pictures.map((p: any) => p?.secure_url || p?.url).filter(Boolean) : []);
       const attributes = Array.isArray(it?.attributes) ? it.attributes : [];
       return {
         organizations_id: organizationId as string,
@@ -400,7 +306,7 @@ serve(async (req) => {
         marketplace_name: "Mercado Livre",
         marketplace_item_id: it?.id || String(it?.id || ""),
         title: it?.title || null,
-        sku: it?.seller_sku || it?.catalog_product_id || null,
+        sku: it?.seller_sku || it?.seller_custom_field || it?.catalog_product_id || null,
         condition: it?.condition || null,
         status: it?.status || null,
         price: typeof it?.price === "number" ? it.price : (Number(it?.price) || null),
@@ -412,7 +318,7 @@ serve(async (req) => {
         variations: Array.isArray(it?.variations) ? it.variations : null,
         pictures,
         tags: Array.isArray(it?.tags) ? it.tags : null,
-        seller_id: it?.seller?.id ? String(it.seller.id) : String(sellerId),
+        seller_id: it?.seller_id ? String(it.seller_id) : (it?.seller?.id ? String(it.seller.id) : String(sellerId)),
         data: it || null,
         published_at: it?.stop_time ? null : (it?.date_created ? it.date_created : null),
         last_synced_at: nowIso,

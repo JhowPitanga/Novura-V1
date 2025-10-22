@@ -83,6 +83,23 @@ export default function Anuncios() {
         try {
             const res = await syncMercadoLivreItems(supabase as any, organizationId);
             toast({ title: "Sincronização iniciada", description: `Itens sincronizados: ${res?.synced ?? 0}` });
+            // Após sincronizar, atualiza qualidade via Edge Function
+            try {
+                const { data: sessionRes } = await (supabase as any).auth.getSession();
+                const token: string | undefined = sessionRes?.session?.access_token;
+                const invokeHeaders: Record<string, string> = {
+                    apikey: (supabase as any).supabaseKey || '',
+                };
+                if (token) invokeHeaders['Authorization'] = `Bearer ${token}`;
+                await (supabase as any).functions.invoke('mercado-livre-update-quality', {
+                    body: { organizationId },
+                    headers: invokeHeaders,
+                } as any);
+                // Recarrega itens para refletir qualidade atualizada
+                await loadItems();
+            } catch (e) {
+                console.warn('Falha ao atualizar qualidade via função:', e);
+            }
         } catch (e: any) {
             console.error("Erro ao sincronizar Mercado Livre:", e);
             toast({ title: "Falha na sincronização", description: e?.message || "", variant: "destructive" });
