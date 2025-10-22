@@ -137,6 +137,64 @@ export async function syncMercadoLivreItems(
   return (data as any) ?? { ok: false, synced: 0 };
 }
 
+// Fetch quality metrics for a list of Mercado Livre items using access token from session
+export async function fetchMercadoLivreQuality(
+  supabase: SupabaseClient<Database>,
+  itemIds: string[]
+): Promise<Record<string, { score: number; level: string | null }>> {
+  if (!itemIds?.length) return {};
+  const { data: sessionRes } = await (supabase as any).auth.getSession();
+  const token: string | undefined = sessionRes?.session?.access_token;
+  if (!token) throw new Error('Sessão expirada.');
+
+  // Use the new /item/{ITEM_ID}/performance endpoint
+  // Map level_wording to a numeric score for the gauge
+  const toScore = (level: string | null | undefined): number => {
+    const lv = (level || '').toLowerCase();
+    if (!lv) return 0;
+    if (lv.includes('profissional') || lv.includes('professional')) return 100;
+    if (lv.includes('satisfat') || lv.includes('estándar') || lv.includes('standard')) return 66;
+    if (lv.includes('básica') || lv.includes('basic')) return 33;
+    return 0;
+  };
+
+  const results: Record<string, { score: number; level: string | null }> = {};
+  // Limit concurrency to avoid rate limits
+  const MAX_CONCURRENCY = 6;
+  let idx = 0;
+  const runOne = async (id: string) => {
+    try {
+      const url = `https://api.mercadolibre.com/item/${encodeURIComponent(id)}/performance`;
+      const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!resp.ok) return;
+      const data = await resp.json().catch(() => null as any);
+      const level: string | null = data?.level_wording || data?.level || null;
+      const scoreRaw = Number(data?.score);
+      const score = isNaN(scoreRaw) ? toScore(level) : scoreRaw;
+      results[id] = { score: Math.max(0, Math.min(100, score)), level };
+    } catch {
+      // ignore errors per item
+    }
+  };
+
+  const workers: Promise<void>[] = [];
+  while (idx < itemIds.length) {
+    while (workers.length < MAX_CONCURRENCY && idx < itemIds.length) {
+      workers.push(runOne(itemIds[idx++]));
+    }
+    await Promise.race(workers).catch(() => {});
+    // Remove settled promises
+    for (let i = workers.length - 1; i >= 0; i--) {
+      if ((workers[i] as any).settled) continue;
+    }
+    // Simpler: wait all current batch then clear
+    await Promise.all(workers).catch(() => {});
+    workers.length = 0;
+  }
+
+  return results;
+}
+
 export function subscribeMercadoLivreItems(
   supabase: SupabaseClient<Database>,
   organizationId: string,

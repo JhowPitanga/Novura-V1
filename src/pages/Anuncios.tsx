@@ -15,7 +15,7 @@ import { GlobalHeader } from "@/components/GlobalHeader";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
-import { fetchMercadoLivreItems, subscribeMercadoLivreItems, syncMercadoLivreItems } from "@/WebhooksAPI/marketplace/mercado-livre/items";
+import { fetchMercadoLivreItems, subscribeMercadoLivreItems, syncMercadoLivreItems, fetchMercadoLivreQuality } from "@/WebhooksAPI/marketplace/mercado-livre/items";
 
 // Dados de navegação para a CleanNavigation
 const navigationItems = [
@@ -38,6 +38,7 @@ export default function Anuncios() {
     const [syncing, setSyncing] = useState(false);
     const { organizationId } = useAuth();
     const { toast } = useToast();
+    const [qualityById, setQualityById] = useState<Record<string, { score: number; level: string | null }>>({});
 
     const loadItems = async () => {
         if (!organizationId) return;
@@ -45,6 +46,26 @@ export default function Anuncios() {
         try {
             const rows = await fetchMercadoLivreItems(supabase as any, organizationId);
             setItems(rows);
+            // Fetch quality from Mercado Livre for current items
+            const ids = rows.map((r: any) => r?.marketplace_item_id || r?.id).filter(Boolean);
+            if (ids.length) {
+                try {
+                    const qual = await fetchMercadoLivreQuality(supabase as any, ids);
+                    setQualityById(qual);
+                    // Persistir no banco para uso futuro e relatórios
+                    const nowIso = new Date().toISOString();
+                    for (const [itmId, qObj] of Object.entries(qual)) {
+                        try {
+                            await (supabase as any)
+                              .from('marketplace_items')
+                              .update({ listing_quality: (qObj as any)?.score ?? null, quality_level: (qObj as any)?.level ?? null, last_quality_update: nowIso })
+                              .eq('marketplace_item_id', itmId);
+                        } catch {}
+                    }
+                } catch (e) {
+                    console.warn('Falha ao buscar qualidade ML:', e);
+                }
+            }
         } catch (e: any) {
             console.error("Erro ao buscar anúncios:", e);
             toast({ title: "Falha ao carregar anúncios", description: e?.message || "", variant: "destructive" });
@@ -110,23 +131,51 @@ export default function Anuncios() {
     const parsedAds = items.map((row) => {
         const pics = Array.isArray(row?.pictures) ? row.pictures : [];
         const firstPic = Array.isArray(pics) && pics.length > 0 ? (typeof pics[0] === 'string' ? pics[0] : (pics[0]?.url || "/placeholder.svg")) : (row?.thumbnail || "/placeholder.svg");
+        // SKU derivado de variations
+        let derivedSku = row?.sku || "";
+        if (!derivedSku && Array.isArray(row?.variations) && row.variations.length > 0) {
+            const bySellerSku = row.variations.find((v: any) => v?.seller_sku);
+            if (bySellerSku?.seller_sku) derivedSku = bySellerSku.seller_sku;
+            else {
+                const withAttr = row.variations.find((v: any) => Array.isArray(v?.attribute_combinations));
+                const skuAttr = withAttr?.attribute_combinations?.find((a: any) => a?.id === 'SELLER_SKU' || a?.name?.toUpperCase() === 'SKU');
+                if (skuAttr?.value_name) derivedSku = skuAttr.value_name;
+            }
+        }
+        // Preços e promoção
+        const priceNum = typeof row?.price === 'number' ? row.price : (Number(row?.price) || 0);
+        const originalPrice = Number(row?.original_price) || null;
+        const hasPromo = !!originalPrice && originalPrice > priceNum;
+        const promoPrice = hasPromo ? priceNum : null;
+        // Envio (do banco)
+        const shippingMethods = Array.isArray(row?.shipping) ? row.shipping
+          : Array.isArray(row?.shipping_methods) ? row.shipping_methods.map((m: any) => m?.name || m)
+          : [];
+        // Qualidade (estimativa)
+        const qualityVal = typeof row?.quality === 'number' ? row.quality : (Number(row?.listing_quality) || Number(row?.quality_score) || 0);
+
+        const idVal = row?.marketplace_item_id || row?.id;
+        const qualityObj = qualityById[idVal] ?? null;
+
         return {
-            id: row?.marketplace_item_id || row?.id,
+            id: idVal,
             title: row?.title || "Sem título",
-            sku: row?.sku || "",
+            sku: derivedSku,
             marketplace: row?.marketplace_name || "Mercado Livre",
-            price: typeof row?.price === 'number' ? row.price : (Number(row?.price) || 0),
-            promoPrice: null,
+            price: priceNum,
+            originalPrice: hasPromo ? originalPrice : null,
+            promoPrice,
             status: row?.status || "",
-            visits: 0,
-            questions: 0,
-            sales: typeof row?.sold_quantity === 'number' ? row.sold_quantity : (Number(row?.sold_quantity) || 0),
-            stock: typeof row?.available_quantity === 'number' ? row.available_quantity : (Number(row?.available_quantity) || 0),
+            visits: Number(row?.visits) || 0,
+            questions: Number(row?.questions) || 0,
+            sales: typeof row?.sold_quantity === 'number' ? row?.sold_quantity : (Number(row?.sold_quantity) || 0),
+            stock: typeof row?.available_quantity === 'number' ? row?.available_quantity : (Number(row?.available_quantity) || 0),
             marketplaceId: row?.marketplace_item_id || "",
             image: firstPic || "/placeholder.svg",
-            shipping: [],
-            quality: 0,
-            margin: 0,
+            shipping: shippingMethods,
+            quality: qualityObj?.score ?? qualityVal,
+            qualityLevel: qualityObj?.level ?? null,
+            margin: Number(row?.margin) || 0,
         };
     });
 
@@ -218,7 +267,7 @@ export default function Anuncios() {
                                     <div className="space-y-4">
                                         {filteredAds.length > 0 ? (
                                             filteredAds.map((ad) => (
-                                                <div key={ad.id} className="grid grid-cols-5 gap-4 items-center p-6 bg-white border border-gray-200 rounded-lg shadow-sm hover:shadow-md transition-shadow">
+                                                <div key={ad.id} className="relative grid grid-cols-5 gap-4 items-center p-6 bg-white border border-gray-200 rounded-lg shadow-sm hover:shadow-md transition-shadow transform scale-[0.95] origin-top-left">
                                                     
                                                     {/* Coluna do Anúncio */}
                                                     <div className="flex items-start space-x-4">
@@ -245,22 +294,22 @@ export default function Anuncios() {
                                                     </div>
 
                                                     {/* Coluna de Preço */}
-                                                    <div className="flex flex-col items-center space-y-1 justify-center">
+                                                    <div className="flex flex-col items-start space-y-1 justify-center">
                                                         <div className="text-2xl font-bold text-gray-900">
                                                             R$ {ad.price.toFixed(2)}
                                                         </div>
                                                         {ad.promoPrice && (
                                                             <>
-                                                                <div className="text-lg text-gray-600 font-semibold line-through">
-                                                                    R$ {ad.promoPrice.toFixed(2)}
-                                                                </div>
-                                                                <Button variant="link" className="p-0 h-auto text-sm text-novura-primary">Ver promoções</Button>
+                                                                {ad.originalPrice && (
+                                                                    <div className="text-sm text-gray-500 line-through">R$ {ad.originalPrice.toFixed(2)}</div>
+                                                                )}
+                                                                <div className="text-lg font-semibold text-green-600">Promo: R$ {ad.promoPrice.toFixed(2)}</div>
                                                             </>
                                                         )}
                                                     </div>
 
                                                     {/* Coluna de Envio */}
-                                                    <div className="flex flex-col items-center space-y-2 justify-center">
+                                                    <div className="flex flex-col items-start space-y-2 justify-center">
                                                         <Badge className={`${getMarketplaceColor(ad.marketplace)} text-white text-xs px-2`}>
                                                             {ad.marketplace}
                                                         </Badge>
@@ -268,7 +317,7 @@ export default function Anuncios() {
                                                             <div className="flex flex-wrap gap-2 mt-1">
                                                                 {ad.shipping.map((method, index) => (
                                                                     <Badge key={index} variant="secondary" className="font-medium text-xs bg-gray-100 text-gray-700">
-                                                                        {method}
+                                                                        {String(method)}
                                                                     </Badge>
                                                                 ))}
                                                             </div>
@@ -277,31 +326,46 @@ export default function Anuncios() {
                                                         )}
                                                     </div>
 
-                                                    {/* Coluna de Métricas */}
-                                                    <div className="flex flex-col items-center justify-center">
-                                                        <div className="grid grid-cols-2 gap-4">
-                                                            <div className="flex flex-col items-center">
+                                                    {/* Coluna de Métricas (horizontal) */}
+                                                    <div className="flex items-center justify-between">
+                                                        <div className="flex items-center space-x-6">
+                                                            <div className="flex items-center space-x-2">
                                                                 <BarChart className="w-5 h-5 text-novura-primary" />
-                                                                <span className="font-bold text-lg text-gray-900">{ad.visits}</span>
-                                                                <span className="text-xs text-gray-500">Visitas</span>
+                                                                <div className="text-sm"><div className="font-bold text-gray-900">{ad.visits}</div><div className="text-xs text-gray-500">Visitas</div></div>
                                                             </div>
-                                                            <div className="flex flex-col items-center">
+                                                            <div className="flex items-center space-x-2">
                                                                 <ShoppingCart className="w-5 h-5 text-novura-primary" />
-                                                                <span className="font-bold text-lg text-gray-900">{ad.sales}</span>
-                                                                <span className="text-xs text-gray-500">Vendas</span>
+                                                                <div className="text-sm"><div className="font-bold text-gray-900">{ad.sales}</div><div className="text-xs text-gray-500">Vendas</div></div>
                                                             </div>
-                                                            <div className="flex flex-col items-center">
+                                                            <div className="flex items-center space-x-2">
                                                                 <Percent className="w-5 h-5 text-novura-primary" />
-                                                                <span className="font-bold text-lg text-gray-900">{ad.quality}</span>
-                                                                <span className="text-xs text-gray-500">Qualidade</span>
+                                                                <div className="text-sm"><div className="font-bold text-gray-900">{ad.quality}%</div><div className="text-xs text-gray-500">Qualidade</div></div>
                                                             </div>
-                                                            <div className="flex flex-col items-center">
+                                                            <div className="flex items-center space-x-2">
                                                                 <DollarSign className="w-5 h-5 text-novura-primary" />
-                                                                <span className="font-bold text-lg text-gray-900">{ad.margin}%</span>
-                                                                <span className="text-xs text-gray-500">Margem</span>
+                                                                <div className="text-sm"><div className="font-bold text-gray-900">{ad.margin}%</div><div className="text-xs text-gray-500">Margem</div></div>
                                                             </div>
                                                         </div>
-                                                        <div className="mt-4">
+                                                    </div>
+
+                                                    {/* Coluna de Qualidade + Ações (canto direito) */}
+                                                    <div className="flex items-center justify-end relative">
+                                                        <div className="mr-4 flex flex-col items-center">
+                                                            {/* Medidor simples */}
+                                                            <svg width="80" height="50" viewBox="0 0 80 50">
+                                                                <path d={`M10,40 A30,30 0 0,1 70,40`} fill="none" stroke="#eee" strokeWidth="8" />
+                                                                {(() => {
+                                                                    const val = Math.max(0, Math.min(100, Number(ad.quality) || 0));
+                                                                    const r = 28; const c = Math.PI * r; const pct = val / 100; const dash = c * pct; const remain = c - dash;
+                                                                    return <path d={`M10,40 A30,30 0 0,1 70,40`} fill="none" stroke="#7c3aed" strokeWidth="8" strokeDasharray={`${dash} ${remain}`} />;
+                                                                })()}
+                                                                <text x="40" y="35" textAnchor="middle" fontSize="12" fill="#111" fontWeight="700">{Math.max(0, Math.min(100, Number(ad.quality) || 0))}%</text>
+                                                            </svg>
+                                                            {ad.qualityLevel && (
+                                                                <div className="text-xs text-gray-600 -mt-1 text-center">{ad.qualityLevel}</div>
+                                                            )}
+                                                        </div>
+                                                        <div className="absolute right-2 top-2">
                                                             <DropdownMenu>
                                                                 <DropdownMenuTrigger asChild>
                                                                     <Button variant="ghost" size="icon">
@@ -319,7 +383,6 @@ export default function Anuncios() {
                                                                             </DropdownMenuItem>
                                                                         </DrawerTrigger>
                                                                         <DrawerContent>
-                                                                            {/* Conteúdo da Drawer de Desempenho */}
                                                                         </DrawerContent>
                                                                     </Drawer>
                                                                     <DropdownMenuItem>
@@ -354,3 +417,4 @@ export default function Anuncios() {
         </SidebarProvider>
     );
 }
+
