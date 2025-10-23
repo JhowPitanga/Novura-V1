@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["es2015", "es2017", "es2018", "es2019", "es2020", "dom"],
+    "target": "es2015",
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "skipLibCheck": true,
+    "types": [
+      "./deno.d.ts"
+    ],
+    "moduleResolution": "node",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "module": "esnext"
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "./deno.d.ts"
+  ]
+}

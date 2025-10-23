@@ -1,0 +1,5 @@
+[build]
+command = "deno compile --target x86_64-unknown-linux-gnu --output ./index ./index.ts"
+
+[deploy]
+command = "supabase functions deploy mercado-livre-update-metrics"

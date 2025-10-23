@@ -402,25 +402,6 @@ serve(async (req) => {
       }
     }
 
-<<<<<<< HEAD
-    // New approach: list via /users/{USER_ID}/items/search and fetch details via /items?ids=
-    const items: any[] = [];
-    let offset = 0;
-    const limit = 100;
-    const listHeaders = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } as const;
-
-    for (let page = 0; page < 500; page++) {
-      const listUrl = new URL(`https://api.mercadolibre.com/users/${sellerId}/items/search`);
-      listUrl.searchParams.set("offset", String(offset));
-      listUrl.searchParams.set("limit", String(limit));
-
-      const listResp = await fetch(listUrl.toString(), { headers: listHeaders });
-      let listJson: any = null;
-      try { listJson = await listResp.json(); } catch { listJson = {}; }
-
-      if (!listResp.ok) {
-        // Enrich and return 4xx/5xx
-=======
     // Paginated fetch from Mercado Livre: /users/{USER_ID}/items/search (recomendado)
     console.log(`[meli-sync-items] Starting paginated fetch for sellerId: ${sellerId}`);
     const items: any[] = [];
@@ -431,7 +412,7 @@ serve(async (req) => {
     for (let page = 0; page < 200; page++) { // safety cap
       // Usar endpoint recomendado para obter itens da conta do vendedor
       const urlMl = new URL(`https://api.mercadolibre.com/users/${sellerId}/items/search`);
-      urlMl.searchParams.set("status", "active"); // Apenas itens ativos
+      // Não filtrar por status para incluir ativos, pausados e inativos
       urlMl.searchParams.set("offset", String(offset));
       urlMl.searchParams.set("limit", String(limit));
       urlMl.searchParams.set("orders", "last_updated_desc"); // Ordenar por última atualização
@@ -449,7 +430,11 @@ serve(async (req) => {
       console.log(`[meli-sync-items] Response status: ${resp.status}, ok: ${resp.ok}`);
       
       if (!resp.ok) {
-        
+        let tokenUserId: string | null = null;
+        try {
+          const meResp = await fetch("https://api.mercadolibre.com/users/me", { headers });
+          if (meResp.ok) { const me = await meResp.json(); tokenUserId = me?.id ? String(me.id) : null; }
+        } catch { /* ignore */ }
         if (!usePublicSearch && resp.status === 403) {
           // Try to refresh token if we get 403 with authenticated request
           console.log("[meli-sync-items] Got 403, attempting token refresh...");
@@ -622,47 +607,15 @@ serve(async (req) => {
             }
           } catch { /* ignore */ }
         }
-        // Enrich 403+ errors with diagnostics when cause is empty
->>>>>>> e5a312c11890476bd128139e850bf7c9d467c96b
-        let tokenUserId: string | null = null;
-        try {
-          const meResp = await fetch("https://api.mercadolibre.com/users/me", { headers: listHeaders });
-          if (meResp.ok) { const me = await meResp.json(); tokenUserId = me?.id ? String(me.id) : null; }
-        } catch { /* ignore */ }
         const details = {
-          meli: listJson,
+          meli: json,
           request: { sellerId: String(sellerId), offset, limit },
           context: { organizationId: organizationId as string, userIdFromJwt },
           diagnostics: { token_user_id: tokenUserId, integration_meli_user_id: String(sellerId) },
         };
-        return jsonResponse({ error: listJson?.error || listJson?.message || "Failed to list items", details }, listResp.status);
+        return jsonResponse({ error: json?.error || json?.message || "Failed to list items", details }, resp.status);
       }
 
-<<<<<<< HEAD
-      const ids: string[] = Array.isArray(listJson?.results) ? listJson.results : [];
-      if (!ids.length) break;
-
-      // Batch details by 20 ids
-      for (let i = 0; i < ids.length; i += 20) {
-        const batchIds = ids.slice(i, i + 20);
-        const detailsUrl = new URL("https://api.mercadolibre.com/items");
-        detailsUrl.searchParams.set("ids", batchIds.join(","));
-        const detResp = await fetch(detailsUrl.toString(), { headers: listHeaders });
-        let detJson: any = null;
-        try { detJson = await detResp.json(); } catch { detJson = []; }
-        if (!detResp.ok) {
-          const details = { meli: detJson, request: { ids: batchIds }, context: { organizationId: organizationId as string, userIdFromJwt } };
-          return jsonResponse({ error: "Failed to fetch item details", details }, detResp.status);
-        }
-        for (const entry of Array.isArray(detJson) ? detJson : []) {
-          if (entry?.code === 200 && entry?.body) items.push(entry.body);
-        }
-      }
-
-      const total = Number(listJson?.paging?.total || 0);
-      offset += ids.length;
-      if (offset >= total || ids.length === 0) break;
-=======
       const batch = Array.isArray(json?.results) ? json.results : [];
       console.log(`[meli-sync-items] Page ${page + 1} results: ${batch.length} items`);
       items.push(...batch);
@@ -670,7 +623,6 @@ serve(async (req) => {
       offset += batch.length;
       console.log(`[meli-sync-items] Total items so far: ${items.length}, offset: ${offset}, total available: ${total}`);
       if (offset >= total || batch.length === 0) break;
->>>>>>> e5a312c11890476bd128139e850bf7c9d467c96b
     }
 
     console.log(`[meli-sync-items] Finished fetching item IDs. Total item IDs: ${items.length}`);
@@ -722,15 +674,8 @@ serve(async (req) => {
     // Map items to marketplace_items rows
     console.log("[meli-sync-items] Mapping items to database format...");
     const nowIso = new Date().toISOString();
-<<<<<<< HEAD
-    const upserts = items.map((it) => {
-      const pictures = it?.thumbnail
-        ? [it.thumbnail]
-        : (Array.isArray(it?.pictures) ? it.pictures.map((p: any) => p?.secure_url || p?.url).filter(Boolean) : []);
-=======
     const upserts = completeItems.map((it) => {
       const pictures = Array.isArray(it?.pictures) ? it.pictures : [];
->>>>>>> e5a312c11890476bd128139e850bf7c9d467c96b
       const attributes = Array.isArray(it?.attributes) ? it.attributes : [];
       const variations = Array.isArray(it?.variations) ? it.variations : null;
       const tags = Array.isArray(it?.tags) ? it.tags : null;
@@ -741,11 +686,7 @@ serve(async (req) => {
         marketplace_name: "Mercado Livre",
         marketplace_item_id: it?.id || String(it?.id || ""),
         title: it?.title || null,
-<<<<<<< HEAD
-        sku: it?.seller_sku || it?.seller_custom_field || it?.catalog_product_id || null,
-=======
         sku: it?.seller_custom_field || it?.seller_sku || it?.catalog_product_id || null,
->>>>>>> e5a312c11890476bd128139e850bf7c9d467c96b
         condition: it?.condition || null,
         status: it?.status || null,
         price: typeof it?.price === "number" ? it.price : (Number(it?.price) || null),
@@ -756,13 +697,8 @@ serve(async (req) => {
         attributes,
         variations,
         pictures,
-<<<<<<< HEAD
-        tags: Array.isArray(it?.tags) ? it.tags : null,
-        seller_id: it?.seller_id ? String(it.seller_id) : (it?.seller?.id ? String(it.seller.id) : String(sellerId)),
-=======
         tags,
         seller_id: it?.seller?.id ? String(it.seller.id) : String(sellerId),
->>>>>>> e5a312c11890476bd128139e850bf7c9d467c96b
         data: it || null,
         published_at: it?.stop_time ? null : (it?.date_created ? it.date_created : null),
         last_synced_at: nowIso,
