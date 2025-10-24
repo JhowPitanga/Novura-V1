@@ -69,11 +69,13 @@ serve(async (req) => {
     console.log("[meli-sync-items] AES key imported successfully");
     
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      console.log("[meli-sync-items] Missing Authorization header");
+    const apiKeyHeader = req.headers.get("apikey") || "";
+    const isInternalCall = req.headers.get("x-internal-call") === "1" && !!apiKeyHeader && apiKeyHeader === SERVICE_ROLE_KEY;
+    if (!authHeader && !isInternalCall) {
+      console.log("[meli-sync-items] Missing Authorization header and not internal call");
       return jsonResponse({ error: "Missing Authorization header" }, 401);
     }
-    console.log("[meli-sync-items] Authorization header present");
+    console.log("[meli-sync-items] Authorization present?", !!authHeader, "internal?", isInternalCall);
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
     console.log("[meli-sync-items] Supabase admin client created");
@@ -93,7 +95,7 @@ serve(async (req) => {
     if (req.method === "POST") {
       try { 
         body = await req.json(); 
-        console.log("[meli-sync-items] Request body:", body);
+    console.log("[meli-sync-items] Request body parsed");
       } catch (e) { 
         body = null; 
       }
@@ -134,34 +136,33 @@ serve(async (req) => {
     }
 
     // Validate membership using JWT subject and rpc_get_member_permissions (no refresh)
-    const tokenValue = authHeader.replace(/^Bearer\s+/i, "").trim();
-    const userIdFromJwt = decodeJwtSub(tokenValue);
-    console.log(`[meli-sync-items] JWT decoded userId: ${userIdFromJwt}`);
-    
-    if (!userIdFromJwt) {
-      console.log("[meli-sync-items] Invalid Authorization token - could not decode userId");
-      return jsonResponse({ error: "Invalid Authorization token" }, 401);
-    }
-    
-    console.log(`[meli-sync-items] Checking permissions for userId: ${userIdFromJwt}, organizationId: ${organizationId}`);
-    const { data: permData, error: permErr } = await admin.rpc("rpc_get_member_permissions", {
-      p_user_id: userIdFromJwt,
-      p_organization_id: organizationId,
-    });
-    
-    if (permErr) {
-      return jsonResponse({ error: permErr.message }, 500);
-    }
-    
-    const permRow = Array.isArray(permData) ? (permData[0] as any) : (permData as any);
-    console.log("[meli-sync-items] Permission check result:", { role: permRow?.role, permissions: permRow?.permissions });
-    
-    if (!permRow?.role) {
-      console.log("[meli-sync-items] User does not belong to organization");
-      return jsonResponse({
-        error: "Forbidden: You don't belong to this organization",
-        details: { requested: organizationId, role: permRow?.role ?? null, userId: userIdFromJwt },
-      }, 403);
+    if (!isInternalCall) {
+      const tokenValue = authHeader!.replace(/^Bearer\s+/i, "").trim();
+      const userIdFromJwt = decodeJwtSub(tokenValue);
+      console.log(`[meli-sync-items] JWT decoded userId: ${userIdFromJwt}`);
+      if (!userIdFromJwt) {
+        console.log("[meli-sync-items] Invalid Authorization token - could not decode userId");
+        return jsonResponse({ error: "Invalid Authorization token" }, 401);
+      }
+      console.log(`[meli-sync-items] Checking permissions for userId: ${userIdFromJwt}, organizationId: ${organizationId}`);
+      const { data: permData, error: permErr } = await admin.rpc("rpc_get_member_permissions", {
+        p_user_id: userIdFromJwt,
+        p_organization_id: organizationId,
+      });
+      if (permErr) {
+        return jsonResponse({ error: permErr.message }, 500);
+      }
+      const permRow = Array.isArray(permData) ? (permData[0] as any) : (permData as any);
+      console.log("[meli-sync-items] Permission check result:", { role: permRow?.role, permissions: permRow?.permissions });
+      if (!permRow?.role) {
+        console.log("[meli-sync-items] User does not belong to organization");
+        return jsonResponse({
+          error: "Forbidden: You don't belong to this organization",
+          details: { requested: organizationId, role: permRow?.role ?? null, userId: userIdFromJwt },
+        }, 403);
+      }
+    } else {
+      console.log("[meli-sync-items] Internal call: skipping membership check");
     }
 
     // Get integration for Mercado Livre in this org
@@ -180,14 +181,7 @@ serve(async (req) => {
       return jsonResponse({ error: integErr?.message || "Integration not found" }, 404);
     }
     
-    console.log("[meli-sync-items] Integration found:", {
-      id: integration.id,
-      meli_user_id: integration.meli_user_id,
-      expires_in: integration.expires_in,
-      has_access_token: !!integration.access_token,
-      has_refresh_token: !!integration.refresh_token,
-      allFields: integration
-    });
+    console.log("[meli-sync-items] Integration found for organization");
 
     // Resolve company id: prefer integration.company_id, fallback to org company
     let finalCompanyId: string | null = integration.company_id || null;
@@ -204,21 +198,11 @@ serve(async (req) => {
 
     // Decrypt access token
     console.log("[meli-sync-items] Decrypting access token...");
-    console.log("[meli-sync-items] Encrypted access token format:", {
-      isEncrypted: integration.access_token?.startsWith('enc:gcm:'),
-      length: integration.access_token?.length,
-      preview: integration.access_token?.substring(0, 20) + '...'
-    });
     
     let accessToken: string;
     try {
       accessToken = await aesGcmDecryptFromString(aesKey, integration.access_token);
       console.log("[meli-sync-items] Access token decrypted successfully");
-      console.log("[meli-sync-items] Decrypted access token:", {
-        length: accessToken.length,
-        preview: accessToken.substring(0, 20) + '...',
-        endsWith: accessToken.substring(accessToken.length - 10)
-      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ error: `Failed to decrypt access token: ${msg}` }, 500);
@@ -258,28 +242,15 @@ serve(async (req) => {
         return jsonResponse({ error: "App credentials not found for token refresh" }, 404);
       }
       
-      console.log("[meli-sync-items] App credentials found:", {
-        hasClientId: !!appRow.client_id,
-        hasClientSecret: !!appRow.client_secret
-      });
+      console.log("[meli-sync-items] App credentials found");
 
       // Decrypt refresh token
       console.log("[meli-sync-items] Decrypting refresh token...");
-      console.log("[meli-sync-items] Encrypted refresh token format:", {
-        isEncrypted: integration.refresh_token?.startsWith('enc:gcm:'),
-        length: integration.refresh_token?.length,
-        preview: integration.refresh_token?.substring(0, 20) + '...'
-      });
       
       let refreshTokenPlain: string;
       try {
         refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token);
         console.log("[meli-sync-items] Refresh token decrypted successfully");
-        console.log("[meli-sync-items] Decrypted refresh token:", {
-          length: refreshTokenPlain.length,
-          preview: refreshTokenPlain.substring(0, 20) + '...',
-          endsWith: refreshTokenPlain.substring(refreshTokenPlain.length - 10)
-        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.log("[meli-sync-items] Failed to decrypt refresh token:", msg);
@@ -302,11 +273,7 @@ serve(async (req) => {
       });
 
       const refreshJson = await refreshResp.json();
-      console.log("[meli-sync-items] Token refresh response:", {
-        status: refreshResp.status,
-        ok: refreshResp.ok,
-        response: refreshJson
-      });
+      console.log("[meli-sync-items] Token refresh response received", { status: refreshResp.status, ok: refreshResp.ok });
       
       if (!refreshResp.ok) {
         return jsonResponse({ 
@@ -321,44 +288,16 @@ serve(async (req) => {
       const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
       const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
       
-      console.log("[meli-sync-items] Token refresh successful:", {
-        hasNewAccessToken: !!newAccessToken,
-        hasNewRefreshToken: !!newRefreshToken,
-        expires_in,
-        user_id,
-        newExpiresAtIso
-      });
+      console.log("[meli-sync-items] Token refresh successful");
 
-      console.log("[meli-sync-items] New tokens received:", {
-        newAccessToken: {
-          length: newAccessToken?.length,
-          preview: newAccessToken?.substring(0, 20) + '...',
-          endsWith: newAccessToken?.substring(newAccessToken.length - 10)
-        },
-        newRefreshToken: {
-          length: newRefreshToken?.length,
-          preview: newRefreshToken?.substring(0, 20) + '...',
-          endsWith: newRefreshToken?.substring(newRefreshToken.length - 10)
-        }
-      });
+      // Avoid logging token material
 
       // Re-encrypt and save new tokens
       console.log("[meli-sync-items] Encrypting and saving new tokens...");
       const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
       const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
       
-      console.log("[meli-sync-items] New tokens encrypted:", {
-        newAccessTokenEnc: {
-          length: newAccessTokenEnc?.length,
-          preview: newAccessTokenEnc?.substring(0, 20) + '...',
-          isEncrypted: newAccessTokenEnc?.startsWith('enc:gcm:')
-        },
-        newRefreshTokenEnc: {
-          length: newRefreshTokenEnc?.length,
-          preview: newRefreshTokenEnc?.substring(0, 20) + '...',
-          isEncrypted: newRefreshTokenEnc?.startsWith('enc:gcm:')
-        }
-      });
+      console.log("[meli-sync-items] New tokens encrypted");
 
       const { error: updErr } = await admin
         .from("marketplace_integrations")
@@ -407,7 +346,18 @@ serve(async (req) => {
     const items: any[] = [];
     let offset = 0;
     const limit = 50;
-    let usePublicSearch = false;
+    // Cache/skip: load recently synced items to avoid refetching
+    const RECENT_SYNC_TTL_MS = 60 * 60 * 1000; // 1h
+    const recentSinceIso = new Date(Date.now() - RECENT_SYNC_TTL_MS).toISOString();
+    const { data: recentRows } = await admin
+      .from("marketplace_items")
+      .select("marketplace_item_id")
+      .eq("organizations_id", organizationId as string)
+      .eq("marketplace_name", "Mercado Livre")
+      .gte("last_synced_at", recentSinceIso)
+      .limit(5000);
+    const recentlySynced = new Set<string>((recentRows || []).map((r: any) => String(r.marketplace_item_id)));
+    const idSet = new Set<string>();
     
     for (let page = 0; page < 200; page++) { // safety cap
       // Usar endpoint recomendado para obter itens da conta do vendedor
@@ -417,11 +367,9 @@ serve(async (req) => {
       urlMl.searchParams.set("limit", String(limit));
       urlMl.searchParams.set("orders", "last_updated_desc"); // Ordenar por última atualização
 
-      const headers: Record<string, string> = usePublicSearch
-        ? { Accept: "application/json" }
-        : { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
+      const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
 
-      console.log(`[meli-sync-items] Fetching page ${page + 1}, offset: ${offset}, usePublicSearch: ${usePublicSearch}`);
+      console.log(`[meli-sync-items] Fetching page ${page + 1}, offset: ${offset}`);
       console.log(`[meli-sync-items] Request URL: ${urlMl.toString()}`);
 
       const resp = await fetch(urlMl.toString(), { headers });
@@ -435,7 +383,7 @@ serve(async (req) => {
           const meResp = await fetch("https://api.mercadolibre.com/users/me", { headers });
           if (meResp.ok) { const me = await meResp.json(); tokenUserId = me?.id ? String(me.id) : null; }
         } catch { /* ignore */ }
-        if (!usePublicSearch && resp.status === 403) {
+        if (resp.status === 403) {
           // Try to refresh token if we get 403 with authenticated request
           console.log("[meli-sync-items] Got 403, attempting token refresh...");
           
@@ -453,13 +401,7 @@ serve(async (req) => {
               throw new Error(`Failed to fetch integration for retry: ${retryIntegErr?.message || 'Integration not found'}`);
             }
 
-            console.log("[meli-sync-items] Integration re-fetched for retry:", {
-              id: retryIntegration.id,
-              hasAccessToken: !!retryIntegration.access_token,
-              hasRefreshToken: !!retryIntegration.refresh_token,
-              meliUserId: retryIntegration.meli_user_id,
-              allFields: retryIntegration
-            });
+            console.log("[meli-sync-items] Integration re-fetched for retry");
 
             // Get app credentials for refresh
             const { data: appRow, error: appErr } = await admin
@@ -471,21 +413,11 @@ serve(async (req) => {
             if (!appErr && appRow) {
               // Decrypt refresh token
               console.log("[meli-sync-items] Decrypting refresh token for retry...");
-              console.log("[meli-sync-items] Encrypted refresh token format (retry):", {
-                isEncrypted: retryIntegration.refresh_token?.startsWith('enc:gcm:'),
-                length: retryIntegration.refresh_token?.length,
-                preview: retryIntegration.refresh_token?.substring(0, 20) + '...'
-              });
               
               let refreshTokenPlain: string | null = null;
               try {
                 refreshTokenPlain = await aesGcmDecryptFromString(aesKey, retryIntegration.refresh_token);
                 console.log("[meli-sync-items] Refresh token decrypted successfully (retry)");
-                console.log("[meli-sync-items] Decrypted refresh token (retry):", {
-                  length: refreshTokenPlain.length,
-                  preview: refreshTokenPlain.substring(0, 20) + '...',
-                  endsWith: refreshTokenPlain.substring(refreshTokenPlain.length - 10)
-                });
               } catch (e) {
               }
 
@@ -504,46 +436,20 @@ serve(async (req) => {
                 });
 
                 const refreshJson = await refreshResp.json();
-                console.log("[meli-sync-items] Token refresh response (retry):", {
-                  status: refreshResp.status,
-                  ok: refreshResp.ok,
-                  response: refreshJson
-                });
+                console.log("[meli-sync-items] Token refresh response (retry) received", { status: refreshResp.status, ok: refreshResp.ok });
                 
                 if (refreshResp.ok) {
                   const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
                   const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
 
-                  console.log("[meli-sync-items] New tokens received (retry):", {
-                    newAccessToken: {
-                      length: newAccessToken?.length,
-                      preview: newAccessToken?.substring(0, 20) + '...',
-                      endsWith: newAccessToken?.substring(newAccessToken.length - 10)
-                    },
-                    newRefreshToken: {
-                      length: newRefreshToken?.length,
-                      preview: newRefreshToken?.substring(0, 20) + '...',
-                      endsWith: newRefreshToken?.substring(newRefreshToken.length - 10)
-                    }
-                  });
+                  // Avoid logging token material
 
                   // Re-encrypt and save new tokens
                   console.log("[meli-sync-items] Encrypting and saving new tokens (retry)...");
                   const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
                   const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
                   
-                  console.log("[meli-sync-items] New tokens encrypted (retry):", {
-                    newAccessTokenEnc: {
-                      length: newAccessTokenEnc?.length,
-                      preview: newAccessTokenEnc?.substring(0, 20) + '...',
-                      isEncrypted: newAccessTokenEnc?.startsWith('enc:gcm:')
-                    },
-                    newRefreshTokenEnc: {
-                      length: newRefreshTokenEnc?.length,
-                      preview: newRefreshTokenEnc?.substring(0, 20) + '...',
-                      isEncrypted: newRefreshTokenEnc?.startsWith('enc:gcm:')
-                    }
-                  });
+                  console.log("[meli-sync-items] New tokens encrypted (retry)");
 
                   const { error: updErr } = await admin
                     .from("marketplace_integrations")
@@ -558,11 +464,7 @@ serve(async (req) => {
                   if (!updErr) {
                     // Use the new access token and retry the request
                     accessToken = newAccessToken;
-                    console.log("[meli-sync-items] Using new access token for retry:", {
-                      length: accessToken.length,
-                      preview: accessToken.substring(0, 20) + '...',
-                      endsWith: accessToken.substring(accessToken.length - 10)
-                    });
+                    console.log("[meli-sync-items] Using new access token for retry");
                     
                     const newHeaders: Record<string, string> = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
                     console.log("[meli-sync-items] Retrying request with new token...");
@@ -592,20 +494,7 @@ serve(async (req) => {
             // Token refresh failed, continue with fallback
           }
 
-          // Fallback to public search if refresh failed
-          try {
-            const respPublic = await fetch(urlMl.toString(), { headers: { Accept: "application/json" } });
-            if (respPublic.ok) {
-              usePublicSearch = true;
-              const jsonPublic = await respPublic.json();
-              const batch = Array.isArray(jsonPublic?.results) ? jsonPublic.results : [];
-              items.push(...batch);
-              const total = Number(jsonPublic?.paging?.total || 0);
-              offset += batch.length;
-              if (offset >= total || batch.length === 0) break;
-              continue;
-            }
-          } catch { /* ignore */ }
+          // No fallback to unauthenticated endpoints to ensure compliance
         }
         const details = {
           meli: json,
@@ -618,7 +507,13 @@ serve(async (req) => {
 
       const batch = Array.isArray(json?.results) ? json.results : [];
       console.log(`[meli-sync-items] Page ${page + 1} results: ${batch.length} items`);
-      items.push(...batch);
+      for (const id of batch) {
+        const idStr = String(id);
+        if (!recentlySynced.has(idStr) && !idSet.has(idStr)) {
+          idSet.add(idStr);
+          items.push(idStr);
+        }
+      }
       const total = Number(json?.paging?.total || 0);
       offset += batch.length;
       console.log(`[meli-sync-items] Total items so far: ${items.length}, offset: ${offset}, total available: ${total}`);
@@ -627,7 +522,7 @@ serve(async (req) => {
 
     console.log(`[meli-sync-items] Finished fetching item IDs. Total item IDs: ${items.length}`);
 
-    // Obter dados completos dos itens usando Multiget
+    // Obter dados completos dos itens usando Multiget (apenas IDs não sincronizados recentemente)
     console.log("[meli-sync-items] Fetching complete item details using Multiget...");
     const completeItems: any[] = [];
     const batchSize = 20; // Multiget permite até 20 itens por vez

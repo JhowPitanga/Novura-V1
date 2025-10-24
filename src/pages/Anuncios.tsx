@@ -127,51 +127,49 @@ export default function Anuncios() {
         }
         setSyncing(true);
         try {
-            // 1. Sincronizar itens básicos
-            const res = await syncMercadoLivreItems(supabase as any, organizationId);
-            toast({ title: "Sincronização iniciada", description: `Itens sincronizados: ${res?.synced ?? 0}` });
-            
-            // 2. Atualizar métricas de qualidade
-            try {
-                console.log('Atualizando métricas de qualidade...');
-                const { data: qualityData, error: qualityError } = await (supabase as any).functions.invoke(`mercado-livre-update-quality?organizationId=${encodeURIComponent(organizationId)}`);
-                if (qualityError) console.warn('Função quality retornou erro:', qualityError);
-                else console.log('Função quality ok:', qualityData);
-            } catch (e) {
-                console.warn('Falha ao atualizar qualidade via função:', e);
-            }
+            const startedAt = Date.now();
+            const clientRid = (crypto as any)?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+            console.log('[anuncios.sync] start', { organizationId, clientRid });
 
-            // 3. Atualizar métricas de reviews/opiniões
-            try {
-                console.log('Atualizando métricas de reviews...');
-                const { data: reviewsData, error: reviewsError } = await (supabase as any).functions.invoke(`mercado-livre-update-reviews?organizationId=${encodeURIComponent(organizationId)}`);
-                if (reviewsError) console.warn('Função reviews retornou erro:', reviewsError);
-                else console.log('Função reviews ok:', reviewsData);
-            } catch (e) {
-                console.warn('Falha ao atualizar reviews via função:', e);
+            // Orquestração em uma única chamada
+            const { data: orchestration, error: orchError } = await (supabase as any).functions.invoke('mercado-livre-orchestrate-sync', {
+                body: { organizationId, clientRid }
+            });
+            console.log('[anuncios.sync] orchestrator result', { orchError, orchestration });
+            if (orchError) {
+                try {
+                    console.warn('[anuncios.sync] orchestrator failed, trying direct sync-items diagnostics');
+                    const { data: diagData, error: diagErr } = await (supabase as any).functions.invoke('mercado-livre-sync-items', {
+                        body: { organizationId, debug: true }
+                    });
+                    console.log('[anuncios.sync] direct sync-items diag', { diagErr, diagData });
+                } catch (diag) {
+                    console.warn('[anuncios.sync] direct sync-items diag threw', diag);
+                }
+                throw orchError;
             }
+            const synced = Number(orchestration?.sync?.synced ?? 0);
+            toast({ title: "Sincronização concluída", description: `Itens sincronizados: ${synced}` });
 
-            // 4. Atualizar métricas completas (nova função consolidada)
+            // Recarrega itens para refletir todas as atualizações
             try {
-                console.log('Atualizando métricas completas...');
-                const { data: metricsData, error: metricsError } = await (supabase as any).functions.invoke(`mercado-livre-update-metrics?organizationId=${encodeURIComponent(organizationId)}`);
-                if (metricsError) console.warn('Função metrics retornou erro:', metricsError);
-                else console.log('Função metrics ok:', metricsData);
-            } catch (e) {
-                console.warn('Falha ao atualizar métricas via função:', e);
+                await loadItems();
+            } catch (reloadErr: any) {
+                console.warn('[anuncios.sync] reload items failed', reloadErr?.message || reloadErr);
             }
-
-            // 5. Recarrega itens para refletir todas as atualizações
-            await loadItems();
             
             toast({ 
                 title: "Sincronização completa", 
                 description: "Itens, qualidade e reviews atualizados com sucesso!" 
             });
-            
+            const elapsedMs = Date.now() - startedAt;
+            console.log('[anuncios.sync] done', { clientRid, elapsedMs });
         } catch (e: any) {
-            console.error("Erro ao sincronizar Mercado Livre:", e);
-            toast({ title: "Falha na sincronização", description: e?.message || "", variant: "destructive" });
+            const msg = e?.message || String(e);
+            const stack = e?.stack || null;
+            const details = (() => { try { return JSON.stringify(e); } catch { return null; } })();
+            console.error('[anuncios.sync] error', { message: msg, stack, details });
+            toast({ title: "Falha na sincronização", description: msg || "Erro inesperado", variant: "destructive" });
         } finally {
             setSyncing(false);
         }
@@ -224,17 +222,7 @@ export default function Anuncios() {
         };
     }, [organizationId]);
 
-    // Auto-sync em intervalos enquanto a página estiver aberta
-    const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
-    useEffect(() => {
-        if (!organizationId) return;
-        const id = setInterval(() => {
-            if (!syncing && !loading) {
-                handleSync();
-            }
-        }, AUTO_SYNC_INTERVAL_MS);
-        return () => clearInterval(id);
-    }, [organizationId, syncing, loading]);
+    // Removido auto-sync: sincronização apenas ao clicar no botão
 
     const translatePauseReason = (reason: string | null | undefined): string => {
         const r = String(reason || '').toLowerCase();
@@ -816,4 +804,3 @@ export default function Anuncios() {
         </SidebarProvider>
     );
 }
-

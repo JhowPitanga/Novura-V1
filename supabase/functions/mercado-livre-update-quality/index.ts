@@ -3,6 +3,13 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
+// AES-GCM helpers for token encryption/decryption when available
+function uint8ToB64(bytes: Uint8Array): string { return btoa(String.fromCharCode(...bytes)); }
+function b64ToUint8(b64: string): Uint8Array { return new Uint8Array(atob(b64).split('').map(c => c.charCodeAt(0))); }
+async function importAesGcmKey(b64Key: string): Promise<CryptoKey> { const keyBytes = b64ToUint8(b64Key); return await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']); }
+async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> { const parts = encStr.split(":"); if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); const iv = b64ToUint8(parts[2]); const ct = b64ToUint8(parts[3]); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); return new TextDecoder().decode(pt); }
+async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext)); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(new Uint8Array(ct))}`; }
+
 type UpdateBody = {
   organizationId?: string; // pass '*' to update all orgs
   itemIds?: string[];
@@ -33,6 +40,7 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || '';
     const ML_CLIENT_ID = Deno.env.get("ML_CLIENT_ID") || '';
     const ML_CLIENT_SECRET = Deno.env.get("ML_CLIENT_SECRET") || '';
+    const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY") || '';
     const authHeader = req.headers.get("Authorization") || undefined;
 
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -76,17 +84,22 @@ serve(async (req) => {
     };
 
     // Helper: perform authorized GET with Accept header and return JSON/body text
+    const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
     const doGet = async (url: string, token: string) => {
-      const resp = await fetch(url, { 
-        headers: { 
-          Authorization: `Bearer ${token}`, 
-          Accept: 'application/json',
-          'User-Agent': 'Novura/1.0'
-        } 
-      });
+      const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
       const text = await resp.text().catch(() => '');
       let json: any = null; try { json = text ? JSON.parse(text) : null; } catch {}
       return { resp, text, json } as const;
+    };
+    const doGetWithBackoff = async (url: string, token: string) => {
+      let attempt = 0; let last: any = null;
+      while (attempt < 3) {
+        const r = await doGet(url, token); last = r;
+        if (r.resp.status !== 429) return r;
+        await sleep(300 * Math.pow(2, attempt));
+        attempt++;
+      }
+      return last as ReturnType<typeof doGet>;
     };
 
     // Helper: validate token by making a simple API call
@@ -114,7 +127,16 @@ serve(async (req) => {
         }
         const newToken = js.access_token as string;
         const newRefresh = js.refresh_token as (string | undefined);
-        await admin.from('marketplace_integrations').update({ access_token: newToken, refresh_token: newRefresh ?? refreshToken }).eq('organizations_id', orgId).eq('marketplace_name', 'Mercado Livre');
+        if (ENC_KEY_B64) {
+          try {
+            const aes = await importAesGcmKey(ENC_KEY_B64);
+            const encAccess = await aesGcmEncryptToString(aes, newToken);
+            const encRefresh = newRefresh ? await aesGcmEncryptToString(aes, newRefresh) : undefined;
+            await admin.from('marketplace_integrations').update({ access_token: encAccess, refresh_token: encRefresh ?? refreshToken }).eq('organizations_id', orgId).eq('marketplace_name', 'Mercado Livre');
+          } catch {
+            // fallback: do not persist if encryption fails
+          }
+        }
         console.log('[ml-quality]', rid, 'token refreshed for org', orgId);
         return newToken;
       } catch (e) {
@@ -134,14 +156,14 @@ serve(async (req) => {
         // Primary: item/{id}/performance
         const itemUrl = `https://api.mercadolibre.com/item/${encodeURIComponent(id)}/performance`;
         let used = 'item';
-        let { resp, json, text } = await doGet(itemUrl, accessToken);
+        let { resp, json, text } = await doGetWithBackoff(itemUrl, accessToken);
         if (!resp.ok) {
           console.warn('[ml-quality]', rid, 'item/performance not ok', id, resp.status, text?.slice(0,500));
           // If unauthorized/expired/forbidden, try refreshing
           if (resp.status === 401 || resp.status === 400 || resp.status === 403) {
             const newTok = await refreshTokenIfNeeded(orgIdForUpdate, accessToken, refreshTok);
             if (newTok !== accessToken) {
-              ({ resp, json, text } = await doGet(itemUrl, newTok));
+              ({ resp, json, text } = await doGetWithBackoff(itemUrl, newTok));
               if (!resp.ok) console.warn('[ml-quality]', rid, 'retry item/performance not ok', id, resp.status, text?.slice(0,500));
               else accessToken = newTok;
             }
@@ -151,11 +173,11 @@ serve(async (req) => {
           // Fallback: user-product/{id}/performance
           const upUrl = `https://api.mercadolibre.com/user-product/${encodeURIComponent(id)}/performance`;
           used = 'user-product';
-          ({ resp, json, text } = await doGet(upUrl, accessToken));
+          ({ resp, json, text } = await doGetWithBackoff(upUrl, accessToken));
           if (!resp.ok && (resp.status === 401 || resp.status === 400 || resp.status === 403)) {
             const newTok = await refreshTokenIfNeeded(orgIdForUpdate, accessToken, refreshTok);
             if (newTok !== accessToken) {
-              ({ resp, json, text } = await doGet(upUrl, newTok));
+              ({ resp, json, text } = await doGetWithBackoff(upUrl, newTok));
               if (!resp.ok) console.warn('[ml-quality]', rid, 'retry user-product/performance not ok', id, resp.status, text?.slice(0,500));
               else accessToken = newTok;
             }
@@ -213,6 +235,8 @@ serve(async (req) => {
       // Resolve token per org (or use provided for single-org)
       let resolvedToken = meliAccessToken || "";
       let refreshTok: string | undefined = undefined;
+      let aesKey: CryptoKey | null = null;
+      if (ENC_KEY_B64) { try { aesKey = await importAesGcmKey(ENC_KEY_B64); } catch { aesKey = null; } }
       if (!resolvedToken) {
         const { data: integ, error: integErr } = await admin
           .from("marketplace_integrations")
@@ -221,8 +245,16 @@ serve(async (req) => {
           .eq("marketplace_name", "Mercado Livre")
           .maybeSingle();
         if (integErr) console.warn('[ml-quality]', rid, 'token lookup error', integErr.message);
-        resolvedToken = (integ as any)?.access_token || "";
-        refreshTok = (integ as any)?.refresh_token || undefined;
+        if (aesKey && (integ as any)?.access_token?.startsWith('enc:gcm:')) {
+          try { resolvedToken = await aesGcmDecryptFromString(aesKey, (integ as any).access_token); } catch { resolvedToken = (integ as any)?.access_token || ""; }
+        } else {
+          resolvedToken = (integ as any)?.access_token || "";
+        }
+        if (aesKey && (integ as any)?.refresh_token?.startsWith('enc:gcm:')) {
+          try { refreshTok = await aesGcmDecryptFromString(aesKey, (integ as any).refresh_token); } catch { refreshTok = (integ as any)?.refresh_token || undefined; }
+        } else {
+          refreshTok = (integ as any)?.refresh_token || undefined;
+        }
       }
       if (!resolvedToken) {
         console.warn('[ml-quality]', rid, 'skipping org, missing token', orgId);
@@ -247,7 +279,9 @@ serve(async (req) => {
           continue;
         }
       }
-      // Load item ids if not provided
+      // Load item ids if not provided, then apply TTL filter using marketplace_metrics.last_quality_update
+      const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+      const cutoffIso = new Date(Date.now() - CACHE_TTL_MS).toISOString();
       let ids: string[] = (itemIds || []);
       if (!ids.length) {
         const { data: rows, error } = await admin
@@ -256,10 +290,19 @@ serve(async (req) => {
           .eq("organizations_id", orgId)
           .eq("marketplace_name", "Mercado Livre")
           .order("updated_at", { ascending: false })
-          .limit(500);
+          .limit(1000);
         if (error) { console.error('[ml-quality]', rid, 'items query error', error.message); throw error; }
         ids = (rows || []).map((r: any) => r.marketplace_item_id).filter(Boolean);
       }
+      // Fetch recent metrics and filter
+      const { data: metricRows } = await admin
+        .from("marketplace_metrics")
+        .select("marketplace_item_id,last_quality_update")
+        .eq("organizations_id", orgId)
+        .eq("marketplace_name", "Mercado Livre")
+        .in("marketplace_item_id", ids.slice(0, 10000));
+      const recent = new Set<string>((metricRows || []).filter((m: any) => m?.last_quality_update && String(m.last_quality_update) >= cutoffIso).map((m: any) => String(m.marketplace_item_id)));
+      ids = ids.filter((id) => !recent.has(String(id)));
       console.log('[ml-quality]', rid, 'items', ids.length);
       if (!ids.length) { console.log('[ml-quality]', rid, 'no items for org', orgId, 'skipping'); continue; }
 

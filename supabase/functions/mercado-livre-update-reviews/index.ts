@@ -2,6 +2,12 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+// AES helpers
+function uint8ToB64(bytes: Uint8Array): string { return btoa(String.fromCharCode(...bytes)); }
+function b64ToUint8(b64: string): Uint8Array { return new Uint8Array(atob(b64).split('').map(c => c.charCodeAt(0))); }
+async function importAesGcmKey(b64Key: string): Promise<CryptoKey> { const keyBytes = b64ToUint8(b64Key); return await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']); }
+async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> { const parts = encStr.split(":"); if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); const iv = b64ToUint8(parts[2]); const ct = b64ToUint8(parts[3]); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); return new TextDecoder().decode(pt); }
+async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext)); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(new Uint8Array(ct))}`; }
 
 // Helper functions for AES-GCM encryption/decryption
 function strToUint8(str: string): Uint8Array { return new TextEncoder().encode(str); }
@@ -99,17 +105,22 @@ serve(async (req) => {
     }
 
     // Helper: perform authorized GET with Accept header and return JSON/body text
+    const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
     const doGet = async (url: string, token: string) => {
-      const resp = await fetch(url, { 
-        headers: { 
-          Authorization: `Bearer ${token}`, 
-          Accept: 'application/json',
-          'User-Agent': 'Novura/1.0'
-        } 
-      });
+      const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
       const text = await resp.text().catch(() => '');
       let json: any = null; try { json = text ? JSON.parse(text) : null; } catch {}
       return { resp, text, json } as const;
+    };
+    const doGetWithBackoff = async (url: string, token: string) => {
+      let attempt = 0; let last: any = null;
+      while (attempt < 3) {
+        const r = await doGet(url, token); last = r;
+        if (r.resp.status !== 429) return r;
+        await sleep(300 * Math.pow(2, attempt));
+        attempt++;
+      }
+      return last as ReturnType<typeof doGet>;
     };
 
     // Helper: validate token by making a simple API call
@@ -156,7 +167,12 @@ serve(async (req) => {
       try {
         // Get reviews data from Mercado Livre API
         const reviewsUrl = `https://api.mercadolibre.com/reviews/item/${encodeURIComponent(id)}`;
-        let { resp, json, text } = await doGet(reviewsUrl, accessToken);
+        let { resp, json, text } = await doGetWithBackoff(reviewsUrl, accessToken);
+        const rl = {
+          limit: resp.headers.get('x-ratelimit-limit') || resp.headers.get('ratelimit-limit') || null,
+          remaining: resp.headers.get('x-ratelimit-remaining') || resp.headers.get('ratelimit-remaining') || null,
+          reset: resp.headers.get('x-ratelimit-reset') || resp.headers.get('ratelimit-reset') || null,
+        };
         
         if (!resp.ok) {
           console.warn('[ml-reviews]', rid, 'reviews not ok', id, resp.status, text?.slice(0,500));
@@ -164,12 +180,30 @@ serve(async (req) => {
           if (resp.status === 401 || resp.status === 400 || resp.status === 403) {
             const newTok = await refreshTokenIfNeeded(orgIdForUpdate, accessToken, refreshTok);
             if (newTok !== accessToken) {
-              ({ resp, json, text } = await doGet(reviewsUrl, newTok));
+              ({ resp, json, text } = await doGetWithBackoff(reviewsUrl, newTok));
+              // update latest ratelimit info
+              rl.limit = resp.headers.get('x-ratelimit-limit') || rl.limit;
+              rl.remaining = resp.headers.get('x-ratelimit-remaining') || rl.remaining;
+              rl.reset = resp.headers.get('x-ratelimit-reset') || rl.reset;
               if (!resp.ok) console.warn('[ml-reviews]', rid, 'retry reviews not ok', id, resp.status, text?.slice(0,500));
               else accessToken = newTok;
             }
           }
           if (!resp.ok) {
+            // Enfileira para retentativa com backoff se 429/503
+            if (resp.status === 429 || resp.status === 503) {
+              try {
+                await admin.from('ml_retry_queue').insert({
+                  job_type: 'reviews',
+                  organizations_id: orgIdForUpdate,
+                  payload: { itemId: id },
+                  attempts: 0,
+                  max_attempts: 5,
+                  next_retry_at: new Date(Date.now() + 30_000).toISOString(),
+                  last_error: `HTTP ${resp.status}`
+                });
+              } catch {}
+            }
             console.warn('[ml-reviews]', rid, 'reviews API failed', id, resp.status, text?.slice(0,500));
             return;
           }
@@ -201,7 +235,7 @@ serve(async (req) => {
 
         if (!upErr) {
           updated += 1;
-          console.log('[ml-reviews]', rid, 'updated reviews for', id, 'rating', ratingAverage, 'count', reviewsCount);
+          console.log('[ml-reviews]', rid, 'updated reviews for', id, 'rating', ratingAverage, 'count', reviewsCount, 'ratelimit', rl);
         } else {
           console.warn('[ml-reviews]', rid, 'reviews update error', id, upErr.message);
         }
@@ -274,7 +308,9 @@ serve(async (req) => {
         }
       }
 
-      // Load item ids if not provided
+      // Load item ids if not provided, then apply TTL using marketplace_metrics.last_reviews_update
+      const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+      const cutoffIso = new Date(Date.now() - CACHE_TTL_MS).toISOString();
       let ids: string[] = (itemIds || []);
       if (!ids.length) {
         const { data: rows, error } = await admin
@@ -283,10 +319,18 @@ serve(async (req) => {
           .eq("organizations_id", orgId)
           .eq("marketplace_name", "Mercado Livre")
           .order("updated_at", { ascending: false })
-          .limit(500);
+          .limit(1000);
         if (error) { console.error('[ml-reviews]', rid, 'items query error', error.message); throw error; }
         ids = (rows || []).map((r: any) => r.marketplace_item_id).filter(Boolean);
       }
+      const { data: metricRows } = await admin
+        .from("marketplace_metrics")
+        .select("marketplace_item_id,last_reviews_update")
+        .eq("organizations_id", orgId)
+        .eq("marketplace_name", "Mercado Livre")
+        .in("marketplace_item_id", ids.slice(0, 10000));
+      const recent = new Set<string>((metricRows || []).filter((m: any) => m?.last_reviews_update && String(m.last_reviews_update) >= cutoffIso).map((m: any) => String(m.marketplace_item_id)));
+      ids = ids.filter((id) => !recent.has(String(id)));
       console.log('[ml-reviews]', rid, 'items', ids.length);
       if (!ids.length) { console.log('[ml-reviews]', rid, 'no items for org', orgId, 'skipping'); continue; }
 
