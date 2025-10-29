@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { ChevronDown, ChevronUp, MapPin, User, Package, CreditCard, Clock, TrendingUp, Wallet, Percent, Truck, Receipt, Ticket, MinusCircle, ShoppingCart, DollarSign, Zap } from "lucide-react";
-import { format } from "date-fns";
-import { ptBR } from "date-fns/locale";
+import { ChevronDown, ChevronUp, User, Package, CreditCard, Clock, TrendingUp, Wallet, Percent, Truck, Receipt, Ticket, MinusCircle, ShoppingCart, DollarSign, Zap } from "lucide-react";
+import { formatDateTimeSP } from "@/lib/datetime";
 
 // Assumindo que você tem os componentes Badge, Separator, Collapsible, CollapsibleContent, CollapsibleTrigger
 // Como não temos acesso aos componentes reais, assumimos que eles estão definidos
@@ -102,32 +101,39 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
         { status: "NF Emitida", date: "16/01/2024 11:30", completed: false },
     ];
 
-    // --- CÁLCULOS FINANCEIROS DINÂMICOS E NOVOS MOCKS ---
-    const comissaoPercentual = 0.12; // 12%
-    const impostosPercentual = 0.08; // 8%
-    
-    // Novas variáveis mockadas (para preencher os campos em branco)
-    const custoProdutosFixo = 999.00; // Custo dos produtos (CMV) - MOCK
-    const custosExtras = 80.00; // Ex: Custos com embalagem especial - MOCK
-    const valorRecebidoFrete = 109.90; // Valor que o cliente pagou pelo frete (Receita) - MOCK
-    const freteCusto = 159.00; // Custo real do frete para o vendedor (Despesa) - MOCK
-    const cupomFixo = 50.00; // Desconto dado ao cliente (Despesa) - MOCK
-    
-    // Venda Bruta (Valor dos Itens no carrinho)
-    const valorBrutoItens = pedido.valor;
-    
-    // Cálculo das Despesas de Transação
-    const comissaoMarketplace = valorBrutoItens * comissaoPercentual;
-    const impostosCalculados = valorBrutoItens * impostosPercentual;
+    // --- CÁLCULOS FINANCEIROS DINÂMICOS COM BASE NOS DADOS SINCRONIZADOS ---
+    const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
+
+    // Valor bruto dos itens calculado a partir da lista de itens (quantidade x valor unitário)
+    const valorBrutoItens = (pedido?.itens || []).reduce((sum: number, it: any) => sum + (toNum(it?.valor) * (toNum(it?.quantidade) || 0)), 0) || toNum((pedido as any)?.financeiro?.valorPedido) || toNum(pedido?.valor);
+
+    // Dados financeiros provenientes da sincronização (payments/shipments normalizados em pedidos.tsx)
+    const valorRecebidoFrete = toNum((pedido as any)?.financeiro?.freteRecebido);
+    const freteCusto = toNum((pedido as any)?.financeiro?.taxaFrete); // custo real do frete
+    const comissaoMarketplace = toNum((pedido as any)?.financeiro?.taxaMarketplace);
+    const saleFeeReportado = toNum((pedido as any)?.financeiro?.saleFee);
+    const feesViaPayments = toNum((pedido as any)?.financeiro?.feesPayments);
+    const shippingFeeBuyer = toNum((pedido as any)?.financeiro?.shippingFeeBuyer);
+    const freteRecebidoLiquido = toNum((pedido as any)?.financeiro?.freteRecebidoLiquido ?? (valorRecebidoFrete - shippingFeeBuyer));
+    const impostosCalculados = toNum((pedido as any)?.financeiro?.impostos); // preparado p/ regime tributário
+    const custoProdutosFixo = toNum((pedido as any)?.financeiro?.custoProdutos); // virá após vínculo de produto
+    const custosExtras = toNum((pedido as any)?.financeiro?.custosExtras); // ex: embalagem, mão de obra
+    const cupomFixo = toNum((pedido as any)?.financeiro?.cupom);
+
+    // Percentuais derivados apenas para exibição auxiliar
+    const comissaoPercentual = valorBrutoItens > 0 ? (comissaoMarketplace / valorBrutoItens) : 0;
+    const impostosPercentual = valorBrutoItens > 0 ? (impostosCalculados / valorBrutoItens) : 0;
+    const saleFeePercentual = valorBrutoItens > 0 ? (saleFeeReportado / valorBrutoItens) : 0;
+    const showSaleFeeSeparado = false; // evitamos duplicidade; comissão efetiva já contempla sale_fee
     
     // Custo Líquido do Frete (Frete Custo - Frete Recebido)
-    const custoLiquidoFrete = freteCusto - valorRecebidoFrete;
+    const custoLiquidoFrete = freteCusto - freteRecebidoLiquido;
     
     // 1. Líquido a Receber (Repasse do Marketplace)
     // Valor Bruto dos Itens + Valor Recebido Frete - Comissões - Impostos - Descontos
     const valorLiquidoReceber =
         valorBrutoItens +
-        valorRecebidoFrete -
+        freteRecebidoLiquido -
         comissaoMarketplace -
         impostosCalculados -
         cupomFixo;
@@ -143,8 +149,11 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
     // 3. Margem Final (usando o lucro e o valor bruto dos itens)
     const margemCalculada = valorBrutoItens > 0 ? (lucroPedido / valorBrutoItens) * 100 : 0;
 
-    // --- FORMATAÇÃO DE DATA ---
-    const dataFormatada = format(new Date(pedido.data), "dd/MM/yyyy HH:mm", { locale: ptBR });
+    
+
+    // --- FORMATAÇÃO DE DATA (forçada para America/Sao_Paulo) ---
+    const dataBase = (pedido as any)?.dataPagamento || pedido.data;
+    const dataFormatada = formatDateTimeSP(dataBase);
 
 
     return (
@@ -179,13 +188,6 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             <span className="text-gray-900 font-medium flex items-center">
                                 <User className="w-4 h-4 mr-1 text-gray-400" /> {pedido.cliente}
                             </span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">Tipo de Entrega:</span>
-                            <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
-                                <Truck className="w-3 h-3 mr-1" />
-                                Entrega Normal
-                            </Badge>
                         </div>
                         <div className="flex justify-between items-center">
                             <span className="text-gray-600 text-sm">Status:</span>
@@ -297,22 +299,42 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                         </h4>
                         
                         <div className="space-y-1">
-                            {/* Frete Custo (Custo de Envio) */}
-                            <FinancialDetailRow 
-                                icon={Truck} 
-                                label="Valor Pago Frete (Custo Real)" 
-                                value={freteCusto} // Custo total é uma despesa
-                                isNegative={true} 
-                            />
+                        {/* Frete Custo (Custo de Envio) */}
+                        <FinancialDetailRow 
+                            icon={Truck} 
+                            label="Valor Pago Frete (Custo Real)" 
+                            value={freteCusto} // Custo total é uma despesa
+                            isNegative={true} 
+                        />
 
-                            {/* Comissão Marketplace */}
+                        {/* Tarifa do Mercado Envios (pagador: comprador) - entra e sai, não afeta líquido se frete recebido existir */}
+                        <FinancialDetailRow 
+                            icon={Truck} 
+                            label="Tarifa Mercado Envios (pagador: comprador)" 
+                            value={shippingFeeBuyer} 
+                            isNegative={true} 
+                        />
+
+
+                            {/* Comissão Marketplace (efetiva) */}
                             <FinancialDetailRow 
                                 icon={Percent} 
-                                label="Comissão do Marketplace" 
+                                label="Comissão do Marketplace (Efetiva)" 
                                 value={comissaoMarketplace} 
                                 isNegative={true} 
                                 percent={comissaoPercentual * 100}
                             />
+
+                            {/* Comissão (sale_fee reportado): visível quando difere da efetiva */}
+                            {showSaleFeeSeparado && (
+                                <FinancialDetailRow 
+                                    icon={Percent} 
+                                    label="Comissão (sale_fee do Pedido)" 
+                                    value={saleFeeReportado} 
+                                    isNegative={true} 
+                                    percent={saleFeePercentual * 100}
+                                />
+                            )}
                             
                             {/* Impostos */}
                             <FinancialDetailRow 

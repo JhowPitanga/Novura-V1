@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Search, Filter, Settings, FileText, Printer, Bot, TrendingUp, Zap, QrCode, Check, Calendar, Download, X, ChevronDown, ChevronUp, Package, Truck, MinusCircle, CheckCircle2, Box, Scan, FileBadge, StickyNote, AudioWaveform, TextSelect, ListChecks, Table } from "lucide-react";
+import { Search, Filter, Settings, FileText, Printer, Bot, TrendingUp, Zap, QrCode, Check, Calendar, Download, X, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Package, Truck, MinusCircle, CheckCircle2, Box, Scan, FileBadge, StickyNote, AudioWaveform, TextSelect, ListChecks, Table } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -36,11 +36,158 @@ import { usePrintingSettings } from "@/hooks/usePrintingSettings";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { formatDateTimeSP, formatDateSP, eventToSPEpochMs, calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs } from "@/lib/datetime";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { Reorder } from "framer-motion";
 import { PedidoDetailsDrawer } from "@/components/pedidos/PedidoDetailsDrawer";
 import { supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+
+// Cache simples para requisições ao endpoint público de Items do Mercado Livre
+const mlItemCache = new Map<string, any>();
+
+function mapTipoEnvioLabel(v?: string) {
+    const s = String(v || '').toLowerCase();
+    if (s === 'full' || s === 'fulfillment' || s === 'fbm') return 'Full';
+    if (s === 'flex' || s === 'self_service') return 'Flex';
+    if (s === 'agencia' || s === 'me2' || s === 'drop_off' || s === 'xd_drop_off' || s === 'cross_docking') return 'Agência';
+    if (s === 'no_shipping') return 'Sem Envio';
+    return s ? s : '—';
+}
+
+
+async function fetchMLItemDetails(itemId: string): Promise<any | null> {
+    if (!itemId) return null;
+    const key = itemId.toUpperCase();
+    if (mlItemCache.has(key)) return mlItemCache.get(key);
+    try {
+        const resp = await fetch(`https://api.mercadolibre.com/items/${key}?include_attributes=all`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const json = await resp.json();
+        mlItemCache.set(key, json);
+        return json;
+    } catch (e) {
+        console.warn('Falha ao buscar item MLB', key, e);
+        mlItemCache.set(key, null);
+        return null;
+    }
+}
+
+function resolveVariationImageUrl(itemJson: any, variationId?: number | string): string | null {
+    if (!itemJson) return null;
+    const pictures: any[] = Array.isArray(itemJson?.pictures) ? itemJson.pictures : [];
+    // Se houver variação, tentar pegar picture_ids da variação correspondente
+    if (variationId && Array.isArray(itemJson?.variations)) {
+        const vId = typeof variationId === 'string' ? variationId : Number(variationId);
+        const variation = itemJson.variations.find((v: any) => String(v?.id) === String(vId));
+        if (variation && Array.isArray(variation.picture_ids) && variation.picture_ids.length > 0) {
+            const picId = variation.picture_ids[0];
+            const pic = pictures.find(p => p?.id === picId);
+            if (pic?.url) return pic.url;
+        }
+    }
+    // Fallback: primeira imagem do anúncio
+    if (pictures.length > 0 && pictures[0]?.url) return pictures[0].url;
+    // Último recurso: thumbnail
+    if (itemJson?.thumbnail) return itemJson.thumbnail;
+    return null;
+}
+
+async function enrichPedidosWithMLImages(parsedPedidos: any[], marketplaceByOrderId: Record<string, any>) {
+    const pedidosClonados = parsedPedidos.map(p => ({ ...p, itens: p.itens.map((it: any) => ({ ...it })) }));
+    // Coletar todos os MLBs e variações necessárias a partir dos dados brutos do pedido
+    type Target = { item_id: string, variation_id?: string | number, apply: Array<{ pedidoIndex: number, itemIndex: number }> };
+    const targetsByKey = new Map<string, Target>();
+    const uniqueItemIds = new Set<string>();
+
+    pedidosClonados.forEach((pedido, pIdx) => {
+        const mq = marketplaceByOrderId?.[pedido.id] || marketplaceByOrderId?.[pedido.idPlataforma] || null;
+        const orderDataRaw: any = mq?.data || {};
+        const orderItemsRaw: any[] = Array.isArray(orderDataRaw?.order_items) ? orderDataRaw.order_items : [];
+        for (let idx = 0; idx < pedido.itens.length; idx++) {
+            const raw = orderItemsRaw[idx];
+            const itemId: string | undefined = raw?.item?.id;
+            const variationId: string | number | undefined = raw?.variation_id;
+            if (!itemId) continue;
+            const key = `${itemId}::${variationId ?? ''}`;
+            uniqueItemIds.add(String(itemId));
+            if (!targetsByKey.has(key)) {
+                targetsByKey.set(key, { item_id: String(itemId), variation_id: variationId, apply: [] });
+            }
+            targetsByKey.get(key)!.apply.push({ pedidoIndex: pIdx, itemIndex: idx });
+        }
+    });
+
+    if (uniqueItemIds.size === 0) {
+        // Nada para resolver, apenas garanta placeholder nas imagens primárias
+        pedidosClonados.forEach((pedido) => {
+            pedido.imagem = pedido.itens?.[0]?.imagem || "/placeholder.svg";
+        });
+        return pedidosClonados;
+    }
+
+    // Buscar dados dos itens no backend (tabela marketplace_items) — evita chamadas à API pública do ML
+    let itemRows: any[] = [];
+    try {
+        const { data: rows, error } = await supabase
+            .from('marketplace_items')
+            .select('marketplace_item_id, pictures, variations, data, marketplace_name')
+            .eq('marketplace_name', 'Mercado Livre')
+            .in('marketplace_item_id', Array.from(uniqueItemIds));
+        if (error) throw error;
+        itemRows = rows || [];
+    } catch (err) {
+        console.warn('Falha ao buscar marketplace_items para imagens:', err);
+        // fallback: mantém placeholders
+        pedidosClonados.forEach((pedido) => {
+            pedido.imagem = pedido.itens?.[0]?.imagem || "/placeholder.svg";
+        });
+        return pedidosClonados;
+    }
+
+    const rowByItemId = new Map<string, any>();
+    for (const r of itemRows) {
+        if (r?.marketplace_item_id) rowByItemId.set(String(r.marketplace_item_id), r);
+    }
+
+    // Helper para resolver URL a partir do row armazenado
+    const resolveFromRow = (row: any, variationId?: string | number): string | null => {
+        if (!row) return null;
+        const pictures: any[] = Array.isArray(row?.pictures) ? row.pictures : [];
+        const variations: any[] = Array.isArray(row?.variations) ? row.variations : [];
+        if (variationId && variations.length > 0) {
+            const v = variations.find((vv: any) => String(vv?.id) === String(variationId));
+            if (v && Array.isArray(v.picture_ids) && v.picture_ids.length > 0) {
+                const picId = v.picture_ids[0];
+                const pic = pictures.find((p: any) => String(p?.id) === String(picId));
+                if (pic?.url) return pic.url;
+                if (pic?.secure_url) return pic.secure_url;
+            }
+        }
+        if (pictures.length > 0) {
+            if (pictures[0]?.url) return pictures[0].url;
+            if (pictures[0]?.secure_url) return pictures[0].secure_url;
+        }
+        const thumb = row?.data?.thumbnail || row?.data?.thumbnail_id || null;
+        if (typeof thumb === 'string' && thumb.startsWith('http')) return thumb;
+        return null;
+    };
+
+    // Aplicar URLs resolvidas aos itens dos pedidos
+    for (const [, target] of targetsByKey) {
+        const row = rowByItemId.get(String(target.item_id));
+        const url = resolveFromRow(row, target.variation_id) || "/placeholder.svg";
+        for (const ap of target.apply) {
+            pedidosClonados[ap.pedidoIndex].itens[ap.itemIndex].imagem = url;
+        }
+    }
+
+    // Ajustar imagem principal do pedido (primeiro item)
+    for (const pedido of pedidosClonados) {
+        pedido.imagem = pedido.itens?.[0]?.imagem || "/placeholder.svg";
+    }
+    return pedidosClonados;
+}
 
 // --- Mockup de PDF de Lista de Separação (Novo Componente) ---
 const PickingListPDFMockup = ({ pedidos, settings, onPrint }) => {
@@ -345,6 +492,10 @@ function Pedidos() {
     const [activeFilterStatus, setActiveFilterStatus] = useState("todos");
     const [selectedPedidos, setSelectedPedidos] = useState<string[]>([]);
     const [isDatePopoverOpen, setIsDatePopoverOpen] = useState(false);
+    const [pageSize, setPageSize] = useState<number>(30);
+    const [currentPage, setCurrentPage] = useState<number>(1);
+    const [sortKey, setSortKey] = useState<'recent' | 'sku' | 'items'>('recent');
+    const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
     const { user } = useAuth();
 
@@ -354,6 +505,13 @@ function Pedidos() {
                 setPedidos([]);
                 return;
             }
+
+            // Descobrir a organização do usuário para cruzar com marketplace_orders
+            let organizationId: string | null = null;
+            try {
+                const { data: orgRes } = await supabase.rpc('get_user_organization_id');
+                if (orgRes) organizationId = String(orgRes);
+            } catch (_) {}
 
             const { data, error } = await supabase
                 .from("orders")
@@ -370,11 +528,69 @@ function Pedidos() {
                     order_items (
                         product_name,
                         quantity,
-                        sku
+                        sku,
+                        price_per_unit
                     )
                 `);
 
             if (error) throw error;
+
+            // Buscar dados brutos do marketplace para pagamentos e envios
+            const orderIds = Array.from(new Set((data || []).map((o: any) => o.marketplace_order_id).filter(Boolean)));
+            let marketplaceByOrderId: Record<string, any> = {};
+            let shipmentsByOrderId: Record<string, any[]> = {};
+            if (orderIds.length > 0) {
+                try {
+                    // 1) Tentativa com filtro por organização (quando disponível)
+                    let mq1 = supabase
+                        .from('marketplace_orders')
+                        .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created')
+                        .in('marketplace_order_id', orderIds);
+                    if (organizationId) mq1 = (mq1 as any).eq('organizations_id', organizationId);
+                    const { data: mqRows1, error: mqErr1 } = await mq1;
+                    let rows: any[] | null = null;
+                    if (!mqErr1 && Array.isArray(mqRows1) && mqRows1.length > 0) {
+                        rows = mqRows1 as any[];
+                    } else {
+                        // 2) Fallback sem filtro de organização (aproveita políticas RLS existentes)
+                        const { data: mqRows2, error: mqErr2 } = await supabase
+                            .from('marketplace_orders')
+                            .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created')
+                            .in('marketplace_order_id', orderIds);
+                        if (!mqErr2 && Array.isArray(mqRows2)) rows = mqRows2 as any[];
+                    }
+                    if (rows) {
+                        marketplaceByOrderId = rows.reduce((acc, row) => {
+                            const k = row?.marketplace_order_id;
+                            if (k) acc[k] = row;
+                            return acc;
+                        }, {} as Record<string, any>);
+                    }
+                    // 3) Buscar envios normalizados em marketplace_shipments
+                    try {
+                        let sh1 = supabase
+                            .from('marketplace_shipments')
+                            .select('marketplace_order_id, status, substatus, logistic_type, mode, shipping_mode, service_id, carrier, tracking_number, tracking_url, tracking_history, receiver_address, sender_address, costs, items, promise, tags, dimensions, data, date_created, last_updated, date_ready_to_ship, date_first_printed, last_synced_at')
+                            .eq('marketplace_name', 'Mercado Livre')
+                            .in('marketplace_order_id', orderIds);
+                        if (organizationId) sh1 = (sh1 as any).eq('organizations_id', organizationId);
+                        const { data: shRows, error: shErr } = await sh1;
+                        if (!shErr && Array.isArray(shRows)) {
+                            shipmentsByOrderId = (shRows as any[]).reduce((acc, row) => {
+                                const k = row?.marketplace_order_id;
+                                if (!k) return acc;
+                                if (!acc[k]) acc[k] = [];
+                                acc[k].push(row);
+                                return acc;
+                            }, {} as Record<string, any[]>);
+                        }
+                    } catch (shCatch) {
+                        console.warn('Falha ao buscar marketplace_shipments:', shCatch);
+                    }
+                } catch (mqCatch) {
+                    console.warn('Falha ao buscar marketplace_orders:', mqCatch);
+                }
+            }
 
             const parsed = (data || []).map((o: any) => {
                 const items = (o.order_items || []).map((it: any, idx: number) => ({
@@ -382,7 +598,7 @@ function Pedidos() {
                     nome: it.product_name,
                     sku: it.sku || null,
                     quantidade: it.quantity || 0,
-                    valor: 0,
+                    valor: typeof it.price_per_unit === 'number' ? it.price_per_unit : Number(it.price_per_unit) || 0,
                     bipado: false,
                     vinculado: !!it.sku,
                     imagem: "/placeholder.svg",
@@ -391,28 +607,216 @@ function Pedidos() {
 
                 const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
 
+                // Dados do marketplace para cálculos financeiros (pagamentos/entregas)
+                const mq = o.marketplace_order_id ? marketplaceByOrderId[o.marketplace_order_id] : null;
+                const payments: any[] = Array.isArray(mq?.payments) ? mq.payments : [];
+                const shipmentsNormalized: any[] = Array.isArray(shipmentsByOrderId[o.marketplace_order_id]) ? shipmentsByOrderId[o.marketplace_order_id] : [];
+                const shipments: any[] = shipmentsNormalized.length > 0
+                    ? shipmentsNormalized
+                    : (Array.isArray(mq?.shipments) ? mq.shipments : []);
+                const orderDataRaw: any = mq?.data || {};
+
+                // Helpers de número
+                const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
+
+                // Receitas
+                const valorBrutoItens = items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0);
+                const valorRecebidoFrete = payments.reduce((sum, p) => sum + toNum(p?.shipping_cost), 0);
+                const cupom = payments.reduce((sum, p) => sum + toNum(p?.coupon_amount), 0);
+
+                // Taxas da plataforma (quando disponível no pagamento)
+                const feesFromPayments = payments.reduce((sum, p) => sum + toNum((p?.marketplace_fee ?? p?.fee_amount ?? p?.fees_total)), 0);
+                // sale_fee por item vindo do payload bruto do pedido
+                const saleFeeOrderItems = Array.isArray(orderDataRaw?.order_items)
+                    ? orderDataRaw.order_items.reduce((sum: number, oi: any) => sum + toNum(oi?.sale_fee), 0)
+                    : 0;
+                // Se o marketplace detalha tarifa de frete (pagador: comprador), normalmente aparece em fees dos pagamentos
+                // Estimamos essa tarifa como o excedente sobre sale_fee e limitamos ao frete recebido para evitar dupla contagem
+                const diffFees = Math.max(feesFromPayments - saleFeeOrderItems, 0);
+                const shippingFeeBuyer = Math.min(diffFees, valorRecebidoFrete);
+                // Comissão efetiva usada nos cálculos (sem a tarifa de frete do comprador)
+                const taxaMarketplace = saleFeeOrderItems > 0
+                    ? saleFeeOrderItems
+                    : Math.max(feesFromPayments - shippingFeeBuyer, 0);
+
+                // Custo real de frete (a partir de shipments)
+                const shippingFromOrder = orderDataRaw?.shipping || null;
+                const firstShipment = shipments?.[0] || shippingFromOrder || null;
+                const freteCusto = firstShipment
+                    ? (
+                        toNum(firstShipment?.shipping_option?.cost) ||
+                        toNum(firstShipment?.cost) ||
+                        toNum(firstShipment?.base_cost) ||
+                        toNum(firstShipment?.original_cost) ||
+                        toNum(firstShipment?.cost_components?.total)
+                      )
+                    : 0;
+
+                // Método de envio (ex.: flex, me2, fulfillment)
+                const envioMetodo = (
+                    firstShipment?.logistic_type ||
+                    firstShipment?.shipping_mode ||
+                    firstShipment?.mode ||
+                    shippingFromOrder?.logistic_type ||
+                    shippingFromOrder?.mode ||
+                    null
+                );
+                const envioTags = Array.isArray(firstShipment?.tags)
+                    ? firstShipment.tags
+                    : (Array.isArray(shippingFromOrder?.tags) ? shippingFromOrder.tags : []);
+                const freteRecebidoLiquido = valorRecebidoFrete - shippingFeeBuyer; // crédito de frete já descontando a tarifa repassada ao ML
+                const freteDiferenca = freteRecebidoLiquido - freteCusto; // positivo: reembolso/recebimento líquido; negativo: custo adicional
+
+                // --- Determinação de status visual (UI) ---
+                const paymentStatuses: string[] = payments.map((p: any) => String(p?.status || '').toLowerCase()).filter(Boolean);
+                const isPaymentCancelled = paymentStatuses.includes('cancelled') || String(orderDataRaw?.status || '').toLowerCase() === 'cancelled';
+                const shippingStatuses: string[] = [
+                    ...(Array.isArray(shipments)
+                        ? shipments.flatMap((s: any) => [s?.status, s?.substatus].map((v) => String(v || '').toLowerCase()))
+                        : []),
+                    String(shippingFromOrder?.status || '').toLowerCase(),
+                    String(shippingFromOrder?.substatus || '').toLowerCase(),
+                    String(mq?.status || '').toLowerCase(),
+                    String(mq?.status_detail || '').toLowerCase(),
+                ].filter(Boolean);
+                // Tornar detecção mais abrangente (alguns status variam: receiver_received, out_for_delivery, etc.)
+                const shippedKeywords = [
+                    'shipped',
+                    'in_transit',
+                    'handling',
+                    'delivery_in_progress',
+                    'not_delivered',
+                    'to_be_agreed',
+                    'out_for_delivery',
+                    'on_route',
+                    'handed_to_carrier',
+                    'processing',
+                    'collected',
+                    'dispatch', // dispatched/dispatching
+                ];
+                const deliveredKeywords = [
+                    'delivered',
+                    'received',
+                    'receiver_received',
+                    'picked_up',
+                    'ready_to_pickup',
+                    'delivered_to_authorized',
+                ];
+                const readySet = new Set(['ready_to_ship', 'printed', 'ready_to_print']);
+                const hasDeliveredHistory = Array.isArray(shipments) && shipments.some((s: any) => {
+                    const hist = s?.status_history || s?.shipping_status_history || s?.history;
+                    return !!(hist?.date_delivered || hist?.date_first_delivered || hist?.receiver_received || hist?.delivered_at);
+                });
+                const isDelivered = shippingStatuses.some((s) => deliveredKeywords.some(k => s.includes(k))) || hasDeliveredHistory;
+                const isShipped = shippingStatuses.some((s) => shippedKeywords.some(k => s.includes(k)));
+                const isReadyToShip = shippingStatuses.some((s) => readySet.has(s));
+
+                // Nome do cliente a partir do marketplace (buyer first/last), com limite de 3 palavras; fallback ao nome da tabela orders
+                const buyer = orderDataRaw?.buyer || {};
+                const rawClienteNome = [buyer?.first_name, buyer?.last_name].filter(Boolean).join(' ').trim() || (o.customer_name || "");
+                const clienteNome = rawClienteNome.split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
+
+                // Data do pedido/pagamento: usar marketplace_orders.date_created (timestamptz, América/São Paulo) como fonte principal
+                let dataPagamento: string | null = null;
+                if (mq?.date_created) {
+                    try {
+                        const d = new Date(mq.date_created);
+                        dataPagamento = d.toISOString();
+                    } catch (_) {
+                        dataPagamento = null;
+                    }
+                }
+                // Fallback: inferir a partir dos pagamentos caso date_created não esteja disponível
+                if (!dataPagamento) {
+                    const approvedPayments = payments
+                        .filter((p: any) => String(p?.status || '').toLowerCase() === 'approved' && p?.date_approved)
+                        .map((p: any) => new Date(p.date_approved));
+                    const fallbackPaymentDates = payments
+                        .map((p: any) => p?.date_approved || p?.date_created || p?.date_last_updated)
+                        .filter(Boolean)
+                        .map((d: any) => new Date(d));
+                    const paymentDateObj = approvedPayments.length > 0
+                        ? new Date(Math.min(...approvedPayments.map(d => d.getTime())))
+                        : (fallbackPaymentDates.length > 0 ? new Date(Math.min(...fallbackPaymentDates.map(d => d.getTime()))) : null);
+                    dataPagamento = paymentDateObj ? paymentDateObj.toISOString() : null;
+                }
+
+                // Regras de status para o quadro visual
+                let statusUI = o.status || 'Pendente';
+                if (isPaymentCancelled) {
+                    statusUI = 'Cancelado';
+                } else if (isDelivered || isShipped) {
+                    // Pedidos recebidos (pelo comprador) ou entregues entram no quadro "Enviado"
+                    statusUI = 'Enviado';
+                } else if (isReadyToShip) {
+                    statusUI = 'Aguardando Coleta';
+                }
+
+                // Ajuste de financeiro para cancelados
+                const liquidoCalculado = (valorBrutoItens || orderTotal) + freteRecebidoLiquido - taxaMarketplace - cupom;
+                const liquidoFinal = (statusUI === 'Cancelado') ? 0 : liquidoCalculado;
+                const margemFinal = (statusUI === 'Cancelado') ? 0 : 0;
+
+                const marketplaceName = (
+                    mq?.marketplace_name ||
+                    o.marketplace ||
+                    (String(o.marketplace_order_id || '').toUpperCase().startsWith('ML') ? 'Mercado Livre' : 'Desconhecido')
+                );
+
+                // Fallback local para tipo de envio quando ainda não populado em orders.shipping_type
+                const classifyType = (sh: any): string | null => {
+                    if (!sh) return null;
+                    const lt = String(sh?.logistic_type || sh?.shipping_mode || sh?.mode || '').toLowerCase();
+                    if (!lt) return null;
+                    if (lt === 'fulfillment' || lt === 'fbm') return 'full';
+                    if (lt === 'self_service') return 'flex';
+                    if (lt === 'drop_off' || lt === 'xd_drop_off' || lt === 'cross_docking') return 'agencia';
+                    if (lt === 'me2' || lt === 'custom') return 'agencia';
+                    return null;
+                };
+
+                const tipoEnvioDerivado = (() => {
+                    if (o?.shipping_type) return o.shipping_type;
+                    const t = classifyType(firstShipment);
+                    if (t) return t;
+                    const tags = Array.isArray(orderDataRaw?.tags) ? orderDataRaw.tags : [];
+                    if (tags.includes('no_shipping')) return 'no_shipping';
+                    return '';
+                })();
+
                 return {
                     id: o.marketplace_order_id || o.id,
-                    marketplace: o.marketplace || "Desconhecido",
+                    marketplace: marketplaceName,
                     produto: items[0]?.nome || "",
                     sku: items[0]?.sku || null,
-                    cliente: o.customer_name || "",
+                    cliente: clienteNome,
                     valor: orderTotal,
                     data: o.created_at,
-                    status: o.status || "Pendente",
-                    tipoEnvio: o.shipping_type || "",
+                    status: statusUI,
+                    dataPagamento,
+                    tipoEnvio: tipoEnvioDerivado,
                     idPlataforma: o.platform_id || o.marketplace_order_id || "",
                     quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
                     imagem: "/placeholder.svg",
                     itens: items,
                     financeiro: {
-                        valorPedido: orderTotal,
-                        taxaFrete: 0,
-                        taxaMarketplace: 0,
-                        cupom: 0,
-                        impostos: 0,
-                        liquido: orderTotal,
-                        margem: 0,
+                        valorPedido: valorBrutoItens || orderTotal,
+                        freteRecebido: valorRecebidoFrete,
+                        freteRecebidoLiquido: freteRecebidoLiquido,
+                        taxaFrete: freteCusto,
+                        taxaMarketplace: taxaMarketplace,
+                        saleFee: saleFeeOrderItems,
+                        feesPayments: feesFromPayments,
+                        shippingFeeBuyer,
+                        envioMetodo,
+                        envioTags,
+                        freteDiferenca,
+                        cupom: cupom,
+                        impostos: 0, // Preparado para futura integração por regime tributário
+                        liquido: liquidoFinal, // líquido da plataforma (estimado) ou 0 se cancelado
+                        margem: margemFinal, // 0 se cancelado
+                        pagamentos: payments,
+                        envios: shipments,
                     },
                     impressoEtiqueta: false,
                     impressoLista: false,
@@ -420,6 +824,14 @@ function Pedidos() {
             });
 
             setPedidos(parsed);
+
+            // Pós-processamento: enriquecer imagens dos itens com base no MLB e variação
+            try {
+                const withImages = await enrichPedidosWithMLImages(parsed, marketplaceByOrderId);
+                setPedidos(withImages);
+            } catch (imgErr) {
+                console.warn('Falha ao enriquecer imagens MLB:', imgErr);
+            }
         } catch (err) {
             console.error("Erro ao buscar pedidos:", err);
             setPedidos([]);
@@ -504,12 +916,13 @@ function Pedidos() {
             </div>
         )},
         { id: "cliente", name: "Cliente", enabled: true, render: (pedido) => (<span className="text-gray-900">{pedido.cliente}</span>)},
-        { id: "valor", name: "Valor do Pedido", enabled: true, render: (pedido) => (`R$ ${pedido.valor.toFixed(2)}`)},
+        { id: "valor", name: "Valor do Pedido", enabled: true, render: (pedido) => (pedido.valor?.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }))},
         { id: "tipoEnvio", name: "Tipo de Envio", enabled: true, render: (pedido) => (
             <Badge className={`uppercase bg-purple-600 text-white hover:bg-purple-700`}>
-                {pedido.tipoEnvio}
+                {mapTipoEnvioLabel(pedido.tipoEnvio)}
             </Badge>
         )},
+        
         { id: "marketplace", name: "Marketplace", enabled: true, render: (pedido) => (<span className="text-gray-900">{pedido.marketplace}</span>)},
         { id: "idPlataforma", name: "ID da Plataforma", enabled: false, render: (pedido) => (pedido.idPlataforma)},
         { id: "status", name: "Status", enabled: true, alwaysVisible: true, render: (pedido) => (
@@ -542,7 +955,10 @@ function Pedidos() {
                 )}
             </div>
         )},
-        { id: "data", name: "Data", enabled: false, render: (pedido) => (<span className="text-gray-500">{pedido.data}</span>)},
+        
+        
+        
+        
     ]);
 
     const getStatusColor = (status: string) => {
@@ -700,9 +1116,13 @@ function Pedidos() {
             p.sku || "N/A",
             p.cliente,
             `R$ ${p.valor.toFixed(2)}`,
-            p.data,
+            (() => {
+                const base = p.dataPagamento || p.data;
+                if (!base) return "";
+                try { return formatDateTimeSP(base); } catch { return String(base); }
+            })(),
             p.status,
-            p.tipoEnvio
+            mapTipoEnvioLabel(p.tipoEnvio)
         ]);
 
         const csvContent = [
@@ -722,18 +1142,34 @@ function Pedidos() {
     const pedidosNaoImpressos = pedidosImpressao.filter(p => !p.impressoEtiqueta || !p.impressoLista);
     const pedidosImpressos = pedidosImpressao.filter(p => p.impressoEtiqueta && p.impressoLista);
 
-    let filteredPedidos = pedidos.filter(p => {
-        const statusMatch = activeStatus === "todos" || (activeStatus === "impressao" ? p.status === 'NF Emitida' : p.status.toLowerCase().replace(/ /g, '-') === activeStatus.toLowerCase());
-        
-        // Lógica do filtro de data por range
-        const date = new Date(p.data);
-        const dateMatch = !dateRange.from || (date >= dateRange.from && (!dateRange.to || date <= dateRange.to));
+    // Intervalo na timezone de São Paulo (dias do calendário em SP)
+    const effectiveFromMs = dateRange.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
+    const effectiveToMs = dateRange.to
+        ? calendarEndOfDaySPEpochMs(dateRange.to as Date)
+        : (dateRange.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
 
-        const searchTermMatch = searchTerm === "" ||
-            p.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            p.cliente.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (p.sku && p.sku.toLowerCase().includes(searchTerm.toLowerCase()));
-        return statusMatch && dateMatch && searchTermMatch;
+    const baseFiltered = pedidos.filter(p => {
+        const baseDateStr = p.dataPagamento || p.data;
+        const eventMs = baseDateStr ? eventToSPEpochMs(baseDateStr) : null;
+        const inDate = effectiveFromMs === undefined
+            ? true
+            : (eventMs !== null && eventMs >= effectiveFromMs && (effectiveToMs === undefined || eventMs <= effectiveToMs));
+
+        const term = (searchTerm || "").toLowerCase();
+        const searchTermMatch = term === "" ||
+            p.id?.toLowerCase?.().includes(term) ||
+            p.cliente?.toLowerCase?.().includes(term) ||
+            (p.sku && p.sku.toLowerCase().includes(term)) ||
+            (Array.isArray(p.itens) && p.itens.some((it: any) =>
+                (it?.nome && String(it.nome).toLowerCase().includes(term)) ||
+                (it?.product_name && String(it.product_name).toLowerCase().includes(term))
+            ));
+        return inDate && searchTermMatch;
+    });
+
+    let filteredPedidos = baseFiltered.filter(p => {
+        const statusMatch = activeStatus === "todos" || (activeStatus === "impressao" ? p.status === 'NF Emitida' : p.status.toLowerCase().replace(/ /g, '-') === activeStatus.toLowerCase());
+        return statusMatch;
     });
 
     if (activeStatus === "emissao-nf") {
@@ -743,6 +1179,51 @@ function Pedidos() {
             filteredPedidos = filteredPedidos.filter(p => p.subStatus === "Falha ao enviar");
         }
     }
+
+    // Ordenação antes da paginação
+    const sortedPedidos = [...filteredPedidos].sort((a, b) => {
+        const dir = sortDir === 'desc' ? -1 : 1;
+        if (sortKey === 'sku') {
+            const as = String(a?.sku ?? '').toLowerCase();
+            const bs = String(b?.sku ?? '').toLowerCase();
+            return as.localeCompare(bs) * dir;
+        }
+        if (sortKey === 'items') {
+            const av = Number(a?.quantidadeTotal ?? 0);
+            const bv = Number(b?.quantidadeTotal ?? 0);
+            if (av === bv) return 0;
+            return av > bv ? dir : -dir;
+        }
+        // 'recent' por padrão: usa dataPagamento ou data (ordenado por horário em SP)
+        const ad = a?.dataPagamento || a?.data;
+        const bd = b?.dataPagamento || b?.data;
+        const at = ad ? (eventToSPEpochMs(ad) ?? 0) : 0;
+        const bt = bd ? (eventToSPEpochMs(bd) ?? 0) : 0;
+        if (at === bt) return 0;
+        return at > bt ? dir : -dir;
+    });
+
+    // Paginação baseada na lista ordenada
+    const totalFiltered = sortedPedidos.length;
+    const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+    const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+    const startIndex = (safeCurrentPage - 1) * pageSize;
+    const paginatedPedidos = sortedPedidos.slice(startIndex, startIndex + pageSize);
+    const showingFrom = totalFiltered === 0 ? 0 : startIndex + 1;
+    const showingTo = Math.min(startIndex + paginatedPedidos.length, totalFiltered);
+
+    // Resetar página ao mudar filtros principais
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [searchTerm, activeStatus, dateRange, quickFilter, sortKey, sortDir]);
+
+    // Garantir que a página atual seja válida quando total de páginas mudar
+    useEffect(() => {
+        const newTotalPages = Math.max(1, Math.ceil(filteredPedidos.length / pageSize));
+        if (currentPage > newTotalPages) {
+            setCurrentPage(newTotalPages);
+        }
+    }, [filteredPedidos.length, pageSize, currentPage]);
     
     const handleSelectAll = (list: string[], setList: (list: string[]) => void) => {
         if (list.length === filteredPedidos.length) {
@@ -773,13 +1254,13 @@ function Pedidos() {
     };
 
     const statusBlocks = [
-        { id: "todos", title: "Todos os Pedidos", count: pedidos.length, description: "Sincronizados com marketplaces" },
-        { id: "a-vincular", title: "A Vincular", count: pedidos.filter(p => p.status === 'A vincular').length, description: "Pedidos sem vínculo de SKU" },
-        { id: "emissao-nf", title: "Emissão de NF", count: pedidos.filter(p => p.status === 'Emissao NF').length, description: "Aguardando emissão" },
-        { id: "impressao", title: "Impressão", count: pedidos.filter(p => p.status === 'NF Emitida').length, description: "NF e etiqueta" },
-        { id: "aguardando-coleta", title: "Aguardando Coleta", count: pedidos.filter(p => p.status === 'Aguardando Coleta').length, description: "Prontos para envio" },
-        { id: "enviado", title: "Enviado", count: pedidos.filter(p => p.status === 'Enviado').length, description: "Pedidos em trânsito" },
-        { id: "cancelado", title: "Cancelados", count: pedidos.filter(p => p.status === 'Cancelado').length, description: "Pedidos cancelados/devolvidos" },
+        { id: "todos", title: "Todos os Pedidos", count: baseFiltered.length, description: "Sincronizados com marketplaces" },
+        { id: "a-vincular", title: "A Vincular", count: baseFiltered.filter(p => p.status === 'A vincular').length, description: "Pedidos sem vínculo de SKU" },
+        { id: "emissao-nf", title: "Emissão de NF", count: baseFiltered.filter(p => p.status === 'Emissao NF').length, description: "Aguardando emissão" },
+        { id: "impressao", title: "Impressão", count: baseFiltered.filter(p => p.status === 'NF Emitida').length, description: "NF e etiqueta" },
+        { id: "aguardando-coleta", title: "Aguardando Coleta", count: baseFiltered.filter(p => p.status === 'Aguardando Coleta').length, description: "Prontos para envio" },
+        { id: "enviado", title: "Enviado", count: baseFiltered.filter(p => p.status === 'Enviado').length, description: "Pedidos em trânsito" },
+        { id: "cancelado", title: "Cancelados", count: baseFiltered.filter(p => p.status === 'Cancelado').length, description: "Pedidos cancelados/devolvidos" },
     ];
 
     const handlePrintPickingList = () => {
@@ -829,124 +1310,241 @@ function Pedidos() {
                             </div>
 
                             {activeStatus === "todos" && (
-                                <div className="flex items-center space-x-4 mb-6">
-                                    <div className="relative flex-1">
+                                <div className="flex items-center justify-between mb-6 w-full">
+                                    <div className="relative w-full md:max-w-[420px]">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
-                                            placeholder="Buscar por ID, cliente ou SKU..."
+                                            placeholder="Buscar por ID, cliente, SKU ou produto..."
                                             value={searchTerm}
                                             onChange={(e) => setSearchTerm(e.target.value)}
                                             className="h-12 w-full pl-10 pr-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
                                         />
                                     </div>
-                                    <Popover open={isDatePopoverOpen} onOpenChange={setIsDatePopoverOpen}>
-                                        <PopoverTrigger asChild>
+                                    <div className="flex items-center gap-4">
+                                        {/* Ordenação: à esquerda do filtro de data */}
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
+                                                >
+                                                    {sortDir === 'asc' ? (
+                                                        <ChevronUp className="w-4 h-4 mr-2" />
+                                                    ) : (
+                                                        <ChevronDown className="w-4 h-4 mr-2" />
+                                                    )}
+                                                    Ordenar
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="start">
+                                                <DropdownMenuItem
+                                                    className={sortKey === 'sku' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => { e.preventDefault(); setSortKey('sku'); setSortDir('asc'); }}
+                                                >
+                                                    Sku
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem
+                                                    className={sortKey === 'items' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => { e.preventDefault(); setSortKey('items'); setSortDir('desc'); }}
+                                                >
+                                                    Total de itens
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem
+                                                    className={sortKey === 'recent' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => { e.preventDefault(); setSortKey('recent'); setSortDir('desc'); }}
+                                                >
+                                                    Mais recente
+                                                </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+                                        <Popover open={isDatePopoverOpen} onOpenChange={setIsDatePopoverOpen}>
+                                            <PopoverTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    className={`h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 ${!dateRange.from && "text-gray-500"}`}
+                                                >
+                                                    <Calendar className="mr-2 h-4 w-4" />
+                                                    {dateRange.from ? 
+                                                        dateRange.to ? 
+                                                            `${formatDateSP(dateRange.from)} - ${formatDateSP(dateRange.to)}`
+                                                            : formatDateSP(dateRange.from)
+                                                    : "Filtrar por Data"}
+                                                </Button>
+                                            </PopoverTrigger>
+                                            <PopoverContent className="w-auto p-0">
+                                                <CalendarComponent
+                                                    mode="range"
+                                                    selected={tempDateRange}
+                                                    onSelect={setTempDateRange}
+                                                    locale={ptBR}
+                                                    initialFocus
+                                                />
+                                                <div className="p-2 border-t flex justify-end space-x-2">
+                                                    <Button variant="ghost" className="text-gray-500" onClick={() => { setDateRange({ from: undefined, to: undefined }); setIsDatePopoverOpen(false); }}>Remover Filtro</Button>
+                                                    <Button onClick={() => { setDateRange(tempDateRange); setIsDatePopoverOpen(false); }}>Aplicar</Button>
+                                                </div>
+                                            </PopoverContent>
+                                        </Popover>
+                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={handleExportCSV}>
+                                            <Download className="w-4 h-4 mr-2" />
+                                            Exportar CSV
+                                        </Button>
+                                        <Button variant="outline" className="h-12 px-6 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); setIsFilterDrawerOpen(false); setIsColumnsDrawerOpen(true); }} data-columns-trigger>
+                                            <Table className="w-4 h-4 mr-2" />
+                                            Colunas
+                                        </Button>
+                                        <div className="w-[150px]">
+                                            <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v))}>
+                                                <SelectTrigger className="h-12 rounded-2xl bg-white shadow-lg ring-1 ring-gray-200/60">
+                                                    <SelectValue placeholder="Itens por página" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="30">30 por página</SelectItem>
+                                                    <SelectItem value="50">50 por página</SelectItem>
+                                                    <SelectItem value="100">100 por página</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="flex items-center gap-2 select-none">
                                             <Button
                                                 variant="outline"
-                                                className={`h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 ${!dateRange.from && "text-gray-500"}`}
+                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
+                                                disabled={safeCurrentPage === 1}
+                                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                                aria-label="Página anterior"
                                             >
-                                                <Calendar className="mr-2 h-4 w-4" />
-                                                {dateRange.from ? 
-                                                    dateRange.to ? 
-                                                        `${format(dateRange.from, "PP", { locale: ptBR })} - ${format(dateRange.to, "PP", { locale: ptBR })}`
-                                                        : format(dateRange.from, "PP", { locale: ptBR })
-                                                : "Filtrar por Data"}
+                                                <ChevronLeft className="h-4 w-4" />
                                             </Button>
-                                        </PopoverTrigger>
-                                        <PopoverContent className="w-auto p-0">
-                                            <CalendarComponent
-                                                mode="range"
-                                                selected={tempDateRange}
-                                                onSelect={setTempDateRange}
-                                                locale={ptBR}
-                                                initialFocus
-                                            />
-                                            <div className="p-2 border-t flex justify-end space-x-2">
-                                                <Button variant="ghost" className="text-gray-500" onClick={() => { setDateRange({ from: undefined, to: undefined }); setIsDatePopoverOpen(false); }}>Remover Filtro</Button>
-                                                <Button onClick={() => { setDateRange(tempDateRange); setIsDatePopoverOpen(false); }}>Aplicar</Button>
-                                            </div>
-                                        </PopoverContent>
-                                    </Popover>
-                                    <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={handleExportCSV}>
-                                        <Download className="w-4 h-4 mr-2" />
-                                        Exportar CSV
-                                    </Button>
-                                    <Button variant="outline" className="h-12 px-6 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60" onClick={(e) => { (e.currentTarget as HTMLButtonElement).blur(); setIsColumnsDrawerOpen(true); }}>
-                                        <Table className="w-4 h-4 mr-2" />
-                                        Colunas
-                                    </Button>
+                                            <div className="text-sm font-medium w-[56px] text-center">{safeCurrentPage}/{totalPages}</div>
+                                            <Button
+                                                variant="outline"
+                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
+                                                disabled={safeCurrentPage === totalPages}
+                                                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                                aria-label="Próxima página"
+                                            >
+                                                <ChevronRight className="h-4 w-4" />
+                                            </Button>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
 
                             {activeStatus === "emissao-nf" && (
-                                <div className="flex items-center space-x-4 mb-6">
-                                    <div className="relative flex-1">
+                                <div className="flex items-center justify-between mb-6 w-full">
+                                    <div className="relative w-full md:max-w-[420px]">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
-                                            placeholder="Buscar por ID, cliente ou SKU..."
+                                            placeholder="Buscar por ID, cliente, SKU ou produto..."
                                             value={searchTerm}
                                             onChange={(e) => setSearchTerm(e.target.value)}
                                             className="h-12 w-full pl-10 pr-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
                                         />
                                     </div>
-                                    <div className="w-[200px]">
-                                        <Select value={quickFilter} onValueChange={setQuickFilter}>
-                                            <SelectTrigger className="h-12 rounded-2xl bg-white shadow-lg ring-1 ring-gray-200/60">
-                                                <SelectValue placeholder="Filtro Rápido" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="Todos">Todos</SelectItem>
-                                                <SelectItem value="Falha na emissão">Falha na emissão</SelectItem>
-                                                <SelectItem value="Falha ao Enviar">Falha ao Enviar</SelectItem>
-                                            </SelectContent>
-                                        </Select>
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-[200px]">
+                                            <Select value={quickFilter} onValueChange={setQuickFilter}>
+                                                <SelectTrigger className="h-12 rounded-2xl bg-white shadow-lg ring-1 ring-gray-200/60">
+                                                    <SelectValue placeholder="Filtro Rápido" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="Todos">Todos</SelectItem>
+                                                    <SelectItem value="Falha na emissão">Falha na emissão</SelectItem>
+                                                    <SelectItem value="Falha ao Enviar">Falha ao Enviar</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => handleEmitirNfe(filteredPedidos)}>
+                                            <FileText className="w-4 h-4 mr-2" />
+                                            Emitir em Massa
+                                        </Button>
+                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => handleEmitirNfe(filteredPedidos.filter(p => selectedPedidosEmissao.includes(p.id)))}>
+                                            <FileText className="w-4 h-4 mr-2" />
+                                            Emitir Selecionados ({selectedPedidosEmissao.length})
+                                        </Button>
+                                        <div className="flex items-center gap-2 select-none">
+                                            <Button
+                                                variant="outline"
+                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
+                                                disabled={safeCurrentPage === 1}
+                                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                                aria-label="Página anterior"
+                                            >
+                                                <ChevronLeft className="h-4 w-4" />
+                                            </Button>
+                                            <div className="text-sm font-medium w-[56px] text-center">{safeCurrentPage}/{totalPages}</div>
+                                            <Button
+                                                variant="outline"
+                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
+                                                disabled={safeCurrentPage === totalPages}
+                                                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                                aria-label="Próxima página"
+                                            >
+                                                <ChevronRight className="h-4 w-4" />
+                                            </Button>
+                                        </div>
                                     </div>
-                                    <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => handleEmitirNfe(filteredPedidos)}>
-                                        <FileText className="w-4 h-4 mr-2" />
-                                        Emitir em Massa
-                                    </Button>
-                                    <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => handleEmitirNfe(filteredPedidos.filter(p => selectedPedidosEmissao.includes(p.id)))}>
-                                        <FileText className="w-4 h-4 mr-2" />
-                                        Emitir Selecionados ({selectedPedidosEmissao.length})
-                                    </Button>
                                 </div>
                             )}
                             
                             {activeStatus === "impressao" && (
-                                <div className="flex items-center space-x-4 mb-6">
-                                    <div className="relative flex-1">
+                                <div className="flex items-center justify-between mb-6 w-full">
+                                    <div className="relative w-full md:max-w-[420px]">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
-                                            placeholder="Buscar por ID, cliente ou SKU..."
+                                            placeholder="Buscar por ID, cliente, SKU ou produto..."
                                             value={searchTerm}
                                             onChange={(e) => setSearchTerm(e.target.value)}
                                             className="h-12 w-full pl-10 pr-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
                                         />
                                     </div>
-                                    <Button
-                                        className="h-12 px-6 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
-                                        onClick={handlePrintPickingList}
-                                        disabled={selectedPedidosImpressao.length === 0}
-                                    >
-                                        <ListChecks className="w-4 h-4 mr-2" />
-                                        Lista de Separação ({selectedPedidosImpressao.length})
-                                    </Button>
-                                    <Button
-                                        className="h-12 px-6 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
-                                        onClick={handlePrintLabels}
-                                        disabled={selectedPedidosImpressao.length === 0}
-                                    >
-                                        <FileBadge className="w-4 h-4 mr-2" />
-                                        Etiquetas ({selectedPedidosImpressao.length})
-                                    </Button>
-                                    <Button className="h-12 px-6 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsScannerOpen(true)}>
-                                        <Scan className="w-4 h-4 mr-2" />
-                                        Scanner
-                                    </Button>
-                                    <Button className="h-12 px-6 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsPrintConfigOpen(true)}>
-                                        <Settings className="w-4 h-4 mr-2" />
-                                        Configurações
-                                    </Button>
+                                    <div className="flex items-center gap-4">
+                                        <Button
+                                            className="h-12 px-6 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
+                                            onClick={handlePrintPickingList}
+                                            disabled={selectedPedidosImpressao.length === 0}
+                                        >
+                                            <ListChecks className="w-4 h-4 mr-2" />
+                                            Lista de Separação ({selectedPedidosImpressao.length})
+                                        </Button>
+                                        <Button
+                                            className="h-12 px-6 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
+                                            onClick={handlePrintLabels}
+                                            disabled={selectedPedidosImpressao.length === 0}
+                                        >
+                                            <FileBadge className="w-4 h-4 mr-2" />
+                                            Etiquetas ({selectedPedidosImpressao.length})
+                                        </Button>
+                                        <Button className="h-12 px-6 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsScannerOpen(true)}>
+                                            <Scan className="w-4 h-4 mr-2" />
+                                            Scanner
+                                        </Button>
+                                        <Button className="h-12 px-6 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsPrintConfigOpen(true)}>
+                                            <Settings className="w-4 h-4 mr-2" />
+                                            Configurações
+                                        </Button>
+                                        <div className="flex items-center gap-2 select-none">
+                                            <Button
+                                                variant="outline"
+                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
+                                                disabled={safeCurrentPage === 1}
+                                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                                aria-label="Página anterior"
+                                            >
+                                                <ChevronLeft className="h-4 w-4" />
+                                            </Button>
+                                            <div className="text-sm font-medium w-[56px] text-center">{safeCurrentPage}/{totalPages}</div>
+                                            <Button
+                                                variant="outline"
+                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
+                                                disabled={safeCurrentPage === totalPages}
+                                                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                                aria-label="Próxima página"
+                                            >
+                                                <ChevronRight className="h-4 w-4" />
+                                            </Button>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
 
@@ -983,8 +1581,8 @@ function Pedidos() {
                                             </tr>
                                         </thead>
                                         <tbody className="bg-white divide-y divide-gray-200">
-                                            {filteredPedidos.length > 0 ? (
-                                                filteredPedidos.map((pedido) => (
+                                            {paginatedPedidos.length > 0 ? (
+                                                paginatedPedidos.map((pedido) => (
                                                     <tr key={pedido.id} className="hover:bg-gray-50 transition-colors">
                                                         <td className="w-16 px-6 py-4 whitespace-nowrap">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao") && (
@@ -1032,8 +1630,53 @@ function Pedidos() {
                                         </tbody>
                                     </table>
                                 </div>
-                                <div className="py-4 px-6 flex justify-between items-center text-sm text-gray-600">
-                                    <div>Exibindo {filteredPedidos.length} de {pedidos.length} pedido(s)</div>
+                                <div className="py-4 px-6 flex flex-col md:flex-row md:justify-between md:items-center gap-3 text-sm text-gray-600">
+                                    <div>
+                                        Exibindo {showingFrom}-{showingTo} de {filteredPedidos.length} pedido(s)
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant="outline"
+                                            className="h-8 px-3 rounded-lg"
+                                            disabled={safeCurrentPage === 1}
+                                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                        >
+                                            Anterior
+                                        </Button>
+                                        {Array.from({ length: Math.min(totalPages, 10) }, (_, i) => {
+                                            const page = i + 1;
+                                            return (
+                                                <Button
+                                                    key={page}
+                                                    variant={page === safeCurrentPage ? "default" : "outline"}
+                                                    className={`h-8 w-9 p-0 rounded-lg ${page === safeCurrentPage ? 'bg-primary text-white' : ''}`}
+                                                    onClick={() => setCurrentPage(page)}
+                                                >
+                                                    {page}
+                                                </Button>
+                                            );
+                                        })}
+                                        {totalPages > 10 && (
+                                            <span className="px-2">...</span>
+                                        )}
+                                        {totalPages > 10 && (
+                                            <Button
+                                                variant={totalPages === safeCurrentPage ? "default" : "outline"}
+                                                className={`h-8 w-12 p-0 rounded-lg ${totalPages === safeCurrentPage ? 'bg-primary text-white' : ''}`}
+                                                onClick={() => setCurrentPage(totalPages)}
+                                            >
+                                                {totalPages}
+                                            </Button>
+                                        )}
+                                        <Button
+                                            variant="outline"
+                                            className="h-8 px-3 rounded-lg"
+                                            disabled={safeCurrentPage === totalPages}
+                                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                        >
+                                            Próximo
+                                        </Button>
+                                    </div>
                                 </div>
                             </div>
                         </main>
@@ -1079,7 +1722,7 @@ function Pedidos() {
                 </Drawer>
 
                 {/* Drawer de Colunas */}
-                <Drawer direction="right" open={isColumnsDrawerOpen} onOpenChange={(open) => { setIsColumnsDrawerOpen(open); if (!open) { const btn = document.querySelector<HTMLButtonElement>('button:has(.w-4.h-4.mr-2)'); btn?.focus(); } }}>
+                <Drawer direction="right" open={isColumnsDrawerOpen} onOpenChange={(open) => { setIsColumnsDrawerOpen(open); if (!open) { const btn = document.querySelector<HTMLButtonElement>('button[data-columns-trigger]'); btn?.focus(); } }} shouldScaleBackground={false}>
                     <DrawerContent className="w-[30%] right-0">
                         <DrawerHeader>
                             <DrawerTitle>Gerenciar Colunas</DrawerTitle>
@@ -1183,7 +1826,7 @@ function Pedidos() {
                                                     <p><strong>Nº do Pedido:</strong> {scannedPedido.id}</p>
                                                     <p><strong>Marketplace:</strong> {scannedPedido.marketplace}</p>
                                                     <p><strong>Cliente:</strong> {scannedPedido.cliente}</p>
-                                                    <p><strong>Tipo de Envio:</strong> {scannedPedido.tipoEnvio}</p>
+                                                    <p><strong>Tipo de Envio:</strong> {mapTipoEnvioLabel(scannedPedido.tipoEnvio)}</p>
                                                 </div>
                                                 <div className="space-y-3">
                                                     <h4 className="font-semibold pt-2 border-t">Itens do Pedido ({scannedPedido.itens.length})</h4>
@@ -1247,7 +1890,7 @@ function Pedidos() {
                                             <Card key={index} className="bg-white hover:bg-gray-50 cursor-pointer">
                                                 <CardContent className="p-3 flex items-center justify-between">
                                                     <div className="text-sm font-medium">Pedido #{pedido.id}</div>
-                                                    <div className="text-xs text-gray-500">{pedido.marketplace} - {pedido.tipoEnvio}</div>
+                                                    <div className="text-xs text-gray-500">{pedido.marketplace} - {mapTipoEnvioLabel(pedido.tipoEnvio)}</div>
                                                 </CardContent>
                                             </Card>
                                         ))}
@@ -1259,7 +1902,7 @@ function Pedidos() {
                                             <Card key={index} className="bg-white hover:bg-gray-50 cursor-pointer">
                                                 <CardContent className="p-3 flex items-center justify-between">
                                                     <div className="text-sm font-medium">Pedido #{pedido.id}</div>
-                                                    <div className="text-xs text-gray-500">{pedido.marketplace} - {pedido.tipoEnvio}</div>
+                                                    <div className="text-xs text-gray-500">{pedido.marketplace} - {mapTipoEnvioLabel(pedido.tipoEnvio)}</div>
                                                 </CardContent>
                                             </Card>
                                         ))}

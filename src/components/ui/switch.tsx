@@ -10,12 +10,12 @@ const Switch = React.forwardRef<
   <SwitchPrimitives.Root
     className={cn(
       "peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50",
-      "data-[state=checked]:bg-purple-600 data-[state=unchecked]:bg-gray-200",
+      "data-[state=checked]:bg-[#7C3AED] data-[state=unchecked]:bg-gray-200",
       "bg-gray-200", // fallback para estado unchecked
       className
     )}
     style={{
-      backgroundColor: props.checked ? '#9333ea' : '#e5e7eb' // purple-600 e gray-200 como fallback
+      backgroundColor: props.checked ? '#7C3AED' : '#e5e7eb' // padrão roxo e gray-200 como fallback
     }}
     {...props}
     ref={ref}

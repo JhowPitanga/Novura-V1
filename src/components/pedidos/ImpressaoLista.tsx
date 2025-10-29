@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from "@/hooks/use-toast";
 import { Paginacao } from "./Paginacao";
+import { formatDateSP } from "@/lib/datetime";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSearchParams } from "react-router-dom";
 import { Printer, Settings } from "lucide-react";
@@ -279,7 +280,7 @@ export function ImpressaoLista({ onOpenDetalhesPedido }: ImpressaoListaProps) {
               </div>
               <div class="info-row">
                 <span class="label">Data:</span>
-                <span class="value">${new Date(pedido.created_at).toLocaleDateString('pt-BR')}</span>
+                <span class="value">${formatDateSP(pedido.created_at)}</span>
               </div>
             </div>
 
@@ -396,7 +397,7 @@ export function ImpressaoLista({ onOpenDetalhesPedido }: ImpressaoListaProps) {
               <TableRow key={pedido.id}>
                 <TableCell className="font-medium">
                   <span className="block text-sm font-bold text-foreground">{pedido.marketplace_order_id}</span>
-                  <span className="block text-xs text-muted-foreground">{new Date(pedido.created_at).toLocaleDateString()}</span>
+                  <span className="block text-xs text-muted-foreground">{formatDateSP(pedido.created_at)}</span>
                 </TableCell>
                 <TableCell>
                   {pedido.order_items?.map((item, index) => (

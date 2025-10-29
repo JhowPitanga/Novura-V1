@@ -263,20 +263,21 @@ serve(async (req) => {
         // ************************************************
 
         // Upsert into marketplace_metrics table
-        const metricsData = {
-          organizations_id: orgIdForUpdate,
-          marketplace_item_id: id,
-          marketplace_name: 'Mercado Livre',
-          listing_quality: score,
-          quality_level: level,
-          performance_data: performanceData || null, // Dados da API de Performance
-          // Novos campos para visitas
-          total_visits: visitsCount, // Assumindo uma coluna INT 'total_visits'
-          visits_data: visitsRawData, // Assumindo uma coluna JSONB 'visits_data'
-          last_quality_update: nowIso,
-          last_updated: nowIso,
-          updated_at: nowIso
-        };
+        const metricsData = {
+          organizations_id: orgIdForUpdate,
+          marketplace_item_id: id,
+          marketplace_name: 'Mercado Livre',
+          listing_quality: score,
+          quality_level: level,
+          performance_data: performanceData || null, // Dados da API de Performance
+          // Novos campos para visitas
+          visits_total: visitsCount ?? undefined, // coluna correta 'visits_total'
+          visits_data: visitsRawData, // Assumindo uma coluna JSONB 'visits_data'
+          last_quality_update: nowIso,
+          last_visits_update: visitsCount != null ? nowIso : undefined,
+          last_updated: nowIso,
+          updated_at: nowIso
+        };
 
         const { error: upErr } = await admin
           .from("marketplace_metrics")
@@ -292,21 +293,20 @@ serve(async (req) => {
           console.warn('[ml-metrics]', rid, 'metrics update error', id, upErr.message);
         }
 
-        // Also update the old marketplace_items table for backward compatibility (optional, dependendo do seu esquema)
-        const { error: legacyErr } = await admin
-          .from("marketplace_items")
-          .update({ 
-            listing_quality: score, 
-            quality_level: level, 
-            total_visits: visitsCount, // Adicionando visitas aqui também para compatibilidade
-            last_quality_update: nowIso 
-          })
-          .eq("marketplace_item_id", id)
-          .eq("organizations_id", orgIdForUpdate);
+        // Atualiza marketplace_items apenas para qualidade (sem campo de visitas, não existe na tabela)
+        const { error: legacyQualityErr } = await admin
+          .from("marketplace_items")
+          .update({ 
+            listing_quality: score, 
+            quality_level: level, 
+            last_quality_update: nowIso 
+          })
+          .eq("marketplace_item_id", id)
+          .eq("organizations_id", orgIdForUpdate);
 
-        if (legacyErr) {
-          console.warn('[ml-metrics]', rid, 'legacy update error', id, legacyErr.message);
-        }
+        if (legacyQualityErr) {
+          console.warn('[ml-metrics]', rid, 'legacy quality update error', id, legacyQualityErr.message);
+        }
 
       } catch (e) { 
         console.warn('[ml-metrics]', rid, 'worker error', (e as any)?.message || e); 
@@ -376,9 +376,11 @@ serve(async (req) => {
         }
       }
 
-      // Load item ids if not provided, then apply TTL filter using marketplace_metrics.last_quality_update
-      const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12h
-      const cutoffIso = new Date(Date.now() - CACHE_TTL_MS).toISOString();
+      // Load item ids if not provided, then apply TTL filters for quality and visits
+      const QUALITY_TTL_MS = 12 * 60 * 60 * 1000; // 12h for quality
+      const VISITS_TTL_MS = 6 * 60 * 60 * 1000;  // 6h for visits (more frequent)
+      const cutoffQualityIso = new Date(Date.now() - QUALITY_TTL_MS).toISOString();
+      const cutoffVisitsIso = new Date(Date.now() - VISITS_TTL_MS).toISOString();
       let ids: string[] = (itemIds || []);
       if (!ids.length) {
         const { data: rows, error } = await admin
@@ -391,15 +393,27 @@ serve(async (req) => {
         if (error) { console.error('[ml-metrics]', rid, 'items query error', error.message); throw error; }
         ids = (rows || []).map((r: any) => r.marketplace_item_id).filter(Boolean);
       }
-      const { data: metricRows } = await admin
-        .from("marketplace_metrics")
-        .select("marketplace_item_id,last_quality_update")
-        .eq("organizations_id", orgId)
-        .eq("marketplace_name", "Mercado Livre")
-        .in("marketplace_item_id", ids.slice(0, 10000));
-      const recent = new Set<string>((metricRows || []).filter((m: any) => m?.last_quality_update && String(m.last_quality_update) >= cutoffIso).map((m: any) => String(m.marketplace_item_id)));
-      ids = ids.filter((id) => !recent.has(String(id)));
-      console.log('[ml-metrics]', rid, 'items to process after TTL filter:', ids.length);
+      const { data: metricRows } = await admin
+        .from("marketplace_metrics")
+        .select("marketplace_item_id,last_quality_update,last_visits_update")
+        .eq("organizations_id", orgId)
+        .eq("marketplace_name", "Mercado Livre")
+        .in("marketplace_item_id", ids.slice(0, 10000));
+      const qualityRecent = new Set<string>((metricRows || [])
+        .filter((m: any) => m?.last_quality_update && String(m.last_quality_update) >= cutoffQualityIso)
+        .map((m: any) => String(m.marketplace_item_id)));
+      const visitsRecent = new Set<string>((metricRows || [])
+        .filter((m: any) => m?.last_visits_update && String(m.last_visits_update) >= cutoffVisitsIso)
+        .map((m: any) => String(m.marketplace_item_id)));
+      // Include items that need either quality or visits refresh
+      const needUpdate = ids.filter((id) => {
+        const idStr = String(id);
+        const qFresh = qualityRecent.has(idStr);
+        const vFresh = visitsRecent.has(idStr);
+        return !(qFresh && vFresh);
+      });
+      ids = needUpdate;
+      console.log('[ml-metrics]', rid, 'items to process after TTL filter:', ids.length, 'quality_fresh', qualityRecent.size, 'visits_fresh', visitsRecent.size);
       if (!ids.length) { console.log('[ml-metrics]', rid, 'no items for org', orgId, 'skipping'); continue; }
 
       i = 0;

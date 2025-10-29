@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
-import { Plus, Search, Filter, ExternalLink, Edit, Pause, Play, TrendingUp, Eye, BarChart, ShoppingCart, Percent, Copy, MoreHorizontal, DollarSign, ChevronUp, ChevronDown, ChevronDown as ChevronDownIcon } from "lucide-react";
+import { Plus, Search, Filter, ExternalLink, Edit, Pause, Play, TrendingUp, Eye, BarChart, ShoppingCart, Percent, Copy, MoreHorizontal, DollarSign, ChevronUp, ChevronDown, ChevronDown as ChevronDownIcon, Package, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -8,9 +9,10 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { CleanNavigation } from "@/components/CleanNavigation";
 import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip } from "recharts";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -38,9 +40,25 @@ export default function Anuncios() {
     const [selectedMarketplacePath, setSelectedMarketplacePath] = useState<string>("");
     const [sortKey, setSortKey] = useState<'sales' | 'visits' | 'price' | 'quality' | 'margin'>('sales');
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+    const [activeTab, setActiveTab] = useState<string>("anuncios");
     const { organizationId } = useAuth();
     const { toast } = useToast();
-    // Qualidade agora é obtida e persistida via Edge Function; usamos as colunas do banco
+    // Estado para métricas adicionais por item (quality_level e performance_data)
+    const [metricsByItemId, setMetricsByItemId] = useState<Record<string, { quality_level?: string | null; performance_data?: any }>>({});
+    const [listingTypeByItemId, setListingTypeByItemId] = useState<Record<string, string | null>>({});
+    const [shippingTypesByItemId, setShippingTypesByItemId] = useState<Record<string, string[]>>({});
+    const [listingPricesByItemId, setListingPricesByItemId] = useState<Record<string, any>>({});
+    const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+    const [expandedVariations, setExpandedVariations] = useState<Set<string>>(new Set());
+
+    // Helper para colorização do medidor por nível de qualidade
+    const getQualityStrokeColor = (level?: string | null) => {
+        const s = String(level || '').toLowerCase();
+        if (s.includes('prof')) return '#7C3AED'; // roxo Novura
+        if (s.includes('satis')) return '#F59E0B'; // âmbar
+        if (s.includes('bás') || s.includes('bas')) return '#EF4444'; // vermelho
+        return '#6B7280'; // cinza
+    };
 
     const loadItems = async () => {
         if (!organizationId) return;
@@ -57,6 +75,83 @@ export default function Anuncios() {
             const rows = data || [];
             setItems(rows);
             console.log('Itens carregados com métricas:', rows.length);
+
+            // Buscar métricas (quality_level e performance_data) diretamente
+            try {
+                const { data: metricsRows, error: metricsError } = await (supabase as any)
+                    .from('marketplace_metrics')
+                    .select('marketplace_item_id, quality_level, performance_data')
+                    .eq('organizations_id', organizationId)
+                    .limit(1000);
+                if (metricsError) {
+                    console.error('Erro ao buscar métricas:', metricsError);
+                } else {
+                    const map: Record<string, any> = {};
+                    (metricsRows || []).forEach((m: any) => {
+                        const k = m?.marketplace_item_id || m?.item_id || m?.id;
+                        if (!k) return;
+                        map[k] = { quality_level: m?.quality_level ?? null, performance_data: m?.performance_data ?? null };
+                    });
+                    setMetricsByItemId(map);
+                }
+            } catch (metricsCatchErr) {
+                console.error('Falha ao carregar métricas:', metricsCatchErr);
+            }
+
+            // Buscar tipos de publicação (listing_type_id) e custos (listing_prices) no contexto de preço
+            try {
+                const { data: pricesRows, error: pricesErr } = await (supabase as any)
+                    .from('marketplace_item_prices')
+                    .select('marketplace_item_id, sale_price_context, listing_prices')
+                    .eq('organizations_id', organizationId)
+                    .eq('marketplace_name', 'Mercado Livre')
+                    .limit(1000);
+                if (pricesErr) {
+                    console.error('Erro ao buscar marketplace_item_prices:', pricesErr);
+                } else {
+                    const lmap: Record<string, string | null> = {};
+                    const pmap: Record<string, any> = {};
+                    (pricesRows || []).forEach((p: any) => {
+                        const k = p?.marketplace_item_id || p?.id;
+                        if (!k) return;
+                        const ctx = p?.sale_price_context || {};
+                        const lt = ctx?.listing_type_id || ctx?.listingTypeId || null;
+                        lmap[k] = lt ? String(lt) : null;
+                        pmap[k] = p?.listing_prices ?? null;
+                    });
+                    setListingTypeByItemId(lmap);
+                    setListingPricesByItemId(pmap);
+                }
+            } catch (pricesCatchErr) {
+                console.error('Falha ao carregar tipos de publicação:', pricesCatchErr);
+            }
+
+            // Buscar distribuição de estoque e tipos de envio
+            try {
+                const { data: distRows, error: distErr } = await (supabase as any)
+                    .from('marketplace_stock_distribution')
+                    .select('marketplace_item_id, shipping_type')
+                    .eq('organizations_id', organizationId)
+                    .eq('marketplace_name', 'Mercado Livre')
+                    .limit(5000);
+                if (distErr) {
+                    console.error('Erro ao buscar marketplace_stock_distribution:', distErr);
+                } else {
+                    const smap: Record<string, Set<string>> = {};
+                    (distRows || []).forEach((d: any) => {
+                        const id = d?.marketplace_item_id;
+                        const t = String(d?.shipping_type || '').toLowerCase();
+                        if (!id || !t) return;
+                        if (!smap[id]) smap[id] = new Set<string>();
+                        smap[id].add(t);
+                    });
+                    const out: Record<string, string[]> = {};
+                    Object.keys(smap).forEach(k => { out[k] = Array.from(smap[k]); });
+                    setShippingTypesByItemId(out);
+                }
+            } catch (distCatchErr) {
+                console.error('Falha ao carregar distribuição de estoque:', distCatchErr);
+            }
         } catch (e: any) {
             console.error("Erro ao buscar anúncios:", e);
             // Fallback para tabela original se a view não existir ainda
@@ -71,6 +166,83 @@ export default function Anuncios() {
                 const rows = data || [];
                 setItems(rows);
                 console.log('Fallback: Itens carregados da tabela original:', rows.length);
+
+                // Buscar métricas também no fallback
+                try {
+                    const { data: metricsRows, error: metricsError } = await (supabase as any)
+                        .from('marketplace_metrics')
+                        .select('marketplace_item_id, quality_level, performance_data')
+                        .eq('organizations_id', organizationId)
+                        .limit(1000);
+                    if (metricsError) {
+                        console.error('Erro ao buscar métricas (fallback):', metricsError);
+                    } else {
+                        const map: Record<string, any> = {};
+                        (metricsRows || []).forEach((m: any) => {
+                            const k = m?.marketplace_item_id || m?.item_id || m?.id;
+                            if (!k) return;
+                            map[k] = { quality_level: m?.quality_level ?? null, performance_data: m?.performance_data ?? null };
+                        });
+                        setMetricsByItemId(map);
+                    }
+                } catch (metricsCatchErr) {
+                    console.error('Falha ao carregar métricas (fallback):', metricsCatchErr);
+                }
+
+                // Buscar tipos de publicação e custos também no fallback
+                try {
+                    const { data: pricesRows, error: pricesErr } = await (supabase as any)
+                        .from('marketplace_item_prices')
+                        .select('marketplace_item_id, sale_price_context, listing_prices')
+                        .eq('organizations_id', organizationId)
+                        .eq('marketplace_name', 'Mercado Livre')
+                        .limit(1000);
+                    if (pricesErr) {
+                        console.error('Erro ao buscar marketplace_item_prices (fallback):', pricesErr);
+                    } else {
+                        const lmap: Record<string, string | null> = {};
+                        const pmap: Record<string, any> = {};
+                        (pricesRows || []).forEach((p: any) => {
+                            const k = p?.marketplace_item_id || p?.id;
+                            if (!k) return;
+                            const ctx = p?.sale_price_context || {};
+                            const lt = ctx?.listing_type_id || ctx?.listingTypeId || null;
+                            lmap[k] = lt ? String(lt) : null;
+                            pmap[k] = p?.listing_prices ?? null;
+                        });
+                        setListingTypeByItemId(lmap);
+                        setListingPricesByItemId(pmap);
+                    }
+                } catch (pricesCatchErr) {
+                    console.error('Falha ao carregar tipos de publicação (fallback):', pricesCatchErr);
+                }
+
+                // Buscar distribuição de estoque e tipos de envio (fallback)
+                try {
+                    const { data: distRows, error: distErr } = await (supabase as any)
+                        .from('marketplace_stock_distribution')
+                        .select('marketplace_item_id, shipping_type')
+                        .eq('organizations_id', organizationId)
+                        .eq('marketplace_name', 'Mercado Livre')
+                        .limit(5000);
+                    if (distErr) {
+                        console.error('Erro ao buscar marketplace_stock_distribution (fallback):', distErr);
+                    } else {
+                        const smap: Record<string, Set<string>> = {};
+                        (distRows || []).forEach((d: any) => {
+                            const id = d?.marketplace_item_id;
+                            const t = String(d?.shipping_type || '').toLowerCase();
+                            if (!id || !t) return;
+                            if (!smap[id]) smap[id] = new Set<string>();
+                            smap[id].add(t);
+                        });
+                        const out: Record<string, string[]> = {};
+                        Object.keys(smap).forEach(k => { out[k] = Array.from(smap[k]); });
+                        setShippingTypesByItemId(out);
+                    }
+                } catch (distCatchErr) {
+                    console.error('Falha ao carregar distribuição de estoque (fallback):', distCatchErr);
+                }
             } catch (fallbackError: any) {
                 console.error("Erro no fallback:", fallbackError);
                 toast({ title: "Falha ao carregar anúncios", description: fallbackError?.message || "", variant: "destructive" });
@@ -93,6 +265,60 @@ export default function Anuncios() {
 
     const toSlug = (displayName: string): string => {
         return '/' + displayName.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+    };
+
+    const toPublicationLabel = (listingTypeId?: string | null): string | null => {
+        const s = String(listingTypeId || '').toLowerCase();
+        if (!s) return null;
+        if (s.includes('gold_pro') || s === 'gold_pro' || s.includes('pro')) return 'Premium';
+        if (s.includes('gold_special') || s === 'gold_special' || s === 'gold' || s.includes('gold')) return 'Clássico';
+        if (s === 'silver') return 'Clássico';
+        if (s === 'free') return 'Grátis';
+        return 'Outro';
+    };
+
+    const extractCostsFromListingPrices = (lp: any) => {
+        try {
+            if (!lp) return null;
+            const entry = Array.isArray(lp?.prices) ? lp.prices[0] : lp;
+            const currency = entry?.currency_id || entry?.sale_fee?.currency_id || 'BRL';
+            const commission = typeof entry?.sale_fee?.amount === 'number'
+                ? entry.sale_fee.amount
+                : (typeof entry?.sale_fee_amount === 'number' ? entry.sale_fee_amount
+                : (typeof entry?.application_fee?.amount === 'number' ? entry.application_fee.amount : 0));
+            const shippingCost = typeof entry?.shipping_cost?.amount === 'number'
+                ? entry.shipping_cost.amount
+                : (typeof entry?.logistics?.shipping_cost === 'number' ? entry.logistics.shipping_cost : 0);
+            const tax = typeof entry?.taxes?.amount === 'number' ? entry.taxes.amount : 0;
+            const total = [commission || 0, shippingCost || 0, tax || 0].reduce((a, b) => a + b, 0);
+            return { currency: String(currency || 'BRL'), commission: commission || 0, shippingCost: shippingCost || 0, tax: tax || 0, total };
+        } catch {
+            return null;
+        }
+    };
+
+    const extractSaleFeeDetails = (lp: any) => {
+        try {
+            if (!lp) return null;
+            const entry = Array.isArray(lp?.prices) ? (lp.prices.find((p: any) => p?.sale_fee_details) || lp.prices[0]) : lp;
+            const currency = entry?.currency_id || entry?.sale_fee?.currency_id || 'BRL';
+            const details = entry?.sale_fee_details || entry?.sale_fee?.details || {};
+            const percentage = typeof details?.percentage_fee === 'number'
+                ? details.percentage_fee
+                : (typeof details?.percentage === 'number' ? details.percentage : null);
+            const fixedFee = typeof details?.fixed_fee === 'number'
+                ? details.fixed_fee
+                : (typeof details?.fixed_amount === 'number' ? details.fixed_amount
+                : (typeof details?.fixed_fee?.amount === 'number' ? details.fixed_fee.amount : null));
+            const grossAmount = typeof details?.gross_amount === 'number'
+                ? details.gross_amount
+                : (typeof details?.total === 'number' ? details.total
+                : (typeof entry?.sale_fee?.amount === 'number' ? entry.sale_fee.amount : null));
+            if (percentage == null && fixedFee == null && grossAmount == null) return null;
+            return { currency: String(currency || 'BRL'), percentage, fixedFee, grossAmount };
+        } catch {
+            return null;
+        }
     };
 
     const loadConnectedMarketplaces = async () => {
@@ -169,6 +395,46 @@ export default function Anuncios() {
             const stack = e?.stack || null;
             const details = (() => { try { return JSON.stringify(e); } catch { return null; } })();
             console.error('[anuncios.sync] error', { message: msg, stack, details });
+            toast({ title: "Falha na sincronização", description: msg || "Erro inesperado", variant: "destructive" });
+        } finally {
+            setSyncing(false);
+        }
+    };
+
+    const handleSyncSelected = async () => {
+        if (!organizationId) {
+            toast({ title: "Sessão necessária", description: "Entre na sua conta para sincronizar.", variant: "destructive" });
+            return;
+        }
+        const selectedCount = selectedItems.size;
+        if (selectedCount === 0) {
+            toast({ title: "Nenhum anúncio selecionado", description: "Selecione anúncios para sincronizar.", variant: "default" });
+            return;
+        }
+        setSyncing(true);
+        try {
+            const startedAt = Date.now();
+            const clientRid = (crypto as any)?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+            const onlySelectedIds = Array.from(selectedItems);
+            console.log('[anuncios.syncSelected] start', { organizationId, clientRid, onlySelectedIds });
+
+            const { data: orchestration, error: orchError } = await (supabase as any).functions.invoke('mercado-livre-orchestrate-sync', {
+                body: { organizationId, clientRid, onlySelectedIds }
+            });
+            console.log('[anuncios.syncSelected] orchestrator result', { orchError, orchestration });
+            if (orchError) throw orchError;
+
+            toast({ title: "Sincronização concluída", description: `Selecionados sincronizados: ${selectedCount}` });
+            try {
+                await loadItems();
+            } catch (reloadErr: any) {
+                console.warn('[anuncios.syncSelected] reload items failed', reloadErr?.message || reloadErr);
+            }
+            const elapsedMs = Date.now() - startedAt;
+            console.log('[anuncios.syncSelected] done', { clientRid, elapsedMs });
+        } catch (e: any) {
+            const msg = e?.message || String(e);
+            console.error('[anuncios.syncSelected] error', msg);
             toast({ title: "Falha na sincronização", description: msg || "Erro inesperado", variant: "destructive" });
         } finally {
             setSyncing(false);
@@ -253,6 +519,47 @@ export default function Anuncios() {
         return { line1, line2 };
     };
 
+    // Dicas de melhoria baseadas em performance_data e dados locais
+    const extractPerformanceHints = (pd: any, ad: any): string[] => {
+        const hints: string[] = [];
+        try {
+            if (pd && Array.isArray(pd?.missing_fields) && pd.missing_fields.length) {
+                hints.push(`Preencher campos: ${pd.missing_fields.join(', ')}`);
+            }
+            const recs = Array.isArray(pd?.recommendations) ? pd.recommendations : [];
+            recs.slice(0, 3).forEach((r: any) => {
+                const t = typeof r === 'string' ? r : (r?.text || r?.title || r?.message || '');
+                if (t) hints.push(t);
+            });
+            const actions = Array.isArray(pd?.actions) ? pd.actions : [];
+            actions.slice(0, 3).forEach((a: any) => {
+                const t = typeof a === 'string' ? a : (a?.text || a?.title || a?.message || '');
+                if (t) hints.push(t);
+            });
+        } catch {}
+        try {
+            const titleLen = Number(ad?.titleLength) || 0;
+            const pictures = Number(ad?.pictureCount) || 0;
+            const hasVideo = !!ad?.hasVideo;
+            const attrs = Number(ad?.attributeCount) || 0;
+            const descLen = Number(ad?.descriptionLength) || 0;
+            const freeShip = !!ad?.freeShipping;
+            const qualityLevel = String(ad?.qualityLevel || '').toLowerCase();
+            const quality = Number(ad?.quality) || 0;
+            if (titleLen && titleLen < 45) hints.push('Aumente o título com palavras-chave e atributos.');
+            if (pictures < 3) hints.push('Adicione mais fotos (mínimo 3) com diferentes ângulos.');
+            if (!hasVideo) hints.push('Inclua um vídeo curto demonstrando o produto.');
+            if (attrs < 4) hints.push('Preencha atributos importantes (cor, tamanho, marca, etc.).');
+            if (!freeShip) hints.push('Considere oferecer frete grátis para aumentar conversão.');
+            if (descLen < 200) hints.push('Amplie a descrição com benefícios e especificações.');
+            if (quality < 80 || qualityLevel.includes('bás') || qualityLevel.includes('satis')) {
+                hints.push('Siga as recomendações do ML para alcançar nível profissional.');
+            }
+        } catch {}
+        const unique = Array.from(new Set(hints.filter(Boolean)));
+        return unique.slice(0, 5);
+    };
+
     const parsedAds = items.map((row) => {
         const pics = Array.isArray(row?.pictures) ? row.pictures : [];
         const firstPic = Array.isArray(pics) && pics.length > 0 ? (typeof pics[0] === 'string' ? pics[0] : (pics[0]?.url || "/placeholder.svg")) : (row?.thumbnail || "/placeholder.svg");
@@ -272,17 +579,43 @@ export default function Anuncios() {
         const originalPrice = Number(row?.original_price) || null;
         const hasPromo = !!originalPrice && originalPrice > priceNum;
         const promoPrice = hasPromo ? priceNum : null;
-        // Envio (do banco)
-        const shippingMethods = Array.isArray(row?.shipping) ? row.shipping
-          : Array.isArray(row?.shipping_methods) ? row.shipping_methods.map((m: any) => m?.name || m)
-          : [];
-        // Qualidade (estimativa)
-        const qualityVal = typeof row?.quality === 'number' ? row.quality : (Number(row?.listing_quality) || Number(row?.quality_score) || 0);
-
+        // Envio: consolidado de marketplace_stock_distribution ou fallback do marketplace_items
+        let shippingTags: string[] = [];
         const idVal = row?.marketplace_item_id || row?.id;
-        // Preferir colunas persistidas pelo Edge Function
-        const persistedScore = Number(row?.listing_quality);
-        const persistedLevel = row?.quality_level ?? null;
+        if (idVal && Array.isArray(shippingTypesByItemId[idVal])) {
+            shippingTags = (shippingTypesByItemId[idVal] || []).map((s) => String(s || '').toLowerCase());
+        }
+        if (!shippingTags.length) {
+            const sd = row?.stock_distribution;
+            const fromSd = Array.isArray(sd?.shipping_types) ? sd.shipping_types : [];
+            shippingTags = fromSd.map((s: any) => String(s || '').toLowerCase());
+        }
+        const listingTypeIdForItem = listingTypeByItemId[idVal] || null;
+        const publicationTypeLabel = toPublicationLabel(listingTypeIdForItem);
+        const publicationCosts = extractCostsFromListingPrices(listingPricesByItemId[idVal]);
+        const publicationFeeDetails = extractSaleFeeDetails(listingPricesByItemId[idVal]);
+        // Mesclar performance_data e quality_level das métricas com colunas persistidas
+        const metricsForItem = metricsByItemId[idVal] || {};
+        const pd = metricsForItem?.performance_data;
+        const scoreRaw = (pd && !isNaN(Number(pd?.score))) ? Number(pd.score) : null;
+        const rawCandidates = [
+            scoreRaw,
+            pd?.quality_score,
+            pd?.listing_quality_percentage,
+            pd?.listing_quality,
+            row?.listing_quality,
+            row?.quality_score,
+        ];
+        let qualityPercent = 0;
+        for (const v of rawCandidates) {
+            const num = Number(v);
+            if (!isNaN(num) && num >= 0) {
+                qualityPercent = num <= 1 ? num * 100 : num;
+                break;
+            }
+        }
+        qualityPercent = Math.max(0, Math.min(100, qualityPercent));
+        const persistedLevel = row?.quality_level ?? metricsForItem?.quality_level ?? null;
         // Motivo de pausa (quando aplicável)
         let pauseReason: string | null = null;
         const dataRaw: any = row?.data;
@@ -316,11 +649,15 @@ export default function Anuncios() {
             stock: typeof row?.available_quantity === 'number' ? row?.available_quantity : (Number(row?.available_quantity) || 0),
             marketplaceId: row?.marketplace_item_id || "",
             image: firstPic || "/placeholder.svg",
-            shipping: shippingMethods,
-            quality: !isNaN(persistedScore) && persistedScore >= 0 ? persistedScore : qualityVal,
+            shippingTags,
+            quality: Math.round(qualityPercent),
             qualityLevel: persistedLevel,
+            performanceData: pd,
             margin: Number(row?.margin) || 0,
             pauseReason,
+            publicationType: publicationTypeLabel,
+            publicationCosts,
+            publicationFeeDetails,
         };
     });
 
@@ -353,6 +690,22 @@ export default function Anuncios() {
         if (av === bv) return 0;
         return av > bv ? dir : -dir;
     });
+
+    const isAllSelected = sortedAds.length > 0 && sortedAds.every(a => selectedItems.has(a.id));
+
+    const toggleSelectAll = () => {
+        setSelectedItems(prev => {
+            const newSet = new Set(prev);
+            const visibleIds = sortedAds.map(a => a.id);
+            const allSelected = visibleIds.length > 0 && visibleIds.every(id => newSet.has(id));
+            if (allSelected) {
+                visibleIds.forEach(id => newSet.delete(id));
+            } else {
+                visibleIds.forEach(id => newSet.add(id));
+            }
+            return newSet;
+        });
+    };
 
     const getMarketplaceColor = (marketplace: string) => {
         switch (marketplace) {
@@ -402,8 +755,6 @@ export default function Anuncios() {
     };
 
     const [confirmPauseFor, setConfirmPauseFor] = useState<string | null>(null);
-    const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
-    const [expandedVariations, setExpandedVariations] = useState<Set<string>>(new Set());
 
     const toggleItemSelection = (itemId: string) => {
         setSelectedItems(prev => {
@@ -429,22 +780,37 @@ export default function Anuncios() {
         });
     };
 
-    const formatVariationData = (variations: any[]) => {
+    const formatVariationData = (variations: any[], itemRow?: any) => {
         if (!Array.isArray(variations) || variations.length === 0) return [];
-        
+        const picsArr = Array.isArray(itemRow?.pictures) ? itemRow.pictures : [];
+        const fallbackImage = (Array.isArray(picsArr) && picsArr.length > 0)
+            ? (typeof picsArr[0] === 'string' ? picsArr[0] : (picsArr[0]?.url || "/placeholder.svg"))
+            : (itemRow?.thumbnail || "/placeholder.svg");
         return variations.map((variation, index) => {
             const attributes = Array.isArray(variation.attribute_combinations) ? variation.attribute_combinations : [];
             const types = attributes.map((attr: any) => ({
                 name: attr.name || attr.id || 'Tipo',
                 value: attr.value_name || attr.value || 'N/A'
             }));
-            
+            let imageUrl: string | null = null;
+            const pictureIds = Array.isArray(variation?.picture_ids) ? variation.picture_ids : (variation?.picture_id ? [variation.picture_id] : []);
+            if (Array.isArray(pictureIds) && pictureIds.length > 0) {
+                const pid = pictureIds[0];
+                const match = picsArr.find((p: any) => {
+                    if (typeof p === 'string') return false;
+                    return String(p?.id || p?.picture_id) === String(pid);
+                });
+                if (typeof match === 'string') imageUrl = match;
+                else imageUrl = match?.url || match?.secure_url || null;
+            }
+            if (!imageUrl) imageUrl = fallbackImage;
             return {
                 id: variation.id || `var-${index}`,
                 sku: variation.seller_sku || variation.sku || 'N/A',
                 available_quantity: variation.available_quantity || 0,
                 types: types,
-                price: variation.price || 0
+                price: variation.price || 0,
+                image: imageUrl || fallbackImage,
             };
         });
     };
@@ -465,81 +831,113 @@ export default function Anuncios() {
                     />
 
                     <main className="flex-1 overflow-auto">
-                        <div className="p-6">
-                            <div className="flex items-center justify-between mb-6">
-                                <div>
-                                    <h1 className="text-2xl font-bold text-gray-900">Gestão de Anúncios</h1>
-                                    <p className="text-gray-600">Monitore e gerencie seus anúncios em todos os marketplaces</p>
+                        <div className="px-6 pt-3 pb-6">
+                            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+                                <div className="flex items-center justify-between mb-6">
+                                    <div className="border-b border-gray-200 w-full">
+                                        <TabsList className="bg-transparent p-0 h-auto">
+                                            <TabsTrigger 
+                                                value="anuncios" 
+                                                className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent"
+                                            >
+                                                Anúncios
+                                            </TabsTrigger>
+                                            <TabsTrigger 
+                                                value="promocoes" 
+                                                className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent"
+                                            >
+                                                Promoções
+                                            </TabsTrigger>
+                                        </TabsList>
+                                    </div>
                                 </div>
-                                <Button className="bg-novura-primary hover:bg-novura-primary/90">
-                                    <Plus className="w-4 h-4 mr-2" />
-                                    Novo Anúncio
-                                </Button>
-                            </div>
 
-                            <div className="flex items-center justify-between mb-6">
-                                <div className="flex items-center space-x-4">
-                                    <div className="relative flex-1">
-                                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                                        <Input
-                                            placeholder="Buscar por título, SKU ou ID do anúncio..."
-                                            value={searchTerm}
-                                            onChange={(e) => setSearchTerm(e.target.value)}
-                                            className="pl-10 min-w-[300px]"
+                                <TabsContent value="anuncios" className="mt-0">
+                                    <div className="flex items-center justify-between mb-6">
+                                        <div className="flex items-center space-x-4">
+                                            <div className="relative flex-1">
+                                                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+                                                <Input
+                                                    placeholder="Buscar por título, SKU ou ID do anúncio..."
+                                                    value={searchTerm}
+                                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                                    className="pl-10 min-w-[300px]"
+                                                />
+                                            </div>
+                                            <Button variant="outline" size="sm">
+                                                <Filter className="w-4 h-4 mr-2" />
+                                                Filtros
+                                            </Button>
+                                            <DropdownMenu>
+                                                <DropdownMenuTrigger asChild>
+                                                    <Button variant="outline" size="sm" className="text-novura-primary">
+                                                        {sortDir === 'asc' ? (
+                                                            <ChevronUp className="w-4 h-4 mr-2 text-novura-primary" />
+                                                        ) : (
+                                                            <ChevronDown className="w-4 h-4 mr-2 text-novura-primary" />
+                                                        )}
+                                                        Ordenar
+                                                    </Button>
+                                                </DropdownMenuTrigger>
+                                                <DropdownMenuContent align="start">
+                                                    <DropdownMenuItem className={sortKey === 'sales' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('sales'); setSortDir('desc'); }}>Mais vendidos</DropdownMenuItem>
+                                                    <DropdownMenuItem className={sortKey === 'visits' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('visits'); setSortDir('desc'); }}>Mais visitas</DropdownMenuItem>
+                                                    <DropdownMenuItem className={sortKey === 'price' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('price'); setSortDir('desc'); }}>Maior preço</DropdownMenuItem>
+                                                    <DropdownMenuItem className={sortKey === 'quality' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('quality'); setSortDir('desc'); }}>Maior qualidade</DropdownMenuItem>
+                                                    <DropdownMenuItem className={sortKey === 'margin' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('margin'); setSortDir('desc'); }}>Maior margem</DropdownMenuItem>
+                                                </DropdownMenuContent>
+                                            </DropdownMenu>
+                                        </div>
+                                        <div className="flex items-center space-x-2">
+                                            <DropdownMenu>
+                                                <DropdownMenuTrigger asChild>
+                                                    <Button variant="outline" className="bg-white text-novura-primary border-gray-300">
+                                                        Sincronizar
+                                                        <ChevronDown className="w-4 h-4 ml-2 text-novura-primary" />
+                                                    </Button>
+                                                </DropdownMenuTrigger>
+                                                <DropdownMenuContent align="end">
+                                                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleSync(); }}>Sincronizar todos anúncios</DropdownMenuItem>
+                                                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleSyncSelected(); }}>Sincronizar selecionados</DropdownMenuItem>
+                                                </DropdownMenuContent>
+                                            </DropdownMenu>
+                                            <Button className="bg-novura-primary hover:bg-novura-primary/90">
+                                                <Plus className="w-4 h-4 mr-2" />
+                                                Novo Anúncio
+                                            </Button>
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-4">
+                                        <CleanNavigation
+                                            items={[
+                                                { title: 'Todos', path: '/todos' },
+                                                { title: 'Ativos', path: '/ativos' },
+                                                { title: 'Pausados', path: '/pausados' },
+                                            ]}
+                                            basePath=""
+                                            activePath={`/${activeStatus}`}
+                                            onNavigate={(path) => setActiveStatus(path.replace('/', ''))}
                                         />
                                     </div>
-                                    <Button variant="outline" size="sm">
-                                        <Filter className="w-4 h-4 mr-2" />
-                                        Filtros
-                                    </Button>
-                                    <DropdownMenu>
-                                        <DropdownMenuTrigger asChild>
-                                            <Button variant="outline" size="sm" className="text-novura-primary">
-                                                {sortDir === 'asc' ? (
-                                                    <ChevronUp className="w-4 h-4 mr-2 text-novura-primary" />
-                                                ) : (
-                                                    <ChevronDown className="w-4 h-4 mr-2 text-novura-primary" />
-                                                )}
-                                                Ordenar
-                                            </Button>
-                                        </DropdownMenuTrigger>
-                                        <DropdownMenuContent align="start">
-                                            <DropdownMenuItem className={sortKey === 'sales' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('sales'); setSortDir('desc'); }}>Mais vendidos</DropdownMenuItem>
-                                            <DropdownMenuItem className={sortKey === 'visits' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('visits'); setSortDir('desc'); }}>Mais visitas</DropdownMenuItem>
-                                            <DropdownMenuItem className={sortKey === 'price' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('price'); setSortDir('desc'); }}>Maior preço</DropdownMenuItem>
-                                            <DropdownMenuItem className={sortKey === 'quality' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('quality'); setSortDir('desc'); }}>Maior qualidade</DropdownMenuItem>
-                                            <DropdownMenuItem className={sortKey === 'margin' ? 'text-novura-primary font-medium' : ''} onSelect={(e) => { e.preventDefault(); setSortKey('margin'); setSortDir('desc'); }}>Maior margem</DropdownMenuItem>
-                                        </DropdownMenuContent>
-                                    </DropdownMenu>
-                                </div>
-                                <div className="flex items-center space-x-2">
-                                    <Button variant="outline">Alterar em Massa</Button>
-                                    <Button variant="outline">Gerar Relatório</Button>
-                                    <Button onClick={handleSync} disabled={syncing || loading} className="bg-novura-primary hover:bg-novura-primary/90">
-                                        {syncing ? "Sincronizando..." : "Sincronizar"}
-                                    </Button>
-                                </div>
-                            </div>
 
-                            <div className="mt-4">
-                                <CleanNavigation
-                                    items={[
-                                        { title: 'Todos', path: '/todos' },
-                                        { title: 'Ativos', path: '/ativos' },
-                                        { title: 'Pausados', path: '/pausados' },
-                                    ]}
-                                    basePath=""
-                                    activePath={`/${activeStatus}`}
-                                    onNavigate={(path) => setActiveStatus(path.replace('/', ''))}
-                                />
-                            </div>
+                                    <div className="mt-2 flex items-center justify-between">
+                                        <label className="flex items-center space-x-2">
+                                            <Checkbox checked={isAllSelected} onCheckedChange={toggleSelectAll} />
+                                            <span className="text-sm text-gray-700">Selecionar todos</span>
+                                        </label>
+                                        {selectedItems.size > 0 && (
+                                            <span className="text-sm text-novura-primary">{selectedItems.size} selecionados</span>
+                                        )}
+                                    </div>
 
-                            <Card className="mt-6 border border-gray-200 shadow-sm">
-                                <CardContent className="p-0">
-                                    <div className="space-y-3">
+                                    <Card className="mt-6 border border-gray-200 shadow-sm">
+                                        <CardContent className="p-0">
+                                            <div className="space-y-3">
                                         {sortedAds.length > 0 ? (
                                             sortedAds.map((ad) => {
-                                                const variations = formatVariationData(items.find(item => item.id === ad.id)?.variations || []);
+                                                const itemRow = items.find(item => String(item?.marketplace_item_id || item?.id) === String(ad.id));
+                                                const variations = formatVariationData(itemRow?.variations || [], itemRow);
                                                 const hasVariations = variations.length > 0;
                                                 const isExpanded = expandedVariations.has(ad.id);
                                                 
@@ -547,16 +945,26 @@ export default function Anuncios() {
                                                 <div key={ad.id} className="relative bg-white border border-gray-200 rounded-lg">
                                                     <div className="grid grid-cols-12 gap-4 items-center p-5">
                                                         
-                                                        {/* Checkbox */}
-                                                        <div className="col-span-1 flex justify-center">
+                                                        {/* Checkbox + Botão de Variações */}
+                                                        <div className="col-span-1 flex flex-col items-start space-y-1 -ml-3">
                                                             <Checkbox
                                                                 checked={selectedItems.has(ad.id)}
                                                                 onCheckedChange={() => toggleItemSelection(ad.id)}
                                                             />
+                                                            {hasVariations && (
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="icon"
+                                                                    onClick={() => toggleVariationsExpansion(ad.id)}
+                                                                    className="h-6 w-6 p-0 self-start text-novura-primary rounded-full hover:bg-purple-50"
+                                                                >
+                                                                    <ChevronDownIcon className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                                                                </Button>
+                                                            )}
                                                         </div>
                                                         
                                                         {/* Coluna do Anúncio */}
-                                                        <div className="flex items-start space-x-4 col-span-3">
+                                                        <div className="flex items-start space-x-4 col-span-3 -ml-3">
                                                             <img
                                                                 src={ad.image}
                                                                 alt={ad.title}
@@ -564,10 +972,7 @@ export default function Anuncios() {
                                                             />
                                                             <div className="flex flex-col h-full justify-between min-w-0">
                                                                 <div className="max-w-full">
-                                                                    <div className="font-semibold text-base text-gray-900 truncate">{getTitleLines(ad.title).line1}</div>
-                                                                    {getTitleLines(ad.title).line2 && (
-                                                                        <div className="font-semibold text-base text-gray-900 truncate">{getTitleLines(ad.title).line2}</div>
-                                                                    )}
+                                                                    <div className="font-semibold text-base text-gray-900 break-words whitespace-normal">{ad.title}</div>
                                                                 </div>
                                                                 <div className="mt-2 text-sm text-gray-500">
                                                                     <div className="flex items-center space-x-1">
@@ -599,25 +1004,85 @@ export default function Anuncios() {
 
                                                         {/* Coluna de Envio e Motivo */}
                                                         <div className="flex flex-col items-start space-y-2 justify-center col-span-2">
-                                                            <Badge className={`${getMarketplaceColor(ad.marketplace)} text-white text-xs px-2`}>
-                                                                {ad.marketplace}
-                                                            </Badge>
-                                                            {ad.shipping && ad.shipping.length > 0 ? (
-                                                                <div className="flex flex-wrap gap-2 mt-1">
-                                                                    {ad.shipping.map((method, index) => (
-                                                                        <Badge key={index} variant="secondary" className="font-medium text-xs bg-gray-100 text-gray-700">
-                                                                            {String(method)}
-                                                                        </Badge>
-                                                                    ))}
+                                                            {ad.publicationType ? (
+                                                                <TooltipProvider delayDuration={0}>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger asChild>
+                                                                            <Badge variant="outline" className="text-xs px-2 border-[#7C3AED] text-[#7C3AED] cursor-help">
+                                                                                {ad.publicationType}
+                                                                            </Badge>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent className="rounded-lg bg-[#7C3AED] text-white border border-[#6D28D9] shadow-md w-64 min-h-24 p-3">
+                                                                            {ad.publicationFeeDetails ? (
+                                                                                <div className="text-xs leading-5">
+                                                                                    {(() => {
+                                                                                        const currency = ad.publicationFeeDetails?.currency || 'BRL';
+                                                                                        const fmt = new Intl.NumberFormat('pt-BR', { style: 'currency', currency });
+                                                                                        const pct = ad.publicationFeeDetails?.percentage;
+                                                                                        const fixed = ad.publicationFeeDetails?.fixedFee;
+                                                                                        const gross = ad.publicationFeeDetails?.grossAmount;
+                                                                                        const pctLabel = pct != null ? `${String(pct).replace('.', ',')}%` : null;
+                                                                                        return (
+                                                                                            <div className="space-y-1">
+                                                                                                <div className="font-semibold">{ad.publicationType || 'Publicação'}</div>
+                                                                                                <div>
+                                                                                                    Tarifa de venda {pctLabel || '—'}{typeof fixed === 'number' && fixed > 0 ? ` + ${fmt.format(fixed)}` : ''}
+                                                                                                </div>
+                                                                                                <div className="font-medium">A pagar {gross != null ? fmt.format(gross) : fmt.format(0)}</div>
+                                                                                            </div>
+                                                                                        );
+                                                                                    })()}
+                                                                                </div>
+                                                                            ) : ad.publicationCosts ? (
+                                                                                <div className="text-xs leading-5">
+                                                                                    {(() => {
+                                                                                        const currency = ad.publicationCosts?.currency || 'BRL';
+                                                                                        const fmt = new Intl.NumberFormat('pt-BR', { style: 'currency', currency });
+                                                                                        return (
+                                                                                            <div className="space-y-1">
+                                                                                                <div className="font-semibold">Custos</div>
+                                                                                                <div>Comissão: {fmt.format(ad.publicationCosts.commission || 0)}</div>
+                                                                                                <div>Frete: {fmt.format(ad.publicationCosts.shippingCost || 0)}</div>
+                                                                                                {ad.publicationCosts.tax ? <div>Taxas: {fmt.format(ad.publicationCosts.tax || 0)}</div> : null}
+                                                                                                <div className="font-medium">Total: {fmt.format(ad.publicationCosts.total || 0)}</div>
+                                                                                            </div>
+                                                                                        );
+                                                                                    })()}
+                                                                                </div>
+                                                                            ) : (
+                                                                                <div className="text-xs">Sem dados de custos</div>
+                                                                            )}
+                                                                        </TooltipContent>
+                                                                    </Tooltip>
+                                                                </TooltipProvider>
+                                                            ) : (
+                                                                <Badge className={`${getMarketplaceColor(ad.marketplace)} text-white text-xs px-2`}>
+                                                                    {ad.marketplace}
+                                                                </Badge>
+                                                            )}
+
+                                                            {ad.shippingTags && ad.shippingTags.length > 0 ? (
+                                                                <div className="flex flex-wrap gap-1.5 mt-1">
+                                                                    {ad.shippingTags.map((tag, index) => {
+                                                                        const t = String(tag || '').toLowerCase();
+                                                                        const label = t.includes('full') ? 'Full' : t.includes('flex') ? 'Flex' : t.includes('ag') ? 'AG' : t.includes('correios') ? 'Correios' : (tag as string);
+                                                                        return (
+                                                                            <Badge key={index} className="font-medium text-[10px] px-1.5 py-0.5 bg-[#7C3AED] text-white">
+                                                                                {t.includes('full') ? <Zap className="w-2.5 h-2.5 mr-1" /> : null}
+                                                                                {label}
+                                                                            </Badge>
+                                                                        );
+                                                                    })}
                                                                 </div>
                                                             ) : (
                                                                 <span className="text-sm text-gray-500">N/A</span>
                                                             )}
+
                                                             {(() => {
                                                                 const s = (ad.status || '').toLowerCase();
                                                                 if (s === 'paused' || s === 'inactive') {
                                                                     return (
-                                                                        <span className="text-xs font-medium text-novura-primary mt-1">
+                                                                        <span className="text-xs font-semibold mt-1" style={{ color: '#ff5917' }}>
                                                                             {ad.pauseReason || 'Pausado pelo seller'}
                                                                         </span>
                                                                     );
@@ -644,10 +1109,10 @@ export default function Anuncios() {
                                                                     </div>
                                                                 </div>
                                                                 <div className="flex items-center space-x-2">
-                                                                    <Percent className="w-4 h-4 text-novura-primary" />
+                                                                    <Package className="w-4 h-4 text-novura-primary" />
                                                                     <div className="text-sm">
-                                                                        <div className="font-bold text-gray-900">{ad.quality}%</div>
-                                                                        <div className="text-xs text-gray-500">Qualidade</div>
+                                                                        <div className="font-bold text-gray-900">{ad.stock}</div>
+                                                                        <div className="text-xs text-gray-500">Estoque</div>
                                                                     </div>
                                                                 </div>
                                                                 <div className="flex items-center space-x-2">
@@ -663,7 +1128,45 @@ export default function Anuncios() {
                                                         {/* Coluna de Controles (Switch, Medidor e Ações) */}
                                                         <div className="col-span-2">
                                                             <div className="flex items-center justify-center space-x-6">
-                                                                {/* Switch de Status */}
+                                                                {/* Medidor de Qualidade redesenhado */}
+                                                                <div className="flex flex-col items-center">
+                                                                    <svg width="84" height="56" viewBox="0 0 84 56">
+                                                                        {/* trilho cinza */}
+                                                                        <path d={`M12,46 A30,30 0 0,1 72,46`} fill="none" stroke="#E5E7EB" strokeWidth="8" strokeLinecap="round" />
+                                                                        {(() => {
+                                                                            const val = Math.max(0, Math.min(100, Number(ad.quality) || 0));
+                                                                            const r = 30; // raio do arco
+                                                                            const length = Math.PI * r; // comprimento do semicírculo
+                                                                            const pct = val / 100;
+                                                                            const dash = length * pct;
+                                                                            const remain = length - dash;
+                                                                            return (
+                                                                                <path
+                                                                                    d={`M12,46 A30,30 0 0,1 72,46`}
+                                                                                    fill="none"
+                                                                                    stroke="#7C3AED"
+                                                                                    strokeWidth="8"
+                                                                                    strokeLinecap="round"
+                                                                                    strokeDasharray={`${dash} ${remain}`}
+                                                                                />
+                                                                            );
+                                                                        })()}
+                                                                        <text x="42" y="35" textAnchor="middle" dominantBaseline="middle" fontSize="14" fill="#7C3AED" fontWeight="700">
+                                                                            {Math.max(0, Math.min(100, Number(ad.quality) || 0))}
+                                                                        </text>
+                                                                    </svg>
+                                                                    {ad.qualityLevel && (() => {
+                                                                        const raw = String(ad.qualityLevel || '').toLowerCase();
+                                                                        const label = raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
+                                                                        return (
+                                                                            <div className="mt-1 px-2 py-0.5 text-[10px] leading-4 border-2 border-[#7C3AED] text-[#7C3AED] rounded-full">
+                                                                                {label}
+                                                                            </div>
+                                                                        );
+                                                                    })()}
+                                                                </div>
+
+                                                                {/* Switch de Status (após o medidor) */}
                                                                 <div className="flex flex-col items-center">
                                                                     <span className="text-xs text-gray-600 mb-1">{((ad.status || '').toLowerCase() === 'active') ? 'Ativo' : 'Inativo'}</span>
                                                                     <Popover open={confirmPauseFor === ad.id} onOpenChange={(open) => { if (!open) setConfirmPauseFor(null); }}>
@@ -674,7 +1177,7 @@ export default function Anuncios() {
                                                                                     const isActive = (ad.status || '').toLowerCase() === 'active';
                                                                                     if (isActive && !checked) setConfirmPauseFor(ad.id); else toggleItemStatus(ad, checked);
                                                                                 }}
-                                                                                className="data-[state=checked]:bg-purple-600 data-[state=unchecked]:bg-gray-200"
+                                                                                className="data-[state=checked]:bg-[#7C3AED] data-[state=unchecked]:bg-gray-200"
                                                                             />
                                                                         </PopoverTrigger>
                                                                         <PopoverContent align="center" sideOffset={8} className="w-64 bg-white border shadow-md p-3 rounded-xl">
@@ -686,22 +1189,6 @@ export default function Anuncios() {
                                                                             </div>
                                                                         </PopoverContent>
                                                                     </Popover>
-                                                                </div>
-
-                                                                {/* Medidor de Qualidade */}
-                                                                <div className="flex flex-col items-center">
-                                                                    <svg width="60" height="40" viewBox="0 0 60 40">
-                                                                        <path d={`M8,32 A24,24 0 0,1 52,32`} fill="none" stroke="#eee" strokeWidth="6" />
-                                                                        {(() => {
-                                                                            const val = Math.max(0, Math.min(100, Number(ad.quality) || 0));
-                                                                            const r = 22; const c = Math.PI * r; const pct = val / 100; const dash = c * pct; const remain = c - dash;
-                                                                            return <path d={`M8,32 A24,24 0 0,1 52,32`} fill="none" stroke="#7c3aed" strokeWidth="6" strokeDasharray={`${dash} ${remain}`} />;
-                                                                        })()}
-                                                                        <text x="30" y="28" textAnchor="middle" fontSize="10" fill="#111" fontWeight="700">{Math.max(0, Math.min(100, Number(ad.quality) || 0))}%</text>
-                                                                    </svg>
-                                                                    {ad.qualityLevel && (
-                                                                        <div className="text-xs text-gray-600 -mt-1 text-center">{ad.qualityLevel}</div>
-                                                                    )}
                                                                 </div>
 
                                                                 {/* Menu de Ações */}
@@ -723,6 +1210,44 @@ export default function Anuncios() {
                                                                                     </DropdownMenuItem>
                                                                                 </DrawerTrigger>
                                                                                 <DrawerContent>
+                                                                                    <DrawerHeader>
+                                                                                        <DrawerTitle>Desempenho do anúncio</DrawerTitle>
+                                                                                        <DrawerDescription>Insights e recomendações para melhorar qualidade e conversão.</DrawerDescription>
+                                                                                    </DrawerHeader>
+                                                                                    <div className="px-6 pb-6 space-y-4">
+                                                                                        <div className="grid grid-cols-2 gap-4">
+                                                                                            <div className="flex items-center space-x-2">
+                                                                                                <BarChart className="w-4 h-4 text-novura-primary" />
+                                                                                                <div className="text-sm">
+                                                                                                    <div className="font-bold text-gray-900">{ad.visits}</div>
+                                                                                                    <div className="text-xs text-gray-500">Visitas</div>
+                                                                                                </div>
+                                                                                            </div>
+                                                                                            <div className="flex items-center space-x-2">
+                                                                                                <ShoppingCart className="w-4 h-4 text-novura-primary" />
+                                                                                                <div className="text-sm">
+                                                                                                    <div className="font-bold text-gray-900">{ad.sales}</div>
+                                                                                                    <div className="text-xs text-gray-500">Vendas</div>
+                                                                                                </div>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                        <div>
+                                                                                            <div className="text-xs font-medium text-gray-600 mb-2">Recomendações</div>
+                                                                                            {(() => {
+                                                                                                const hints = extractPerformanceHints(ad.performanceData, ad);
+                                                                                                if (!hints || hints.length === 0) {
+                                                                                                    return <div className="text-sm text-gray-500">Sem dados de desempenho disponíveis no momento.</div>;
+                                                                                                }
+                                                                                                return (
+                                                                                                    <ul className="list-disc list-inside text-sm text-gray-800 space-y-1">
+                                                                                                        {hints.map((h, idx) => (
+                                                                                                            <li key={idx}>{h}</li>
+                                                                                                        ))}
+                                                                                                    </ul>
+                                                                                                );
+                                                                                            })()}
+                                                                                        </div>
+                                                                                    </div>
                                                                                 </DrawerContent>
                                                                             </Drawer>
                                                                             <DropdownMenuItem>
@@ -739,26 +1264,27 @@ export default function Anuncios() {
                                                         </div>
                                                     </div>
                                                     
-                                                    {/* Dropdown de Variações */}
+                                                    {/* Variações (conteúdo expande abaixo do card; botão de toggle fica sob o checkbox) */}
                                                     {hasVariations && (
                                                         <div className="border-t border-gray-100 bg-gray-50">
-                                                            <Collapsible open={isExpanded} onOpenChange={() => toggleVariationsExpansion(ad.id)}>
-                                                                <CollapsibleTrigger asChild>
-                                                                    <Button variant="ghost" className="w-full justify-between p-3 text-sm text-gray-600 hover:text-gray-900">
-                                                                        <span>Variações ({variations.length})</span>
-                                                                        <ChevronDownIcon className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                                                                    </Button>
-                                                                </CollapsibleTrigger>
+                                                            <Collapsible open={isExpanded}>
                                                                 <CollapsibleContent className="px-3 pb-3">
                                                                     <div className="space-y-2">
                                                                         {variations.map((variation, index) => (
                                                                             <div key={variation.id} className="bg-white rounded-lg p-3 border border-gray-200">
-                                                                                <div className="grid grid-cols-4 gap-4 items-center text-xs">
-                                                                                    <div>
+                                                                                {/* Usamos grid de 12 colunas para alinhar 'Estoque' ao bloco de métricas acima */}
+                                                                                <div className="grid grid-cols-12 gap-4 items-center text-xs">
+                                                                                    {/* Foto da variação, posicionada sob a coluna do anúncio */}
+                                                                                    <div className="col-start-2 col-span-1 flex items-center justify-center">
+                                                                                        <img src={variation.image} alt={`Variação ${variation.sku}`} className="w-12 h-12 rounded-md object-cover bg-gray-100" />
+                                                                                    </div>
+                                                                                    {/* SKU */}
+                                                                                    <div className="col-start-3 col-span-2">
                                                                                         <div className="text-gray-500 mb-1">SKU</div>
                                                                                         <div className="font-medium text-gray-900">{variation.sku}</div>
                                                                                     </div>
-                                                                                    <div>
+                                                                                    {/* Tipos */}
+                                                                                    <div className="col-start-5 col-span-3">
                                                                                         <div className="text-gray-500 mb-1">Tipos</div>
                                                                                         <div className="space-y-1">
                                                                                             {variation.types.map((type, typeIndex) => (
@@ -768,15 +1294,12 @@ export default function Anuncios() {
                                                                                             ))}
                                                                                         </div>
                                                                                     </div>
-                                                                                    <div>
+                                                                                    {/* Estoque — alinhado sob o ícone de estoque (colunas 9-10 do card) */}
+                                                                                    <div className="col-start-9 col-span-2">
                                                                                         <div className="text-gray-500 mb-1">Estoque</div>
                                                                                         <div className={`font-medium ${variation.available_quantity < 10 ? 'text-red-600' : 'text-gray-900'}`}>
                                                                                             {variation.available_quantity}
                                                                                         </div>
-                                                                                    </div>
-                                                                                    <div>
-                                                                                        <div className="text-gray-500 mb-1">Preço</div>
-                                                                                        <div className="font-medium text-gray-900">R$ {variation.price.toFixed(2)}</div>
                                                                                     </div>
                                                                                 </div>
                                                                             </div>
@@ -797,6 +1320,13 @@ export default function Anuncios() {
                                     </div>
                                 </CardContent>
                             </Card>
+                        </TabsContent>
+                        <TabsContent value="promocoes" className="mt-0">
+                            <div className="bg-white rounded-xl border border-gray-200 p-6 text-gray-600">
+                                Em breve: gestão de promoções.
+                            </div>
+                        </TabsContent>
+                    </Tabs>
                         </div>
                     </main>
                 </div>

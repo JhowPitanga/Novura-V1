@@ -306,6 +306,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 return;
             }
 
+            // Silencia erros de requisição abortada (ex.: navegação interrompe a call)
+            if (err?.name === 'AbortError' || msg.includes('abort') || msg.includes('aborted')) {
+                setOrganizationId(null);
+                setPermissions(null);
+                setUserRole(null);
+                toast({
+                    title: "Logout realizado",
+                    description: "Você foi desconectado com sucesso.",
+                });
+                return;
+            }
+
             console.error('SignOut error:', err);
             toast({
                 title: "Erro",

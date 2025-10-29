@@ -1,5 +1,6 @@
 import type { DateRange } from "react-day-picker";
 import { supabase } from "@/integrations/supabase/client";
+import { calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs } from "@/lib/datetime";
 
 type SalesByStateResult = {
   byState: { state: string; total: number }[];
@@ -46,8 +47,9 @@ export async function getSalesByState(range?: DateRange, marketplace?: string): 
     return { byState: [], byRegion: [], total: 0 };
   }
 
-  const fromISO = from.toISOString();
-  const toISO = to.toISOString();
+  // Use São Paulo timezone day boundaries to build the filter window
+  const fromISO = new Date(calendarStartOfDaySPEpochMs(from)).toISOString();
+  const toISO = new Date(calendarEndOfDaySPEpochMs(to)).toISOString();
 
   let query = supabase
     .from("orders")

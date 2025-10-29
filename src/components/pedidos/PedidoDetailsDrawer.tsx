@@ -3,7 +3,6 @@ import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerDescription, Dr
 import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useId } from "react";
 import { PedidoDetails } from "@/components/pedidos/PedidoDetails";
-import { CreditCard, TrendingUp } from "lucide-react";
 
 export interface PedidoDetailsDrawerProps {
     pedido: Pedido | null;
@@ -40,33 +39,7 @@ export function PedidoDetailsDrawer({ pedido, onOpenChange, open }: PedidoDetail
         }
     }, [open]);
 
-    // Cálculos financeiros para os cards abaixo do drawer (alinhados com PedidoDetails)
-    const comissaoPercentual = 0.12; // 12%
-    const impostosPercentual = 0.08; // 8%
-    const custoProdutosFixo = 999.0; // MOCK
-    const custosExtras = 80.0; // MOCK
-    const valorRecebidoFrete = 109.9; // MOCK
-    const freteCusto = 159.0; // MOCK
-    const cupomFixo = 50.0; // MOCK
-
-    const valorBrutoItens = pedido.valor;
-    const comissaoMarketplace = valorBrutoItens * comissaoPercentual;
-    const impostosCalculados = valorBrutoItens * impostosPercentual;
-
-    const valorLiquidoReceber =
-        valorBrutoItens +
-        valorRecebidoFrete -
-        comissaoMarketplace -
-        impostosCalculados -
-        cupomFixo;
-
-    const lucroPedido =
-        valorLiquidoReceber -
-        custoProdutosFixo -
-        custosExtras -
-        (freteCusto - valorRecebidoFrete);
-
-    const margemCalculada = valorBrutoItens > 0 ? (lucroPedido / valorBrutoItens) * 100 : 0;
+    // Os cálculos financeiros agora são realizados dentro de PedidoDetails usando pedido.financeiro
 
     return (
         <>
@@ -85,7 +58,7 @@ export function PedidoDetailsDrawer({ pedido, onOpenChange, open }: PedidoDetail
                         <DrawerTitle id={titleId}>Detalhes do Pedido #{pedido.id}</DrawerTitle>
                         <DrawerDescription id={descriptionId}>Informações detalhadas sobre o pedido e seus itens.</DrawerDescription>
                     </DrawerHeader>
-                    <div className="p-4 space-y-4">
+                    <div className="p-4 space-y-6">
                         <PedidoDetails pedido={pedido} />
                     </div>
                     <DrawerFooter>

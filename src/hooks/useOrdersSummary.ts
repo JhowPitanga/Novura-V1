@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DateRange } from "react-day-picker";
 import { supabase } from "@/integrations/supabase/client";
+import { calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs } from "@/lib/datetime";
 
 type BreakdownItem = {
   marketplace: string;
@@ -28,8 +29,9 @@ export function useOrdersSummary(range?: DateRange, marketplace?: string) {
           return;
         }
 
-        const fromISO = from.toISOString();
-        const toISO = to.toISOString();
+        // Use São Paulo timezone day boundaries to build the filter window
+        const fromISO = new Date(calendarStartOfDaySPEpochMs(from)).toISOString();
+        const toISO = new Date(calendarEndOfDaySPEpochMs(to)).toISOString();
 
         // Try to query orders grouped by marketplace
         let query = supabase

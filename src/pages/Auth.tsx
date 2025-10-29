@@ -10,6 +10,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { useAuth } from '@/hooks/useAuth';
 import { Eye, EyeOff, Loader2, HelpCircle, Mail, Sparkles } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import LoadingOverlay from "@/components/LoadingOverlay";
 
 // Animated eye pupil component
 interface PupilProps {
@@ -103,6 +104,13 @@ export default function Auth() {
   const navigate = useNavigate();
   const { user, signIn } = useAuth();
   const [error, setError] = useState<string>('');
+  const [isLoginLoading, setIsLoginLoading] = useState(false);
+  const loginLoadingTimeoutRef = useRef<number | null>(null);
+  const loginLoadingShownAtRef = useRef<number | null>(null);
+  const MIN_LOGIN_LOADER_MS = 5000;
+
+  // Redirect if already authenticated
+  useEffect(() => { if (user && !isLoginLoading) { navigate('/', { replace: true }); } }, [user, isLoginLoading, navigate]);
 
   // Animation states
   const [mouseX, setMouseX] = useState<number>(0);
@@ -206,8 +214,34 @@ export default function Auth() {
     if (!email || !password) return;
     setError('');
     setIsLoading(true);
+    setIsLoginLoading(true);
+    loginLoadingShownAtRef.current = Date.now();
+    if (loginLoadingTimeoutRef.current) {
+      clearTimeout(loginLoadingTimeoutRef.current);
+    }
+    loginLoadingTimeoutRef.current = window.setTimeout(() => {
+      setIsLoginLoading(false);
+      loginLoadingTimeoutRef.current = null;
+    }, 5000);
+
     const { error: signInError } = await signIn(email, password);
     setIsLoading(false);
+
+    // Garante tempo mínimo de exibição do loader
+    const shownAt = loginLoadingShownAtRef.current ?? Date.now();
+    const elapsed = Date.now() - shownAt;
+    const remaining = Math.max(0, MIN_LOGIN_LOADER_MS - elapsed);
+    if (remaining > 0) {
+      await new Promise((resolve) => setTimeout(resolve, remaining));
+    }
+
+    if (loginLoadingTimeoutRef.current) {
+      clearTimeout(loginLoadingTimeoutRef.current);
+      loginLoadingTimeoutRef.current = null;
+    }
+    setIsLoginLoading(false);
+    loginLoadingShownAtRef.current = null;
+
     if (signInError) {
       setError(signInError.message || 'Falha ao entrar.');
       return;
@@ -247,6 +281,7 @@ export default function Auth() {
 
   return (
     <div className="min-h-screen bg-background">
+      {activeTab === 'login' && isLoginLoading && <LoadingOverlay />}
       <div className="grid lg:grid-cols-2 h-full min-h-screen">
         {/* Lado esquerdo - animação personalizada para Login; mantém original no Signup */}
         <div className="hidden lg:flex flex-col border-r bg-white/70 backdrop-blur-sm relative">

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { AppSidebar } from "@/components/AppSidebar";
@@ -13,7 +13,9 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { getSalesByState } from "@/hooks/useSalesByState";
-import { LineChart, Line, XAxis, YAxis, PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
+import { getOrdersMetrics } from "@/hooks/useOrdersMetrics";
+import { getListingsRanking, type ListingRankingItem } from "@/hooks/useListingsRanking";
+import { LineChart, Line, XAxis, YAxis, PieChart, Pie, Cell, ResponsiveContainer, CartesianGrid } from "recharts";
 import { ComposableMap, Geographies, Geography, ZoomableGroup } from "react-simple-maps";
 import { scaleLinear } from "d3-scale";
 import { TrendingUp, DollarSign, Package, MapPin, Award, Calendar as CalendarIcon, Filter } from "lucide-react";
@@ -22,44 +24,97 @@ import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import type { DateRange } from "react-day-picker";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { useOrdersSummary } from "@/hooks/useOrdersSummary";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 const navigationItems = [
   { title: "Visão Geral", path: "", description: "Métricas principais" },
   { title: "Por Produto", path: "/produtos", description: "Desempenho individual" },
 ];
 
-const chartData = [
-  { day: "Seg", value: 2400, label: "R$ 2.400" },
-  { day: "Ter", value: 1398, label: "R$ 1.398" },
-  { day: "Qua", value: 9800, label: "R$ 9.800" },
-  { day: "Qui", value: 3908, label: "R$ 3.908" },
-  { day: "Sex", value: 4800, label: "R$ 4.800" },
-  { day: "Sáb", value: 3800, label: "R$ 3.800" },
-  { day: "Dom", value: 4300, label: "R$ 4.300" },
-];
-
-const produtosVendidos = [
-  { id: 1, nome: "iPhone 15 Pro Max", pedidos: 15, unidades: 18, valor: 161999.82, margem: 23.5 },
-  { id: 2, nome: "MacBook Air M3", pedidos: 8, unidades: 8, valor: 103999.92, margem: 18.2 },
-  { id: 3, nome: "Samsung Galaxy S24", pedidos: 22, unidades: 25, valor: 149999.75, margem: 25.8 },
-  { id: 4, nome: "iPad Pro 12.9", pedidos: 12, unidades: 14, valor: 132999.86, margem: 19.7 },
-];
+// Dados mock removidos: gráficos, totais e ranking serão calculados por hooks
 
 function VisaoGeral() {
-  const [dateRange, setDateRange] = useState<DateRange | undefined>({ from: new Date(), to: new Date() });
+  // Período padrão: últimos 7 dias
+  const now = new Date();
+  const defaultFrom = new Date(now);
+  defaultFrom.setDate(defaultFrom.getDate() - 6);
+  const defaultRange: DateRange = { from: defaultFrom, to: now };
+
+  // Range aplicado (usado nas consultas) e range temporário (UI do popover)
+  const [appliedDateRange, setAppliedDateRange] = useState<DateRange | undefined>(defaultRange);
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(["vendas"]);
   const [isDatePopoverOpen, setIsDatePopoverOpen] = useState(false);
-  const [tempDateRange, setTempDateRange] = useState<DateRange | undefined>(dateRange);
-  const [activeQuick, setActiveQuick] = useState<"hoje" | "7dias" | "30dias" | null>(null);
+  const [tempDateRange, setTempDateRange] = useState<DateRange | undefined>(defaultRange);
+  const [activeQuick, setActiveQuick] = useState<"hoje" | "7dias" | "30dias" | null>("7dias");
   const [selectedMarketplace, setSelectedMarketplace] = useState<string>("todos");
   const [mapZoom, setMapZoom] = useState(1);
   const [mapCenter, setMapCenter] = useState<[number, number]>([-50, -15]);
   const [hoverInfo, setHoverInfo] = useState<{ name: string; total: number } | null>(null);
   const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
 
+  // Métricas reais
+  const [totals, setTotals] = useState({ vendas: 0, unidades: 0, pedidos: 0, ticketMedio: 0 });
+  const [series, setSeries] = useState<any[]>([]);
+  const [marketplaceBreakdown, setMarketplaceBreakdown] = useState<{ marketplace: string; total: number }[]>([]);
+  const [topListings, setTopListings] = useState<ListingRankingItem[]>([]);
+  const [loadingTop, setLoadingTop] = useState<boolean>(false);
+
+  const { organizationId } = useAuth();
+  const [connectedMarketplaces, setConnectedMarketplaces] = useState<Array<{ display: string; slug: string }>>([]);
+
+  // Map raw names or slugs to a consistent display name used in the DB
+  const toDisplayMarketplaceName = (name: string): string => {
+    if (!name) return name;
+    const n = name.toLowerCase();
+    if (n === 'mercado_livre' || n === 'mercadolivre' || n === 'mercado livre') return 'Mercado Livre';
+    if (n === 'amazon') return 'Amazon';
+    if (n === 'shopee') return 'Shopee';
+    if (n === 'magalu' || n === 'magazineluiza' || n === 'magazine luiza' || n === 'magazine_luiza') return 'Magazine Luiza';
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  };
+
+  const slugify = (display: string): string => {
+    return display
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/\s+/g, '')
+      .replace(/[^a-z0-9]/g, '');
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      if (!organizationId) return;
+      try {
+        const { data, error } = await (supabase as any)
+          .from('marketplace_integrations')
+          .select('marketplace_name')
+          .eq('organizations_id', organizationId);
+        if (error) throw error;
+        const names = (data || []).map((r: any) => toDisplayMarketplaceName(String(r?.marketplace_name || ''))).filter(Boolean);
+        const uniq = Array.from(new Set(names));
+        const list = uniq.map((dn) => ({ display: dn, slug: slugify(dn) }));
+        if (!mounted) return;
+        setConnectedMarketplaces(list);
+      } catch (_) {
+        if (!mounted) return;
+        setConnectedMarketplaces([]);
+      }
+    };
+    load();
+    return () => { mounted = false; };
+  }, [organizationId]);
+
+  // Compute the actual display name to query on orders table
+  const selectedMarketplaceDisplay = useMemo(() => {
+    if (!selectedMarketplace || selectedMarketplace === 'todos') return 'todos';
+    return toDisplayMarketplaceName(selectedMarketplace);
+  }, [selectedMarketplace]);
+
   const handleDateRangeChange = (range: DateRange | undefined) => {
-    setDateRange(range);
+    setAppliedDateRange(range);
   };
 
   const applyQuickRange = (key: "hoje" | "7dias" | "30dias") => {
@@ -67,77 +122,85 @@ function VisaoGeral() {
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
     const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
     if (key === "hoje") {
-      setDateRange({ from: startOfToday, to: endOfToday });
+      setTempDateRange({ from: startOfToday, to: endOfToday });
     } else if (key === "7dias") {
       const from = new Date(now);
       from.setDate(from.getDate() - 6);
-      setDateRange({ from, to: endOfToday });
+      setTempDateRange({ from, to: endOfToday });
     } else {
       const from = new Date(now);
       from.setDate(from.getDate() - 29);
-      setDateRange({ from, to: endOfToday });
+      setTempDateRange({ from, to: endOfToday });
     }
     setActiveQuick(key);
-    setIsDatePopoverOpen(false);
+    // Não fecha e não aplica automaticamente; aplicar no botão "Aplicar"
   };
 
   useEffect(() => {
     if (isDatePopoverOpen) {
-      setTempDateRange(dateRange);
+      setTempDateRange(appliedDateRange);
     }
-  }, [isDatePopoverOpen]);
+  }, [isDatePopoverOpen, appliedDateRange?.from?.toString(), appliedDateRange?.to?.toString()]);
 
   const toggleMetric = (metric: string) => {
     setSelectedMetrics((prev) => (prev.includes(metric) ? prev.filter((m) => m !== metric) : [...prev, metric]));
   };
 
   const metricColors: Record<string, string> = {
-    vendas: "#0ea5e9",
-    unidades: "#8b5cf6",
-    pedidos: "#a78bfa",
-    ticketMedio: "#f59e0b",
-    margem: "#22c55e",
+    vendas: "#7c3aed",
+    unidades: "#a78bfa",
+    pedidos: "#c4b5fd",
+    ticketMedio: "#6d28d9",
   };
 
   const isSingleDay =
-    !!dateRange?.from &&
-    !!dateRange?.to &&
-    dateRange.from.toDateString() === dateRange.to.toDateString();
+    !!appliedDateRange?.from &&
+    !!appliedDateRange?.to &&
+    appliedDateRange.from.toDateString() === appliedDateRange.to.toDateString();
 
-  const generateChartData = () => {
-    const data: any[] = [];
-    if (isSingleDay) {
-      for (let h = 0; h < 24; h++) {
-        const label = `${String(h).padStart(2, "0")}:00`;
-        const point: any = { label };
-        point.vendas = Math.floor(Math.random() * 20) + (h % 5 === 0 ? 15 : 5);
-        point.unidades = Math.floor(Math.random() * 15) + (h % 6 === 0 ? 10 : 3);
-        point.pedidos = Math.floor(Math.random() * 12) + (h % 4 === 0 ? 8 : 2);
-        point.ticketMedio = Math.floor(Math.random() * 200) + 120;
-        point.margem = Math.floor(Math.random() * 15) + 10;
-        data.push(point);
+  // Buscar métricas reais (filtradas por data de pagamento e marketplace)
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const res = await getOrdersMetrics(appliedDateRange, selectedMarketplaceDisplay, organizationId);
+        if (!mounted) return;
+        setTotals(res.totals);
+        setSeries(res.series);
+        setMarketplaceBreakdown(res.byMarketplace);
+      } catch (e) {
+        if (!mounted) return;
+        setTotals({ vendas: 0, unidades: 0, pedidos: 0, ticketMedio: 0 });
+        setSeries([]);
+        setMarketplaceBreakdown([]);
       }
-    } else {
-      const from = dateRange?.from ?? new Date();
-      const to = dateRange?.to ?? new Date();
-      const days = Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-      for (let i = 0; i < days; i++) {
-        const d = new Date(from);
-        d.setDate(from.getDate() + i);
-        const label = format(d, "dd/MM", { locale: ptBR });
-        const point: any = { label };
-        point.vendas = Math.floor(Math.random() * 8000) + 2000;
-        point.unidades = Math.floor(Math.random() * 120) + 20;
-        point.pedidos = Math.floor(Math.random() * 90) + 10;
-        point.ticketMedio = Math.floor(Math.random() * 200) + 100;
-        point.margem = Math.floor(Math.random() * 15) + 8;
-        data.push(point);
-      }
-    }
-    return data;
-  };
+    };
+    load();
+    return () => { mounted = false; };
+  }, [appliedDateRange?.from?.toString(), appliedDateRange?.to?.toString(), selectedMarketplaceDisplay, organizationId]);
 
-  const { breakdown: marketplaceBreakdown } = useOrdersSummary(dateRange, selectedMarketplace);
+  // Ranking de anúncios mais vendidos (com margem), filtrado por data de pagamento
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      if (!organizationId) { setTopListings([]); return; }
+      setLoadingTop(true);
+      try {
+        const data = await getListingsRanking(appliedDateRange, selectedMarketplaceDisplay, organizationId, 50);
+        if (!mounted) return;
+        setTopListings(data);
+      } catch (_) {
+        if (!mounted) return;
+        setTopListings([]);
+      } finally {
+        if (!mounted) return;
+        setLoadingTop(false);
+      }
+    };
+    load();
+    return () => { mounted = false; };
+  }, [appliedDateRange?.from?.toString(), appliedDateRange?.to?.toString(), selectedMarketplaceDisplay, organizationId]);
+
   // API de vendas por estado
   // Importação dinâmica para evitar ciclo durante HMR
   const [stateSales, setStateSales] = useState<{ state: string; total: number }[]>([]);
@@ -147,7 +210,7 @@ function VisaoGeral() {
     let mounted = true;
     const load = async () => {
       try {
-        const res = await getSalesByState(dateRange, selectedMarketplace);
+        const res = await getSalesByState(appliedDateRange, selectedMarketplaceDisplay);
         if (!mounted) return;
         setStateSales(res.byState);
         setRegionSales(res.byRegion);
@@ -160,7 +223,7 @@ function VisaoGeral() {
     };
     load();
     return () => { mounted = false; };
-  }, [dateRange?.from?.toString(), dateRange?.to?.toString(), selectedMarketplace]);
+  }, [appliedDateRange?.from?.toString(), appliedDateRange?.to?.toString(), selectedMarketplaceDisplay]);
   const salesSources = marketplaceBreakdown.map((m) => ({ name: m.marketplace, value: m.total }));
   const totalSources = salesSources.reduce((acc, s) => acc + s.value, 0);
   const pieData = salesSources.length ? salesSources.map((s) => ({ name: s.name, value: s.value })) : [{ name: "Sem dados", value: 1 }];
@@ -189,18 +252,18 @@ function VisaoGeral() {
     <div className="space-y-6">
       {/* Filtros */}
       <div className="flex items-center space-x-4">
-        <Popover open={isDatePopoverOpen} onOpenChange={(open) => { setIsDatePopoverOpen(open); if (open) setTempDateRange(dateRange); }}>
+        <Popover open={isDatePopoverOpen} onOpenChange={(open) => { setIsDatePopoverOpen(open); if (open) setTempDateRange(appliedDateRange); }}>
           <PopoverTrigger asChild>
             <Button variant="outline" className="w-[320px] justify-start text-left font-normal">
               <CalendarIcon className="mr-2 h-4 w-4" />
-              {dateRange?.from ? (
-                dateRange.to ? (
+              {appliedDateRange?.from ? (
+                appliedDateRange.to ? (
                   <>
-                    {format(dateRange.from, "dd MMM, y", { locale: ptBR })} -{" "}
-                    {format(dateRange.to, "dd MMM, y", { locale: ptBR })}
+                    {format(appliedDateRange.from, "dd MMM, y", { locale: ptBR })} -{" "}
+                    {format(appliedDateRange.to, "dd MMM, y", { locale: ptBR })}
                   </>
                 ) : (
-                  format(dateRange.from, "dd MMM, y", { locale: ptBR })
+                  format(appliedDateRange.from, "dd MMM, y", { locale: ptBR })
                 )
               ) : (
                 "Selecione o período"
@@ -236,15 +299,13 @@ function VisaoGeral() {
               <Calendar
                 initialFocus
                 mode="range"
-                defaultMonth={tempDateRange?.from || new Date(new Date().getFullYear(), 8, 1)}
+                defaultMonth={tempDateRange?.from || new Date()}
                 selected={tempDateRange}
                 onSelect={setTempDateRange}
                 numberOfMonths={1}
-                fromMonth={new Date(new Date().getFullYear(), 8, 1)}
-                toMonth={new Date(new Date().getFullYear(), 11, 1)}
               />
               <div className="flex justify-end">
-                <Button onClick={() => { setDateRange(tempDateRange); setActiveQuick(null); setIsDatePopoverOpen(false); }}>
+                <Button onClick={() => { handleDateRangeChange(tempDateRange); setActiveQuick(null); setIsDatePopoverOpen(false); }}>
                   Aplicar
                 </Button>
               </div>
@@ -257,90 +318,59 @@ function VisaoGeral() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="todos">Todos</SelectItem>
-            <SelectItem value="mercadolivre">Mercado Livre</SelectItem>
-            <SelectItem value="amazon">Amazon</SelectItem>
-            <SelectItem value="shopee">Shopee</SelectItem>
-            <SelectItem value="magazineluiza">Magazine Luiza</SelectItem>
+            {connectedMarketplaces.map((m) => (
+              <SelectItem key={m.slug} value={m.slug}>{m.display}</SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
 
       {/* Métricas principais */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
-        <Card onClick={() => toggleMetric("vendas")} className={`cursor-pointer ${selectedMetrics.includes("vendas") ? "ring-2 ring-[#0ea5e9]" : ""}`}>
+        <Card onClick={() => toggleMetric("vendas")} className={`cursor-pointer ${selectedMetrics.includes("vendas") ? "ring-2 ring-[#7c3aed]" : ""}`}>
           {selectedMetrics.includes("vendas") && <div className="h-1 w-full" style={{ backgroundColor: metricColors.vendas }} />}
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium text-gray-600">Vendas</CardTitle>
-            <DollarSign className="h-4 w-4 text-green-600" />
+            <DollarSign className="h-4 w-4 text-violet-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-gray-900">R$ 12.847</div>
-            <p className="text-xs text-green-600 flex items-center mt-1">
-              <TrendingUp className="w-3 h-3 mr-1" />
-              +18% vs ontem
-            </p>
+            <div className="text-2xl font-bold text-gray-900">R$ {totals.vendas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
           </CardContent>
         </Card>
 
-        <Card onClick={() => toggleMetric("unidades")} className={`cursor-pointer ${selectedMetrics.includes("unidades") ? "ring-2 ring-[#8b5cf6]" : ""}`}>
+        <Card onClick={() => toggleMetric("unidades")} className={`cursor-pointer ${selectedMetrics.includes("unidades") ? "ring-2 ring-[#a78bfa]" : ""}`}>
           {selectedMetrics.includes("unidades") && <div className="h-1 w-full" style={{ backgroundColor: metricColors.unidades }} />}
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium text-gray-600">Unidades Vendidas</CardTitle>
-            <Package className="h-4 w-4 text-blue-600" />
+            <Package className="h-4 w-4 text-violet-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-gray-900">147</div>
-            <p className="text-xs text-blue-600 flex items-center mt-1">
-              <TrendingUp className="w-3 h-3 mr-1" />
-              +22% vs ontem
-            </p>
+            <div className="text-2xl font-bold text-gray-900">{totals.unidades}</div>
           </CardContent>
         </Card>
 
-        <Card onClick={() => toggleMetric("pedidos")} className={`cursor-pointer ${selectedMetrics.includes("pedidos") ? "ring-2 ring-[#a78bfa]" : ""}`}>
+        <Card onClick={() => toggleMetric("pedidos")} className={`cursor-pointer ${selectedMetrics.includes("pedidos") ? "ring-2 ring-[#c4b5fd]" : ""}`}>
           {selectedMetrics.includes("pedidos") && <div className="h-1 w-full" style={{ backgroundColor: metricColors.pedidos }} />}
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium text-gray-600">Pedidos</CardTitle>
-            <Package className="h-4 w-4 text-purple-600" />
+            <Package className="h-4 w-4 text-violet-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-gray-900">89</div>
-            <p className="text-xs text-purple-600 flex items-center mt-1">
-              <TrendingUp className="w-3 h-3 mr-1" />
-              +12% vs ontem
-            </p>
+            <div className="text-2xl font-bold text-gray-900">{totals.pedidos}</div>
           </CardContent>
         </Card>
 
-        <Card onClick={() => toggleMetric("ticketMedio")} className={`cursor-pointer ${selectedMetrics.includes("ticketMedio") ? "ring-2 ring-[#f59e0b]" : ""}`}>
+        <Card onClick={() => toggleMetric("ticketMedio")} className={`cursor-pointer ${selectedMetrics.includes("ticketMedio") ? "ring-2 ring-[#6d28d9]" : ""}`}>
           {selectedMetrics.includes("ticketMedio") && <div className="h-1 w-full" style={{ backgroundColor: metricColors.ticketMedio }} />}
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium text-gray-600">Ticket Médio</CardTitle>
-            <DollarSign className="h-4 w-4 text-orange-600" />
+            <DollarSign className="h-4 w-4 text-violet-700" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-gray-900">R$ 144</div>
-            <p className="text-xs text-orange-600 flex items-center mt-1">
-              <TrendingUp className="w-3 h-3 mr-1" />
-              +5% vs ontem
-            </p>
+            <div className="text-2xl font-bold text-gray-900">R$ {totals.ticketMedio.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
           </CardContent>
         </Card>
 
-        <Card onClick={() => toggleMetric("margem")} className={`cursor-pointer ${selectedMetrics.includes("margem") ? "ring-2 ring-[#22c55e]" : ""}`}>
-          {selectedMetrics.includes("margem") && <div className="h-1 w-full" style={{ backgroundColor: metricColors.margem }} />}
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Margem</CardTitle>
-            <Award className="h-4 w-4 text-green-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-gray-900">22.5%</div>
-            <p className="text-xs text-green-600 flex items-center mt-1">
-              <TrendingUp className="w-3 h-3 mr-1" />
-              +1.2% vs ontem
-            </p>
-          </CardContent>
-        </Card>
       </div>
 
       {/* Gráfico Principal */}
@@ -356,12 +386,12 @@ function VisaoGeral() {
               unidades: { label: "Unidades", color: metricColors.unidades },
               pedidos: { label: "Pedidos", color: metricColors.pedidos },
               ticketMedio: { label: "Ticket Médio", color: metricColors.ticketMedio },
-              margem: { label: "Margem", color: metricColors.margem },
             }}
             className="h-[380px] w-full"
           >
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={generateChartData()}>
+              <LineChart data={series}>
+                <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="label" />
                 <YAxis />
                 <ChartTooltip content={<ChartTooltipContent />} />
@@ -422,17 +452,18 @@ function VisaoGeral() {
         </CardContent>
       </Card>
 
-      {/* Lista de Produtos Vendidos */}
+      {/* Ranking de Anúncios Vendidos */}
       <Card>
         <CardHeader>
-          <CardTitle>Produtos Vendidos no Período</CardTitle>
-          <CardDescription>Lista completa de produtos vendidos</CardDescription>
+          <CardTitle>Anúncios Vendidos no Período</CardTitle>
+          <CardDescription>Mais vendidos no período filtrado (por data de pagamento)</CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Produto</TableHead>
+                <TableHead>Anúncio</TableHead>
+                <TableHead>Marketplace</TableHead>
                 <TableHead>Pedidos</TableHead>
                 <TableHead>Unidades Vendidas</TableHead>
                 <TableHead>Valor Total</TableHead>
@@ -440,19 +471,32 @@ function VisaoGeral() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {produtosVendidos.map((produto) => (
-                <TableRow key={produto.id}>
-                  <TableCell className="font-medium">{produto.nome}</TableCell>
-                  <TableCell>{produto.pedidos}</TableCell>
-                  <TableCell>{produto.unidades}</TableCell>
-                  <TableCell>R$ {produto.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
-                  <TableCell>
-                    <Badge variant={produto.margem > 20 ? "default" : "secondary"}>
-                      {produto.margem}%
-                    </Badge>
-                  </TableCell>
+              {loadingTop ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-sm text-gray-600">Carregando ranking de anúncios...</TableCell>
                 </TableRow>
-              ))}
+              ) : topListings.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-sm text-gray-600">Sem vendas no período selecionado.</TableCell>
+                </TableRow>
+              ) : (
+                topListings.map((ad) => (
+                  <TableRow key={ad.marketplace_item_id}>
+                    <TableCell className="font-medium">{ad.title}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline">{ad.marketplace}</Badge>
+                    </TableCell>
+                    <TableCell>{ad.pedidos}</TableCell>
+                    <TableCell>{ad.unidades}</TableCell>
+                    <TableCell>R$ {ad.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
+                    <TableCell>
+                      <Badge variant={ad.margem >= 0 ? "default" : "secondary"}>
+                        {(ad.margem * 100).toFixed(1)}%
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
             </TableBody>
           </Table>
         </CardContent>

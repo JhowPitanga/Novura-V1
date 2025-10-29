@@ -28,6 +28,74 @@ function b64UrlToUint8(b64url: string): Uint8Array { let b64 = b64url.replace(/-
 // Extract user id (sub) from JWT without calling auth APIs
 function decodeJwtSub(jwt: string): string | null { try { const parts = jwt.split("."); if (parts.length < 2) return null; const payloadBytes = b64UrlToUint8(parts[1]); const payload = JSON.parse(new TextDecoder().decode(payloadBytes)); return (payload?.sub as string) || (payload?.user_id as string) || null; } catch { return null; } }
 
+// Mapeamento de status interno conforme regras discutidas
+function computeInternalStatusForOrder(o: any, shipment?: any): string {
+  const rawStatus = String(o?.status || "").toLowerCase();
+  const isCancelled = rawStatus === "cancelled";
+  if (isCancelled) return "Cancelados ou devolvidos";
+
+  const tags: string[] = Array.isArray(o?.tags) ? o.tags.map((t: any) => String(t).toLowerCase()) : [];
+  const shipStatus = String(shipment?.status || "").toLowerCase();
+  const logisticType = String(shipment?.logistic_type || shipment?.mode || "").toLowerCase();
+
+  // FULL sempre ENVIADO (exceto cancelados — já tratado acima)
+  if (logisticType === "fulfillment") return "Enviado";
+
+  // Progresso de envio
+  if (["shipped", "in_transit", "delivered"].includes(shipStatus)) return "Enviado";
+
+  // Aguardando Coleta
+  if (["ready_to_ship", "handling"].includes(shipStatus)) return "Aguardando Coleta";
+
+  // Impressão de etiquetas
+  if (shipStatus === "ready_to_print" || tags.includes("to_print") || tags.includes("ready_to_print")) return "Impressão";
+
+  // Emissão de NF (heurística: pago e sem envio pronto)
+  if (rawStatus === "paid") {
+    if (tags.includes("invoice_pending") || tags.includes("ready_for_invoicing")) return "Emissão de NF";
+    if (!shipStatus || shipStatus === "") return "Emissão de NF";
+  }
+
+  // A vincular: itens sem SKU/custom
+  const items = Array.isArray(o?.order_items) ? o.order_items : [];
+  const hasSku = items.some((it: any) => (it?.item?.seller_sku || it?.item?.seller_custom_field));
+  if (!hasSku) return "A vincular";
+
+  // Fallback genérico
+  return "A vincular";
+}
+
+// Classifica tipo de envio (full, flex, agencia, no_shipping) a partir de um shipment
+function classifyShippingType(sh: any): string | null {
+  if (!sh) return null;
+  const lt = String(sh?.logistic_type || sh?.shipping_mode || sh?.mode || "").toLowerCase();
+  if (!lt) return null;
+  if (lt === "fulfillment" || lt === "fbm") return "full";
+  if (lt === "self_service") return "flex";
+  if (lt === "drop_off" || lt === "xd_drop_off" || lt === "cross_docking") return "agencia";
+  if (lt === "me2" || lt === "custom") return "agencia";
+  return null;
+}
+
+// Helper to fetch shipment details with the new response format
+async function fetchShipmentDetails(shipmentId: string, accessToken: string): Promise<any | null> {
+  if (!shipmentId) return null;
+  try {
+    const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+        // Prefer new format which includes lead_time, logistic, addresses, etc.
+        "x-format-new": "true",
+      },
+    });
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (_) {
+    return null;
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -40,27 +108,48 @@ serve(async (req) => {
   }
   if (req.method !== "POST" && req.method !== "GET") return jsonResponse({ error: "Method not allowed" }, 405);
 
+  // Enhanced logging for debugging
+  console.log(`[SYNC-ORDERS] Received ${req.method} for ${req.url}`);
+  const headersObject = Object.fromEntries(req.headers.entries());
+  console.log(`[SYNC-ORDERS] Headers: ${JSON.stringify(headersObject, null, 2)}`);
+
   try {
+    let body: any = {};
+    if (req.method === "POST") {
+      const bodyText = await req.text();
+      console.log(`[SYNC-ORDERS] Body: ${bodyText}`);
+      if (bodyText) {
+        try {
+          body = JSON.parse(bodyText);
+        } catch (e) {
+          console.error("[SYNC-ORDERS] Failed to parse JSON body:", e);
+          return jsonResponse({ error: "Invalid JSON format" }, 400);
+        }
+      }
+    }
+
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
     if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ENC_KEY_B64) {
+      console.error("[SYNC-ORDERS] Missing service configuration");
       return jsonResponse({ error: "Missing service configuration" }, 500);
     }
 
     const aesKey = await importAesGcmKey(ENC_KEY_B64);
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return jsonResponse({ error: "Missing Authorization header" }, 401);
+    const apiKeyHeader = req.headers.get("apikey") || "";
+    const isInternalCall = req.headers.get("x-internal-call") === "1" && !!apiKeyHeader && apiKeyHeader === SERVICE_ROLE_KEY;
+    if (!authHeader && !isInternalCall) {
+      console.error("[SYNC-ORDERS] Missing Authorization header or invalid internal call");
+      return jsonResponse({ error: "Missing Authorization header" }, 401);
+    }
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
     // Input
     const url = new URL(req.url);
     const sellerIdFromQuery = url.searchParams.get("seller_id");
-    let body: any = null;
-    if (req.method === "POST") {
-      try { body = await req.json(); } catch { body = null; }
-    }
     let organizationId: string | undefined = body?.organizationId as string | undefined;
     const sellerIdInput: string | undefined = (body?.seller_id as string) || (body?.sellerId as string) || sellerIdFromQuery || undefined;
 
@@ -83,14 +172,17 @@ serve(async (req) => {
       organizationId = orgLookup.organizations_id as string;
     }
 
-    // Validate membership using JWT subject
-    const tokenValue = authHeader.replace(/^Bearer\s+/i, "").trim();
-    const userIdFromJwt = decodeJwtSub(tokenValue);
-    if (!userIdFromJwt) return jsonResponse({ error: "Invalid Authorization token" }, 401);
-    const { data: permData, error: permErr } = await admin.rpc("rpc_get_member_permissions", { p_user_id: userIdFromJwt, p_organization_id: organizationId });
-    if (permErr) return jsonResponse({ error: permErr.message }, 500);
-    const permRow = Array.isArray(permData) ? (permData[0] as any) : (permData as any);
-    if (!permRow?.role) return jsonResponse({ error: "Forbidden: You don't belong to this organization" }, 403);
+    // Validate membership using JWT subject (skip for internal calls using service role key)
+    let userIdFromJwt: string | null = null;
+    if (!isInternalCall) {
+      const tokenValue = authHeader!.replace(/^Bearer\s+/i, "").trim();
+      userIdFromJwt = decodeJwtSub(tokenValue);
+      if (!userIdFromJwt) return jsonResponse({ error: "Invalid Authorization token" }, 401);
+      const { data: permData, error: permErr } = await admin.rpc("rpc_get_member_permissions", { p_user_id: userIdFromJwt, p_organization_id: organizationId });
+      if (permErr) return jsonResponse({ error: permErr.message }, 500);
+      const permRow = Array.isArray(permData) ? (permData[0] as any) : (permData as any);
+      if (!permRow?.role) return jsonResponse({ error: "Forbidden: You don't belong to this organization" }, 403);
+    }
 
     // Integration
     const { data: integration, error: integErr } = await admin
@@ -116,10 +208,19 @@ serve(async (req) => {
       finalCompanyId = company.id;
     }
 
-    // Decrypt access token
+    // Decrypt access token with fallback to plaintext (legacy rows)
     let accessToken: string;
-    try { accessToken = await aesGcmDecryptFromString(aesKey, integration.access_token); }
-    catch (e) { const msg = e instanceof Error ? e.message : String(e); return jsonResponse({ error: `Failed to decrypt access token: ${msg}` }, 500); }
+    try {
+      accessToken = await aesGcmDecryptFromString(aesKey, integration.access_token);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // If value is not in enc:gcm:<iv>:<ct> format, treat as plaintext
+      if (typeof integration.access_token === "string" && !integration.access_token.startsWith("enc:")) {
+        accessToken = integration.access_token;
+      } else {
+        return jsonResponse({ error: `Failed to decrypt access token: ${msg}` }, 500);
+      }
+    }
 
     const sellerId = integration.meli_user_id;
     if (!sellerId) return jsonResponse({ error: "Missing meli_user_id" }, 400);
@@ -164,7 +265,25 @@ serve(async (req) => {
       }
     }
 
-    // Fetch orders via /orders/search?seller={sellerId}
+    // Determine incremental watermark from DB (max last_updated already persisted)
+    const overlapMs = 10 * 60 * 1000; // 10 min overlap to be safe
+    let safeFromIso: string | null = null;
+    try {
+      const { data: maxRow } = await admin
+        .from("marketplace_orders_raw")
+        .select("last_updated")
+        .eq("organizations_id", organizationId as string)
+        .eq("marketplace_name", "Mercado Livre")
+        .order("last_updated", { ascending: false })
+        .limit(1)
+        .single();
+      if (maxRow?.last_updated) {
+        const t = new Date(maxRow.last_updated).getTime() - overlapMs;
+        safeFromIso = new Date(Math.max(0, t)).toISOString();
+      }
+    } catch (_) { /* ignore: no watermark yet */ }
+
+    // Fetch orders via /orders/search?seller={sellerId} incrementally
     const orders: any[] = [];
     let offset = 0;
     const limit = 50;
@@ -174,8 +293,11 @@ serve(async (req) => {
       listUrl.searchParams.set("seller", String(sellerId));
       listUrl.searchParams.set("offset", String(offset));
       listUrl.searchParams.set("limit", String(limit));
+      listUrl.searchParams.set("sort", "date_desc");
       // Optionally filter by date/status with extra params if passed
       if (body?.status) listUrl.searchParams.set("order.status", String(body.status));
+      // Try to filter by last updated when available in API; safe to ignore if not supported
+      if (safeFromIso) listUrl.searchParams.set("order.last_updated.from", safeFromIso);
 
       let resp = await fetch(listUrl.toString(), { headers });
       let json: any = null; try { json = await resp.json(); } catch { json = {}; }
@@ -228,89 +350,158 @@ serve(async (req) => {
       orders.push(...batch);
       const total = Number(json?.paging?.total || 0);
       offset += batch.length;
-      if (offset >= total || batch.length === 0) break;
+      // Early stop: if batch is empty or we already went past our window
+      if (batch.length === 0) break;
+      if (safeFromIso) {
+        // If the last item in this batch is older than our safeFrom, we can stop
+        const last = batch[batch.length - 1];
+        const lastUpdatedStr = String(last?.last_updated || last?.date_last_updated || last?.date_created || "");
+        if (lastUpdatedStr) {
+          const lastUpdatedTs = Date.parse(lastUpdatedStr);
+          const safeFromTs = Date.parse(safeFromIso);
+          if (!Number.isNaN(lastUpdatedTs) && lastUpdatedTs < safeFromTs) {
+            break;
+          }
+        }
+      }
+      if (offset >= total) break;
     }
 
-    // Upsert orders and items
+    // Build map of existing marketplace_orders last_updated for delta comparison
+    const ids = Array.from(new Set(orders.map((o:any)=> String(o?.id)).filter(Boolean)));
+    const existingMap = new Map<string, string | null>();
+    if (ids.length > 0) {
+      const { data: existingRows } = await admin
+        .from("marketplace_orders_raw")
+        .select("marketplace_order_id,last_updated")
+        .eq("organizations_id", organizationId as string)
+        .eq("marketplace_name", "Mercado Livre")
+        .in("marketplace_order_id", ids);
+      for (const r of (existingRows || [])) {
+        existingMap.set(String(r.marketplace_order_id), r.last_updated ? String(r.last_updated) : null);
+      }
+    }
+
+    // Upsert orders and items (only new/changed)
     let created = 0, updated = 0, itemsUpserted = 0;
     for (const o of orders) {
       const marketplaceOrderId = String(o?.id ?? "");
       if (!marketplaceOrderId) continue;
 
-      // Try find existing order by marketplace_order_id
-      const { data: existingOrder } = await admin
-        .from("orders")
-        .select("id")
-        .eq("marketplace_order_id", marketplaceOrderId)
-        .eq("company_id", finalCompanyId)
-        .limit(1)
-        .single();
-
-      const orderPayload: any = {
-        company_id: finalCompanyId,
-        marketplace: "Mercado Livre",
-        marketplace_order_id: marketplaceOrderId,
-        order_total: typeof o?.total_amount === 'number' ? o.total_amount : (Number(o?.total_amount) || 0),
-        order_cost: 0,
-        status: String(o?.status || ""),
-        customer_name: o?.buyer?.nickname || "",
-        customer_email: null,
-        customer_phone: null,
-        shipping_address: "",
-        shipping_city: "",
-        shipping_state: "",
-        shipping_zip_code: "",
-        shipping_type: Array.isArray(o?.tags) && o.tags.includes("no_shipping") ? "no_shipping" : (o?.shipping?.id ? "shipping" : null),
-        platform_id: o?.shipping?.id ? String(o.shipping.id) : marketplaceOrderId,
-      };
-
-      let orderId: string | null = existingOrder?.id || null;
-      if (!orderId) {
-        const { data: inserted, error: insErr } = await admin
-          .from("orders")
-          .insert(orderPayload)
-          .select("id")
-          .single();
-        if (insErr || !inserted?.id) return jsonResponse({ error: insErr?.message || "Failed to insert order", details: { marketplaceOrderId } }, 500);
-        orderId = inserted.id; created++;
-      } else {
-        const { error: updErr } = await admin
-          .from("orders")
-          .update(orderPayload)
-          .eq("id", orderId);
-        if (updErr) return jsonResponse({ error: updErr.message, details: { marketplaceOrderId } }, 500);
-        updated++;
-      }
-
-      // Upsert order items
-      const items = Array.isArray(o?.order_items) ? o.order_items : [];
-      for (const it of items) {
-        const mlItem = it?.item || {};
-        const mlItemId = mlItem?.id ? String(mlItem.id) : null;
-        const sku = mlItem?.seller_sku || mlItem?.seller_custom_field || null;
-        const productName = mlItem?.title || null;
-        const pricePerUnit = typeof it?.unit_price === 'number' ? it.unit_price : (Number(it?.unit_price) || 0);
-        const quantity = typeof it?.quantity === 'number' ? it.quantity : (Number(it?.quantity) || 0);
-
-        const itemPayload: any = {
-          order_id: orderId,
-          company_id: finalCompanyId,
-          product_id: null,
-          product_name: productName,
-          price_per_unit: pricePerUnit,
-          quantity,
-          sku,
-          marketplace_item_id: mlItemId,
-        };
-
-        // There is no unique constraint; insert always, or replace simplistic by delete+insert for this order id + ml item id
-        if (mlItemId) {
-          await admin.from("order_items").delete().eq("order_id", orderId).eq("marketplace_item_id", mlItemId);
+      // Skip unchanged orders by comparing last_updated
+      const remoteUpdatedStr = String(o?.last_updated || o?.date_last_updated || o?.date_created || "");
+      const existingUpdatedStr = existingMap.get(marketplaceOrderId) || null;
+      if (existingUpdatedStr && remoteUpdatedStr) {
+        const remoteTs = Date.parse(remoteUpdatedStr);
+        const localTs = Date.parse(existingUpdatedStr);
+        if (!Number.isNaN(remoteTs) && !Number.isNaN(localTs) && remoteTs <= localTs) {
+          // Already up-to-date, skip heavy work
+          continue;
         }
-        const { error: insItemErr } = await admin.from("order_items").insert(itemPayload);
-        if (insItemErr) return jsonResponse({ error: insItemErr.message, details: { orderId, mlItemId } }, 500);
-        itemsUpserted++;
       }
+
+      // Buscar detalhes de envio (para aplicar regras e status internos) — agora apenas para enriquecer shipments
+      let shipmentDetails: any = null;
+      if (o?.shipping?.id) {
+        shipmentDetails = await fetchShipmentDetails(String(o.shipping.id), accessToken);
+      }
+
+      // Buscar detalhes completos do pedido e upsert em marketplace_orders para organização
+      try {
+        let fullOrderResp = await fetch(`https://api.mercadolibre.com/orders/${marketplaceOrderId}`, { headers });
+        if (!fullOrderResp.ok && (fullOrderResp.status === 401 || fullOrderResp.status === 403) && integration.refresh_token) {
+          try {
+            const { data: appRow, error: appErr } = await admin
+              .from("apps")
+              .select("client_id, client_secret")
+              .eq("name", integration.marketplace_name === "mercado_livre" ? "Mercado Livre" : integration.marketplace_name)
+              .single();
+            if (!appErr && appRow) {
+              let refreshTokenPlain: string | null = null;
+              try { refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token); } catch { refreshTokenPlain = null; }
+              if (refreshTokenPlain) {
+                const form = new URLSearchParams();
+                form.append("grant_type", "refresh_token");
+                form.append("client_id", appRow.client_id);
+                form.append("client_secret", appRow.client_secret);
+                form.append("refresh_token", refreshTokenPlain);
+                const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
+                  method: "POST",
+                  headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
+                  body: form.toString(),
+                });
+                const refreshJson = await refreshResp.json();
+                if (refreshResp.ok) {
+                  const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
+                  const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
+                  const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
+                  const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
+                  await admin
+                    .from("marketplace_integrations")
+                    .update({ access_token: newAccessTokenEnc, refresh_token: newRefreshTokenEnc, expires_in: newExpiresAtIso, meli_user_id: user_id })
+                    .eq("id", integration.id);
+                  // retry com novo token
+                  fullOrderResp = await fetch(`https://api.mercadolibre.com/orders/${marketplaceOrderId}`, { headers: { Authorization: `Bearer ${newAccessToken}`, Accept: "application/json" } });
+                }
+              }
+            }
+          } catch (_) { /* ignore */ }
+        }
+        if (fullOrderResp.ok) {
+          const orderData = await fullOrderResp.json();
+          const nowIso = new Date().toISOString();
+          // Resolver shipmentId também a partir do payload completo se necessário
+          let finalShipmentDetails = shipmentDetails;
+          if (!finalShipmentDetails) {
+            const candidateId = orderData?.shipping?.id
+              || (Array.isArray(orderData?.shipments) && orderData.shipments[0]?.id)
+              || null;
+            if (candidateId) {
+              finalShipmentDetails = await fetchShipmentDetails(String(candidateId), accessToken);
+            }
+          }
+          // Normaliza envios: prioriza detalhes completos do /shipments/{id},
+          // senão usa array de shipments do pedido, senão fallback para order.shipping
+          const shipmentsNormalized = (
+            finalShipmentDetails ? [finalShipmentDetails] : (
+              (Array.isArray(orderData?.shipments) && orderData.shipments.length > 0)
+                ? orderData.shipments
+                : (orderData?.shipping ? [orderData.shipping] : [])
+            )
+          );
+          // Determina se é criação ou atualização no raw
+          const isNewRaw = !existingMap.has(marketplaceOrderId);
+          const upsertData = {
+            organizations_id: organizationId,
+            company_id: finalCompanyId,
+            marketplace_name: "Mercado Livre",
+            marketplace_order_id: orderData.id,
+            status: orderData.status || null,
+            status_detail: orderData.status_detail || null,
+            order_items: Array.isArray(orderData.order_items) ? orderData.order_items : [],
+            buyer: orderData.buyer || null,
+            seller: orderData.seller || null,
+            payments: Array.isArray(orderData.payments) ? orderData.payments : [],
+            shipments: Array.isArray(shipmentsNormalized) ? shipmentsNormalized : [],
+            feedback: orderData.feedback || null,
+            tags: Array.isArray(orderData.tags) ? orderData.tags : [],
+            data: orderData,
+            date_created: orderData.date_created || null,
+            date_closed: orderData.date_closed || null,
+            last_updated: orderData.last_updated || null,
+            last_synced_at: nowIso,
+            updated_at: nowIso,
+          } as const;
+          try {
+            await admin
+              .from("marketplace_orders_raw")
+              .upsert(upsertData, { onConflict: "organizations_id,marketplace_name,marketplace_order_id" });
+            if (isNewRaw) created++; else updated++;
+            // Upsert normalized shipments rows
+            // Não gravar mais em marketplace_shipments: todos os dados de envio ficam em marketplace_orders_raw.shipments
+          } catch (_) { /* ignore */ }
+        }
+      } catch (_) { /* ignore */ }
     }
 
     return jsonResponse({ ok: true, orders_found: orders.length, created, updated, items_upserted: itemsUpserted });
@@ -319,5 +510,9 @@ serve(async (req) => {
     return jsonResponse({ error: msg }, 500);
   }
 });
+
+
+
+// ... existing code ...
 
 
