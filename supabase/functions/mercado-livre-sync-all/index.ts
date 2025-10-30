@@ -9,7 +9,7 @@ function jsonResponse(body: any, status = 200) {
       "content-type": "application/json",
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
+      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-meli-signature, x-request-id",
     },
   });
 }
@@ -132,7 +132,6 @@ async function routeToItemsWebhook(notification: any, headers?: Headers) {
     const { data, error } = await admin.functions.invoke('mercado-livre-webhook-items', {
       body: notification,
       headers: {
-        Authorization: headers?.get('authorization') || '',
         'x-meli-signature': headers?.get('x-meli-signature') || '',
         'x-request-id': headers?.get('x-request-id') || ''
       }
@@ -185,7 +184,6 @@ async function routeToOrdersWebhook(notification: any, headers?: Headers) {
     const { data, error } = await admin.functions.invoke('mercado-livre-webhook-orders', {
       body: notification,
       headers: {
-        Authorization: headers?.get('authorization') || '',
         'x-meli-signature': headers?.get('x-meli-signature') || '',
         'x-request-id': headers?.get('x-request-id') || ''
       }
