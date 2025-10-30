@@ -25,6 +25,8 @@ interface AnuncioParaVincular {
   sku?: string; // opcional: SKU do anúncio
   variacao?: string; // opcional: cor/variação
   image_url?: string; // opcional: miniatura
+  marketplaceItemId?: string; // id do anúncio no marketplace (ex.: item.id no ML)
+  variationId?: string; // id/label da variação (quando aplicável)
 }
 
 interface VincularPedidoModalProps {
@@ -51,11 +53,10 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
   // Filtragem para o modal secundário
   const filteredProducts: Product[] = bindableProducts.filter((produto: Product) => {
     const term = searchTerm.toLowerCase();
-    return (
-      produto.name.toLowerCase().includes(term) ||
-      produto.sku.toLowerCase().includes(term) ||
-      (produto.barcode ? produto.barcode.toLowerCase().includes(term) : false)
-    );
+    const nameMatch = (produto.name || '').toLowerCase().includes(term);
+    const skuMatch = (produto.sku ? produto.sku.toLowerCase() : '').includes(term);
+    const barcodeMatch = produto.barcode ? produto.barcode.toLowerCase().includes(term) : false;
+    return nameMatch || skuMatch || barcodeMatch;
   });
 
   // Abrir o modal secundário para um item específico
@@ -113,6 +114,8 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
           permanent: !!permanenteFlags[anuncio.id],
           marketplace: anuncio.marketplace,
           adSku: anuncio.sku || null,
+          marketplaceItemId: anuncio.marketplaceItemId || null,
+          variationId: anuncio.variationId ?? '',
         };
       })
       .filter(Boolean) as Array<{
@@ -122,6 +125,8 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
         permanent: boolean;
         marketplace: string;
         adSku: string | null;
+        marketplaceItemId: string | null;
+        variationId: string;
       }>;
 
     if (linkedItems.length === 0) {
@@ -131,6 +136,81 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
         variant: 'destructive',
       });
       return;
+    }
+
+    // Antes de reservar estoque, persistir vínculos permanentes (se houver)
+    const persistErrors: string[] = [];
+    try {
+      // Obter organização atual
+      let organizationId: string | null = null;
+      try {
+        const { data: orgRes, error: orgErr } = await supabase.rpc('get_current_user_organization_id');
+        if (orgErr) throw orgErr;
+        organizationId = (orgRes ? String(orgRes) : null);
+      } catch (e) {
+        // manter organizationId null; trataremos erro ao montar payload
+      }
+
+      // Obter company_id do pedido via view presented (por id ou marketplace_order_id)
+      let companyId: string | null = null;
+      if (pedidoId) {
+        try {
+          // 1) Tenta por marketplace_order_id
+          let q = supabase
+            .from('marketplace_orders_presented')
+            .select('id, company_id, marketplace_order_id')
+            .eq('marketplace_order_id', pedidoId)
+            .maybeSingle();
+          let { data: ord1, error: err1 } = await q;
+          if (!err1 && ord1?.company_id) {
+            companyId = String(ord1.company_id);
+          }
+          // 2) Fallback: tenta por id
+          if (!companyId) {
+            const { data: ord2, error: err2 } = await supabase
+              .from('marketplace_orders_presented')
+              .select('id, company_id')
+              .eq('id', pedidoId)
+              .maybeSingle();
+            if (!err2 && ord2?.company_id) {
+              companyId = String(ord2.company_id);
+            }
+          }
+        } catch (e) {
+          // silencioso, tratar abaixo
+        }
+      }
+
+      // Montar linhas a persistir: apenas itens marcados como permanentes e com marketplaceItemId disponível
+      const rowsToPersist = linkedItems
+        .filter(li => li.permanent && !!li.marketplaceItemId)
+        .map(li => ({
+          organizations_id: organizationId,
+          company_id: companyId,
+          marketplace_name: li.marketplace,
+          marketplace_item_id: li.marketplaceItemId as string,
+          variation_id: li.variationId || '',
+          product_id: li.productId,
+          permanent: li.permanent,
+          updated_at: new Date().toISOString(),
+        }));
+
+      if (rowsToPersist.length > 0) {
+        // Validar contexto necessário
+        const missingContext = rowsToPersist.some(r => !r.organizations_id || !r.company_id);
+        if (missingContext) {
+          persistErrors.push('Contexto de organização/empresa não resolvido para persistência de vínculo.');
+        } else {
+          const { error: upsertErr } = await supabase
+            .from('marketplace_item_product_links')
+            .upsert(rowsToPersist, { onConflict: 'organizations_id,marketplace_name,marketplace_item_id,variation_id' });
+          if (upsertErr) {
+            persistErrors.push(upsertErr.message);
+          }
+        }
+      }
+    } catch (e: any) {
+      persistErrors.push(e?.message || 'Erro inesperado ao persistir vínculos.');
     }
 
     // Descobrir storage padrão para reserva
@@ -182,13 +262,21 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
     onSave(payload);
     onClose();
 
+    // Feedback consolidando possíveis erros de persistência e de reserva
+    const anyErrors = (persistErrors.length > 0) || (reservationErrors.length > 0);
+    const details = [
+      ...(persistErrors.length > 0 ? [
+        `Persistência de vínculos: ${persistErrors.join('; ')}`,
+      ] : []),
+      ...(reservationErrors.length > 0 ? [
+        `Reservas de estoque: ${reservationErrors.join('; ')}`,
+      ] : []),
+    ].join(' | ');
+
     toast({
-      title: reservationErrors.length === 0 ? 'Vinculação salva!' : 'Vinculação salva com avisos',
-      description:
-        reservationErrors.length === 0
-          ? 'Os anúncios foram vinculados e o estoque foi reservado corretamente.'
-          : 'Algumas reservas podem não ter sido aplicadas. Verifique o módulo de estoque.',
-      variant: reservationErrors.length === 0 ? 'success' : 'warning',
+      title: anyErrors ? 'Vinculação concluída com avisos' : 'Vinculação salva!',
+      description: anyErrors ? (details || 'Ocorreram avisos na operação.') : 'Os anúncios foram vinculados e o estoque foi reservado corretamente.',
+      variant: anyErrors ? 'warning' : 'success',
     });
   };
 

@@ -98,23 +98,50 @@ export function useBindableProducts() {
 
     useEffect(() => {
         const fetchBindableProducts = async () => {
+            // Exige sessão válida para cumprir RLS, mas não restringe por user_id
             if (!user) {
                 setLoading(false);
                 return;
             }
             try {
-                // Listar produtos cadastrados do usuário, com campos necessários para exibição
+                // Listar produtos acessíveis via RLS/permissões, com campos necessários para exibição
                 const { data, error } = await supabase
                     .from('products')
-                    .select('id, name, sku, image_urls')
-                    .eq('user_id', user.id)
+                    .select(`
+                      id,
+                      name,
+                      sku,
+                      image_urls,
+                      barcode,
+                      products_stock (
+                        current,
+                        reserved
+                      )
+                    `)
                     .in('type', ['UNICO', 'VARIACAO_ITEM', 'ITEM'])
                     .order('name', { ascending: true });
 
                 if (error) {
                     throw error;
                 }
-                setBindableProducts(data ?? []);
+                // Mapear para incluir estoque disponível agregado e normalizar barcode como string
+                const mapped = (data ?? []).map((p: any) => {
+                    const stocks = p?.products_stock
+                        ? (Array.isArray(p.products_stock) ? p.products_stock : [p.products_stock])
+                        : [];
+                    const totalCurrent = stocks.reduce((sum: number, s: any) => sum + (s?.current || 0), 0);
+                    const totalReserved = stocks.reduce((sum: number, s: any) => sum + (s?.reserved || 0), 0);
+                    const available = totalCurrent - totalReserved;
+                    return {
+                        id: p.id,
+                        name: p.name,
+                        sku: p.sku,
+                        image_urls: p.image_urls,
+                        barcode: p.barcode ? String(p.barcode) : undefined,
+                        available_stock: available,
+                    };
+                });
+                setBindableProducts(mapped);
             } catch (err: any) {
                 setError(err.message);
             } finally {

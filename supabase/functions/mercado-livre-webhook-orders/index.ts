@@ -192,12 +192,68 @@ serve(async (req) => {
       } catch (_) { return null; }
     }
 
-    let shipmentDetailed: any = null;
-    const candidateShipmentId = orderData?.shipping?.id
-      || (Array.isArray(orderData?.shipments) && orderData.shipments[0]?.id)
-      || null;
-    if (candidateShipmentId) {
-      shipmentDetailed = await fetchShipmentDetails(String(candidateShipmentId), accessToken);
+    // Sub-recursos do envio: tracking e costs
+    async function fetchShipmentTracking(shipmentId: string, token: string): Promise<any | null> {
+      if (!shipmentId) return null;
+      try {
+        const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/tracking`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        });
+        if (!resp.ok) return null;
+        return await resp.json();
+      } catch (_) { return null; }
+    }
+
+    async function fetchShipmentCosts(shipmentId: string, token: string): Promise<any | null> {
+      if (!shipmentId) return null;
+      try {
+        const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/costs`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        });
+        if (!resp.ok) return null;
+        return await resp.json();
+      } catch (_) { return null; }
+    }
+
+    // Novos sub-recursos: SLA de despacho e atrasos
+    async function fetchShipmentSLA(shipmentId: string, token: string): Promise<any | null> {
+      if (!shipmentId) return null;
+      try {
+        const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/sla`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        });
+        if (!resp.ok) return null;
+        return await resp.json();
+      } catch (_) { return null; }
+    }
+
+    async function fetchShipmentDelays(shipmentId: string, token: string): Promise<any | null> {
+      if (!shipmentId) return null;
+      try {
+        const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/delays`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "x-format-new": "true" },
+        });
+        if (!resp.ok) return null;
+        return await resp.json();
+      } catch (_) { return null; }
+    }
+
+    // Buscar detalhes de TODOS os envios possíveis (shipping.id e elementos de shipments)
+    const candidateShipmentIds = new Set<string>();
+    if (orderData?.shipping?.id) {
+      try { candidateShipmentIds.add(String(orderData.shipping.id)); } catch { /* ignore */ }
+    }
+    if (Array.isArray(orderData?.shipments)) {
+      for (const s of orderData.shipments) {
+        const sid = (s && (s.id ?? s.shipment_id)) ? String(s.id ?? s.shipment_id) : null;
+        if (sid) candidateShipmentIds.add(sid);
+      }
+    }
+
+    const shipmentsDetailed: any[] = [];
+    for (const sid of candidateShipmentIds) {
+      const det = await fetchShipmentDetails(sid, accessToken);
+      if (det) shipmentsDetailed.push(det);
     }
 
     // Classificador do tipo de envio a partir do shipment
@@ -214,6 +270,72 @@ serve(async (req) => {
 
     // Preparar dados para upsert
     const nowIso = new Date().toISOString();
+
+    // Base de envios a enriquecer (detalhados ou fallback)
+    const baseShipments: any[] = (
+      shipmentsDetailed.length > 0
+        ? shipmentsDetailed
+        : (
+            Array.isArray(orderData.shipments) && orderData.shipments.length > 0
+              ? orderData.shipments
+              : (orderData?.shipping ? [orderData.shipping] : [])
+          )
+    );
+
+    // Enriquecer cada envio com /tracking, /costs, /sla e /delays (com mapeamento robusto)
+    const shipmentsNormalized: any[] = [];
+    for (const sh of baseShipments) {
+      const sid = (sh && (sh.id ?? sh.shipment_id)) ? String(sh.id ?? sh.shipment_id) : null;
+      let tracking: any | null = null;
+      let costs: any | null = null;
+      let sla: any | null = null;
+      let delays: any | null = null;
+      if (sid) {
+        tracking = await fetchShipmentTracking(sid, accessToken);
+        costs = await fetchShipmentCosts(sid, accessToken);
+        sla = await fetchShipmentSLA(sid, accessToken);
+        delays = await fetchShipmentDelays(sid, accessToken);
+      }
+
+      // Extrações resilientes de SLA direto do objeto de detalhes do envio (quando vier embutido)
+      const embeddedSla = sh?.sla || sh?.dispatch_sla || null;
+      const embeddedDelays = sh?.delays || sh?.tracking?.delays || null;
+
+      // Preparar campos normalizados com fallback em várias posições
+      const sla_status = (
+        sla?.status ?? embeddedSla?.status ?? sh?.sla_status ?? null
+      );
+      const sla_service = (
+        sla?.service ?? embeddedSla?.service ?? sh?.sla_service ?? null
+      );
+      const sla_expected_date = (
+        sla?.expected_date ?? embeddedSla?.expected_date ?? sh?.sla_expected_date ?? null
+      );
+      const sla_last_updated = (
+        sla?.last_updated ?? embeddedSla?.last_updated ?? sh?.sla_last_updated ?? null
+      );
+      const delaysArr = Array.isArray(delays?.delays)
+        ? delays.delays
+        : (Array.isArray(embeddedDelays) ? embeddedDelays : (Array.isArray(sh?.delays) ? sh.delays : null));
+
+      shipmentsNormalized.push({
+        ...sh,
+        tracking: tracking ?? (sh?.tracking ?? null),
+        costs: costs ?? (sh?.costs ?? null),
+        tracking_fetched_at: tracking ? nowIso : (sh?.tracking_fetched_at ?? null),
+        costs_fetched_at: costs ? nowIso : (sh?.costs_fetched_at ?? null),
+        // Campos normalizados de SLA (com fallback em diferentes fontes)
+        sla_status,
+        sla_service,
+        sla_expected_date,
+        sla_last_updated,
+        sla_fetched_at: (sla || embeddedSla) ? nowIso : (sh?.sla_fetched_at ?? null),
+        // Campos de atrasos (array)
+        delays: delaysArr ?? null,
+        delays_fetched_at: (delays || embeddedDelays) ? nowIso : (sh?.delays_fetched_at ?? null),
+      });
+    }
+
     const upsertData = {
       organizations_id: integration.organizations_id,
       company_id: integration.company_id,
@@ -225,9 +347,7 @@ serve(async (req) => {
       buyer: orderData.buyer || null,
       seller: orderData.seller || null,
       payments: Array.isArray(orderData.payments) ? orderData.payments : [],
-      shipments: shipmentDetailed ? [shipmentDetailed] : (
-        Array.isArray(orderData.shipments) ? orderData.shipments : (orderData?.shipping ? [orderData.shipping] : [])
-      ),
+      shipments: shipmentsNormalized,
       feedback: orderData.feedback || null,
       tags: Array.isArray(orderData.tags) ? orderData.tags : [],
       data: orderData,
@@ -245,13 +365,6 @@ serve(async (req) => {
 
     // If order upsert succeeded, also upsert normalized shipments into marketplace_shipments
     if (!upErr) {
-      const shipmentsNormalized = (
-        shipmentDetailed ? [shipmentDetailed] : (
-          Array.isArray(orderData?.shipments) && orderData.shipments.length > 0
-            ? orderData.shipments
-            : (orderData?.shipping ? [orderData.shipping] : [])
-        )
-      );
       // Não gravar mais em marketplace_shipments: todos os dados de envio ficam em marketplace_orders_raw.shipments
     }
 

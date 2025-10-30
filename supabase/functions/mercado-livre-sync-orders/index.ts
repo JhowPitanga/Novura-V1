@@ -28,73 +28,8 @@ function b64UrlToUint8(b64url: string): Uint8Array { let b64 = b64url.replace(/-
 // Extract user id (sub) from JWT without calling auth APIs
 function decodeJwtSub(jwt: string): string | null { try { const parts = jwt.split("."); if (parts.length < 2) return null; const payloadBytes = b64UrlToUint8(parts[1]); const payload = JSON.parse(new TextDecoder().decode(payloadBytes)); return (payload?.sub as string) || (payload?.user_id as string) || null; } catch { return null; } }
 
-// Mapeamento de status interno conforme regras discutidas
-function computeInternalStatusForOrder(o: any, shipment?: any): string {
-  const rawStatus = String(o?.status || "").toLowerCase();
-  const isCancelled = rawStatus === "cancelled";
-  if (isCancelled) return "Cancelados ou devolvidos";
-
-  const tags: string[] = Array.isArray(o?.tags) ? o.tags.map((t: any) => String(t).toLowerCase()) : [];
-  const shipStatus = String(shipment?.status || "").toLowerCase();
-  const logisticType = String(shipment?.logistic_type || shipment?.mode || "").toLowerCase();
-
-  // FULL sempre ENVIADO (exceto cancelados — já tratado acima)
-  if (logisticType === "fulfillment") return "Enviado";
-
-  // Progresso de envio
-  if (["shipped", "in_transit", "delivered"].includes(shipStatus)) return "Enviado";
-
-  // Aguardando Coleta
-  if (["ready_to_ship", "handling"].includes(shipStatus)) return "Aguardando Coleta";
-
-  // Impressão de etiquetas
-  if (shipStatus === "ready_to_print" || tags.includes("to_print") || tags.includes("ready_to_print")) return "Impressão";
-
-  // Emissão de NF (heurística: pago e sem envio pronto)
-  if (rawStatus === "paid") {
-    if (tags.includes("invoice_pending") || tags.includes("ready_for_invoicing")) return "Emissão de NF";
-    if (!shipStatus || shipStatus === "") return "Emissão de NF";
-  }
-
-  // A vincular: itens sem SKU/custom
-  const items = Array.isArray(o?.order_items) ? o.order_items : [];
-  const hasSku = items.some((it: any) => (it?.item?.seller_sku || it?.item?.seller_custom_field));
-  if (!hasSku) return "A vincular";
-
-  // Fallback genérico
-  return "A vincular";
-}
-
-// Classifica tipo de envio (full, flex, agencia, no_shipping) a partir de um shipment
-function classifyShippingType(sh: any): string | null {
-  if (!sh) return null;
-  const lt = String(sh?.logistic_type || sh?.shipping_mode || sh?.mode || "").toLowerCase();
-  if (!lt) return null;
-  if (lt === "fulfillment" || lt === "fbm") return "full";
-  if (lt === "self_service") return "flex";
-  if (lt === "drop_off" || lt === "xd_drop_off" || lt === "cross_docking") return "agencia";
-  if (lt === "me2" || lt === "custom") return "agencia";
-  return null;
-}
-
-// Helper to fetch shipment details with the new response format
-async function fetchShipmentDetails(shipmentId: string, accessToken: string): Promise<any | null> {
-  if (!shipmentId) return null;
-  try {
-    const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: "application/json",
-        // Prefer new format which includes lead_time, logistic, addresses, etc.
-        "x-format-new": "true",
-      },
-    });
-    if (!resp.ok) return null;
-    return await resp.json();
-  } catch (_) {
-    return null;
-  }
-}
+// (Removido) Qualquer derivação de status/logística e enriquecimento de shipments;
+// a função grava apenas os payloads brutos retornados por `orders/{id}`.
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -137,9 +72,13 @@ serve(async (req) => {
     }
 
     const aesKey = await importAesGcmKey(ENC_KEY_B64);
-    const authHeader = req.headers.get("Authorization");
+    const authHeader = req.headers.get("Authorization") || "";
     const apiKeyHeader = req.headers.get("apikey") || "";
-    const isInternalCall = req.headers.get("x-internal-call") === "1" && !!apiKeyHeader && apiKeyHeader === SERVICE_ROLE_KEY;
+    const bearerToken = authHeader.replace(/^Bearer\s+/i, "").trim();
+    const internalHeader = req.headers.get("x-internal-call") === "1";
+    // Considerar chamada interna quando o cabeçalho x-internal-call=1 e
+    // o token de Authorization OU o apikey correspondem à service role key.
+    const isInternalCall = internalHeader && (apiKeyHeader === SERVICE_ROLE_KEY || bearerToken === SERVICE_ROLE_KEY);
     if (!authHeader && !isInternalCall) {
       console.error("[SYNC-ORDERS] Missing Authorization header or invalid internal call");
       return jsonResponse({ error: "Missing Authorization header" }, 401);
@@ -149,6 +88,8 @@ serve(async (req) => {
 
     // Input
     const url = new URL(req.url);
+    // Suporte a sincronização completa (ignorar watermark): body { full: true } ou query ?full=1
+    const fullSync = body?.full === true || ["1","true","yes"].includes(String(url.searchParams.get("full") || "").toLowerCase());
     const sellerIdFromQuery = url.searchParams.get("seller_id");
     let organizationId: string | undefined = body?.organizationId as string | undefined;
     const sellerIdInput: string | undefined = (body?.seller_id as string) || (body?.sellerId as string) || sellerIdFromQuery || undefined;
@@ -175,7 +116,7 @@ serve(async (req) => {
     // Validate membership using JWT subject (skip for internal calls using service role key)
     let userIdFromJwt: string | null = null;
     if (!isInternalCall) {
-      const tokenValue = authHeader!.replace(/^Bearer\s+/i, "").trim();
+      const tokenValue = authHeader.replace(/^Bearer\s+/i, "").trim();
       userIdFromJwt = decodeJwtSub(tokenValue);
       if (!userIdFromJwt) return jsonResponse({ error: "Invalid Authorization token" }, 401);
       const { data: permData, error: permErr } = await admin.rpc("rpc_get_member_permissions", { p_user_id: userIdFromJwt, p_organization_id: organizationId });
@@ -283,88 +224,102 @@ serve(async (req) => {
       }
     } catch (_) { /* ignore: no watermark yet */ }
 
-    // Fetch orders via /orders/search?seller={sellerId} incrementally
-    const orders: any[] = [];
-    let offset = 0;
-    const limit = 50;
-    const headers = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } as const;
-    for (let page = 0; page < 200; page++) {
-      const listUrl = new URL("https://api.mercadolibre.com/orders/search");
-      listUrl.searchParams.set("seller", String(sellerId));
-      listUrl.searchParams.set("offset", String(offset));
-      listUrl.searchParams.set("limit", String(limit));
-      listUrl.searchParams.set("sort", "date_desc");
-      // Optionally filter by date/status with extra params if passed
-      if (body?.status) listUrl.searchParams.set("order.status", String(body.status));
-      // Try to filter by last updated when available in API; safe to ignore if not supported
-      if (safeFromIso) listUrl.searchParams.set("order.last_updated.from", safeFromIso);
+    // Se solicitado full sync, ignorar completamente o watermark
+    if (fullSync) {
+      safeFromIso = null;
+      console.log(`[SYNC-ORDERS] Full sync solicitado: ignorando watermark incremental`);
+    }
 
-      let resp = await fetch(listUrl.toString(), { headers });
-      let json: any = null; try { json = await resp.json(); } catch { json = {}; }
-      if (!resp.ok) {
-        // On 401/403 try one-time refresh using refresh_token
-        if (resp.status === 401 || resp.status === 403) {
-          try {
-            const { data: appRow, error: appErr } = await admin
-              .from("apps")
-              .select("client_id, client_secret")
-              .eq("name", integration.marketplace_name === "mercado_livre" ? "Mercado Livre" : integration.marketplace_name)
-              .single();
-            if (!appErr && appRow && integration.refresh_token) {
-              let refreshTokenPlain: string | null = null;
-              try { refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token); } catch { refreshTokenPlain = null; }
-              if (refreshTokenPlain) {
-                const form = new URLSearchParams();
-                form.append("grant_type", "refresh_token");
-                form.append("client_id", appRow.client_id);
-                form.append("client_secret", appRow.client_secret);
-                form.append("refresh_token", refreshTokenPlain);
-                const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
-                  method: "POST",
-                  headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
-                  body: form.toString(),
-                });
-                const refreshJson = await refreshResp.json();
-                if (refreshResp.ok) {
-                  const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
-                  const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
-                  const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
-                  const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
-                  await admin
-                    .from("marketplace_integrations")
-                    .update({ access_token: newAccessTokenEnc, refresh_token: newRefreshTokenEnc, expires_in: newExpiresAtIso, meli_user_id: user_id })
-                    .eq("id", integration.id);
-                  accessToken = newAccessToken;
-                  // retry request
-                  resp = await fetch(listUrl.toString(), { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
-                  try { json = await resp.json(); } catch { json = {}; }
+    // Carregar pedidos: modo forçado por IDs (order_ids) ou modo incremental via /orders/search
+    const orders: any[] = [];
+    const headers = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } as const;
+    const forcedOrderIds: string[] = Array.isArray(body?.order_ids)
+      ? [...new Set(body.order_ids.map((v: any) => String(v)).filter((v) => /^\d+$/.test(v) && v !== "2000010000000000"))]
+      : [];
+    const forceUpdate = forcedOrderIds.length > 0;
+    if (forceUpdate) {
+      for (const id of forcedOrderIds) orders.push({ id });
+    } else {
+      let offset = 0;
+      const limit = 50;
+      for (let page = 0; page < 200; page++) {
+        const listUrl = new URL("https://api.mercadolibre.com/orders/search");
+        listUrl.searchParams.set("seller", String(sellerId));
+        listUrl.searchParams.set("offset", String(offset));
+        listUrl.searchParams.set("limit", String(limit));
+        listUrl.searchParams.set("sort", "date_desc");
+        // Optionally filter by date/status with extra params if passed
+        if (body?.status) listUrl.searchParams.set("order.status", String(body.status));
+        // Try to filter by last updated when available in API; safe to ignore if not supported
+        if (safeFromIso) listUrl.searchParams.set("order.last_updated.from", safeFromIso);
+
+        let resp = await fetch(listUrl.toString(), { headers });
+        let json: any = null; try { json = await resp.json(); } catch { json = {}; }
+        if (!resp.ok) {
+          // On 401/403 try one-time refresh using refresh_token
+          if (resp.status === 401 || resp.status === 403) {
+            try {
+              const { data: appRow, error: appErr } = await admin
+                .from("apps")
+                .select("client_id, client_secret")
+                .eq("name", integration.marketplace_name === "mercado_livre" ? "Mercado Livre" : integration.marketplace_name)
+                .single();
+              if (!appErr && appRow && integration.refresh_token) {
+                let refreshTokenPlain: string | null = null;
+                try { refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token); } catch { refreshTokenPlain = null; }
+                if (refreshTokenPlain) {
+                  const form = new URLSearchParams();
+                  form.append("grant_type", "refresh_token");
+                  form.append("client_id", appRow.client_id);
+                  form.append("client_secret", appRow.client_secret);
+                  form.append("refresh_token", refreshTokenPlain);
+                  const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
+                    method: "POST",
+                    headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
+                    body: form.toString(),
+                  });
+                  const refreshJson = await refreshResp.json();
+                  if (refreshResp.ok) {
+                    const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
+                    const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
+                    const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
+                    const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
+                    await admin
+                      .from("marketplace_integrations")
+                      .update({ access_token: newAccessTokenEnc, refresh_token: newRefreshTokenEnc, expires_in: newExpiresAtIso, meli_user_id: user_id })
+                      .eq("id", integration.id);
+                    accessToken = newAccessToken;
+                    // retry request
+                    resp = await fetch(listUrl.toString(), { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
+                    try { json = await resp.json(); } catch { json = {}; }
+                  }
                 }
               }
-            }
-          } catch { /* ignore */ }
+            } catch { /* ignore */ }
+          }
+          const details = { meli: json, request: { sellerId, offset, limit }, context: { organizationId, userIdFromJwt } };
+          return jsonResponse({ error: json?.error || json?.message || "Failed to list orders", details }, resp.status);
         }
-        const details = { meli: json, request: { sellerId, offset, limit }, context: { organizationId, userIdFromJwt } };
-        return jsonResponse({ error: json?.error || json?.message || "Failed to list orders", details }, resp.status);
-      }
-      const batch = Array.isArray(json?.results) ? json.results : [];
-      orders.push(...batch);
-      const total = Number(json?.paging?.total || 0);
-      offset += batch.length;
-      // Early stop: if batch is empty or we already went past our window
-      if (batch.length === 0) break;
-      if (safeFromIso) {
-        // If the last item in this batch is older than our safeFrom, we can stop
-        const last = batch[batch.length - 1];
-        const lastUpdatedStr = String(last?.last_updated || last?.date_last_updated || last?.date_created || "");
-        if (lastUpdatedStr) {
-          const lastUpdatedTs = Date.parse(lastUpdatedStr);
-          const safeFromTs = Date.parse(safeFromIso);
-          if (!Number.isNaN(lastUpdatedTs) && lastUpdatedTs < safeFromTs) {
-            break;
+        const batch = Array.isArray(json?.results) ? json.results : [];
+        orders.push(...batch);
+        const total = Number(json?.paging?.total || 0);
+        offset += batch.length;
+        // Early stop: if batch is empty or we already went past our window
+        if (batch.length === 0) break;
+        if (safeFromIso) {
+          // If the last item in this batch is older than our safeFrom, we can stop
+          const last = batch[batch.length - 1];
+          const lastUpdatedStr = String(last?.last_updated || last?.date_last_updated || last?.date_created || "");
+          if (lastUpdatedStr) {
+            const lastUpdatedTs = Date.parse(lastUpdatedStr);
+            const safeFromTs = Date.parse(safeFromIso);
+            if (!Number.isNaN(lastUpdatedTs) && lastUpdatedTs < safeFromTs) {
+              break;
+            }
           }
         }
+        if (offset >= total) break;
       }
-      if (offset >= total) break;
     }
 
     // Build map of existing marketplace_orders last_updated for delta comparison
@@ -388,23 +343,21 @@ serve(async (req) => {
       const marketplaceOrderId = String(o?.id ?? "");
       if (!marketplaceOrderId) continue;
 
-      // Skip unchanged orders by comparing last_updated
-      const remoteUpdatedStr = String(o?.last_updated || o?.date_last_updated || o?.date_created || "");
-      const existingUpdatedStr = existingMap.get(marketplaceOrderId) || null;
-      if (existingUpdatedStr && remoteUpdatedStr) {
-        const remoteTs = Date.parse(remoteUpdatedStr);
-        const localTs = Date.parse(existingUpdatedStr);
-        if (!Number.isNaN(remoteTs) && !Number.isNaN(localTs) && remoteTs <= localTs) {
-          // Already up-to-date, skip heavy work
-          continue;
+      // Skip unchanged orders by comparing last_updated (desativado em modo forçado por IDs)
+      if (!forceUpdate) {
+        const remoteUpdatedStr = String(o?.last_updated || o?.date_last_updated || o?.date_created || "");
+        const existingUpdatedStr = existingMap.get(marketplaceOrderId) || null;
+        if (existingUpdatedStr && remoteUpdatedStr) {
+          const remoteTs = Date.parse(remoteUpdatedStr);
+          const localTs = Date.parse(existingUpdatedStr);
+          if (!Number.isNaN(remoteTs) && !Number.isNaN(localTs) && remoteTs <= localTs) {
+            // Already up-to-date, skip heavy work
+            continue;
+          }
         }
       }
 
-      // Buscar detalhes de envio (para aplicar regras e status internos) — agora apenas para enriquecer shipments
-      let shipmentDetails: any = null;
-      if (o?.shipping?.id) {
-        shipmentDetails = await fetchShipmentDetails(String(o.shipping.id), accessToken);
-      }
+      // Não buscar/enriquecer envios: vamos persistir apenas o payload bruto do pedido
 
       // Buscar detalhes completos do pedido e upsert em marketplace_orders para organização
       try {
@@ -450,25 +403,155 @@ serve(async (req) => {
         if (fullOrderResp.ok) {
           const orderData = await fullOrderResp.json();
           const nowIso = new Date().toISOString();
-          // Resolver shipmentId também a partir do payload completo se necessário
-          let finalShipmentDetails = shipmentDetails;
-          if (!finalShipmentDetails) {
-            const candidateId = orderData?.shipping?.id
-              || (Array.isArray(orderData?.shipments) && orderData.shipments[0]?.id)
-              || null;
-            if (candidateId) {
-              finalShipmentDetails = await fetchShipmentDetails(String(candidateId), accessToken);
+          const rawPayments = Array.isArray(orderData?.payments) ? orderData.payments : [];
+          const paymentsEnriched: any[] = [];
+          for (const p of rawPayments) {
+            const paymentId = String((p && (p.id ?? p.payment_id)) ?? "");
+            if (!paymentId) { paymentsEnriched.push(p); continue; }
+            const chargesUrl = `https://api.mercadolibre.com/billing/integration/payment/${encodeURIComponent(paymentId)}/charges?limit=1000`;
+            let chargesResp = await fetch(chargesUrl, { headers });
+            if (!chargesResp.ok && (chargesResp.status === 401 || chargesResp.status === 403) && integration.refresh_token) {
+              try {
+                const { data: appRow, error: appErr } = await admin
+                  .from("apps")
+                  .select("client_id, client_secret")
+                  .eq("name", integration.marketplace_name === "mercado_livre" ? "Mercado Livre" : integration.marketplace_name)
+                  .single();
+                if (!appErr && appRow) {
+                  let refreshTokenPlain: string | null = null;
+                  try { refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token); } catch { refreshTokenPlain = null; }
+                  if (refreshTokenPlain) {
+                    const form = new URLSearchParams();
+                    form.append("grant_type", "refresh_token");
+                    form.append("client_id", appRow.client_id);
+                    form.append("client_secret", appRow.client_secret);
+                    form.append("refresh_token", refreshTokenPlain);
+                    const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
+                      method: "POST",
+                      headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
+                      body: form.toString(),
+                    });
+                    const refreshJson = await refreshResp.json();
+                    if (refreshResp.ok) {
+                      const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
+                      const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
+                      const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
+                      const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
+                      await admin
+                        .from("marketplace_integrations")
+                        .update({ access_token: newAccessTokenEnc, refresh_token: newRefreshTokenEnc, expires_in: newExpiresAtIso, meli_user_id: user_id })
+                        .eq("id", integration.id);
+                      accessToken = newAccessToken;
+                      chargesResp = await fetch(chargesUrl, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
+                    }
+                  }
+                }
+              } catch { /* ignore */ }
+            }
+            try {
+              const chargesJson = await chargesResp.json();
+              const paymentDetails = Array.isArray(chargesJson?.payment_details)
+                ? chargesJson.payment_details
+                : (Array.isArray(chargesJson?.charges) ? chargesJson.charges : []);
+              const feesTotal = Array.isArray(paymentDetails)
+                ? paymentDetails.reduce((sum: number, d: any) => sum + (Number(d?.amount || 0)), 0)
+                : 0;
+              const marketplaceFee = (Number(p?.marketplace_fee) > 0) ? Number(p.marketplace_fee) : feesTotal;
+              paymentsEnriched.push({
+                ...p,
+                billing_charges: paymentDetails,
+                fee_details: paymentDetails,
+                fees_total: feesTotal,
+                marketplace_fee: marketplaceFee,
+                billing_charges_fetched_at: nowIso,
+              });
+            } catch {
+              paymentsEnriched.push(p);
             }
           }
-          // Normaliza envios: prioriza detalhes completos do /shipments/{id},
-          // senão usa array de shipments do pedido, senão fallback para order.shipping
-          const shipmentsNormalized = (
-            finalShipmentDetails ? [finalShipmentDetails] : (
-              (Array.isArray(orderData?.shipments) && orderData.shipments.length > 0)
-                ? orderData.shipments
-                : (orderData?.shipping ? [orderData.shipping] : [])
-            )
+          // Enriquecer envios: buscar detalhes via API de shipments quando houver IDs
+          async function fetchShipmentDetails(shipmentId: string, token: string): Promise<any | null> {
+            if (!shipmentId) return null;
+            try {
+              const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}`, {
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  Accept: "application/json",
+                  "x-format-new": "true",
+                },
+              });
+              if (!resp.ok) return null;
+              return await resp.json();
+            } catch (_) { return null; }
+          }
+
+          // Sub-recursos de envio: tracking e costs
+          async function fetchShipmentTracking(shipmentId: string, token: string): Promise<any | null> {
+            if (!shipmentId) return null;
+            try {
+              const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/tracking`, {
+                headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+              });
+              if (!resp.ok) return null;
+              return await resp.json();
+            } catch (_) { return null; }
+          }
+
+          async function fetchShipmentCosts(shipmentId: string, token: string): Promise<any | null> {
+            if (!shipmentId) return null;
+            try {
+              const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/costs`, {
+                headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+              });
+              if (!resp.ok) return null;
+              return await resp.json();
+            } catch (_) { return null; }
+          }
+
+          const candidateShipmentIds = new Set<string>();
+          if (orderData?.shipping?.id) {
+            try { candidateShipmentIds.add(String(orderData.shipping.id)); } catch { /* ignore */ }
+          }
+          if (Array.isArray(orderData?.shipments)) {
+            for (const s of orderData.shipments) {
+              const sid = (s && (s.id ?? s.shipment_id)) ? String(s.id ?? s.shipment_id) : null;
+              if (sid) candidateShipmentIds.add(sid);
+            }
+          }
+
+          const shipmentsDetailed: any[] = [];
+          for (const sid of candidateShipmentIds) {
+            const det = await fetchShipmentDetails(sid, accessToken);
+            if (det) shipmentsDetailed.push(det);
+          }
+
+          // Base de envios a enriquecer (detalhados ou fallback)
+          const baseShipments = (
+            shipmentsDetailed.length > 0
+              ? shipmentsDetailed
+              : ((Array.isArray(orderData?.shipments) && orderData.shipments.length > 0)
+                  ? orderData.shipments
+                  : (orderData?.shipping ? [orderData.shipping] : []))
           );
+
+          // Enriquecer cada envio com /tracking e /costs
+          const shipmentsNormalized: any[] = [];
+          for (const sh of baseShipments) {
+            const sid = (sh && (sh.id ?? sh.shipment_id)) ? String(sh.id ?? sh.shipment_id) : null;
+            let tracking: any | null = null;
+            let costs: any | null = null;
+            if (sid) {
+              tracking = await fetchShipmentTracking(sid, accessToken);
+              costs = await fetchShipmentCosts(sid, accessToken);
+            }
+            shipmentsNormalized.push({
+              ...sh,
+              tracking: tracking ?? (sh?.tracking ?? null),
+              costs: costs ?? (sh?.costs ?? null),
+              tracking_fetched_at: tracking ? nowIso : (sh?.tracking_fetched_at ?? null),
+              costs_fetched_at: costs ? nowIso : (sh?.costs_fetched_at ?? null),
+            });
+          }
           // Determina se é criação ou atualização no raw
           const isNewRaw = !existingMap.has(marketplaceOrderId);
           const upsertData = {
@@ -481,7 +564,7 @@ serve(async (req) => {
             order_items: Array.isArray(orderData.order_items) ? orderData.order_items : [],
             buyer: orderData.buyer || null,
             seller: orderData.seller || null,
-            payments: Array.isArray(orderData.payments) ? orderData.payments : [],
+            payments: paymentsEnriched,
             shipments: Array.isArray(shipmentsNormalized) ? shipmentsNormalized : [],
             feedback: orderData.feedback || null,
             tags: Array.isArray(orderData.tags) ? orderData.tags : [],
@@ -504,7 +587,10 @@ serve(async (req) => {
       } catch (_) { /* ignore */ }
     }
 
-    return jsonResponse({ ok: true, orders_found: orders.length, created, updated, items_upserted: itemsUpserted });
+    // Resumo da execução
+    const summary: any = { ok: true, orders_found: orders.length, created, updated, items_upserted: itemsUpserted };
+    if (forceUpdate) summary.orders_forced = forcedOrderIds.length;
+    return jsonResponse(summary);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
     return jsonResponse({ error: msg }, 500);

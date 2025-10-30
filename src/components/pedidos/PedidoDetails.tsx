@@ -27,6 +27,11 @@ interface Pedido {
     data: string;
     cliente: string;
     status: string;
+    // Campos adicionais derivados (podem vir via any)
+    shipment_status?: string;
+    shippingCity?: string | null;
+    shippingState?: string | null;
+    shippingUF?: string | null;
     valor: number; // Valor total dos itens
     margem: number; // Margem percentual mockada ou calculada
     itens: Item[];
@@ -41,8 +46,63 @@ const getStatusColor = (status: string) => {
         case "NF Emitida": return "bg-green-100 text-green-800 border-green-300";
         case "Aguardando Coleta": return "bg-purple-100 text-purple-800 border-purple-300";
         case "Enviado": return "bg-teal-100 text-teal-800 border-teal-300";
-        case "Cancelado": return "bg-gray-100 text-gray-800 border-gray-300";
+        case "Cancelado": return "bg-red-100 text-red-800 border-red-300";
+        case "Devolução": return "bg-gray-100 text-gray-800 border-gray-300";
+        case "Devolvido": return "bg-gray-100 text-gray-800 border-gray-300";
         default: return "bg-gray-100 text-gray-800 border-gray-300";
+    }
+};
+
+// Mapeamento de status de envio (cores e tradução)
+const formatShipmentStatus = (status?: string) => {
+    const s = String(status || '').trim();
+    if (!s) return '';
+    const key = s.toLowerCase();
+    const map: Record<string, string> = {
+        'pending': 'pendente',
+        'ready_to_print': 'pronto para imprimir',
+        'printed': 'etiqueta impressa',
+        'ready_to_ship': 'pronto para envio',
+        'handling': 'em preparação',
+        'shipped': 'enviado',
+        'in_transit': 'em trânsito',
+        'delivery_in_progress': 'em entrega',
+        'out_for_delivery': 'saiu para entrega',
+        'on_route': 'a caminho',
+        'handed_to_carrier': 'entregue à transportadora',
+        'delivered': 'entregue',
+        'receiver_received': 'recebido pelo destinatário',
+        'ready_to_pickup': 'pronto para retirada',
+        'not_delivered': 'não entregue',
+        'returned': 'devolvido',
+        'canceled': 'cancelado',
+        'cancelled': 'cancelado',
+        'collected': 'coletado',
+        'processing': 'processando',
+    };
+    return map[key] || s.replace(/_/g, ' ');
+};
+
+const getShipmentStatusColor = (status: string) => {
+    const s = String(status || '').toLowerCase();
+    switch (s) {
+        case 'pending':
+        case 'ready_to_print':
+        case 'ready_to_ship':
+            return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+        case 'in_transit':
+        case 'shipped':
+            return 'bg-blue-100 text-blue-800 border-blue-300';
+        case 'delivered':
+            return 'bg-green-100 text-green-800 border-green-300';
+        case 'not_delivered':
+        case 'returned':
+            return 'bg-purple-100 text-purple-800 border-purple-300';
+        case 'canceled':
+        case 'cancelled':
+            return 'bg-red-100 text-red-800 border-red-300';
+        default:
+            return 'bg-gray-100 text-gray-800 border-gray-300';
     }
 };
 
@@ -120,6 +180,10 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
     const custosExtras = toNum((pedido as any)?.financeiro?.custosExtras); // ex: embalagem, mão de obra
     const cupomFixo = toNum((pedido as any)?.financeiro?.cupom);
 
+    // Zerar detalhamento financeiro para Cancelado/Devolução
+    const isZeroed = String(pedido?.status || '').toLowerCase() === 'cancelado' || String(pedido?.status || '').toLowerCase() === 'devolução';
+    const zeroIfNeeded = (n: number) => (isZeroed ? 0 : n);
+
     // Percentuais derivados apenas para exibição auxiliar
     const comissaoPercentual = valorBrutoItens > 0 ? (comissaoMarketplace / valorBrutoItens) : 0;
     const impostosPercentual = valorBrutoItens > 0 ? (impostosCalculados / valorBrutoItens) : 0;
@@ -127,27 +191,27 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
     const showSaleFeeSeparado = false; // evitamos duplicidade; comissão efetiva já contempla sale_fee
     
     // Custo Líquido do Frete (Frete Custo - Frete Recebido)
-    const custoLiquidoFrete = freteCusto - freteRecebidoLiquido;
+    const custoLiquidoFrete = zeroIfNeeded(freteCusto) - zeroIfNeeded(freteRecebidoLiquido);
     
     // 1. Líquido a Receber (Repasse do Marketplace)
     // Valor Bruto dos Itens + Valor Recebido Frete - Comissões - Impostos - Descontos
     const valorLiquidoReceber =
-        valorBrutoItens +
-        freteRecebidoLiquido -
-        comissaoMarketplace -
-        impostosCalculados -
-        cupomFixo;
+        zeroIfNeeded(valorBrutoItens) +
+        zeroIfNeeded(freteRecebidoLiquido) -
+        zeroIfNeeded(comissaoMarketplace) -
+        zeroIfNeeded(impostosCalculados) -
+        zeroIfNeeded(cupomFixo);
         
     // 2. Lucro Total do Pedido (Após todos os custos internos)
     // Repasse Liquido - Custos Internos - Custo Liquido do Frete (o frete recebido já foi contado acima)
     const lucroPedido =
         valorLiquidoReceber -
-        custoProdutosFixo -
-        custosExtras -
-        (freteCusto - valorRecebidoFrete); 
+        zeroIfNeeded(custoProdutosFixo) -
+        zeroIfNeeded(custosExtras) -
+        (zeroIfNeeded(freteCusto) - zeroIfNeeded(valorRecebidoFrete)); 
         
     // 3. Margem Final (usando o lucro e o valor bruto dos itens)
-    const margemCalculada = valorBrutoItens > 0 ? (lucroPedido / valorBrutoItens) * 100 : 0;
+    const margemCalculada = isZeroed ? 0 : (valorBrutoItens > 0 ? (lucroPedido / valorBrutoItens) * 100 : 0);
 
     
 
@@ -181,6 +245,18 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             <span className="text-gray-600 text-sm">Data do Pedido:</span>
                             <span className="text-gray-900">{dataFormatada}</span>
                         </div>
+                        <div className="flex justify-between items-center">
+                            <span className="text-gray-600 text-sm">Cidade:</span>
+                            <span className="text-gray-900">{(pedido as any)?.shippingCity || '-'}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="text-gray-600 text-sm">Estado:</span>
+                            <span className="text-gray-900">{(pedido as any)?.shippingState || '-'}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="text-gray-600 text-sm">UF:</span>
+                            <span className="text-gray-900">{(pedido as any)?.shippingUF || '-'}</span>
+                        </div>
                     </div>
                     <div className="space-y-3">
                         <div className="flex justify-between items-center">
@@ -194,6 +270,12 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             {/* Uso da função getStatusColor para estilo dinâmico */}
                             <Badge className={getStatusColor(pedido.status) + " font-bold"}>
                                 {pedido.status}
+                            </Badge>
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="text-gray-600 text-sm">Status de Envio:</span>
+                            <Badge className={(pedido as any)?.shipment_status ? getShipmentStatusColor((pedido as any).shipment_status) + " font-medium" : "bg-gray-100 text-gray-800 border-gray-300"}>
+                                {formatShipmentStatus((pedido as any)?.shipment_status) || '-'}
                             </Badge>
                         </div>
                     </div>
@@ -277,7 +359,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             <FinancialDetailRow 
                                 icon={ShoppingCart} 
                                 label="Valor Bruto dos Itens" 
-                                value={valorBrutoItens} 
+                                value={zeroIfNeeded(valorBrutoItens)} 
                                 isNegative={false} 
                             />
 
@@ -285,7 +367,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             <FinancialDetailRow 
                                 icon={Truck} 
                                 label="Valor Recebido Frete da Plataforma" 
-                                value={valorRecebidoFrete} 
+                                value={zeroIfNeeded(valorRecebidoFrete)} 
                                 isNegative={false} 
                             />
                         </div>
@@ -303,7 +385,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                         <FinancialDetailRow 
                             icon={Truck} 
                             label="Valor Pago Frete (Custo Real)" 
-                            value={freteCusto} // Custo total é uma despesa
+                            value={zeroIfNeeded(freteCusto)} // Custo total é uma despesa
                             isNegative={true} 
                         />
 
@@ -311,7 +393,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                         <FinancialDetailRow 
                             icon={Truck} 
                             label="Tarifa Mercado Envios (pagador: comprador)" 
-                            value={shippingFeeBuyer} 
+                            value={zeroIfNeeded(shippingFeeBuyer)} 
                             isNegative={true} 
                         />
 
@@ -320,9 +402,9 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             <FinancialDetailRow 
                                 icon={Percent} 
                                 label="Comissão do Marketplace (Efetiva)" 
-                                value={comissaoMarketplace} 
+                                value={zeroIfNeeded(comissaoMarketplace)} 
                                 isNegative={true} 
-                                percent={comissaoPercentual * 100}
+                                percent={isZeroed ? 0 : (comissaoPercentual * 100)}
                             />
 
                             {/* Comissão (sale_fee reportado): visível quando difere da efetiva */}
@@ -330,9 +412,9 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                                 <FinancialDetailRow 
                                     icon={Percent} 
                                     label="Comissão (sale_fee do Pedido)" 
-                                    value={saleFeeReportado} 
+                                    value={zeroIfNeeded(saleFeeReportado)} 
                                     isNegative={true} 
-                                    percent={saleFeePercentual * 100}
+                                    percent={isZeroed ? 0 : (saleFeePercentual * 100)}
                                 />
                             )}
                             
@@ -340,16 +422,16 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             <FinancialDetailRow 
                                 icon={Receipt} 
                                 label="Impostos e Taxas Fiscais" 
-                                value={impostosCalculados} 
+                                value={zeroIfNeeded(impostosCalculados)} 
                                 isNegative={true} 
-                                percent={impostosPercentual * 100}
+                                percent={isZeroed ? 0 : (impostosPercentual * 100)}
                             />
 
                             {/* Custo dos Produtos (CMV) */}
                             <FinancialDetailRow 
                                 icon={Wallet} 
                                 label="Custo dos Produtos (CMV)" 
-                                value={custoProdutosFixo} 
+                                value={zeroIfNeeded(custoProdutosFixo)} 
                                 isNegative={true} 
                             />
                             
@@ -357,7 +439,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             <FinancialDetailRow 
                                 icon={Zap} 
                                 label="Custos Extras (Embalagem, Mão de Obra)" 
-                                value={custosExtras} 
+                                value={zeroIfNeeded(custosExtras)} 
                                 isNegative={true} 
                             />
 
@@ -365,7 +447,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             <FinancialDetailRow 
                                 icon={Ticket} 
                                 label="Desconto/Cupom Utilizado" 
-                                value={cupomFixo} 
+                                value={zeroIfNeeded(cupomFixo)} 
                                 isNegative={true} 
                             />
                         </div>
@@ -386,7 +468,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                                     </span>
                                 </div>
                                 <span className="text-purple-800 font-extrabold text-3xl mt-2 block">
-                                    {formatCurrency(valorLiquidoReceber)}
+                                    {formatCurrency(isZeroed ? 0 : valorLiquidoReceber)}
                                 </span>
                                 <p className="text-xs text-purple-600 mt-2">Valor creditado pelo Marketplace (inclui frete recebido, menos comissões, impostos e descontos).</p>
                             </div>

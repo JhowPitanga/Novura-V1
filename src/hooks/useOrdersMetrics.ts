@@ -63,13 +63,13 @@ export async function getOrdersMetrics(
 
   // Fetch orders (optionally filter by marketplace)
   let q: any = supabase
-    .from('orders')
+    .from('marketplace_orders_presented')
     .select(`
       id,
       marketplace_order_id,
       order_total,
       marketplace,
-      order_items ( quantity )
+      items_total_quantity
     `);
   if (selectedMarketplaceDisplay && selectedMarketplaceDisplay !== 'todos') {
     q = q.eq('marketplace', selectedMarketplaceDisplay);
@@ -80,10 +80,10 @@ export async function getOrdersMetrics(
   const orderList = Array.isArray(orders) ? orders : [];
   const orderIds = Array.from(new Set(orderList.map((o: any) => o.marketplace_order_id).filter(Boolean)));
 
-  // Fetch marketplace_orders to compute payment date
+  // Fetch RAW marketplace orders to compute payment date
   let mq = supabase
-    .from('marketplace_orders')
-    .select('marketplace_order_id, payments, date_created')
+    .from('marketplace_orders_raw')
+    .select('marketplace_order_id, payments, shipments, date_created')
     .in('marketplace_order_id', orderIds);
   if (organizationId) mq = (mq as any).eq('organizations_id', organizationId);
   const { data: mqRows, error: mqErr } = await mq;
@@ -128,7 +128,7 @@ export async function getOrdersMetrics(
     if (!inRange) continue;
 
     const venda = Number(o?.order_total || 0) || 0;
-    const unidades = Array.isArray(o?.order_items) ? (o.order_items as any[]).reduce((acc, it: any) => acc + Number(it?.quantity || 0), 0) : 0;
+    const unidades = Number(o?.items_total_quantity || 0) || 0;
     totalVendas += venda;
     totalUnidades += unidades;
     totalPedidos += 1;

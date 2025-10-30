@@ -354,16 +354,16 @@ export function ImpressaoLista({ onOpenDetalhesPedido }: ImpressaoListaProps) {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end space-x-2">
-         <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setIsConfigModalOpen(true)}
-          >
-            <Settings className="w-4 h-4 mr-2" />
-            Configurações
-          </Button>
-      </div>
+      <div className="flex justify-end space-x-2">
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={() => setIsConfigModalOpen(true)}
+          aria-label="Configurações de impressão"
+        >
+          <Settings className="w-4 h-4" />
+        </Button>
+      </div>
 
       {loading || settingsLoading ? (
         <div className="space-y-4">

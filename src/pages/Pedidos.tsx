@@ -38,7 +38,6 @@ import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { formatDateTimeSP, formatDateSP, eventToSPEpochMs, calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs } from "@/lib/datetime";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
-import { Reorder } from "framer-motion";
 import { PedidoDetailsDrawer } from "@/components/pedidos/PedidoDetailsDrawer";
 import { supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -496,8 +495,63 @@ function Pedidos() {
     const [currentPage, setCurrentPage] = useState<number>(1);
     const [sortKey, setSortKey] = useState<'recent' | 'sku' | 'items'>('recent');
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+    const columnsDrawerRef = useRef<HTMLDivElement | null>(null);
 
-    const { user } = useAuth();
+    const { user, organizationId } = useAuth();
+
+    // Estado para animar suavemente o painel de colunas ao abrir
+    const [columnsPanelAnimatedOpen, setColumnsPanelAnimatedOpen] = useState(false);
+    // Estado para destacar alvo durante drag-and-drop
+    const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+    const dragStartIndexRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        if (isColumnsDrawerOpen) {
+            const t = setTimeout(() => setColumnsPanelAnimatedOpen(true), 20);
+            return () => clearTimeout(t);
+        }
+        setColumnsPanelAnimatedOpen(false);
+    }, [isColumnsDrawerOpen]);
+
+    // Logs para diagnosticar abertura de Drawer de Colunas/Filtros e possíveis erros globais
+    useEffect(() => {
+        console.log('[Pedidos] isColumnsDrawerOpen mudou:', isColumnsDrawerOpen);
+        if (isColumnsDrawerOpen && columnsDrawerRef.current) {
+            const rect = columnsDrawerRef.current.getBoundingClientRect();
+            const styles = window.getComputedStyle(columnsDrawerRef.current);
+            console.log('[Pedidos] Columns Drawer Content rect:', rect);
+            console.log('[Pedidos] Columns Drawer Content styles:', {
+                position: styles.position,
+                zIndex: styles.zIndex,
+                right: styles.right,
+                left: styles.left,
+                width: styles.width,
+                display: styles.display,
+                visibility: styles.visibility,
+                transform: styles.transform,
+                opacity: styles.opacity,
+            });
+        }
+    }, [isColumnsDrawerOpen]);
+
+    useEffect(() => {
+        // noop: mantido para possível debug futuro
+    }, [isFilterDrawerOpen]);
+
+    useEffect(() => {
+        const onError = (e: ErrorEvent) => {
+            console.error('[Pedidos] Erro não tratado ao abrir Drawer:', e.error || e.message, e.filename, e.lineno, e.colno);
+        };
+        const onUnhandledRejection = (e: PromiseRejectionEvent) => {
+            console.error('[Pedidos] Promessa rejeitada sem tratamento:', e.reason);
+        };
+        window.addEventListener('error', onError);
+        window.addEventListener('unhandledrejection', onUnhandledRejection);
+        return () => {
+            window.removeEventListener('error', onError);
+            window.removeEventListener('unhandledrejection', onUnhandledRejection);
+        };
+    }, []);
 
     const loadPedidos = async () => {
         try {
@@ -514,7 +568,7 @@ function Pedidos() {
             } catch (_) {}
 
             const { data, error } = await supabase
-                .from("orders")
+                .from("marketplace_orders_presented")
                 .select(`
                     id,
                     marketplace_order_id,
@@ -523,28 +577,50 @@ function Pedidos() {
                     status,
                     created_at,
                     marketplace,
-                    platform_id,
                     shipping_type,
-                    order_items (
-                        product_name,
-                        quantity,
-                        sku,
-                        price_per_unit
-                    )
+                    payment_status,
+                    payment_marketplace_fee,
+                    payment_shipping_cost,
+                    payment_date_created,
+                    payment_date_approved,
+                    items_total_quantity,
+                    items_total_amount,
+                    items_total_sale_fee,
+                    first_item_title,
+                    first_item_sku,
+                    shipping_city_name,
+                    shipping_state_name,
+                    shipping_state_uf,
+                    shipment_status,
+                    shipping_method_name,
+                    shipment_sla_status,
+                    shipment_sla_service,
+                    shipment_sla_expected_date,
+                    shipment_sla_last_updated,
+                    shipment_delays
                 `);
 
             if (error) throw error;
 
+            // Filtrar pedidos pagos (não exibir não pagos)
+            const isRowPaid = (o: any): boolean => {
+                const st = String(o?.payment_status || '').toLowerCase();
+                if (st === 'approved' || st === 'paid' || st === 'settled') return true;
+                if (o?.payment_date_approved) return true;
+                return false;
+            };
+            const paidRows: any[] = Array.isArray(data) ? data.filter(isRowPaid) : [];
+
             // Buscar dados brutos do marketplace para pagamentos e envios
-            const orderIds = Array.from(new Set((data || []).map((o: any) => o.marketplace_order_id).filter(Boolean)));
+            const orderIds = Array.from(new Set(paidRows.map((o: any) => o.marketplace_order_id).filter(Boolean)));
             let marketplaceByOrderId: Record<string, any> = {};
             let shipmentsByOrderId: Record<string, any[]> = {};
             if (orderIds.length > 0) {
                 try {
                     // 1) Tentativa com filtro por organização (quando disponível)
                     let mq1 = supabase
-                        .from('marketplace_orders')
-                        .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created')
+                        .from('marketplace_orders_raw')
+                        .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer')
                         .in('marketplace_order_id', orderIds);
                     if (organizationId) mq1 = (mq1 as any).eq('organizations_id', organizationId);
                     const { data: mqRows1, error: mqErr1 } = await mq1;
@@ -554,8 +630,8 @@ function Pedidos() {
                     } else {
                         // 2) Fallback sem filtro de organização (aproveita políticas RLS existentes)
                         const { data: mqRows2, error: mqErr2 } = await supabase
-                            .from('marketplace_orders')
-                            .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created')
+                            .from('marketplace_orders_raw')
+                            .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer')
                             .in('marketplace_order_id', orderIds);
                         if (!mqErr2 && Array.isArray(mqRows2)) rows = mqRows2 as any[];
                     }
@@ -570,7 +646,7 @@ function Pedidos() {
                     try {
                         let sh1 = supabase
                             .from('marketplace_shipments')
-                            .select('marketplace_order_id, status, substatus, logistic_type, mode, shipping_mode, service_id, carrier, tracking_number, tracking_url, tracking_history, receiver_address, sender_address, costs, items, promise, tags, dimensions, data, date_created, last_updated, date_ready_to_ship, date_first_printed, last_synced_at')
+                            .select('marketplace_order_id, status, substatus, logistic_type, mode, shipping_mode, service_id, carrier, tracking_number, tracking_url, tracking_history, receiver_address, sender_address, costs, items, promise, tags, dimensions, data, date_created, last_updated, date_ready_to_ship, date_first_printed, last_synced_at, sla_status, sla_service, sla_expected_date, sla_last_updated, delays')
                             .eq('marketplace_name', 'Mercado Livre')
                             .in('marketplace_order_id', orderIds);
                         if (organizationId) sh1 = (sh1 as any).eq('organizations_id', organizationId);
@@ -587,27 +663,53 @@ function Pedidos() {
                     } catch (shCatch) {
                         console.warn('Falha ao buscar marketplace_shipments:', shCatch);
                     }
-                } catch (mqCatch) {
-                    console.warn('Falha ao buscar marketplace_orders:', mqCatch);
+                    } catch (mqCatch) {
+                        console.warn('Falha ao buscar marketplace_orders_presented:', mqCatch);
+                    }
                 }
-            }
 
-            const parsed = (data || []).map((o: any) => {
-                const items = (o.order_items || []).map((it: any, idx: number) => ({
-                    id: `${o.id || o.marketplace_order_id}-ITEM-${idx + 1}`,
-                    nome: it.product_name,
-                    sku: it.sku || null,
-                    quantidade: it.quantity || 0,
-                    valor: typeof it.price_per_unit === 'number' ? it.price_per_unit : Number(it.price_per_unit) || 0,
-                    bipado: false,
-                    vinculado: !!it.sku,
-                    imagem: "/placeholder.svg",
-                    marketplace: o.marketplace,
-                }));
+                // Pré-busca: vínculos de anúncios -> produtos por item_id em todos os pedidos
+                let linkByItemIdGlobal: Record<string, { product_id: string, sku: string, name: string, variation_id: string }> = {};
+                try {
+                    const uniqueItemIdsForLinks = new Set<string>();
+                    for (const o of paidRows as any[]) {
+                        const mq = o.marketplace_order_id ? marketplaceByOrderId[o.marketplace_order_id] : null;
+                        const orderDataRaw: any = mq?.data || {};
+                        const rawOrderItems: any[] = Array.isArray(orderDataRaw?.order_items) ? orderDataRaw.order_items : [];
+                        for (const rit of rawOrderItems) {
+                            const itemId = rit?.item?.id;
+                            if (itemId) uniqueItemIdsForLinks.add(String(itemId));
+                        }
+                    }
+                    if (uniqueItemIdsForLinks.size > 0) {
+                        let q = supabase
+                            .from('marketplace_item_product_links')
+                            .select('marketplace_item_id, variation_id, product:products (id, sku, name)')
+                            .eq('marketplace_name', 'Mercado Livre')
+                            .in('marketplace_item_id', Array.from(uniqueItemIdsForLinks));
+                        if (organizationId) q = (q as any).eq('organizations_id', organizationId);
+                        const { data: linkRows, error: linkErr } = await q;
+                        if (!linkErr && Array.isArray(linkRows)) {
+                            for (const r of linkRows) {
+                                const k = String(r?.marketplace_item_id || '');
+                                const prod = r?.product;
+                                if (k && prod) {
+                                    linkByItemIdGlobal[k] = {
+                                        product_id: String(prod.id),
+                                        sku: String(prod.sku || ''),
+                                        name: String(prod.name || ''),
+                                        variation_id: String(r?.variation_id || ''),
+                                    };
+                                }
+                            }
+                        }
+                    }
+                } catch (linkCatch) {
+                    console.warn('Falha ao pré-buscar vínculos de anúncios:', linkCatch);
+                }
 
-                const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
-
-                // Dados do marketplace para cálculos financeiros (pagamentos/entregas)
+            const parsed = paidRows.map((o: any) => {
+                // Dados do marketplace bruto
                 const mq = o.marketplace_order_id ? marketplaceByOrderId[o.marketplace_order_id] : null;
                 const payments: any[] = Array.isArray(mq?.payments) ? mq.payments : [];
                 const shipmentsNormalized: any[] = Array.isArray(shipmentsByOrderId[o.marketplace_order_id]) ? shipmentsByOrderId[o.marketplace_order_id] : [];
@@ -615,21 +717,76 @@ function Pedidos() {
                     ? shipmentsNormalized
                     : (Array.isArray(mq?.shipments) ? mq.shipments : []);
                 const orderDataRaw: any = mq?.data || {};
+                const rawOrderItems: any[] = Array.isArray(orderDataRaw?.order_items) ? orderDataRaw.order_items : [];
+
+                // Construção dos itens do pedido a partir do RAW; fallback para agregados da view
+                let items: any[] = [];
+                if (rawOrderItems.length > 0) {
+                    items = rawOrderItems.map((rit: any, idx: number) => {
+                        const itemId = rit?.item?.id ? String(rit.item.id) : null;
+                        const mapped = itemId ? linkByItemIdGlobal[itemId] : undefined;
+                        const resolvedSku = (
+                            rit?.item?.seller_sku ?? rit?.seller_sku ?? rit?.sku ?? o.first_item_sku ?? (mapped?.sku || null)
+                        );
+                        const isLinked = !!(rit?.item?.seller_sku || rit?.seller_sku || rit?.sku || (mapped?.sku));
+                        return {
+                            id: `${o.marketplace_order_id || o.id}-ITEM-${idx + 1}`,
+                            nome: rit?.item?.title ?? rit?.item?.name ?? rit?.title ?? o.first_item_title ?? 'Item',
+                            sku: resolvedSku,
+                            quantidade: (typeof rit?.quantity === 'number' ? rit.quantity : Number(rit?.quantity)) || 0,
+                            valor: (typeof rit?.unit_price === 'number' ? rit.unit_price : Number(rit?.unit_price))
+                                || (typeof rit?.full_unit_price === 'number' ? rit.full_unit_price : Number(rit?.full_unit_price))
+                                || (typeof rit?.price === 'number' ? rit.price : Number(rit?.price))
+                                || 0,
+                            bipado: false,
+                            vinculado: isLinked,
+                            imagem: "/placeholder.svg",
+                            marketplace: o.marketplace,
+                            marketplaceItemId: itemId,
+                            variationId: (rit?.variation_id !== undefined && rit?.variation_id !== null) ? String(rit.variation_id) : '',
+                        };
+                    });
+                } else {
+                    const qtyAgg = (typeof o?.items_total_quantity === 'number' ? o.items_total_quantity : Number(o?.items_total_quantity)) || 1;
+                    const amtAgg = (typeof o?.items_total_amount === 'number' ? o.items_total_amount : Number(o?.items_total_amount)) || 0;
+                    const unitPriceAgg = qtyAgg > 0 ? amtAgg / qtyAgg : amtAgg;
+                    items = [{
+                        id: `${o.marketplace_order_id || o.id}-ITEM-1`,
+                        nome: o.first_item_title || 'Item',
+                        sku: o.first_item_sku || null,
+                        quantidade: qtyAgg,
+                        valor: unitPriceAgg,
+                        bipado: false,
+                        vinculado: !!o.first_item_sku,
+                        imagem: "/placeholder.svg",
+                        marketplace: o.marketplace,
+                        marketplaceItemId: null,
+                        variationId: '',
+                    }];
+                }
+
+                const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
 
                 // Helpers de número
                 const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
 
                 // Receitas
                 const valorBrutoItens = items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0);
-                const valorRecebidoFrete = payments.reduce((sum, p) => sum + toNum(p?.shipping_cost), 0);
+                const valorRecebidoFrete = (
+                    toNum(o?.payment_shipping_cost) ||
+                    payments.reduce((sum, p) => sum + toNum(p?.shipping_cost), 0)
+                );
                 const cupom = payments.reduce((sum, p) => sum + toNum(p?.coupon_amount), 0);
 
                 // Taxas da plataforma (quando disponível no pagamento)
-                const feesFromPayments = payments.reduce((sum, p) => sum + toNum((p?.marketplace_fee ?? p?.fee_amount ?? p?.fees_total)), 0);
-                // sale_fee por item vindo do payload bruto do pedido
-                const saleFeeOrderItems = Array.isArray(orderDataRaw?.order_items)
-                    ? orderDataRaw.order_items.reduce((sum: number, oi: any) => sum + toNum(oi?.sale_fee), 0)
-                    : 0;
+                const feesFromPayments = toNum(o?.payment_marketplace_fee) || payments.reduce((sum, p) => sum + toNum((p?.marketplace_fee ?? p?.fee_amount ?? p?.fees_total)), 0);
+                // sale_fee por item vindo do payload bruto do pedido ou agregado da view
+                const saleFeeOrderItems = (
+                    (typeof o?.items_total_sale_fee === 'number' ? o.items_total_sale_fee : Number(o?.items_total_sale_fee)) ||
+                    (Array.isArray(orderDataRaw?.order_items)
+                        ? orderDataRaw.order_items.reduce((sum: number, oi: any) => sum + toNum(oi?.sale_fee), 0)
+                        : 0)
+                );
                 // Se o marketplace detalha tarifa de frete (pagador: comprador), normalmente aparece em fees dos pagamentos
                 // Estimamos essa tarifa como o excedente sobre sale_fee e limitamos ao frete recebido para evitar dupla contagem
                 const diffFees = Math.max(feesFromPayments - saleFeeOrderItems, 0);
@@ -710,23 +867,22 @@ function Pedidos() {
                 const isDelivered = shippingStatuses.some((s) => deliveredKeywords.some(k => s.includes(k))) || hasDeliveredHistory;
                 const isShipped = shippingStatuses.some((s) => shippedKeywords.some(k => s.includes(k)));
                 const isReadyToShip = shippingStatuses.some((s) => readySet.has(s));
+                const hasPendingShipment = shippingStatuses.includes('pending');
+                const hasReadyToShip = shippingStatuses.includes('ready_to_ship');
+                const hasReadyToPrint = shippingStatuses.includes('ready_to_print');
 
                 // Nome do cliente a partir do marketplace (buyer first/last), com limite de 3 palavras; fallback ao nome da tabela orders
-                const buyer = orderDataRaw?.buyer || {};
+                const buyer = mq?.buyer || orderDataRaw?.buyer || {};
                 const rawClienteNome = [buyer?.first_name, buyer?.last_name].filter(Boolean).join(' ').trim() || (o.customer_name || "");
                 const clienteNome = rawClienteNome.split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
 
                 // Data do pedido/pagamento: usar marketplace_orders.date_created (timestamptz, América/São Paulo) como fonte principal
                 let dataPagamento: string | null = null;
-                if (mq?.date_created) {
-                    try {
-                        const d = new Date(mq.date_created);
-                        dataPagamento = d.toISOString();
-                    } catch (_) {
-                        dataPagamento = null;
-                    }
-                }
-                // Fallback: inferir a partir dos pagamentos caso date_created não esteja disponível
+                const pdApproved = o?.payment_date_approved ? new Date(o.payment_date_approved) : null;
+                const pdCreated = o?.payment_date_created ? new Date(o.payment_date_created) : null;
+                const createdAt = o?.created_at ? new Date(o.created_at) : null;
+                const primaryDate = pdApproved || pdCreated || createdAt || null;
+                if (primaryDate) dataPagamento = primaryDate.toISOString();
                 if (!dataPagamento) {
                     const approvedPayments = payments
                         .filter((p: any) => String(p?.status || '').toLowerCase() === 'approved' && p?.date_approved)
@@ -743,19 +899,38 @@ function Pedidos() {
 
                 // Regras de status para o quadro visual
                 let statusUI = o.status || 'Pendente';
-                if (isPaymentCancelled) {
+                const shipmentStatusLower = String(o?.shipment_status || firstShipment?.status || '').toLowerCase();
+                const isPaymentRefunded = paymentStatuses.includes('refunded') || String(o?.payment_status || '').toLowerCase() === 'refunded';
+
+                if (isPaymentRefunded) {
+                    // Regra: cancelled + refunded => Cancelado | delivered/not_delivered + refunded => Devolução
+                    if (shipmentStatusLower === 'cancelled' || shipmentStatusLower === 'canceled') {
+                        statusUI = 'Cancelado';
+                    } else if (shipmentStatusLower === 'delivered' || shipmentStatusLower === 'not_delivered') {
+                        statusUI = 'Devolução';
+                    }
+                } else if (isPaymentCancelled) {
                     statusUI = 'Cancelado';
+                } else if (hasPendingShipment) {
+                    // Regra: shipment_status 'pending' => quadro "A vincular"
+                    statusUI = 'A vincular';
+                } else if (hasReadyToShip && hasReadyToPrint) {
+                    // Regra: pronto para envio + pronto para imprimir => quadro "Impressão" (NF Emitida)
+                    statusUI = 'NF Emitida';
                 } else if (isDelivered || isShipped) {
                     // Pedidos recebidos (pelo comprador) ou entregues entram no quadro "Enviado"
                     statusUI = 'Enviado';
                 } else if (isReadyToShip) {
                     statusUI = 'Aguardando Coleta';
+                } else if (items.some((it: any) => !it.vinculado)) {
+                    // Itens do pedido sem SKU vinculado => colocar na aba "A vincular"
+                    statusUI = 'A vincular';
                 }
 
                 // Ajuste de financeiro para cancelados
                 const liquidoCalculado = (valorBrutoItens || orderTotal) + freteRecebidoLiquido - taxaMarketplace - cupom;
-                const liquidoFinal = (statusUI === 'Cancelado') ? 0 : liquidoCalculado;
-                const margemFinal = (statusUI === 'Cancelado') ? 0 : 0;
+                const liquidoFinal = (statusUI === 'Cancelado' || statusUI === 'Devolução') ? 0 : liquidoCalculado;
+                const margemFinal = (statusUI === 'Cancelado' || statusUI === 'Devolução') ? 0 : 0;
 
                 const marketplaceName = (
                     mq?.marketplace_name ||
@@ -793,9 +968,21 @@ function Pedidos() {
                     valor: orderTotal,
                     data: o.created_at,
                     status: statusUI,
+                    shipment_status: o?.shipment_status || (firstShipment?.status ?? null),
+                    // SLA de despacho e atrasos: prioriza colunas da view presented
+                    slaDespacho: {
+                        status: o?.shipment_sla_status ?? (firstShipment?.sla_status ?? null),
+                        service: o?.shipment_sla_service ?? (firstShipment?.sla_service ?? null),
+                        expected_date: o?.shipment_sla_expected_date ?? (firstShipment?.sla_expected_date ?? null),
+                        last_updated: o?.shipment_sla_last_updated ?? (firstShipment?.sla_last_updated ?? null),
+                    },
+                    atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : (Array.isArray(firstShipment?.delays) ? firstShipment?.delays : null),
                     dataPagamento,
                     tipoEnvio: tipoEnvioDerivado,
                     idPlataforma: o.platform_id || o.marketplace_order_id || "",
+                    shippingCity: o?.shipping_city_name || null,
+                    shippingState: o?.shipping_state_name || null,
+                    shippingUF: o?.shipping_state_uf || null,
                     quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
                     imagem: "/placeholder.svg",
                     itens: items,
@@ -877,8 +1064,119 @@ function Pedidos() {
         }
     };
 
+    // Sincronizar apenas pedidos selecionados via função mercado-livre-sync-orders com order_ids
+    const handleSyncSelectedOrders = async () => {
+        try {
+            // Derivar a lista de IDs selecionados conforme o quadro atual
+            const selectedIds = (
+                activeStatus === 'todos' ? selectedPedidos :
+                activeStatus === 'emissao-nf' ? selectedPedidosEmissao :
+                activeStatus === 'impressao' ? selectedPedidosImpressao :
+                []
+            ).map((id) => String(id)).filter(Boolean);
 
-    // Definição das colunas da tabela
+            // Filtrar para apenas pedidos de Mercado Livre e ignorar placeholders
+            const selectedOrderIds = pedidos
+                .filter((p: any) => selectedIds.includes(String(p.id)))
+                .filter((p: any) => String(p.marketplace || '').toLowerCase().includes('mercado'))
+                .map((p: any) => String(p.id))
+                .filter((id: string) => !!id && id !== '2000010000000000');
+
+            if (selectedOrderIds.length === 0) {
+                console.warn('Nenhum pedido selecionado com marketplace válido para sincronização.');
+                return;
+            }
+
+            setIsSyncing(true);
+            const { data: sessionRes } = await (supabase as any).auth.getSession();
+            const token: string | undefined = sessionRes?.session?.access_token;
+            if (!token) throw new Error('Sessão expirada ou ausente. Faça login novamente.');
+
+            let organizationId: string | null = null;
+            try {
+                const { data: orgRes } = await supabase.rpc('get_user_organization_id');
+                if (orgRes) organizationId = String(orgRes);
+            } catch {}
+
+            const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-sync-orders`, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'apikey': SUPABASE_PUBLISHABLE_KEY,
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({ organizationId, order_ids: selectedOrderIds }),
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                const msg = json?.error ? String(json.error) : `HTTP ${resp.status}`;
+                throw new Error(msg);
+            }
+            await loadPedidos();
+        } catch (e) {
+            console.error('Falha ao sincronizar pedidos selecionados:', e);
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+
+    // Sincronizar um pedido via ID interno (UUID de orders.id)
+    const handleSyncOrderByInternalId = async (internalOrderId?: string) => {
+        try {
+            const id = String(internalOrderId || '').trim();
+            if (!id) return;
+            setIsSyncing(true);
+
+            const { data: sessionRes } = await (supabase as any).auth.getSession();
+            const token: string | undefined = sessionRes?.session?.access_token;
+            if (!token) throw new Error('Sessão expirada ou ausente. Faça login novamente.');
+
+            // Buscar o marketplace_order_id a partir do ID interno
+            const { data: row, error: rowErr } = await supabase
+                .from('marketplace_orders_presented')
+                .select('marketplace_order_id, marketplace')
+                .eq('id', id)
+                .limit(1)
+                .single();
+            if (rowErr || !row) throw new Error(rowErr?.message || 'Pedido não encontrado');
+
+            const marketplaceName = String(row.marketplace || '').toLowerCase();
+            if (!marketplaceName.includes('mercado')) throw new Error('Pedido não é do Mercado Livre');
+
+            const mlOrderId = String(row.marketplace_order_id || '').trim();
+            if (!/^\d+$/.test(mlOrderId)) throw new Error('Pedido sem marketplace_order_id válido');
+
+            // Organização do usuário
+            let organizationId: string | null = null;
+            try {
+                const { data: orgRes } = await supabase.rpc('get_user_organization_id');
+                if (orgRes) organizationId = String(orgRes);
+            } catch {}
+
+            const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-sync-orders`, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'apikey': SUPABASE_PUBLISHABLE_KEY,
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({ organizationId, order_ids: [mlOrderId] }),
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                const msg = json?.error ? String(json.error) : `HTTP ${resp.status}`;
+                throw new Error(msg);
+            }
+            await loadPedidos();
+        } catch (e) {
+            console.error('Falha ao sincronizar pedido por ID interno:', e);
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+
+
+    // Definição das colunas da tabela (valores padrão)
     const [columns, setColumns] = useState([
         { id: "produto", name: "Produto", enabled: true, alwaysVisible: true, render: (pedido) => (
             <div className="flex flex-col space-y-2">
@@ -891,7 +1189,7 @@ function Pedidos() {
                         />
                         <div className="min-w-0 flex-1">
                             <div className={`text-sm font-medium text-gray-900 ${pedido.quantidadeTotal >= 2 ? 'font-bold' : ''}`}>
-                                <span className="line-clamp-1">
+                                <span className="line-clamp-2">
                                     {idx === 0 ? (pedido.produto || it?.nome || 'Produto') : (it?.nome || 'Produto')}
                                 </span>
                             </div>
@@ -901,7 +1199,7 @@ function Pedidos() {
                 ))}
             </div>
         )},
-        { id: "itens", name: "Itens", enabled: true, render: (pedido) => (
+        { id: "itens", name: "Itens", enabled: true, alwaysVisible: true, render: (pedido) => (
             <div className="flex flex-col space-y-2">
                 {pedido.itens?.map((item: any, index: number) => (
                     <div key={index} className="h-12 flex items-center">
@@ -915,51 +1213,169 @@ function Pedidos() {
                 ))}
             </div>
         )},
-        { id: "cliente", name: "Cliente", enabled: true, render: (pedido) => (<span className="text-gray-900">{pedido.cliente}</span>)},
-        { id: "valor", name: "Valor do Pedido", enabled: true, render: (pedido) => (pedido.valor?.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }))},
-        { id: "tipoEnvio", name: "Tipo de Envio", enabled: true, render: (pedido) => (
-            <Badge className={`uppercase bg-purple-600 text-white hover:bg-purple-700`}>
-                {mapTipoEnvioLabel(pedido.tipoEnvio)}
-            </Badge>
+        { id: "cliente", name: "Cliente", enabled: true, render: (pedido) => {
+            const name = String(pedido?.cliente || "");
+            const truncated = name.length > 30 ? name.slice(0, 30) + "…" : name;
+            return (<span className="text-gray-900 block truncate">{truncated}</span>);
+        }},
+        { id: "valor", name: "Valor do Pedido", enabled: true, render: (pedido) => (
+            <span className="text-gray-900 font-semibold">{pedido.valor?.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>
         )},
+        { id: "tipoEnvio", name: "Tipo de Envio", enabled: true, alwaysVisible: true, render: (pedido) => {
+            const shipmentStatus = String(pedido?.shipment_status || '').toLowerCase();
+            const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup'];
+            const isOrderCancelledOrReturned = (
+                pedido?.status === 'Cancelado' ||
+                pedido?.status === 'Devolvido' ||
+                pedido?.status === 'Devolução'
+            );
+            const showSLA = !deliveredStatuses.includes(shipmentStatus) && !isOrderCancelledOrReturned && pedido?.slaDespacho?.expected_date;
+            let countdown: JSX.Element | null = null;
+            if (showSLA) {
+                const expected = new Date(pedido.slaDespacho.expected_date);
+                const now = new Date();
+                const diffMs = expected.getTime() - now.getTime();
+                const expired = diffMs <= 0;
+                const totalMinutes = Math.max(0, Math.floor(diffMs / 60000));
+                const days = Math.floor(totalMinutes / (60 * 24));
+                const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+                const minutes = totalMinutes % 60;
+                const color = expired ? 'text-red-600' : 'text-purple-600';
+                countdown = (
+                    <span className={`text-xs font-medium ${color}`}>
+                        ENVIE EM: {days}d {hours}h {minutes}m
+                    </span>
+                );
+            }
+            return (
+                <div className="flex flex-col gap-1">
+                    <Badge className={`uppercase bg-purple-600 text-white hover:bg-purple-700`}>
+                        {mapTipoEnvioLabel(pedido.tipoEnvio)}
+                    </Badge>
+                    {countdown}
+                </div>
+            );
+        }},
+        
         
         { id: "marketplace", name: "Marketplace", enabled: true, render: (pedido) => (<span className="text-gray-900">{pedido.marketplace}</span>)},
         { id: "idPlataforma", name: "ID da Plataforma", enabled: false, render: (pedido) => (pedido.idPlataforma)},
-        { id: "status", name: "Status", enabled: true, alwaysVisible: true, render: (pedido) => (
-            <div className="flex flex-col items-start space-y-2">
-                <Badge className={`uppercase ${getStatusColor(pedido.status)}`}>
-                    {pedido.status}
-                    {pedido.subStatus && (
-                        <span className="ml-2 text-xs font-normal text-white/80">({pedido.subStatus})</span>
+        { id: "status", name: "Status", enabled: true, alwaysVisible: true, render: (pedido) => {
+            const expected = pedido?.slaDespacho?.expected_date ? new Date(pedido.slaDespacho.expected_date) : null;
+            const expiredSLA = expected ? (new Date().getTime() >= new Date(expected).getTime()) : false;
+            const shipmentStatusKey = String(pedido?.shipment_status || '').toLowerCase();
+            const dispatchedStatuses = ['shipped','handed_to_carrier','collected','in_transit','on_route','out_for_delivery','delivery_in_progress'];
+            const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup'];
+            const isDispatched = dispatchedStatuses.includes(shipmentStatusKey);
+            const isDelivered = deliveredStatuses.includes(shipmentStatusKey);
+            const isOrderCancelledOrReturned = (
+                pedido?.status === 'Cancelado' ||
+                pedido?.status === 'Devolvido' ||
+                pedido?.status === 'Devolução'
+            );
+            const hasDelays = expiredSLA && !isDispatched && !isDelivered && !isOrderCancelledOrReturned;
+            const badgeClass = isOrderCancelledOrReturned
+                ? getStatusColor(pedido.status)
+                : (hasDelays
+                    ? 'bg-red-500 hover:bg-red-500 text-white'
+                    : (pedido?.shipment_status ? getShipmentStatusColor(pedido.shipment_status) : getStatusColor(pedido.status)));
+            const labelText = isOrderCancelledOrReturned
+                ? pedido.status
+                : (hasDelays
+                    ? 'ATRASADO'
+                    : (pedido?.shipment_status ? formatShipmentStatus(pedido.shipment_status) : pedido.status));
+            return (
+                <div className="flex flex-col items-start space-y-2">
+                    <Badge className={`uppercase ${badgeClass}`}>
+                        {labelText}
+                        {!hasDelays && pedido.subStatus && !pedido?.shipment_status && (
+                            <span className="ml-2 text-xs font-normal text-white/80">({pedido.subStatus})</span>
+                        )}
+                    </Badge>
+                    {activeStatus === "impressao" && (
+                        <div className="flex items-center space-x-2 mt-1">
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <StickyNote className={`h-4 w-4 ${pedido.impressoLista ? 'text-primary' : 'text-gray-300'}`} />
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    <p>{pedido.impressoLista ? 'Lista de Separação Impressa' : 'Lista de Separação não impressa'}</p>
+                                </TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <FileBadge className={`h-4 w-4 ${pedido.impressoEtiqueta ? 'text-primary' : 'text-gray-300'}`} />
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    <p>{pedido.impressoEtiqueta ? 'Etiqueta Impressa' : 'Etiqueta não impressa'}</p>
+                                </TooltipContent>
+                            </Tooltip>
+                        </div>
                     )}
-                </Badge>
-                {activeStatus === "impressao" && (
-                    <div className="flex items-center space-x-2 mt-1">
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <StickyNote className={`h-4 w-4 ${pedido.impressoLista ? 'text-primary' : 'text-gray-300'}`} />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                                <p>{pedido.impressoLista ? 'Lista de Separação Impressa' : 'Lista de Separação não impressa'}</p>
-                            </TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <FileBadge className={`h-4 w-4 ${pedido.impressoEtiqueta ? 'text-primary' : 'text-gray-300'}`} />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                                <p>{pedido.impressoEtiqueta ? 'Etiqueta Impressa' : 'Etiqueta não impressa'}</p>
-                            </TooltipContent>
-                        </Tooltip>
-                    </div>
-                )}
-            </div>
-        )},
+                </div>
+            );
+        }},
         
         
         
         
     ]);
+
+    // Snapshot das colunas padrão para mesclar com preferências salvas
+    const defaultColumnsRef = useRef<any[] | null>(null);
+    if (!defaultColumnsRef.current) {
+        defaultColumnsRef.current = [...columns];
+    }
+
+    // Mesclar preferências salvas (id + enabled + ordem) com as colunas padrão
+    const mergeSavedWithDefaults = (saved: Array<{ id: string; enabled?: boolean }>) => {
+        const defaults = defaultColumnsRef.current || [];
+        const defaultMap = new Map<string, any>(defaults.map((c) => [c.id, c]));
+        const seen = new Set<string>();
+        const merged: any[] = [];
+
+        // Ordem conforme salvo (apenas ids ainda existentes)
+        for (const s of saved) {
+            if (!defaultMap.has(s.id)) continue;
+            const base = defaultMap.get(s.id);
+            merged.push({ ...base, enabled: base.alwaysVisible ? true : !!s.enabled });
+            seen.add(s.id);
+        }
+        // Adiciona novos defaults que não estavam salvos
+        for (const d of defaults) {
+            if (!seen.has(d.id)) merged.push({ ...d });
+        }
+        return merged;
+    };
+
+    // Carregar preferências do localStorage quando a organização mudar
+    useEffect(() => {
+        if (!organizationId) return;
+        try {
+            const key = `pedidos_columns_${organizationId}`;
+            const raw = localStorage.getItem(key);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                setColumns(mergeSavedWithDefaults(parsed));
+            }
+        } catch (e) {
+            console.error('Erro ao carregar preferências de colunas do localStorage:', e);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [organizationId]);
+
+    // Salvar preferências sempre que as colunas mudarem
+    useEffect(() => {
+        if (!organizationId) return;
+        try {
+            const key = `pedidos_columns_${organizationId}`;
+            const minimal = columns.map(({ id, enabled }) => ({ id, enabled }));
+            localStorage.setItem(key, JSON.stringify(minimal));
+        } catch (e) {
+            console.error('Erro ao salvar preferências de colunas no localStorage:', e);
+        }
+    }, [columns, organizationId]);
 
     const getStatusColor = (status: string) => {
         switch (status) {
@@ -978,9 +1394,63 @@ function Pedidos() {
             case "Cancelado":
                 return "bg-red-500 hover:bg-red-500 text-white";
             case "Devolvido":
-                return "bg-purple-500 hover:bg-purple-500 text-white";
+                return "bg-gray-500 hover:bg-gray-500 text-white";
+            case "Devolução":
+                return "bg-gray-500 hover:bg-gray-500 text-white";
             default:
                 return "bg-gray-500 hover:bg-gray-500 text-white";
+        }
+    };
+
+    const formatShipmentStatus = (status?: string) => {
+        const s = String(status || '').trim();
+        if (!s) return '';
+        const key = s.toLowerCase();
+        const map: Record<string, string> = {
+            'pending': 'pendente',
+            'ready_to_print': 'pronto para imprimir',
+            'printed': 'etiqueta impressa',
+            'ready_to_ship': 'pronto para envio',
+            'handling': 'em preparação',
+            'shipped': 'enviado',
+            'in_transit': 'em trânsito',
+            'delivery_in_progress': 'em entrega',
+            'out_for_delivery': 'saiu para entrega',
+            'on_route': 'a caminho',
+            'handed_to_carrier': 'entregue à transportadora',
+            'delivered': 'entregue',
+            'receiver_received': 'recebido pelo destinatário',
+            'ready_to_pickup': 'pronto para retirada',
+            'not_delivered': 'não entregue',
+            'returned': 'devolvido',
+            'canceled': 'cancelado',
+            'cancelled': 'cancelado',
+            'collected': 'coletado',
+            'processing': 'processando',
+        };
+        return map[key] || s.replace(/_/g, ' ');
+    };
+
+    const getShipmentStatusColor = (status: string) => {
+        const s = String(status || '').toLowerCase();
+        switch (s) {
+            case 'pending':
+            case 'ready_to_print':
+            case 'ready_to_ship':
+                return 'bg-yellow-500 hover:bg-yellow-500 text-white';
+            case 'in_transit':
+            case 'shipped':
+                return 'bg-blue-500 hover:bg-blue-500 text-white';
+            case 'delivered':
+                return 'bg-green-600 hover:bg-green-600 text-white';
+            case 'not_delivered':
+            case 'returned':
+                return 'bg-purple-600 hover:bg-purple-600 text-white';
+            case 'canceled':
+            case 'cancelled':
+                return 'bg-red-600 hover:bg-red-600 text-white';
+            default:
+                return 'bg-gray-500 hover:bg-gray-500 text-white';
         }
     };
 
@@ -1168,8 +1638,15 @@ function Pedidos() {
     });
 
     let filteredPedidos = baseFiltered.filter(p => {
-        const statusMatch = activeStatus === "todos" || (activeStatus === "impressao" ? p.status === 'NF Emitida' : p.status.toLowerCase().replace(/ /g, '-') === activeStatus.toLowerCase());
-        return statusMatch;
+        if (activeStatus === "todos") return true;
+        if (activeStatus === "impressao") return p.status === 'NF Emitida';
+        if (activeStatus === "cancelado") {
+            // Incluir devoluções na aba Cancelados
+            return p.status === 'Cancelado' || p.status === 'Devolvido' || p.status === 'Devolução';
+        }
+        // Normalização padrão para outras abas
+        const normalized = String(p.status || '').toLowerCase().replace(/ /g, '-');
+        return normalized === activeStatus.toLowerCase();
     });
 
     if (activeStatus === "emissao-nf") {
@@ -1247,8 +1724,9 @@ function Pedidos() {
     };
 
     const handleVincularClick = (pedido: any) => {
-        const anunciosNaoVinculados = pedido.itens.filter((item: any) => !item.vinculado);
-        setAnunciosParaVincular(anunciosNaoVinculados);
+        // Exibir todos os itens do pedido no modal, permitindo revisar/alterar vínculos já existentes
+        const anunciosDoPedido = Array.isArray(pedido.itens) ? pedido.itens : [];
+        setAnunciosParaVincular(anunciosDoPedido);
         setPedidoParaVincular(pedido);
         setIsVincularModalOpen(true);
     };
@@ -1260,7 +1738,7 @@ function Pedidos() {
         { id: "impressao", title: "Impressão", count: baseFiltered.filter(p => p.status === 'NF Emitida').length, description: "NF e etiqueta" },
         { id: "aguardando-coleta", title: "Aguardando Coleta", count: baseFiltered.filter(p => p.status === 'Aguardando Coleta').length, description: "Prontos para envio" },
         { id: "enviado", title: "Enviado", count: baseFiltered.filter(p => p.status === 'Enviado').length, description: "Pedidos em trânsito" },
-        { id: "cancelado", title: "Cancelados", count: baseFiltered.filter(p => p.status === 'Cancelado').length, description: "Pedidos cancelados/devolvidos" },
+        { id: "cancelado", title: "Cancelados", count: baseFiltered.filter(p => (p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido')).length, description: "Pedidos cancelados/devolvidos" },
     ];
 
     const handlePrintPickingList = () => {
@@ -1285,10 +1763,41 @@ function Pedidos() {
                         <main className="flex-1 overflow-auto p-6">
                             <div className="flex items-center justify-between mb-8">
                                 <h1 className="text-3xl font-bold text-gray-900">Gestão de Pedidos</h1>
-                                <Button className="h-10 px-4 rounded-xl bg-primary text-white shadow-lg disabled:opacity-50" onClick={handleSyncOrders} disabled={isSyncing}>
-                                    <Zap className="w-4 h-4 mr-2" />
-                                    {isSyncing ? 'Sincronizando...' : 'Sincronizar pedidos'}
-                                </Button>
+                                {(() => {
+                                    const selectedCount = (
+                                        activeStatus === 'todos' ? selectedPedidos.length :
+                                        activeStatus === 'emissao-nf' ? selectedPedidosEmissao.length :
+                                        activeStatus === 'impressao' ? selectedPedidosImpressao.length :
+                                        0
+                                    );
+                                    return (
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button className="h-10 px-4 rounded-xl bg-primary text-white shadow-lg disabled:opacity-50" disabled={isSyncing}>
+                                                    <Zap className="w-4 h-4 mr-2" />
+                                                    {isSyncing ? 'Sincronizando...' : 'Sincronizar pedidos'}
+                                                    <ChevronDown className="w-4 h-4 ml-2" />
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="end">
+                                                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleSyncOrders(); }} disabled={isSyncing}>
+                                                    Sincronizar todos pedidos
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleSyncSelectedOrders(); }} disabled={isSyncing || selectedCount === 0}>
+                                                    {selectedCount > 0 ? `Sincronizar selecionados (${selectedCount})` : 'Sincronizar selecionados'}
+                                                </DropdownMenuItem>
+                                                <DropdownMenuSeparator />
+                                                <DropdownMenuItem onSelect={(e) => {
+                                                    e.preventDefault();
+                                                    const id = window.prompt('Informe o ID interno (orders.id) para sincronizar:');
+                                                    if (id) handleSyncOrderByInternalId(id);
+                                                }} disabled={isSyncing}>
+                                                    Sincronizar por ID interno...
+                                                </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+                                    );
+                                })()}
                             </div>
 
                             <div className="grid grid-cols-7 gap-4 mb-8">
@@ -1389,7 +1898,19 @@ function Pedidos() {
                                             <Download className="w-4 h-4 mr-2" />
                                             Exportar CSV
                                         </Button>
-                                        <Button variant="outline" className="h-12 px-6 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); setIsFilterDrawerOpen(false); setIsColumnsDrawerOpen(true); }} data-columns-trigger>
+                                        <Button variant="outline" className="h-12 px-6 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60" onClick={(e) => {
+                                            console.log('[Pedidos] Clique no botão Colunas');
+                                            console.log('[Pedidos] Estados antes do clique:', { isFilterDrawerOpen, isColumnsDrawerOpen });
+                                            e.stopPropagation();
+                                            (e.currentTarget as HTMLButtonElement).blur();
+                                            // Feche o drawer de filtros primeiro e abra o de colunas no próximo tick
+                                            // Isso evita conflitos de overlay/estado quando os dois drawers alternam rapidamente
+                                            setIsFilterDrawerOpen(false);
+                                            setTimeout(() => {
+                                                console.log('[Pedidos] Abrindo Drawer de Colunas (setIsColumnsDrawerOpen(true))');
+                                                setIsColumnsDrawerOpen(true);
+                                            }, 0);
+                                        }} data-columns-trigger>
                                             <Table className="w-4 h-4 mr-2" />
                                             Colunas
                                         </Button>
@@ -1519,9 +2040,8 @@ function Pedidos() {
                                             <Scan className="w-4 h-4 mr-2" />
                                             Scanner
                                         </Button>
-                                        <Button className="h-12 px-6 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsPrintConfigOpen(true)}>
-                                            <Settings className="w-4 h-4 mr-2" />
-                                            Configurações
+                                        <Button variant="outline" size="icon" className="rounded-2xl" onClick={() => setIsPrintConfigOpen(true)} aria-label="Configurações de impressão">
+                                            <Settings className="w-4 h-4" />
                                         </Button>
                                         <div className="flex items-center gap-2 select-none">
                                             <Button
@@ -1572,7 +2092,7 @@ function Pedidos() {
                                                 {columns.filter(col => col.enabled).map(col => (
                                                         <th
                                                             key={col.id}
-                                                            className={`px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'min-w-[220px] md:min-w-[300px] lg:min-w-[380px]' : ''} ${col.id === 'itens' ? 'w-28 md:w-32' : ''}`}
+                                                            className={`px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'min-w-[220px] md:min-w-[300px] lg:min-w-[380px]' : ''} ${col.id === 'itens' ? 'w-28 md:w-32' : ''} ${col.id === 'cliente' ? 'w-[200px] md:w-[260px] lg:w-[300px] pr-2' : ''} ${col.id === 'valor' ? 'w-28 md:w-32 pl-2' : ''}`}
                                                         >
                                                             {col.name}
                                                         </th>
@@ -1582,7 +2102,18 @@ function Pedidos() {
                                         </thead>
                                         <tbody className="bg-white divide-y divide-gray-200">
                                             {paginatedPedidos.length > 0 ? (
-                                                paginatedPedidos.map((pedido) => (
+                                                paginatedPedidos.map((pedido) => {
+                                                    const paymentStatusesRow = ((pedido?.financeiro?.pagamentos || []) as any[]).map((p: any) => String(p?.status || '').toLowerCase());
+                                                    const isApprovedRow = paymentStatusesRow.includes('approved');
+                                                    const isCancelledRow = paymentStatusesRow.includes('cancelled');
+                                                    const isRefundedRow = paymentStatusesRow.includes('refunded');
+                                                    const canVincular = isApprovedRow && !isCancelledRow && !isRefundedRow;
+                                                    const vincularTooltip = !isApprovedRow
+                                                        ? 'Pagamento ainda não aprovado'
+                                                        : (isCancelledRow
+                                                            ? 'Pagamento cancelado'
+                                                            : (isRefundedRow ? 'Pagamento reembolsado' : 'Abrir vinculação'));
+                                                    return (
                                                     <tr key={pedido.id} className="hover:bg-gray-50 transition-colors">
                                                         <td className="w-16 px-6 py-4 whitespace-nowrap">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao") && (
@@ -1604,16 +2135,30 @@ function Pedidos() {
                                                         {columns.filter(col => col.enabled).map(col => (
                                                             <td
                                                                 key={col.id}
-                                                                className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${col.id === 'produto' ? 'min-w-[220px] md:min-w-[300px] lg:min-w-[380px]' : ''} ${col.id === 'itens' ? 'w-28 md:w-32' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
+                                                                className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${col.id === 'produto' ? 'min-w-[220px] md:min-w-[300px] lg:min-w-[380px]' : ''} ${col.id === 'itens' ? 'w-28 md:w-32' : ''} ${col.id === 'cliente' ? 'w-[200px] md:w-[260px] lg:w-[300px] pr-2' : ''} ${col.id === 'valor' ? 'w-28 md:w-32 pl-2 text-right' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
                                                             >
                                                                 {col.render(pedido)}
                                                             </td>
                                                         ))}
                                                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                                             {activeStatus === "a-vincular" ? (
-                                                                <Button variant="outline" className="h-8 px-4" onClick={(e) => { e.stopPropagation(); handleVincularClick(pedido); }}>
-                                                                    Vincular
-                                                                </Button>
+                                                                <TooltipProvider>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger asChild>
+                                                                            <Button
+                                                                                variant="outline"
+                                                                                className="h-8 px-4"
+                                                                                disabled={!canVincular}
+                                                                                onClick={(e) => { e.stopPropagation(); if (canVincular) handleVincularClick(pedido); }}
+                                                                            >
+                                                                                Vincular
+                                                                            </Button>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent>
+                                                                            <span>{vincularTooltip}</span>
+                                                                        </TooltipContent>
+                                                                    </Tooltip>
+                                                                </TooltipProvider>
                                                             ) : (
                                                                 <Button variant="outline" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
                                                                     <ChevronDown className="h-4 w-4" />
@@ -1621,7 +2166,8 @@ function Pedidos() {
                                                             )}
                                                         </td>
                                                     </tr>
-                                                ))
+                                                    );
+                                                })
                                             ) : (
                                                 <tr>
                                                     <td colSpan={columns.filter(col => col.enabled).length + 2} className="py-10 text-center text-gray-500">Nenhum pedido encontrado para este status.</td>
@@ -1687,7 +2233,7 @@ function Pedidos() {
                 <PedidoDetailsDrawer pedido={selectedPedido} open={isDetailsDrawerOpen} onOpenChange={(open) => { setIsDetailsDrawerOpen(open); if (!open) { const btn = document.querySelector<HTMLButtonElement>('button[data-details-trigger]'); btn?.focus(); } }} />
 
                 {/* Drawer de Filtros */}
-                <Drawer direction="right" open={isFilterDrawerOpen} onOpenChange={setIsFilterDrawerOpen}>
+                <Drawer direction="right" open={isFilterDrawerOpen} onOpenChange={(open) => { console.log('[Pedidos] Filter Drawer onOpenChange:', open); setIsFilterDrawerOpen(open); }}>
                     <DrawerContent className="w-[30%] right-0">
                         <DrawerHeader>
                             <DrawerTitle>Filtros Avançados</DrawerTitle>
@@ -1721,19 +2267,64 @@ function Pedidos() {
                     </DrawerContent>
                 </Drawer>
 
-                {/* Drawer de Colunas */}
-                <Drawer direction="right" open={isColumnsDrawerOpen} onOpenChange={(open) => { setIsColumnsDrawerOpen(open); if (!open) { const btn = document.querySelector<HTMLButtonElement>('button[data-columns-trigger]'); btn?.focus(); } }} shouldScaleBackground={false}>
-                    <DrawerContent className="w-[30%] right-0">
-                        <DrawerHeader>
-                            <DrawerTitle>Gerenciar Colunas</DrawerTitle>
-                            <DrawerDescription>Selecione e reorganize as colunas da tabela.</DrawerDescription>
-                        </DrawerHeader>
-                        <div className="p-4">
-                            <Reorder.Group axis="y" values={columns} onReorder={setColumns} className="space-y-2">
-                                {columns.map(col => (
-                                    <Reorder.Item key={col.id} value={col}>
-                                        <div className="flex items-center space-x-2 p-2 rounded-md border bg-gray-50 cursor-grab">
-                                            <div className="flex-1 flex items-center space-x-2">
+                {/* Painel de Colunas (custom, sem vaul) */}
+                {isColumnsDrawerOpen && (
+                    <>
+                        {/* Overlay */}
+                        <div
+                            className={`fixed inset-0 z-[50] bg-black/40 transition-opacity duration-200 ${columnsPanelAnimatedOpen ? 'opacity-100' : 'opacity-0'}`}
+                            onClick={() => {
+                                console.log('[Pedidos] Fechando painel de colunas via overlay');
+                                setIsColumnsDrawerOpen(false);
+                                const btn = document.querySelector<HTMLButtonElement>('button[data-columns-trigger]');
+                                btn?.focus();
+                            }}
+                        />
+                        {/* Aside */}
+                        <aside
+                            ref={columnsDrawerRef}
+                            className={`fixed inset-y-0 right-0 z-[60] w-[30%] max-w-[560px] bg-white/95 backdrop-blur-md shadow-2xl flex flex-col border-l border-gray-100 transform transition-transform duration-300 ease-out ${columnsPanelAnimatedOpen ? 'translate-x-0' : 'translate-x-full'}`}
+                            role="dialog"
+                            aria-modal="true"
+                            aria-label="Gerenciar Colunas"
+                        >
+                            <div className="grid gap-2 p-6 border-b border-gray-100 bg-gradient-to-b from-white to-gray-50/70">
+                                <h2 className="text-xl font-bold">Gerenciar Colunas</h2>
+                                <p className="text-sm text-gray-600">Selecione e arraste para organizar as colunas da tabela.</p>
+                            </div>
+                            <div className="p-4 overflow-y-auto flex-1">
+                                <div className="space-y-2">
+                                    {columns.map((col, index) => (
+                                        <div
+                                            key={col.id}
+                                            draggable
+                                            onDragStart={(e) => {
+                                                dragStartIndexRef.current = index;
+                                                e.dataTransfer.effectAllowed = 'move';
+                                                try { e.dataTransfer.setData('text/plain', String(index)); } catch {}
+                                            }}
+                                            onDragOver={(e) => {
+                                                e.preventDefault();
+                                                if (dragOverIndex !== index) setDragOverIndex(index);
+                                            }}
+                                            onDrop={(e) => {
+                                                e.preventDefault();
+                                                const from = dragStartIndexRef.current ?? parseInt(e.dataTransfer.getData('text/plain') || '-1', 10);
+                                                const to = index;
+                                                if (from === -1 || from === null || isNaN(from)) return;
+                                                setColumns((prev) => {
+                                                    const copy = [...prev];
+                                                    const [item] = copy.splice(from, 1);
+                                                    copy.splice(to, 0, item);
+                                                    return copy;
+                                                });
+                                                setDragOverIndex(null);
+                                                dragStartIndexRef.current = null;
+                                            }}
+                                            onDragEnd={() => { setDragOverIndex(null); dragStartIndexRef.current = null; }}
+                                            className={`flex items-center justify-between p-2 rounded-md border bg-gray-50/80 hover:bg-gray-100 transition-colors cursor-grab active:cursor-grabbing ${dragOverIndex === index ? 'ring-2 ring-purple-300' : ''}`}
+                                        >
+                                            <div className="flex items-center space-x-2">
                                                 {!col.alwaysVisible && (
                                                     <Checkbox
                                                         checked={col.enabled}
@@ -1745,19 +2336,17 @@ function Pedidos() {
                                                     <Badge variant="secondary" className="text-xs">Obrigatória</Badge>
                                                 )}
                                             </div>
-                                            <div className="text-gray-400">
-                                                <ListChecks className="w-4 h-4" />
-                                            </div>
+                                            <div className="text-xs text-gray-400 select-none">arraste</div>
                                         </div>
-                                    </Reorder.Item>
-                                ))}
-                            </Reorder.Group>
-                        </div>
-                        <div className="p-4 border-t flex justify-end">
-                            <Button onClick={() => setIsColumnsDrawerOpen(false)}>Concluir</Button>
-                        </div>
-                    </DrawerContent>
-                </Drawer>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="p-4 border-t flex justify-end">
+                                <Button onClick={() => { console.log('[Pedidos] Fechando painel de colunas via botão Concluir'); setIsColumnsDrawerOpen(false); }}>Concluir</Button>
+                            </div>
+                        </aside>
+                    </>
+                )}
 
                 {/* Modal de Vinculação de Pedido */}
                 <VincularPedidoModal

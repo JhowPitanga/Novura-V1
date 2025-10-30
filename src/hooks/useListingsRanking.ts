@@ -63,15 +63,18 @@ export async function getListingsRanking(
   const fromMs = from ? calendarStartOfDaySPEpochMs(from) : undefined;
   const toMs = to ? calendarEndOfDaySPEpochMs(to) : undefined;
 
-  // Fetch orders with items
+  // Fetch orders (aggregated fields only; item details will come from RAW)
   let q: any = supabase
-    .from('orders')
+    .from('marketplace_orders_presented')
     .select(`
       id,
       marketplace_order_id,
       marketplace,
       order_total,
-      order_items ( id, quantity, price_per_unit, sku, product_name )
+      items_total_quantity,
+      items_total_amount,
+      first_item_title,
+      first_item_sku
     `);
   if (selectedMarketplaceDisplay && selectedMarketplaceDisplay !== 'todos') {
     q = q.eq('marketplace', selectedMarketplaceDisplay);
@@ -84,7 +87,7 @@ export async function getListingsRanking(
 
   // Raw marketplace orders for payment date + costs and listing ids
   let mqq: any = supabase
-    .from('marketplace_orders')
+    .from('marketplace_orders_raw')
     .select('marketplace_order_id, payments, shipments, date_created, marketplace_name, data')
     .in('marketplace_order_id', marketplaceOrderIds);
   if (organizationId) mqq = mqq.eq('organizations_id', organizationId);
@@ -114,9 +117,25 @@ export async function getListingsRanking(
       const sku = String(it?.item?.seller_sku || it?.item?.variation_attributes?.find?.((a: any) => a?.id === 'SELLER_SKU')?.value_name || it?.item?.id || '').trim();
       if (sku) itemsBySku[sku] = it;
     }
-
-    const items = Array.isArray(o?.order_items) ? o.order_items : [];
-    if (items.length === 0 && rawItems.length === 0) continue;
+    // Derive items from RAW; fallback to aggregated single item from view
+    let items: any[] = [];
+    if (rawItems.length > 0) {
+      items = rawItems.map((rit: any) => ({
+        sku: String(rit?.item?.seller_sku || rit?.seller_sku || '').trim(),
+        quantity: Number(rit?.quantity || 0),
+        price_per_unit: Number(rit?.unit_price || rit?.full_unit_price || rit?.price || 0),
+      }));
+    } else {
+      const qtyAgg = Number(o?.items_total_quantity || 0) || 1;
+      const amtAgg = Number(o?.items_total_amount || 0) || 0;
+      const unitPriceAgg = qtyAgg > 0 ? amtAgg / qtyAgg : amtAgg;
+      items = [{
+        sku: o?.first_item_sku || '',
+        quantity: qtyAgg,
+        price_per_unit: unitPriceAgg,
+      }];
+    }
+    if (items.length === 0) continue;
 
     // Financials per order (same basis as drawer):
     const valorBrutoItens = Number(o?.order_total || 0) || 0; // fallback; precise split below by item
