@@ -39,10 +39,9 @@ async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<
 async function getIntegration(admin: any, organizationId: string) {
   const { data: integration, error: integErr } = await admin
     .from("marketplace_integrations")
-    .select("id, organizations_id, company_id, meli_user_id, access_token, refresh_token, enabled")
+    .select("id, organizations_id, company_id, meli_user_id, access_token, refresh_token")
     .eq("organizations_id", organizationId)
     .eq("marketplace_name", "Mercado Livre")
-    .eq("enabled", true)
     .single();
 
   if (integErr || !integration) {

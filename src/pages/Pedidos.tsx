@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, startTransition } from "react";
 import { Search, Filter, Settings, FileText, Printer, Bot, TrendingUp, Zap, QrCode, Check, Calendar, Download, X, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Package, Truck, MinusCircle, CheckCircle2, Box, Scan, FileBadge, StickyNote, AudioWaveform, TextSelect, ListChecks, Table } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +52,17 @@ function mapTipoEnvioLabel(v?: string) {
     if (s === 'agencia' || s === 'me2' || s === 'drop_off' || s === 'xd_drop_off' || s === 'cross_docking') return 'Agência';
     if (s === 'no_shipping') return 'Sem Envio';
     return s ? s : '—';
+}
+
+// Normaliza valores de tipo de envio vindos de diferentes fontes (view, API, tags)
+function normalizeShippingType(input?: string | null): string {
+    const s = String(input || '').toLowerCase();
+    if (!s) return '';
+    if (s === 'full' || s === 'fulfillment' || s === 'fbm') return 'full';
+    if (s === 'flex' || s === 'self_service') return 'flex';
+    if (s === 'agencia' || s === 'me2' || s === 'drop_off' || s === 'xd_drop_off' || s === 'cross_docking' || s === 'custom') return 'agencia';
+    if (s === 'no_shipping') return 'no_shipping';
+    return s;
 }
 
 
@@ -469,6 +480,7 @@ function Pedidos() {
     const [pedidoParaVincular, setPedidoParaVincular] = useState<any>(null);
     const [selectedPedidosEmissao, setSelectedPedidosEmissao] = useState<string[]>([]);
     const [selectedPedidosImpressao, setSelectedPedidosImpressao] = useState<string[]>([]);
+    const [selectedPedidosEnviado, setSelectedPedidosEnviado] = useState<string[]>([]);
     const [isScannerOpen, setIsScannerOpen] = useState(false);
     const [isPrintConfigOpen, setIsPrintConfigOpen] = useState(false);
     const [isPickingListModalOpen, setIsPickingListModalOpen] = useState(false);
@@ -493,8 +505,12 @@ function Pedidos() {
     const [isDatePopoverOpen, setIsDatePopoverOpen] = useState(false);
     const [pageSize, setPageSize] = useState<number>(30);
     const [currentPage, setCurrentPage] = useState<number>(1);
-    const [sortKey, setSortKey] = useState<'recent' | 'sku' | 'items'>('recent');
+    const [sortKey, setSortKey] = useState<'recent' | 'sku' | 'items' | 'shipping' | 'sla'>('recent');
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+    const [totalPedidosCount, setTotalPedidosCount] = useState<number | null>(null);
+    const [statusCountsGlobal, setStatusCountsGlobal] = useState<Record<string, number> | null>(null);
+    const [marketplaceFilter, setMarketplaceFilter] = useState<'all' | 'mercado-livre'>('all');
+    const [shippingTypeFilter, setShippingTypeFilter] = useState<'all' | 'full' | 'flex' | 'agencia' | 'no_shipping'>('all');
     const columnsDrawerRef = useRef<HTMLDivElement | null>(null);
 
     const { user, organizationId } = useAuth();
@@ -538,6 +554,89 @@ function Pedidos() {
         // noop: mantido para possível debug futuro
     }, [isFilterDrawerOpen]);
 
+    // Ajustar sort padrão ao entrar na aba Impressão
+    useEffect(() => {
+        if (activeStatus === 'impressao') {
+            setSortKey('shipping');
+            setSortDir('asc');
+        } else if (activeStatus === 'todos') {
+            setSortKey('recent');
+            setSortDir('desc');
+        }
+    }, [activeStatus]);
+
+    // Limpar seleção automaticamente ao trocar de quadro/aba
+    useEffect(() => {
+        setSelectedPedidos([]);
+        setSelectedPedidosEmissao([]);
+        setSelectedPedidosImpressao([]);
+        setSelectedPedidosEnviado([]);
+    }, [activeStatus]);
+
+    // Carregar contagens globais (independente da paginação) aplicando filtros de data e busca
+    const loadGlobalStatusCounts = async () => {
+        try {
+            // Intervalo em SP: mesma lógica usada no filtro local
+            const fromMs = dateRange.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
+            const toMs = dateRange.to
+                ? calendarEndOfDaySPEpochMs(dateRange.to as Date)
+                : (dateRange.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
+            const fromIso = typeof fromMs === 'number' ? new Date(fromMs).toISOString() : null;
+            const toIso = typeof toMs === 'number' ? new Date(toMs).toISOString() : null;
+            const term = (searchTerm || '').trim();
+            const pattern = term ? `%${term}%` : null;
+
+            // Helper para construir consulta base com filtros comuns
+            const buildBase = () => {
+                let qb = supabase
+                    .from('marketplace_orders_presented')
+                    .select('id, shipment_status, first_item_sku, payment_status', { count: 'exact' })
+                    .eq('marketplace', 'Mercado Livre');
+                if (fromIso) qb = (qb as any).or(`payment_date_approved.gte.${fromIso},created_at.gte.${fromIso}`);
+                if (toIso) qb = (qb as any).or(`payment_date_approved.lte.${toIso},created_at.lte.${toIso}`);
+                if (pattern) qb = (qb as any).or(`marketplace_order_id.ilike.${pattern},customer_name.ilike.${pattern},first_item_sku.ilike.${pattern},first_item_title.ilike.${pattern}`);
+                // Considerar somente pagos (equivalente ao isRowPaid)
+                qb = (qb as any).or('payment_status.eq.approved,payment_status.eq.paid,payment_status.eq.settled,payment_date_approved.not.is.null');
+                return qb;
+            };
+
+            // Todos (pagos) com filtros aplicados
+            const { count: totalPaid } = await buildBase();
+
+            // A vincular: shipment pending ou sem SKU do primeiro item (aproximação)
+            const { count: countAVincular } = await (buildBase() as any)
+                .or('shipment_status.eq.pending,first_item_sku.is.null');
+
+            // Aguardando Coleta: pronto para envio
+            const { count: countAguardandoColeta } = await (buildBase() as any)
+                .eq('shipment_status', 'ready_to_ship');
+
+            // Enviado: entregue
+            const { count: countEnviado } = await (buildBase() as any)
+                .eq('shipment_status', 'delivered');
+
+            // Cancelados/Devolvidos: aproximação via payment_status e shipment_status
+            const { count: countCancelados } = await (buildBase() as any)
+                .or('payment_status.eq.canceled,payment_status.eq.cancelled,shipment_status.eq.canceled,shipment_status.eq.cancelled,payment_status.eq.refunded');
+
+            setStatusCountsGlobal({
+                'todos': typeof totalPaid === 'number' ? totalPaid : 0,
+                'a-vincular': typeof countAVincular === 'number' ? countAVincular : 0,
+                'aguardando-coleta': typeof countAguardandoColeta === 'number' ? countAguardandoColeta : 0,
+                'enviado': typeof countEnviado === 'number' ? countEnviado : 0,
+                'cancelado': typeof countCancelados === 'number' ? countCancelados : 0,
+            });
+        } catch (e) {
+            console.warn('Falha ao carregar contagens globais:', e);
+        }
+    };
+
+    // Atualizar contagens globais quando filtros mudarem
+    useEffect(() => {
+        loadGlobalStatusCounts();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [dateRange, searchTerm]);
+
     useEffect(() => {
         const onError = (e: ErrorEvent) => {
             console.error('[Pedidos] Erro não tratado ao abrir Drawer:', e.error || e.message, e.filename, e.lineno, e.colno);
@@ -567,7 +666,22 @@ function Pedidos() {
                 if (orgRes) organizationId = String(orgRes);
             } catch (_) {}
 
-            const { data, error } = await supabase
+            // Consulta inicial otimizada com paginação no servidor
+            const ascending = sortDir === 'asc';
+            const start = Math.max(0, (currentPage - 1) * pageSize);
+            const end = Math.max(start, start + pageSize - 1);
+
+            // Filtros de data e busca
+            const fromMs = dateRange.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
+            const toMs = dateRange.to
+                ? calendarEndOfDaySPEpochMs(dateRange.to as Date)
+                : (dateRange.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
+            const fromIso = typeof fromMs === 'number' ? new Date(fromMs).toISOString() : null;
+            const toIso = typeof toMs === 'number' ? new Date(toMs).toISOString() : null;
+            const term = (searchTerm || '').trim();
+            const pattern = term ? `%${term}%` : null;
+
+            let q = supabase
                 .from("marketplace_orders_presented")
                 .select(`
                     id,
@@ -598,7 +712,65 @@ function Pedidos() {
                     shipment_sla_expected_date,
                     shipment_sla_last_updated,
                     shipment_delays
-                `);
+                `, { count: 'exact' })
+                ;
+
+            // Marketplace (por padrão 'Todos')
+            if (marketplaceFilter === 'mercado-livre') {
+                q = q.eq('marketplace', 'Mercado Livre');
+            }
+
+            // Intervalo por created_at (aproximação do filtro de data)
+            if (fromIso) q = q.gte('created_at', fromIso);
+            if (toIso) q = q.lte('created_at', toIso);
+
+            // Busca (multi-coluna)
+            if (pattern) {
+                q = (q as any).or(`marketplace_order_id.ilike.${pattern},customer_name.ilike.${pattern},first_item_sku.ilike.${pattern},first_item_title.ilike.${pattern}`);
+            }
+
+            // Status específico por quadro (quando possível)
+            if (activeStatus === 'a-vincular') {
+                q = (q as any).or('shipment_status.eq.pending,first_item_sku.is.null');
+            } else if (activeStatus === 'aguardando-coleta') {
+                q = q.eq('shipment_status', 'ready_to_ship');
+            } else if (activeStatus === 'enviado') {
+                q = q.eq('shipment_status', 'delivered');
+            } else if (activeStatus === 'cancelado') {
+                q = (q as any).or('payment_status.eq.canceled,payment_status.eq.cancelled,payment_status.eq.refunded,shipment_status.eq.canceled,shipment_status.eq.cancelled');
+            }
+
+            // Filtro por tipo de envio (aceita valores da view e normalizados)
+            if (shippingTypeFilter !== 'all') {
+                const map = shippingTypeFilter === 'full'
+                    ? ['full', 'fulfillment', 'fbm']
+                    : (shippingTypeFilter === 'flex'
+                        ? ['flex', 'self_service']
+                        : (shippingTypeFilter === 'agencia'
+                            ? ['agencia', 'drop_off', 'xd_drop_off', 'cross_docking', 'me2', 'custom']
+                            : ['no_shipping']));
+                q = (q as any).in('shipping_type', map);
+            }
+
+            // Ordenação conforme sortKey/sortDir
+            if (sortKey === 'sku') {
+                q = q.order('first_item_sku', { ascending });
+            } else if (sortKey === 'items') {
+                q = q.order('items_total_quantity', { ascending });
+            } else if (sortKey === 'shipping') {
+                q = q.order('shipping_type', { ascending });
+            } else if (sortKey === 'sla') {
+                q = q.order('shipment_sla_expected_date', { ascending, nullsFirst: false });
+            } else {
+                // 'recent' => prioriza pagamento aprovado depois criado
+                q = q.order('payment_date_approved', { ascending, nullsFirst: false })
+                     .order('created_at', { ascending });
+            }
+
+            // Faixa paginada
+            q = q.range(start, end);
+
+            const { data, count, error } = await q;
 
             if (error) throw error;
 
@@ -610,8 +782,101 @@ function Pedidos() {
                 return false;
             };
             const paidRows: any[] = Array.isArray(data) ? data.filter(isRowPaid) : [];
+            setTotalPedidosCount(typeof count === 'number' ? count : null);
 
-            // Buscar dados brutos do marketplace para pagamentos e envios
+            // Renderização imediata: construir uma lista leve apenas com dados agregados da view
+            const lightParsed = paidRows.map((o: any) => {
+                const qtyAgg = (typeof o?.items_total_quantity === 'number' ? o.items_total_quantity : Number(o?.items_total_quantity)) || 1;
+                const amtAgg = (typeof o?.items_total_amount === 'number' ? o.items_total_amount : Number(o?.items_total_amount)) || 0;
+                const unitPriceAgg = qtyAgg > 0 ? amtAgg / qtyAgg : amtAgg;
+                const items = [{
+                    id: `${o.marketplace_order_id || o.id}-ITEM-1`,
+                    nome: o.first_item_title || 'Item',
+                    sku: o.first_item_sku || null,
+                    quantidade: qtyAgg,
+                    valor: unitPriceAgg,
+                    bipado: false,
+                    vinculado: !!o.first_item_sku,
+                    imagem: "/placeholder.svg",
+                    marketplace: o.marketplace,
+                    marketplaceItemId: null,
+                    variationId: '',
+                }];
+
+                const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
+                const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
+                const valorRecebidoFrete = toNum(o?.payment_shipping_cost);
+                const saleFeeOrderItems = (typeof o?.items_total_sale_fee === 'number' ? o.items_total_sale_fee : Number(o?.items_total_sale_fee)) || 0;
+                const taxaMarketplace = saleFeeOrderItems; // usar agregado inicialmente
+
+                const shipmentStatusLower = String(o?.shipment_status || '').toLowerCase();
+                let statusUI = o.status || 'Pendente';
+                if (shipmentStatusLower === 'pending') {
+                    statusUI = 'A vincular';
+                } else if (shipmentStatusLower === 'ready_to_ship') {
+                    statusUI = 'Aguardando Coleta';
+                } else if (shipmentStatusLower === 'delivered') {
+                    statusUI = 'Enviado';
+                } else if (items.some((it: any) => !it.vinculado)) {
+                    statusUI = 'A vincular';
+                }
+
+                const liquidoCalculado = (items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0) || orderTotal) + valorRecebidoFrete - taxaMarketplace;
+
+                return {
+                    id: o.marketplace_order_id || o.id,
+                    marketplace: o.marketplace,
+                    produto: items[0]?.nome || "",
+                    sku: items[0]?.sku || null,
+                    cliente: o.customer_name || '',
+                    valor: orderTotal,
+                    data: o.created_at,
+                    status: statusUI,
+                    shipment_status: o?.shipment_status || null,
+                    slaDespacho: {
+                        status: o?.shipment_sla_status ?? null,
+                        service: o?.shipment_sla_service ?? null,
+                        expected_date: o?.shipment_sla_expected_date ?? null,
+                        last_updated: o?.shipment_sla_last_updated ?? null,
+                    },
+                    atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : null,
+                    dataPagamento: o?.payment_date_approved || o?.payment_date_created || o?.created_at || null,
+                    tipoEnvio: normalizeShippingType(o?.shipping_type),
+                    idPlataforma: o.marketplace_order_id || "",
+                    shippingCity: o?.shipping_city_name || null,
+                    shippingState: o?.shipping_state_name || null,
+                    shippingUF: o?.shipping_state_uf || null,
+                    quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
+                    imagem: "/placeholder.svg",
+                    itens: items,
+                    financeiro: {
+                        valorPedido: items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0) || orderTotal,
+                        freteRecebido: valorRecebidoFrete,
+                        freteRecebidoLiquido: valorRecebidoFrete,
+                        taxaFrete: 0,
+                        taxaMarketplace: taxaMarketplace,
+                        saleFee: saleFeeOrderItems,
+                        feesPayments: 0,
+                        shippingFeeBuyer: 0,
+                        envioMetodo: o?.shipping_method_name || null,
+                        envioTags: [],
+                        freteDiferenca: valorRecebidoFrete - 0,
+                        cupom: 0,
+                        impostos: 0,
+                        liquido: liquidoCalculado,
+                        margem: 0,
+                        pagamentos: [],
+                        envios: [],
+                    },
+                    impressoEtiqueta: false,
+                    impressoLista: false,
+                };
+            });
+
+            // Atualiza imediatamente para dar percepção de velocidade
+            startTransition(() => setPedidos(lightParsed));
+
+            // Buscar dados brutos do marketplace para pagamentos e envios (em segundo plano)
             const orderIds = Array.from(new Set(paidRows.map((o: any) => o.marketplace_order_id).filter(Boolean)));
             let marketplaceByOrderId: Record<string, any> = {};
             let shipmentsByOrderId: Record<string, any[]> = {};
@@ -951,7 +1216,7 @@ function Pedidos() {
                 };
 
                 const tipoEnvioDerivado = (() => {
-                    if (o?.shipping_type) return o.shipping_type;
+                    if (o?.shipping_type) return normalizeShippingType(o.shipping_type);
                     const t = classifyType(firstShipment);
                     if (t) return t;
                     const tags = Array.isArray(orderDataRaw?.tags) ? orderDataRaw.tags : [];
@@ -1027,7 +1292,7 @@ function Pedidos() {
 
     useEffect(() => {
         loadPedidos();
-    }, [user]);
+    }, [user, currentPage, pageSize, sortKey, sortDir, activeStatus, dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
 
     const handleSyncOrders = async () => {
         try {
@@ -1061,6 +1326,11 @@ function Pedidos() {
             console.error('Falha ao sincronizar pedidos:', e);
         } finally {
             setIsSyncing(false);
+            // Limpa seleções após sincronização
+            setSelectedPedidos([]);
+            setSelectedPedidosEmissao([]);
+            setSelectedPedidosImpressao([]);
+            setSelectedPedidosEnviado([]);
         }
     };
 
@@ -1649,6 +1919,16 @@ function Pedidos() {
         return normalized === activeStatus.toLowerCase();
     });
 
+    // Filtros adicionais por quadro (Marketplace e Tipo de Envio)
+    if (activeStatus === 'impressao' || activeStatus === 'enviado') {
+        if (marketplaceFilter === 'mercado-livre') {
+            filteredPedidos = filteredPedidos.filter(p => String(p.marketplace || '').toLowerCase().includes('mercado'));
+        }
+        if (shippingTypeFilter !== 'all') {
+            filteredPedidos = filteredPedidos.filter(p => normalizeShippingType(String(p.tipoEnvio ?? '')) === shippingTypeFilter);
+        }
+    }
+
     if (activeStatus === "emissao-nf") {
         if (quickFilter === "Falha na emissão") {
             filteredPedidos = filteredPedidos.filter(p => p.subStatus === "Falha na emissao");
@@ -1671,6 +1951,21 @@ function Pedidos() {
             if (av === bv) return 0;
             return av > bv ? dir : -dir;
         }
+        if (sortKey === 'shipping') {
+            const order = ['full', 'flex', 'agencia', 'no_shipping', ''];
+            const as = normalizeShippingType(String(a?.tipoEnvio ?? ''));
+            const bs = normalizeShippingType(String(b?.tipoEnvio ?? ''));
+            const ai = order.indexOf(as);
+            const bi = order.indexOf(bs);
+            if (ai === bi) return 0;
+            return ai > bi ? dir : -dir;
+        }
+        if (sortKey === 'sla') {
+            const aExp = a?.slaDespacho?.expected_date ? new Date(a.slaDespacho.expected_date).getTime() : Number.POSITIVE_INFINITY;
+            const bExp = b?.slaDespacho?.expected_date ? new Date(b.slaDespacho.expected_date).getTime() : Number.POSITIVE_INFINITY;
+            if (aExp === bExp) return 0;
+            return aExp > bExp ? dir : -dir;
+        }
         // 'recent' por padrão: usa dataPagamento ou data (ordenado por horário em SP)
         const ad = a?.dataPagamento || a?.data;
         const bd = b?.dataPagamento || b?.data;
@@ -1680,27 +1975,36 @@ function Pedidos() {
         return at > bt ? dir : -dir;
     });
 
-    // Paginação baseada na lista ordenada
-    const totalFiltered = sortedPedidos.length;
+    // Paginação baseada na lista ordenada (suporta paginação no servidor)
+    const isServerPaged = totalPedidosCount !== null;
+    const totalFiltered = (() => {
+        // Quando filtros locais afetam o conjunto (marketplace/tipo de envio), usar o total local
+        const hasLocalFilterImpact = (marketplaceFilter !== 'all' || shippingTypeFilter !== 'all');
+        if (!isServerPaged || hasLocalFilterImpact) return sortedPedidos.length;
+        if (activeStatus === 'todos') return (totalPedidosCount ?? sortedPedidos.length);
+        const gs = statusCountsGlobal?.[activeStatus];
+        return typeof gs === 'number' ? gs : sortedPedidos.length;
+    })();
     const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
     const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
     const startIndex = (safeCurrentPage - 1) * pageSize;
-    const paginatedPedidos = sortedPedidos.slice(startIndex, startIndex + pageSize);
+    const paginatedPedidos = isServerPaged ? sortedPedidos : sortedPedidos.slice(startIndex, startIndex + pageSize);
     const showingFrom = totalFiltered === 0 ? 0 : startIndex + 1;
     const showingTo = Math.min(startIndex + paginatedPedidos.length, totalFiltered);
 
     // Resetar página ao mudar filtros principais
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchTerm, activeStatus, dateRange, quickFilter, sortKey, sortDir]);
+    }, [searchTerm, activeStatus, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
 
     // Garantir que a página atual seja válida quando total de páginas mudar
     useEffect(() => {
-        const newTotalPages = Math.max(1, Math.ceil(filteredPedidos.length / pageSize));
+        const tf = totalPedidosCount ?? filteredPedidos.length;
+        const newTotalPages = Math.max(1, Math.ceil(tf / pageSize));
         if (currentPage > newTotalPages) {
             setCurrentPage(newTotalPages);
         }
-    }, [filteredPedidos.length, pageSize, currentPage]);
+    }, [totalPedidosCount, filteredPedidos.length, pageSize, currentPage]);
     
     const handleSelectAll = (list: string[], setList: (list: string[]) => void) => {
         if (list.length === filteredPedidos.length) {
@@ -1718,6 +2022,33 @@ function Pedidos() {
         }
     };
 
+    // Seleção da página atual
+    const paginatedIds = paginatedPedidos.map(p => p.id);
+    const selectedListByStatus = (
+        activeStatus === 'todos' ? selectedPedidos :
+        activeStatus === 'emissao-nf' ? selectedPedidosEmissao :
+        activeStatus === 'impressao' ? selectedPedidosImpressao :
+        activeStatus === 'enviado' ? selectedPedidosEnviado :
+        []
+    );
+    const setSelectedListByStatus = (
+        activeStatus === 'todos' ? setSelectedPedidos :
+        activeStatus === 'emissao-nf' ? setSelectedPedidosEmissao :
+        activeStatus === 'impressao' ? setSelectedPedidosImpressao :
+        activeStatus === 'enviado' ? setSelectedPedidosEnviado :
+        null
+    );
+    const isPageFullySelected = paginatedIds.length > 0 && paginatedIds.every(id => selectedListByStatus.includes(id));
+    const togglePageSelection = () => {
+        if (!setSelectedListByStatus) return;
+        if (isPageFullySelected) {
+            setSelectedListByStatus(selectedListByStatus.filter(id => !paginatedIds.includes(id)));
+        } else {
+            const newSet = Array.from(new Set([...selectedListByStatus, ...paginatedIds]));
+            setSelectedListByStatus(newSet);
+        }
+    };
+
     const handleOpenDetailsDrawer = (pedido: any) => {
         setSelectedPedido(pedido);
         setIsDetailsDrawerOpen(true);
@@ -1732,30 +2063,40 @@ function Pedidos() {
     };
 
     const statusBlocks = [
-        { id: "todos", title: "Todos os Pedidos", count: baseFiltered.length, description: "Sincronizados com marketplaces" },
-        { id: "a-vincular", title: "A Vincular", count: baseFiltered.filter(p => p.status === 'A vincular').length, description: "Pedidos sem vínculo de SKU" },
+        { id: "todos", title: "Todos os Pedidos", count: (statusCountsGlobal?.['todos'] ?? (totalPedidosCount ?? baseFiltered.length)), description: "Sincronizados com marketplaces" },
+        { id: "a-vincular", title: "A Vincular", count: (statusCountsGlobal?.['a-vincular'] ?? baseFiltered.filter(p => p.status === 'A vincular').length), description: "Pedidos sem vínculo de SKU" },
         { id: "emissao-nf", title: "Emissão de NF", count: baseFiltered.filter(p => p.status === 'Emissao NF').length, description: "Aguardando emissão" },
         { id: "impressao", title: "Impressão", count: baseFiltered.filter(p => p.status === 'NF Emitida').length, description: "NF e etiqueta" },
-        { id: "aguardando-coleta", title: "Aguardando Coleta", count: baseFiltered.filter(p => p.status === 'Aguardando Coleta').length, description: "Prontos para envio" },
-        { id: "enviado", title: "Enviado", count: baseFiltered.filter(p => p.status === 'Enviado').length, description: "Pedidos em trânsito" },
-        { id: "cancelado", title: "Cancelados", count: baseFiltered.filter(p => (p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido')).length, description: "Pedidos cancelados/devolvidos" },
+        { id: "aguardando-coleta", title: "Aguardando Coleta", count: (statusCountsGlobal?.['aguardando-coleta'] ?? baseFiltered.filter(p => p.status === 'Aguardando Coleta').length), description: "Prontos para envio" },
+        { id: "enviado", title: "Enviado", count: (statusCountsGlobal?.['enviado'] ?? baseFiltered.filter(p => p.status === 'Enviado').length), description: "Pedidos em trânsito" },
+        { id: "cancelado", title: "Cancelados", count: (statusCountsGlobal?.['cancelado'] ?? baseFiltered.filter(p => (p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido')).length), description: "Pedidos cancelados/devolvidos" },
     ];
 
     const handlePrintPickingList = () => {
         const pedidosToPrint = pedidos.filter(p => selectedPedidosImpressao.includes(p.id));
         const pdfUrl = generateFunctionalPickingListPDF(pedidosToPrint, printSettings);
         window.open(pdfUrl, '_blank');
+        // Limpa seleções após ação
+        setSelectedPedidosImpressao([]);
+        setSelectedPedidosEmissao([]);
+        setSelectedPedidos([]);
+        setSelectedPedidosEnviado([]);
     };
 
     const handlePrintLabels = () => {
         const pedidosToPrint = pedidos.filter(p => selectedPedidosImpressao.includes(p.id));
         const pdfUrl = generateFunctionalLabelPDF(pedidosToPrint, printSettings);
         window.open(pdfUrl, '_blank');
+        // Limpa seleções após ação
+        setSelectedPedidosImpressao([]);
+        setSelectedPedidosEmissao([]);
+        setSelectedPedidos([]);
+        setSelectedPedidosEnviado([]);
     };
 
     return (
         <TooltipProvider>
-            <SidebarProvider>
+            <SidebarProvider defaultOpen={false}>
                 <div className="min-h-screen flex w-full bg-gray-50">
                     <AppSidebar />
                     <div className="flex-1 flex flex-col">
@@ -1768,6 +2109,7 @@ function Pedidos() {
                                         activeStatus === 'todos' ? selectedPedidos.length :
                                         activeStatus === 'emissao-nf' ? selectedPedidosEmissao.length :
                                         activeStatus === 'impressao' ? selectedPedidosImpressao.length :
+                                        activeStatus === 'enviado' ? selectedPedidosEnviado.length :
                                         0
                                     );
                                     return (
@@ -1819,7 +2161,7 @@ function Pedidos() {
                             </div>
 
                             {activeStatus === "todos" && (
-                                <div className="flex items-center justify-between mb-6 w-full">
+                                <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
                                     <div className="relative w-full md:max-w-[420px]">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
@@ -1880,7 +2222,7 @@ function Pedidos() {
                                                     : "Filtrar por Data"}
                                                 </Button>
                                             </PopoverTrigger>
-                                            <PopoverContent className="w-auto p-0">
+                                            <PopoverContent className="w-auto p-0" align="start" side="bottom" sideOffset={8}>
                                                 <CalendarComponent
                                                     mode="range"
                                                     selected={tempDateRange}
@@ -1926,20 +2268,20 @@ function Pedidos() {
                                                 </SelectContent>
                                             </Select>
                                         </div>
-                                        <div className="flex items-center gap-2 select-none">
+                                        <div className="flex items-center gap-1 select-none">
                                             <Button
                                                 variant="outline"
-                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
+                                                className={`h-10 w-8 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
                                                 disabled={safeCurrentPage === 1}
                                                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                                                 aria-label="Página anterior"
                                             >
                                                 <ChevronLeft className="h-4 w-4" />
                                             </Button>
-                                            <div className="text-sm font-medium w-[56px] text-center">{safeCurrentPage}/{totalPages}</div>
+                                            <div className="text-sm font-medium w-[48px] text-center">{safeCurrentPage}/{totalPages}</div>
                                             <Button
                                                 variant="outline"
-                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
+                                                className={`h-10 w-8 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
                                                 disabled={safeCurrentPage === totalPages}
                                                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                                                 aria-label="Próxima página"
@@ -1952,7 +2294,7 @@ function Pedidos() {
                             )}
 
                             {activeStatus === "emissao-nf" && (
-                                <div className="flex items-center justify-between mb-6 w-full">
+                                <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
                                     <div className="relative w-full md:max-w-[420px]">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
@@ -2009,7 +2351,7 @@ function Pedidos() {
                             )}
                             
                             {activeStatus === "impressao" && (
-                                <div className="flex items-center justify-between mb-6 w-full">
+                                <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
                                     <div className="relative w-full md:max-w-[420px]">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
@@ -2019,23 +2361,120 @@ function Pedidos() {
                                             className="h-12 w-full pl-10 pr-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
                                         />
                                     </div>
-                                    <div className="flex items-center gap-4">
-                                        <Button
-                                            className="h-12 px-6 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
-                                            onClick={handlePrintPickingList}
-                                            disabled={selectedPedidosImpressao.length === 0}
-                                        >
-                                            <ListChecks className="w-4 h-4 mr-2" />
-                                            Lista de Separação ({selectedPedidosImpressao.length})
-                                        </Button>
-                                        <Button
-                                            className="h-12 px-6 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
-                                            onClick={handlePrintLabels}
-                                            disabled={selectedPedidosImpressao.length === 0}
-                                        >
-                                            <FileBadge className="w-4 h-4 mr-2" />
-                                            Etiquetas ({selectedPedidosImpressao.length})
-                                        </Button>
+                                    <div className="flex items-center gap-3 flex-wrap">
+                                        {/* Ordenação específica da aba Impressão */}
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
+                                                >
+                                                    {sortDir === 'asc' ? (
+                                                        <ChevronUp className="w-4 h-4 mr-2" />
+                                                    ) : (
+                                                        <ChevronDown className="w-4 h-4 mr-2" />
+                                                    )}
+                                                    Ordenar
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="start">
+                                                <DropdownMenuItem
+                                                    className={sortKey === 'shipping' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => { e.preventDefault(); setSortKey('shipping'); setSortDir('asc'); }}
+                                                >
+                                                    Tipo de envio
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem
+                                                    className={sortKey === 'sla' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => { e.preventDefault(); setSortKey('sla'); setSortDir('asc'); }}
+                                                >
+                                                    SLA próximo
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem
+                                                    className={sortKey === 'recent' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => { e.preventDefault(); setSortKey('recent'); setSortDir('desc'); }}
+                                                >
+                                                    Mais recente
+                                                </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+                                        {/* Filtro Marketplace */}
+                                        <div className="w-[132px]">
+                                            <Select value={marketplaceFilter} onValueChange={(v) => setMarketplaceFilter(v as any)}>
+                                                <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
+                                                    <span className={`text-sm ${marketplaceFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
+                                                        {marketplaceFilter !== 'all' ? (marketplaceFilter === 'mercado-livre' ? 'Mercado Livre' : '') : 'Marketplace'}
+                                                    </span>
+                                                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                                                    <span className="sr-only">
+                                                        <SelectValue placeholder="Marketplace" />
+                                                    </span>
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="all">Todos</SelectItem>
+                                                    <SelectItem value="mercado-livre">Mercado Livre</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        {/* Filtro Tipo de Envio */}
+                                        <div className="w-[132px]">
+                                            <Select value={shippingTypeFilter} onValueChange={(v) => setShippingTypeFilter(v as any)}>
+                                                <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
+                                                    <span className={`text-sm ${shippingTypeFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
+                                                        {shippingTypeFilter !== 'all' ? (
+                                                            shippingTypeFilter === 'full' ? 'Full'
+                                                            : shippingTypeFilter === 'flex' ? 'Flex'
+                                                            : shippingTypeFilter === 'agencia' ? 'Agência'
+                                                            : shippingTypeFilter === 'no_shipping' ? 'Sem envio'
+                                                            : ''
+                                                        ) : 'Tipo de Envio'}
+                                                    </span>
+                                                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                                                    <span className="sr-only">
+                                                        <SelectValue placeholder="Tipo de envio" />
+                                                    </span>
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="all">Todos</SelectItem>
+                                                    <SelectItem value="full">Full</SelectItem>
+                                                    <SelectItem value="flex">Flex</SelectItem>
+                                                    <SelectItem value="agencia">Agência</SelectItem>
+                                                    <SelectItem value="no_shipping">Sem envio</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <Button
+                                                    size="icon"
+                                                    className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
+                                                    onClick={handlePrintPickingList}
+                                                    disabled={selectedPedidosImpressao.length === 0}
+                                                    aria-label={`Imprimir lista de separação (${selectedPedidosImpressao.length})`}
+                                                >
+                                                    <ListChecks className="w-5 h-5" />
+                                                </Button>
+                                            </TooltipTrigger>
+                                            <TooltipContent>
+                                                <p>Lista de Separação ({selectedPedidosImpressao.length})</p>
+                                            </TooltipContent>
+                                        </Tooltip>
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <Button
+                                                    size="icon"
+                                                    className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
+                                                    onClick={handlePrintLabels}
+                                                    disabled={selectedPedidosImpressao.length === 0}
+                                                    aria-label={`Imprimir etiquetas (${selectedPedidosImpressao.length})`}
+                                                >
+                                                    <FileBadge className="w-5 h-5" />
+                                                </Button>
+                                            </TooltipTrigger>
+                                            <TooltipContent>
+                                                <p>Etiquetas ({selectedPedidosImpressao.length})</p>
+                                            </TooltipContent>
+                                        </Tooltip>
                                         <Button className="h-12 px-6 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsScannerOpen(true)}>
                                             <Scan className="w-4 h-4 mr-2" />
                                             Scanner
@@ -2068,37 +2507,174 @@ function Pedidos() {
                                 </div>
                             )}
 
+                            {activeStatus === "enviado" && (
+                                <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
+                                    <div className="relative w-full md:max-w-[420px]">
+                                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+                                        <Input
+                                            placeholder="Buscar por ID, cliente, SKU ou produto..."
+                                            value={searchTerm}
+                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            className="h-12 w-full pl-10 pr-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
+                                        />
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                        {/* Ordenação para Enviado */}
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
+                                                >
+                                                    {sortDir === 'asc' ? (
+                                                        <ChevronUp className="w-4 h-4 mr-2" />
+                                                    ) : (
+                                                        <ChevronDown className="w-4 h-4 mr-2" />
+                                                    )}
+                                                    Ordenar
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="start">
+                                                <DropdownMenuItem
+                                                    className={sortKey === 'shipping' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => { e.preventDefault(); setSortKey('shipping'); setSortDir('asc'); }}
+                                                >
+                                                    Tipo de envio
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem
+                                                    className={sortKey === 'recent' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => { e.preventDefault(); setSortKey('recent'); setSortDir('desc'); }}
+                                                >
+                                                    Mais recente
+                                                </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+                                        {/* Filtro Marketplace (aba Enviado) */}
+                                        <div className="w-[140px]">
+                                            <Select value={marketplaceFilter} onValueChange={(v) => setMarketplaceFilter(v as any)}>
+                                                <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
+                                                    <span className={`text-sm ${marketplaceFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
+                                                        {marketplaceFilter !== 'all' ? (marketplaceFilter === 'mercado-livre' ? 'Mercado Livre' : '') : 'Marketplace'}
+                                                    </span>
+                                                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                                                    <span className="sr-only">
+                                                        <SelectValue placeholder="Marketplace" />
+                                                    </span>
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="all">Todos</SelectItem>
+                                                    <SelectItem value="mercado-livre">Mercado Livre</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        {/* Filtro Tipo de Envio (aba Enviado) */}
+                                        <div className="w-[140px]">
+                                            <Select value={shippingTypeFilter} onValueChange={(v) => setShippingTypeFilter(v as any)}>
+                                                <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
+                                                    <span className={`text-sm ${shippingTypeFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
+                                                        {shippingTypeFilter !== 'all' ? (
+                                                            shippingTypeFilter === 'full' ? 'Full'
+                                                            : shippingTypeFilter === 'flex' ? 'Flex'
+                                                            : shippingTypeFilter === 'agencia' ? 'Agência'
+                                                            : shippingTypeFilter === 'no_shipping' ? 'Sem envio'
+                                                            : ''
+                                                        ) : 'Tipo de Envio'}
+                                                    </span>
+                                                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                                                    <span className="sr-only">
+                                                        <SelectValue placeholder="Tipo de envio" />
+                                                    </span>
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="all">Todos</SelectItem>
+                                                    <SelectItem value="full">Full</SelectItem>
+                                                    <SelectItem value="flex">Flex</SelectItem>
+                                                    <SelectItem value="agencia">Agência</SelectItem>
+                                                    <SelectItem value="no_shipping">Sem envio</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="rounded-2xl bg-white shadow-lg overflow-hidden">
                                 <div className="overflow-x-auto">
                                     <table className="min-w-full table-fixed divide-y divide-gray-200">
                                         <thead className="bg-gray-50">
-                                            <tr>
-                                                <th className="w-16 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                    {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao") && (
-                                                        <Checkbox
-                                                            checked={
-                                                                (activeStatus === "todos" && selectedPedidos.length > 0 && selectedPedidos.length === filteredPedidos.length) ||
-                                                                (activeStatus === "emissao-nf" && selectedPedidosEmissao.length > 0 && selectedPedidosEmissao.length === filteredPedidos.length) ||
-                                                                (activeStatus === "impressao" && selectedPedidosImpressao.length > 0 && selectedPedidosImpressao.length === filteredPedidos.length)
-                                                            }
-                                                            onCheckedChange={() => {
-                                                                if (activeStatus === "todos") handleSelectAll(selectedPedidos, setSelectedPedidos);
-                                                                if (activeStatus === "emissao-nf") handleSelectAll(selectedPedidosEmissao, setSelectedPedidosEmissao);
-                                                                if (activeStatus === "impressao") handleSelectAll(selectedPedidosImpressao, setSelectedPedidosImpressao);
-                                                            }}
-                                                        />
-                                                    )}
-                                                </th>
-                                                {columns.filter(col => col.enabled).map(col => (
-                                                        <th
-                                                            key={col.id}
-                                                            className={`px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'min-w-[220px] md:min-w-[300px] lg:min-w-[380px]' : ''} ${col.id === 'itens' ? 'w-28 md:w-32' : ''} ${col.id === 'cliente' ? 'w-[200px] md:w-[260px] lg:w-[300px] pr-2' : ''} ${col.id === 'valor' ? 'w-28 md:w-32 pl-2' : ''}`}
-                                                        >
-                                                            {col.name}
+                                            {(() => {
+                                                const selectedCountHere = (
+                                                    activeStatus === 'todos' ? selectedPedidos.length :
+                                                    activeStatus === 'emissao-nf' ? selectedPedidosEmissao.length :
+                                                    activeStatus === 'impressao' ? selectedPedidosImpressao.length :
+                                                    activeStatus === 'enviado' ? selectedPedidosEnviado.length :
+                                                    0
+                                                );
+                                                const enabledCols = columns.filter(col => col.enabled).length;
+                                                const colSpan = enabledCols + 2; // checkbox + detalhes
+                                                if (selectedCountHere > 0) {
+                                                    return (
+                                                        <tr>
+                                                            <th className="w-16 px-6 py-3 text-left text-xs font-medium tracking-wider bg-purple-600">
+                                                                {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
+                                                                    <Checkbox
+                                                                        size="md"
+                                                                        indicatorStyle="square"
+                                                                        checked={
+                                                                            (activeStatus === "todos" && selectedPedidos.length > 0 && selectedPedidos.length === filteredPedidos.length) ||
+                                                                            (activeStatus === "emissao-nf" && selectedPedidosEmissao.length > 0 && selectedPedidosEmissao.length === filteredPedidos.length) ||
+                                                                            (activeStatus === "impressao" && selectedPedidosImpressao.length > 0 && selectedPedidosImpressao.length === filteredPedidos.length) ||
+                                                                            (activeStatus === "enviado" && selectedPedidosEnviado.length > 0 && selectedPedidosEnviado.length === filteredPedidos.length)
+                                                                        }
+                                                                        onCheckedChange={() => {
+                                                                            if (activeStatus === "todos") handleSelectAll(selectedPedidos, setSelectedPedidos);
+                                                                            if (activeStatus === "emissao-nf") handleSelectAll(selectedPedidosEmissao, setSelectedPedidosEmissao);
+                                                                            if (activeStatus === "impressao") handleSelectAll(selectedPedidosImpressao, setSelectedPedidosImpressao);
+                                                                            if (activeStatus === "enviado") handleSelectAll(selectedPedidosEnviado, setSelectedPedidosEnviado);
+                                                                        }}
+                                                                    />
+                                                                )}
+                                                            </th>
+                                                            <th colSpan={enabledCols + 1} className="px-6 py-3 text-left text-sm font-semibold bg-purple-600 text-white">
+                                                                {selectedCountHere} selecionado{selectedCountHere > 1 ? 's' : ''}
+                                                            </th>
+                                                        </tr>
+                                                    );
+                                                }
+                                                return (
+                                                    <tr>
+                                                        <th className="w-16 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                            {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
+                                                                <Checkbox
+                                                                    size="md"
+                                                                    indicatorStyle="square"
+                                                                    checked={
+                                                                        (activeStatus === "todos" && selectedPedidos.length > 0 && selectedPedidos.length === filteredPedidos.length) ||
+                                                                        (activeStatus === "emissao-nf" && selectedPedidosEmissao.length > 0 && selectedPedidosEmissao.length === filteredPedidos.length) ||
+                                                                        (activeStatus === "impressao" && selectedPedidosImpressao.length > 0 && selectedPedidosImpressao.length === filteredPedidos.length) ||
+                                                                        (activeStatus === "enviado" && selectedPedidosEnviado.length > 0 && selectedPedidosEnviado.length === filteredPedidos.length)
+                                                                    }
+                                                                    onCheckedChange={() => {
+                                                                        if (activeStatus === "todos") handleSelectAll(selectedPedidos, setSelectedPedidos);
+                                                                        if (activeStatus === "emissao-nf") handleSelectAll(selectedPedidosEmissao, setSelectedPedidosEmissao);
+                                                                        if (activeStatus === "impressao") handleSelectAll(selectedPedidosImpressao, setSelectedPedidosImpressao);
+                                                                        if (activeStatus === "enviado") handleSelectAll(selectedPedidosEnviado, setSelectedPedidosEnviado);
+                                                                    }}
+                                                                />
+                                                            )}
                                                         </th>
-                                                    ))}
-                                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Detalhes</th>
-                                            </tr>
+                                                        {columns.filter(col => col.enabled).map(col => (
+                                                                <th
+                                                                    key={col.id}
+                                                                    className={`px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'min-w-[220px] md:min-w-[300px] lg:min-w-[380px]' : ''} ${col.id === 'itens' ? 'w-28 md:w-32' : ''} ${col.id === 'cliente' ? 'w-[200px] md:w-[260px] lg:w-[300px] pr-2' : ''} ${col.id === 'valor' ? 'w-28 md:w-32 pl-2' : ''}`}
+                                                                >
+                                                                    {col.name}
+                                                                </th>
+                                                            ))}
+                                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Detalhes</th>
+                                                    </tr>
+                                                );
+                                            })()}
                                         </thead>
                                         <tbody className="bg-white divide-y divide-gray-200">
                                             {paginatedPedidos.length > 0 ? (
@@ -2116,17 +2692,21 @@ function Pedidos() {
                                                     return (
                                                     <tr key={pedido.id} className="hover:bg-gray-50 transition-colors">
                                                         <td className="w-16 px-6 py-4 whitespace-nowrap">
-                                                            {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao") && (
+                                                            {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
                                                                 <Checkbox
+                                                                    size="md"
+                                                                    indicatorStyle="square"
                                                                     checked={
                                                                         (activeStatus === "todos" && selectedPedidos.includes(pedido.id)) ||
                                                                         (activeStatus === "emissao-nf" && selectedPedidosEmissao.includes(pedido.id)) ||
-                                                                        (activeStatus === "impressao" && selectedPedidosImpressao.includes(pedido.id))
+                                                                        (activeStatus === "impressao" && selectedPedidosImpressao.includes(pedido.id)) ||
+                                                                        (activeStatus === "enviado" && selectedPedidosEnviado.includes(pedido.id))
                                                                     }
                                                                     onCheckedChange={() => {
                                                                         if (activeStatus === "todos") handleCheckboxChange(pedido.id, selectedPedidos, setSelectedPedidos);
                                                                         if (activeStatus === "emissao-nf") handleCheckboxChange(pedido.id, selectedPedidosEmissao, setSelectedPedidosEmissao);
                                                                         if (activeStatus === "impressao") handleCheckboxChange(pedido.id, selectedPedidosImpressao, setSelectedPedidosImpressao);
+                                                                        if (activeStatus === "enviado") handleCheckboxChange(pedido.id, selectedPedidosEnviado, setSelectedPedidosEnviado);
                                                                     }}
                                                                     onClick={(e) => e.stopPropagation()}
                                                                 />
@@ -2178,7 +2758,7 @@ function Pedidos() {
                                 </div>
                                 <div className="py-4 px-6 flex flex-col md:flex-row md:justify-between md:items-center gap-3 text-sm text-gray-600">
                                     <div>
-                                        Exibindo {showingFrom}-{showingTo} de {filteredPedidos.length} pedido(s)
+                                        Exibindo {showingFrom}-{showingTo} de {totalFiltered} pedido(s)
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <Button

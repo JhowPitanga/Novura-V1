@@ -9,7 +9,7 @@ function jsonResponse(body: any, status = 200) {
       "content-type": "application/json",
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-meli-signature, x-request-id",
+      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-meli-signature, x-request-id, x-origin, x-correlation-id",
     },
   });
 }
@@ -83,23 +83,32 @@ serve(async (req) => {
       resource: notification.resource,
     });
 
-    // Roteamento baseado no tópico
+    // Roteamento baseado no tópico — responder 200 rapidamente e processar em background
     switch (notification.topic) {
-      case "items":
-        // Chamar função específica para items
-        return await routeToItemsWebhook(notification, req.headers);
-    
+      case "items": {
+        setTimeout(() => { routeToItemsWebhook(notification, req.headers).catch((e) => console.error("sync-all bg items error", e)); }, 0);
+        return jsonResponse({ ok: true, accepted: true, topic: "items", correlationId });
+      }
+
       case "orders":
-      case "orders_v2":
-        // Chamar função específica para orders (suporta alias "orders" e "orders_v2")
-        return await routeToOrdersWebhook(notification, req.headers);
-    
-      default:
+      case "orders_v2": {
+        setTimeout(() => { routeToOrdersWebhook(notification, req.headers).catch((e) => console.error("sync-all bg orders error", e)); }, 0);
+        return jsonResponse({ ok: true, accepted: true, topic: notification.topic, correlationId });
+      }
+
+      case "stock_locations":
+      case "available_quantity": {
+        setTimeout(() => { routeToStockLocations(notification, req.headers).catch((e) => console.error("sync-all bg stock_locations error", e)); }, 0);
+        return jsonResponse({ ok: true, accepted: true, topic: notification.topic, correlationId });
+      }
+
+      default: {
         console.warn("mercado-livre-sync-all unsupported_topic", { correlationId, topic: notification.topic });
         return jsonResponse({ 
           error: `Unsupported topic: ${notification.topic}`,
-          supported_topics: ["items", "orders", "orders_v2"]
+          supported_topics: ["items", "orders", "orders_v2", "stock_locations"]
         }, 400);
+      }
     }
 
   } catch (e) {
@@ -127,14 +136,30 @@ async function routeToItemsWebhook(notification: any, headers?: Headers) {
     resource: notification.resource,
     forwarded_headers: forwardedLog,
   });
+
+  // Preparar e registrar cabeçalhos de invocação (sem expor segredos)
+  const invHeaders = {
+    'x-meli-signature': headers?.get('x-meli-signature') || '',
+    'x-request-id': headers?.get('x-request-id') || correlationId,
+    'x-correlation-id': correlationId,
+    'x-origin': 'webhook',
+    'apikey': SERVICE_ROLE_KEY,
+    'x-internal-call': '1',
+  } as const;
+  const invHeadersLog = {
+    apikey_present: !!invHeaders['apikey'],
+    x_meli_signature_present: !!invHeaders['x-meli-signature'],
+    x_request_id: invHeaders['x-request-id'] || null,
+    x_correlation_id_present: !!invHeaders['x-correlation-id'],
+    x_origin: invHeaders['x-origin'],
+    x_internal_call: invHeaders['x-internal-call'],
+  };
+  console.log("mercado-livre-sync-all -> items headers_prepared", { correlationId, headers: invHeadersLog });
   try {
     // Propagar cabeçalhos relevantes (caso necessários para rastreio/validação)
     const { data, error } = await admin.functions.invoke('mercado-livre-webhook-items', {
       body: notification,
-      headers: {
-        'x-meli-signature': headers?.get('x-meli-signature') || '',
-        'x-request-id': headers?.get('x-request-id') || ''
-      }
+      headers: invHeaders,
     });
     if (error) {
       const errObj = {
@@ -144,20 +169,120 @@ async function routeToItemsWebhook(notification: any, headers?: Headers) {
         body: (error as any)?.context?.error || (error as any)?.context?.body,
       };
       console.warn("mercado-livre-sync-all -> items invoke_error", { correlationId, error: errObj });
+      const bodyRaw = (error as any)?.context?.body;
+      const bodyPreview = bodyRaw && typeof bodyRaw === 'object' ? JSON.stringify(bodyRaw).slice(0, 500) : String(bodyRaw || '').slice(0, 500);
+      console.warn("mercado-livre-sync-all -> items invoke_error_details", { correlationId, status: (error as any)?.context?.status, bodyPreview });
       // Não propagar erro para o Mercado Livre; responder 200 com detalhes
-      return jsonResponse({ ok: false, topic: "items", routed: true, error: errObj }, 200);
+      return jsonResponse({ ok: false, topic: "items", routed: true, error: errObj, correlationId }, 200);
     }
     console.log("mercado-livre-sync-all -> items invoke_success", {
       correlationId,
       result_type: typeof data,
       result_keys: data && typeof data === 'object' ? Object.keys(data) : undefined,
     });
-    return jsonResponse({ ok: true, topic: "items", routed: true, result: data });
+    const resultPreview = data && typeof data === 'object' ? JSON.stringify({ ok: (data as any)?.ok, keys: Object.keys(data).slice(0, 10) }).slice(0, 200) : String(data).slice(0, 200);
+    console.log("mercado-livre-sync-all -> items invoke_success_preview", { correlationId, resultPreview });
+    return jsonResponse({ ok: true, topic: "items", routed: true, result: data, correlationId });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("mercado-livre-sync-all -> items invoke_exception", { correlationId, error: msg });
     // Não propagar erro para o Mercado Livre; responder 200 com detalhes
-    return jsonResponse({ ok: false, topic: "items", routed: true, error: msg }, 200);
+    return jsonResponse({ ok: false, topic: "items", routed: true, error: msg, correlationId }, 200);
+  }
+}
+
+// Função para rotear notificações de alterações de locais de estoque
+async function routeToStockLocations(notification: any, headers?: Headers) {
+  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const admin = createClient(SUPABASE_URL!, SERVICE_ROLE_KEY!);
+  const correlationId = headers?.get("x-request-id") || crypto.randomUUID();
+  const forwardedLog = {
+    authorization_present: !!headers?.get("authorization"),
+    "x-meli-signature": headers?.get("x-meli-signature") || null,
+    "x-request-id": headers?.get("x-request-id") || null,
+  };
+  console.log("mercado-livre-sync-all -> available_quantity invoke_start", {
+    correlationId,
+    topic: notification.topic,
+    user_id: String(notification.user_id),
+    resource: notification.resource,
+    forwarded_headers: forwardedLog,
+  });
+
+  // Resolver organizationId a partir do meli_user_id
+  const { data: integration, error: integErr } = await admin
+    .from("marketplace_integrations")
+    .select("id, organizations_id, company_id, meli_user_id, marketplace_name")
+    .eq("meli_user_id", String(notification.user_id))
+    .eq("marketplace_name", "Mercado Livre")
+    .single();
+
+  if (integErr || !integration) {
+    console.warn("mercado-livre-sync-all -> available_quantity integration_missing", { correlationId, error: integErr?.message });
+    // Não propagar erro: responder 200 para o webhook do ML
+    return jsonResponse({ ok: false, topic: "available-quantity", routed: false, error: "Integration not found", correlationId }, 200);
+  }
+
+  const organizationId = integration.organizations_id;
+  console.log("mercado-livre-sync-all -> available_quantity integration_ok", {
+    correlationId,
+    organizations_id: organizationId,
+    integration_id: integration.id,
+    seller_id: integration.meli_user_id,
+  });
+
+  // Preparar cabeçalhos para invocar a função interna
+  const invHeaders = {
+    'x-meli-signature': headers?.get('x-meli-signature') || '',
+    'x-request-id': headers?.get('x-request-id') || correlationId,
+    'x-correlation-id': correlationId,
+    'x-origin': 'webhook',
+    'apikey': SERVICE_ROLE_KEY,
+    'x-internal-call': '1',
+  } as const;
+  const invHeadersLog = {
+    apikey_present: !!invHeaders['apikey'],
+    x_meli_signature_present: !!invHeaders['x-meli-signature'],
+    x_request_id: invHeaders['x-request-id'] || null,
+    x_correlation_id_present: !!invHeaders['x-correlation-id'],
+    x_origin: invHeaders['x-origin'],
+    x_internal_call: invHeaders['x-internal-call'],
+  };
+  console.log("mercado-livre-sync-all -> available_quantity headers_prepared", { correlationId, headers: invHeadersLog });
+
+  try {
+    const { data, error } = await admin.functions.invoke('mercado-livre-sync-stock-distribution', {
+      body: { organizationId },
+      headers: invHeaders,
+    });
+    if (error) {
+      const errObj = {
+        name: (error as any)?.name,
+        message: error.message,
+        status: (error as any)?.context?.status,
+        body: (error as any)?.context?.error || (error as any)?.context?.body,
+      };
+      console.warn("mercado-livre-sync-all -> available_quantity invoke_error", { correlationId, error: errObj });
+      const bodyRaw = (error as any)?.context?.body;
+      const bodyPreview = bodyRaw && typeof bodyRaw === 'object' ? JSON.stringify(bodyRaw).slice(0, 500) : String(bodyRaw || '').slice(0, 500);
+      console.warn("mercado-livre-sync-all -> available_quantity invoke_error_details", { correlationId, status: (error as any)?.context?.status, bodyPreview });
+      // Não propagar erro para o ML; responder 200
+      return jsonResponse({ ok: false, topic: "available_quantity", routed: true, error: errObj, correlationId }, 200);
+    }
+
+    console.log("mercado-livre-sync-all -> available_quantity invoke_success", {
+      correlationId,
+      result_type: typeof data,
+      result_keys: data && typeof data === 'object' ? Object.keys(data) : undefined,
+    });
+    const resultPreview = data && typeof data === 'object' ? JSON.stringify({ ok: (data as any)?.ok, keys: Object.keys(data).slice(0, 10) }).slice(0, 200) : String(data).slice(0, 200);
+    console.log("mercado-livre-sync-all -> available_quantity invoke_success_preview", { correlationId, resultPreview });
+    return jsonResponse({ ok: true, topic: "available_quantity", routed: true, result: data, correlationId });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("mercado-livre-sync-all -> available_quantity invoke_exception", { correlationId, error: msg });
+    return jsonResponse({ ok: false, topic: "available_quantity", routed: true, error: msg, correlationId }, 200);
   }
 }
 
@@ -179,14 +304,28 @@ async function routeToOrdersWebhook(notification: any, headers?: Headers) {
     resource: notification.resource,
     forwarded_headers: forwardedLog,
   });
+  const invHeaders = {
+    'x-meli-signature': headers?.get('x-meli-signature') || '',
+    'x-request-id': headers?.get('x-request-id') || correlationId,
+    'x-correlation-id': correlationId,
+    'x-origin': 'webhook',
+    'apikey': SERVICE_ROLE_KEY,
+    'x-internal-call': '1',
+  } as const;
+  const invHeadersLog = {
+    apikey_present: !!invHeaders['apikey'],
+    x_meli_signature_present: !!invHeaders['x-meli-signature'],
+    x_request_id: invHeaders['x-request-id'] || null,
+    x_correlation_id_present: !!invHeaders['x-correlation-id'],
+    x_origin: invHeaders['x-origin'],
+    x_internal_call: invHeaders['x-internal-call'],
+  };
+  console.log("mercado-livre-sync-all -> orders headers_prepared", { correlationId, headers: invHeadersLog });
   try {
     // Propagar cabeçalhos relevantes (caso necessários para rastreio/validação)
     const { data, error } = await admin.functions.invoke('mercado-livre-webhook-orders', {
       body: notification,
-      headers: {
-        'x-meli-signature': headers?.get('x-meli-signature') || '',
-        'x-request-id': headers?.get('x-request-id') || ''
-      }
+      headers: invHeaders,
     });
     if (error) {
       const errObj = {
@@ -196,19 +335,24 @@ async function routeToOrdersWebhook(notification: any, headers?: Headers) {
         body: (error as any)?.context?.error || (error as any)?.context?.body,
       };
       console.warn("mercado-livre-sync-all -> orders invoke_error", { correlationId, error: errObj });
+      const bodyRaw = (error as any)?.context?.body;
+      const bodyPreview = bodyRaw && typeof bodyRaw === 'object' ? JSON.stringify(bodyRaw).slice(0, 500) : String(bodyRaw || '').slice(0, 500);
+      console.warn("mercado-livre-sync-all -> orders invoke_error_details", { correlationId, status: (error as any)?.context?.status, bodyPreview });
       // Não propagar erro para o Mercado Livre; responder 200 com detalhes
-      return jsonResponse({ ok: false, topic: notification.topic, routed: true, error: errObj }, 200);
+      return jsonResponse({ ok: false, topic: notification.topic, routed: true, error: errObj, correlationId }, 200);
     }
     console.log("mercado-livre-sync-all -> orders invoke_success", {
       correlationId,
       result_type: typeof data,
       result_keys: data && typeof data === 'object' ? Object.keys(data) : undefined,
     });
-    return jsonResponse({ ok: true, topic: notification.topic, routed: true, result: data });
+    const resultPreview = data && typeof data === 'object' ? JSON.stringify({ ok: (data as any)?.ok, keys: Object.keys(data).slice(0, 10) }).slice(0, 200) : String(data).slice(0, 200);
+    console.log("mercado-livre-sync-all -> orders invoke_success_preview", { correlationId, resultPreview });
+    return jsonResponse({ ok: true, topic: notification.topic, routed: true, result: data, correlationId });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("mercado-livre-sync-all -> orders invoke_exception", { correlationId, error: msg });
     // Não propagar erro para o Mercado Livre; responder 200 com detalhes
-    return jsonResponse({ ok: false, topic: notification.topic, routed: true, error: msg }, 200);
+    return jsonResponse({ ok: false, topic: notification.topic, routed: true, error: msg, correlationId }, 200);
   }
 }

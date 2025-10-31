@@ -9,7 +9,7 @@ function jsonResponse(body: any, status = 200) {
       "content-type": "application/json",
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
+      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-request-id, x-correlation-id, x-origin, x-meli-signature",
     },
   });
 }
@@ -104,7 +104,6 @@ serve(async (req) => {
       .select("id, organizations_id, company_id, marketplace_name, access_token, refresh_token, meli_user_id")
       .eq("meli_user_id", String(notification.user_id))
       .eq("marketplace_name", "Mercado Livre")
-      .eq("enabled", true)
       .single();
 
     if (integErr || !integration) {

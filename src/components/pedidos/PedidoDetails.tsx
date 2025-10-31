@@ -1,14 +1,9 @@
 import { useState } from "react";
-import { ChevronDown, ChevronUp, User, Package, CreditCard, Clock, TrendingUp, Wallet, Percent, Truck, Receipt, Ticket, MinusCircle, ShoppingCart, DollarSign, Zap } from "lucide-react";
+import { ChevronDown, ChevronUp, User, Package, CreditCard, Clock, TrendingUp, Wallet, Percent, Truck, Receipt, Ticket, MinusCircle, ShoppingCart, DollarSign, Zap, Copy } from "lucide-react";
 import { formatDateTimeSP } from "@/lib/datetime";
-
-// Assumindo que você tem os componentes Badge, Separator, Collapsible, CollapsibleContent, CollapsibleTrigger
-// Como não temos acesso aos componentes reais, assumimos que eles estão definidos
-const Badge = (props) => <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${props.className}`}>{props.children}</span>;
-const Separator = (props) => <hr className={`border-gray-200 ${props.className}`} />;
-const Collapsible = (props) => <div>{props.children}</div>;
-const CollapsibleContent = (props) => props.open ? <div>{props.children}</div> : null;
-const CollapsibleTrigger = (props) => <div onClick={props.onToggle}>{props.children}</div>;
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 // --- TIPOS MOCKADOS PARA COMPILAÇÃO ---
 // Em um projeto real, estes viriam de "@/types/pedidos"
@@ -124,8 +119,8 @@ const FinancialDetailRow: React.FC<FinancialDetailRowProps> = ({ icon: Icon, lab
     // Usamos Math.abs(value) para garantir que o sinal seja tratado apenas pela formatação visual
     const absoluteValue = Math.abs(value); 
     const valueDisplay = isNegative ? `- ${formatCurrency(absoluteValue)}` : `+ ${formatCurrency(absoluteValue)}`;
-    const valueColor = isNegative ? 'text-red-600' : 'text-green-600';
-    const iconColor = isNegative ? 'text-pink-600' : 'text-green-600'; // pink para despesas
+    const valueColor = isNegative ? 'text-orange-700' : 'text-green-600';
+    const iconColor = isNegative ? 'text-orange-600' : 'text-green-600';
     const percentDisplay = percent !== undefined ? <span className="text-xs font-normal text-gray-500 ml-2">({percent.toFixed(0)}%)</span> : null;
 
     return (
@@ -149,8 +144,11 @@ interface PedidoDetailsProps {
 }
 
 export function PedidoDetails({ pedido }: PedidoDetailsProps) {
-    const [itensExpanded, setItensExpanded] = useState(true); 
+    const [geralExpanded, setGeralExpanded] = useState(false);
+    const [itensExpanded, setItensExpanded] = useState(false); 
     const [historicoExpanded, setHistoricoExpanded] = useState(false);
+    const [financeiroExpanded, setFinanceiroExpanded] = useState(true);
+    const [copiadoPlataforma, setCopiadoPlataforma] = useState(false);
 
     // Historico steps: manter a estrutura para o timeline
     const historicoSteps = [
@@ -222,70 +220,100 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
 
     return (
         <div className="space-y-6 max-w-full overflow-x-hidden">
-            {/* Seção 1: Informações Gerais - Sem Sombra, Cor Roxo */}
-            <div className="bg-white rounded-2xl p-6 border border-gray-100">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                    {/* Cor principal roxa: text-purple-600 */}
-                    <Package className="w-5 h-5 mr-2 text-purple-600" />
-                    Informações Gerais
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-3">
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">Marketplace:</span>
-                            <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
-                                {pedido.marketplace}
-                            </Badge>
+            {/* Seção 1: Informações Gerais com dropdown */}
+            <div className="bg-white rounded-3xl border border-gray-100 overflow-hidden">
+                <Collapsible open={geralExpanded} onOpenChange={setGeralExpanded}>
+                    <CollapsibleTrigger asChild>
+                        <div className="p-6 cursor-pointer hover:bg-gray-50 transition-colors w-full">
+                            <div className="flex items-center justify-between">
+                                <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                                    <Package className="w-5 h-5 mr-2 text-purple-600" />
+                                    Informações Gerais
+                                </h3>
+                                {geralExpanded ? (
+                                    <ChevronUp className="w-5 h-5 text-gray-400" />
+                                ) : (
+                                    <ChevronDown className="w-5 h-5 text-gray-400" />
+                                )}
+                            </div>
                         </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">ID da Plataforma:</span>
-                            <span className="font-mono font-semibold text-gray-900">{pedido.idPlataforma}</span>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                        <div className="px-6 pb-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="space-y-3">
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-gray-600 text-sm">ID da Plataforma:</span>
+                                        <span className="font-mono font-semibold text-gray-900 flex items-center gap-2">
+                                            {pedido.idPlataforma}
+                                            <button
+                                                type="button"
+                                                className="inline-flex items-center p-1 text-xs text-gray-400 hover:text-gray-600"
+                                                onClick={() => {
+                                                    try {
+                                                        const value = String(pedido.idPlataforma ?? "");
+                                                        navigator.clipboard?.writeText(value);
+                                                        setCopiadoPlataforma(true);
+                                                        setTimeout(() => setCopiadoPlataforma(false), 1500);
+                                                    } catch (e) {
+                                                        // ignore
+                                                    }
+                                                }}
+                                                aria-label="Copiar ID da plataforma"
+                                            >
+                                                <Copy className="w-3 h-3" />
+                                            </button>
+                                            {copiadoPlataforma && (
+                                                <span className="text-[10px] text-purple-700 font-semibold">COPIADO</span>
+                                            )}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-gray-600 text-sm">Data do Pedido:</span>
+                                        <span className="text-gray-900">{dataFormatada}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-gray-600 text-sm">Cidade:</span>
+                                        <span className="text-gray-900">{(pedido as any)?.shippingCity || '-'}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-gray-600 text-sm">Estado:</span>
+                                        <span className="text-gray-900">{(pedido as any)?.shippingState || '-'}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-gray-600 text-sm">UF:</span>
+                                        <span className="text-gray-900">{(pedido as any)?.shippingUF || '-'}</span>
+                                    </div>
+                                </div>
+                                <div className="space-y-3">
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-gray-600 text-sm">Cliente:</span>
+                                        <span className="text-gray-900 font-medium flex items-center">
+                                            <User className="w-4 h-4 mr-1 text-gray-400" /> {pedido.cliente}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-gray-600 text-sm">Status:</span>
+                                        <Badge className={getStatusColor(pedido.status) + " font-bold"}>
+                                            {pedido.status}
+                                        </Badge>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-gray-600 text-sm">Status de Envio:</span>
+                                        <Badge className={(pedido as any)?.shipment_status ? getShipmentStatusColor((pedido as any).shipment_status) + " font-medium" : "bg-gray-100 text-gray-800 border-gray-300"}>
+                                            {formatShipmentStatus((pedido as any)?.shipment_status) || '-'}
+                                        </Badge>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">Data do Pedido:</span>
-                            <span className="text-gray-900">{dataFormatada}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">Cidade:</span>
-                            <span className="text-gray-900">{(pedido as any)?.shippingCity || '-'}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">Estado:</span>
-                            <span className="text-gray-900">{(pedido as any)?.shippingState || '-'}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">UF:</span>
-                            <span className="text-gray-900">{(pedido as any)?.shippingUF || '-'}</span>
-                        </div>
-                    </div>
-                    <div className="space-y-3">
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">Cliente:</span>
-                            <span className="text-gray-900 font-medium flex items-center">
-                                <User className="w-4 h-4 mr-1 text-gray-400" /> {pedido.cliente}
-                            </span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">Status:</span>
-                            {/* Uso da função getStatusColor para estilo dinâmico */}
-                            <Badge className={getStatusColor(pedido.status) + " font-bold"}>
-                                {pedido.status}
-                            </Badge>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-gray-600 text-sm">Status de Envio:</span>
-                            <Badge className={(pedido as any)?.shipment_status ? getShipmentStatusColor((pedido as any).shipment_status) + " font-medium" : "bg-gray-100 text-gray-800 border-gray-300"}>
-                                {formatShipmentStatus((pedido as any)?.shipment_status) || '-'}
-                            </Badge>
-                        </div>
-                    </div>
-                </div>
+                    </CollapsibleContent>
+                </Collapsible>
             </div>
 
-            {/* Seção 2: Itens do Pedido - Sem Sombra */}
-            <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-                {/* O Collapsible original não tem onOpenChange, estou mantendo o onToggle para a versão mockada funcionar */}
-                <Collapsible open={itensExpanded} onOpenChange={setItensExpanded} onToggle={() => setItensExpanded(!itensExpanded)}>
+            {/* Seção 2: Itens do Pedido - Dropdown */}
+            <div className="bg-white rounded-3xl border border-gray-100 overflow-hidden">
+                <Collapsible open={itensExpanded} onOpenChange={setItensExpanded}>
                     <CollapsibleTrigger asChild>
                         <div className="p-6 cursor-pointer hover:bg-gray-50 transition-colors w-full">
                             <div className="flex items-center justify-between">
@@ -301,7 +329,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             </div>
                         </div>
                     </CollapsibleTrigger>
-                    <CollapsibleContent open={itensExpanded}>
+                    <CollapsibleContent>
                         <div className="px-6 pb-6">
                             {/* Tabela de Itens - Adaptada do código do usuário */}
                             <div className="space-y-4">
@@ -336,13 +364,26 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                 </Collapsible>
             </div>
 
-            {/* Seção 4: Detalhamento Financeiro - REESTRUTURADA E RESPONSIVA */}
-            <div className="bg-white rounded-2xl p-6 border border-gray-100">
-                <h3 className="text-xl font-bold text-gray-900 mb-6 flex items-center">
-                    <CreditCard className="w-6 h-6 mr-2 text-purple-600" />
-                    Detalhamento Financeiro (Visão Completa)
-                </h3>
-
+            {/* Seção 4: Detalhamento Financeiro - Dropdown (aberto por padrão) */}
+            <div className="bg-white rounded-3xl border border-gray-100 overflow-hidden">
+                <Collapsible open={financeiroExpanded} onOpenChange={setFinanceiroExpanded}>
+                    <CollapsibleTrigger asChild>
+                        <div className="p-6 cursor-pointer hover:bg-gray-50 transition-colors w-full">
+                            <div className="flex items-center justify-between">
+                                <h3 className="text-xl font-bold text-gray-900 flex items-center">
+                                    <CreditCard className="w-6 h-6 mr-2 text-purple-600" />
+                                    Detalhamento Financeiro (Visão Completa)
+                                </h3>
+                                {financeiroExpanded ? (
+                                    <ChevronUp className="w-5 h-5 text-gray-400" />
+                                ) : (
+                                    <ChevronDown className="w-5 h-5 text-gray-400" />
+                                )}
+                            </div>
+                        </div>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                        <div className="px-6 pb-6">
                 {/* Grid Responsivo: Lista de detalhes (coluna 1) e Resultados Finais (coluna 2) */}
                 <div className="grid grid-cols-1 gap-y-8">
                     {/* Coluna 1: Receitas e Despesas (ocupa 2/3 em telas grandes) */}
@@ -375,7 +416,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                         <Separator className="my-6 bg-gray-100" />
                         
                         {/* Bloco 2: Despesas e Custos */}
-                        <h4 className="text-sm font-semibold uppercase tracking-wider text-pink-700 mb-4 border-b-2 border-pink-100 pb-2 flex items-center">
+                        <h4 className="text-sm font-semibold uppercase tracking-wider text-orange-700 mb-4 border-b-2 border-orange-100 pb-2 flex items-center">
                             <MinusCircle className="w-4 h-4 mr-2" />
                             Custos e Despesas (Saídas)
                         </h4>
@@ -460,7 +501,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                         </h4>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {/* Card: Líquido a Receber (Repasse) */}
-                            <div className="bg-purple-50 rounded-xl p-6 border-2 border-purple-200/60 transition-all">
+                            <div className="bg-purple-50 rounded-3xl p-6 border-2 border-purple-200/60 transition-all">
                                 <div className="flex items-center justify-between">
                                     <span className="text-purple-800 font-semibold flex items-center text-sm uppercase">
                                         <CreditCard className="w-5 h-5 mr-2 text-purple-600" />
@@ -473,22 +514,24 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                                 <p className="text-xs text-purple-600 mt-2">Valor creditado pelo Marketplace (inclui frete recebido, menos comissões, impostos e descontos).</p>
                             </div>
                             {/* Card: Margem em % */}
-                            <div className={`${margemCalculada >= 0 ? 'bg-green-50 border-green-200/60' : 'bg-red-50 border-red-200/60'} rounded-xl p-6 border-2 transition-all`}>
+                            <div className={`bg-purple-50 border-purple-200/60 rounded-3xl p-6 border-2 transition-all`}>
                                 <div className="flex items-center justify-between">
-                                    <span className={`${margemCalculada >= 0 ? 'text-green-800' : 'text-red-800'} font-semibold flex items-center text-sm uppercase`}>
-                                        <TrendingUp className="w-5 h-5 mr-2" />
+                                    <span className={`text-purple-800 font-semibold flex items-center text-sm uppercase`}>
+                                        <TrendingUp className="w-5 h-5 mr-2 text-purple-600" />
                                         Margem em %
                                     </span>
                                 </div>
-                                <span className={`${margemCalculada >= 0 ? 'text-green-800' : 'text-red-800'} font-extrabold text-3xl mt-2 block`}>
+                                <span className={`text-purple-800 font-extrabold text-3xl mt-2 block`}>
                                     {margemCalculada.toFixed(2)}%
                                 </span>
                             </div>
                         </div>
                     </div>
-
-
+                
                 </div>
+                        </div>
+                    </CollapsibleContent>
+                </Collapsible>
             </div>
 
 
