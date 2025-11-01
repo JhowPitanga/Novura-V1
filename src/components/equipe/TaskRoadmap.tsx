@@ -19,7 +19,7 @@ export function TaskRoadmap({ tasks }: TaskRoadmapProps) {
             {groups[type].map(t => (
               <div key={t.id} className="flex items-center justify-between rounded-md border p-3">
                 <p className="font-medium">{t.title}</p>
-                <span className="text-xs text-gray-500">Sprint: {t.sprint}</span>
+                {/* Coluna sprint removida do schema; ocultando informação de sprint */}
               </div>
             ))}
             {groups[type].length === 0 && (

@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+// Removed category select per new group creation UX
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { fetchAccountMembers, useChatChannels } from "@/hooks/useChat";
@@ -18,7 +18,7 @@ export function CreateTeamModal({ open, onOpenChange }: Props) {
   const { toast } = useToast();
   const { createTeam } = useChatChannels();
   const [name, setName] = useState("");
-  const [category, setCategory] = useState<string>("Logística");
+  // Removed category; groups now only have a name and members
   const [members, setMembers] = useState<{ id: string; email?: string; nome?: string }[]>([]);
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
@@ -43,7 +43,7 @@ export function CreateTeamModal({ open, onOpenChange }: Props) {
       return;
     }
     setSaving(true);
-    const { error } = await createTeam(name.trim(), category, selectedMemberIds);
+    const { error } = await createTeam(name.trim(), selectedMemberIds);
     setSaving(false);
     if (!error) {
       onOpenChange(false);
@@ -65,21 +65,7 @@ export function CreateTeamModal({ open, onOpenChange }: Props) {
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Logística - Operações" />
           </div>
 
-          <div>
-            <Label>Categoria</Label>
-            <Select value={category} onValueChange={setCategory}>
-              <SelectTrigger>
-                <SelectValue placeholder="Selecione uma categoria" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Logística">Logística</SelectItem>
-                <SelectItem value="Comercial">Comercial</SelectItem>
-                <SelectItem value="Financeiro">Financeiro</SelectItem>
-                <SelectItem value="Marketing">Marketing</SelectItem>
-                <SelectItem value="Geral">Geral</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Categoria removida: usuário define apenas o nome do grupo */}
 
           <div>
             <Label>Membros</Label>

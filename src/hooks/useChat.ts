@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
@@ -10,6 +10,7 @@ export type ChatChannel = {
   category?: string | null;
   created_by: string;
   isStarred?: boolean;
+  member_ids?: string[];
 };
 
 export type ChatMember = {
@@ -26,6 +27,7 @@ export type ChatMessage = {
   is_encrypted?: boolean;
   attachment_path?: string | null;
   attachment_type?: string | null;
+  isPending?: boolean;
 };
 
 export function useChatChannels() {
@@ -41,27 +43,43 @@ export function useChatChannels() {
     }
     try {
       setLoading(true);
-      // Get channels where current user is a member with is_starred
-      const { data, error } = await supabase
-        .from('chat_channel_members')
-        .select(`
-          channel_id,
-          is_starred,
-          chat_channels:channel_id (
-            id,
-            type,
-            name,
-            category,
-            created_by
-          )
-        `)
-        .eq('user_id', user.id);
-
-      if (error) throw error;
-
-      const mapped: ChatChannel[] = (data || [])
-        .map((row: any) => ({ ...(row.chat_channels || {}), isStarred: !!row.is_starred }))
-        .filter((c: any) => !!c.id);
+      // Prefer simplified schema: channels with array membership
+      let mapped: ChatChannel[] = [];
+      const { data: chData, error: chErr } = await supabase
+        .from('chat_channels')
+        .select('id,type,name,category,created_by,member_ids,starred_by')
+        .contains('member_ids', [user.id]);
+      if (!chErr && chData) {
+        mapped = (chData as any[]).map((c: any) => ({
+          id: c.id,
+          type: c.type,
+          name: c.name,
+          category: c.category,
+          created_by: c.created_by,
+          isStarred: Array.isArray(c.starred_by) ? c.starred_by.includes(user.id) : false,
+          member_ids: Array.isArray(c.member_ids) ? c.member_ids : [],
+        }));
+      } else {
+        // Fallback to legacy join if array column not available
+        const { data, error } = await supabase
+          .from('chat_channel_members')
+          .select(`
+            channel_id,
+            is_starred,
+            chat_channels:channel_id (
+              id,
+              type,
+              name,
+              category,
+              created_by
+            )
+          `)
+          .eq('user_id', user.id);
+        if (error) throw error;
+        mapped = (data || [])
+          .map((row: any) => ({ ...(row.chat_channels || {}), isStarred: !!row.is_starred, member_ids: [] }))
+          .filter((c: any) => !!c.id);
+      }
 
       setChannels(mapped);
     } catch (err: any) {
@@ -78,7 +96,6 @@ export function useChatChannels() {
     const channel = supabase
       .channel('realtime-chat-channels')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_channels' }, fetchChannels)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_channel_members' }, fetchChannels)
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
@@ -87,26 +104,16 @@ export function useChatChannels() {
   const directChannels = useMemo(() => channels.filter(c => c.type === 'dm'), [channels]);
   const teamChannels = useMemo(() => channels.filter(c => c.type === 'team'), [channels]);
 
-  const createTeam = async (name: string, category: string, memberIds: string[]) => {
+  const createTeam = async (name: string, memberIds: string[]) => {
     if (!user) return { error: 'Usuário não autenticado' };
     try {
+      const members = Array.from(new Set([user.id, ...memberIds]));
       const { data: channel, error: chError } = await supabase
         .from('chat_channels')
-        .insert({ type: 'team', name, category, account_id: user.id, created_by: user.id, organization_id: organizationId })
+        .insert({ type: 'team', name, category: null, account_id: user.id, created_by: user.id, organization_id: organizationId, member_ids: members, starred_by: [] })
         .select('*')
         .single();
       if (chError) throw chError;
-
-      // Add creator as owner and members
-      const membersPayload = [
-        { channel_id: channel.id, user_id: user.id, role: 'owner' },
-        ...memberIds.filter(id => id !== user.id).map(id => ({ channel_id: channel.id, user_id: id, role: 'member' }))
-      ];
-
-      const { error: mError } = await supabase
-        .from('chat_channel_members')
-        .insert(membersPayload);
-      if (mError) throw mError;
 
       toast({ title: 'Equipe criada', description: 'Canal de equipe criado com sucesso.' });
       await fetchChannels();
@@ -121,51 +128,25 @@ export function useChatChannels() {
     if (!user) return { error: 'Usuário não autenticado' };
     try {
       let dmChannelId: string | null = null;
-      // Check if DM already exists (channel with two members: current user and other user)
-      const { data: existing, error: exError } = await supabase
-        .rpc('get_or_create_dm_channel', { p_user_a: user.id, p_user_b: otherUserId });
-      // If function not found, fallback: try to find channel manually
-      if (exError || !existing) {
-        const { data: candidateChannels } = await supabase
-          .from('chat_channels')
-          .select('id')
-          .eq('type', 'dm');
+      // Find DM channel via array membership
+      const { data: existingDm, error: findErr } = await supabase
+        .from('chat_channels')
+        .select('id, member_ids')
+        .eq('type', 'dm')
+        .contains('member_ids', [user.id, otherUserId]);
 
-        let foundId: string | null = null;
-        if (candidateChannels) {
-          for (const ch of candidateChannels) {
-            const { data: members } = await supabase
-              .from('chat_channel_members')
-              .select('user_id')
-              .eq('channel_id', ch.id);
-            const memberIds = (members || []).map(m => m.user_id);
-            if (memberIds.length === 2 && memberIds.includes(user.id) && memberIds.includes(otherUserId)) {
-              foundId = ch.id; break;
-            }
-          }
-        }
-
-        if (!foundId) {
-          const { data: newChannel, error: chErr } = await supabase
-            .from('chat_channels')
-            .insert({ type: 'dm', account_id: user.id, created_by: user.id, organization_id: organizationId })
-            .select('*')
-            .single();
-          if (chErr) throw chErr;
-
-          const { error: memErr } = await supabase
-            .from('chat_channel_members')
-            .insert([
-              { channel_id: newChannel.id, user_id: user.id, role: 'owner' },
-              { channel_id: newChannel.id, user_id: otherUserId, role: 'member' },
-            ]);
-          if (memErr) throw memErr;
-          dmChannelId = newChannel.id;
-        } else { dmChannelId = foundId; }
+      if (!findErr && existingDm && existingDm.length) {
+        const exact = (existingDm as any[]).find((c: any) => Array.isArray(c.member_ids) && c.member_ids.length === 2);
+        dmChannelId = (exact || existingDm[0] as any).id;
       } else {
-        // If RPC returns a channel id
-        const chId = (Array.isArray(existing) ? (existing[0] as any)?.id : (existing as any)?.id) as string | undefined;
-        dmChannelId = chId ?? null;
+        const members = Array.from(new Set([user.id, otherUserId]));
+        const { data: newChannel, error: chErr } = await supabase
+          .from('chat_channels')
+          .insert({ type: 'dm', account_id: user.id, created_by: user.id, organization_id: organizationId, member_ids: members, starred_by: [] })
+          .select('*')
+          .single();
+        if (chErr) throw chErr;
+        dmChannelId = newChannel.id;
       }
 
       await fetchChannels();
@@ -178,11 +159,19 @@ export function useChatChannels() {
 
   const toggleStar = async (channelId: string, starred: boolean) => {
     if (!user) return { error: 'Sem usuário' };
+    // Fetch channel and update starred_by array
+    const { data: ch, error: getErr } = await supabase
+      .from('chat_channels')
+      .select('starred_by')
+      .eq('id', channelId)
+      .single();
+    if (getErr) return { error: getErr.message };
+    const current = Array.isArray((ch as any)?.starred_by) ? (ch as any).starred_by as string[] : [];
+    const next = starred ? Array.from(new Set([...current, user.id])) : current.filter((id) => id !== user.id);
     const { error } = await supabase
-      .from('chat_channel_members')
-      .update({ is_starred: starred })
-      .eq('channel_id', channelId)
-      .eq('user_id', user.id);
+      .from('chat_channels')
+      .update({ starred_by: next })
+      .eq('id', channelId);
     if (error) return { error: error.message };
     await fetchChannels();
     return { ok: true };
@@ -190,6 +179,17 @@ export function useChatChannels() {
 
   const deleteChannel = async (channelId: string) => {
     try {
+      // Enforce creator-only deletion on client side
+      const { data: ch, error: getErr } = await supabase
+        .from('chat_channels')
+        .select('id, created_by')
+        .eq('id', channelId)
+        .single();
+      if (getErr) throw getErr;
+      if (!user || (ch as any)?.created_by !== user.id) {
+        throw new Error('Apenas o criador do grupo pode excluir esta conversa.');
+      }
+
       const { error } = await supabase
         .from('chat_channels')
         .delete()
@@ -212,77 +212,22 @@ export function useChannelMessages(channelId?: string) {
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
-  const [orgKey, setOrgKey] = useState<string | null>(null);
   const [oldestTs, setOldestTs] = useState<string | null>(null);
-
-  // Load or create organization chat key (for client-side encryption)
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data, error } = await supabase.rpc('get_or_create_chat_org_key');
-        if (error) throw error;
-        const key = (Array.isArray(data) ? data[0]?.secret_key : (data as any)?.secret_key) as string | undefined;
-        setOrgKey(key || null);
-      } catch (e) {
-        // no-op, messages can still load unencrypted
-      }
-    })();
-  }, []);
-
-  const subtle = typeof window !== 'undefined' ? window.crypto?.subtle : undefined;
-
-  async function importKey(base64: string) {
-    try {
-      const raw = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-      return await subtle!.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
-    } catch {
-      return null;
-    }
-  }
-
-  async function encryptContent(plain: string): Promise<{ ciphertext: string; iv: string } | null> {
-    if (!subtle || !orgKey) return null;
-    const key = await importKey(orgKey);
-    if (!key) return null;
-    const enc = new TextEncoder();
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const buf = await subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(plain));
-    const ct = btoa(String.fromCharCode(...new Uint8Array(buf)));
-    const ivb64 = btoa(String.fromCharCode(...iv));
-    return { ciphertext: `${ivb64}:${ct}`, iv: ivb64 };
-  }
-
-  async function decryptContent(payload: string): Promise<string | null> {
-    if (!subtle || !orgKey) return null;
-    const [ivb64, ct] = (payload || '').split(':');
-    if (!ivb64 || !ct) return null;
-    const key = await importKey(orgKey);
-    if (!key) return null;
-    const iv = Uint8Array.from(atob(ivb64), c => c.charCodeAt(0));
-    const data = Uint8Array.from(atob(ct), c => c.charCodeAt(0));
-    try {
-      const buf = await subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
-      return new TextDecoder().decode(buf);
-    } catch {
-      return null;
-    }
-  }
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const realtimeChannelRef = useRef<any | null>(null);
+  const typingTimeoutsRef = useRef<Record<string, any>>({});
+  const lastMsgTsRef = useRef<Record<string, number>>({});
+  const lastTypingTsRef = useRef<Record<string, number>>({});
 
   const fetchMessages = async () => {
     if (!channelId) return;
     try {
       setLoading(true);
-      const { data, error } = await supabase.rpc('get_channel_messages', { p_channel_id: channelId, p_limit: 20 });
+      const { data, error } = await supabase
+        .rpc('get_channel_messages_plain', { p_channel_id: channelId, p_before: new Date().toISOString(), p_limit: 20 });
       if (error) throw error;
-      const rows = (data as any[]) || [];
-      const decrypted = await Promise.all(rows.reverse().map(async (m) => {
-        if (m.is_encrypted) {
-          const plain = await decryptContent(m.content);
-          return { ...m, content: plain ?? m.content } as ChatMessage;
-        }
-        return m as ChatMessage;
-      }));
-      setMessages(decrypted);
+      const rows = ((data as any[]) || []).reverse();
+      setMessages(rows as ChatMessage[]);
       setHasMore(rows.length >= 20);
       setOldestTs(rows.length ? rows[rows.length - 1].created_at : null);
     } catch (err: any) {
@@ -299,14 +244,68 @@ export function useChannelMessages(channelId?: string) {
       .channel(`realtime-chat-messages-${channelId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `channel_id=eq.${channelId}` }, async (payload) => {
         const m = payload.new as any;
-        let content = m.content;
-        if (m.is_encrypted) {
-          const plain = await decryptContent(m.content);
-          content = plain ?? m.content;
+        let plainRow: any = null;
+        try {
+          const { data } = await supabase.rpc('get_message_plain', { p_message_id: m.id });
+          if (Array.isArray(data)) plainRow = data[0]; else plainRow = data;
+        } catch {}
+        const resolved = (plainRow && plainRow.content) ? plainRow : { ...(m as any), content: m.content };
+        setMessages((prev) => {
+          const filtered = prev.filter(pm => !(pm.isPending && pm.sender_id === resolved.sender_id && pm.content === resolved.content));
+          return [...filtered, resolved as ChatMessage];
+        });
+        // Clear typing indicator for this sender immediately and mark message ts
+        lastMsgTsRef.current[resolved.sender_id] = Date.now();
+        if (typingTimeoutsRef.current[m.sender_id]) {
+          clearTimeout(typingTimeoutsRef.current[m.sender_id]);
+          delete typingTimeoutsRef.current[m.sender_id];
         }
-        setMessages((prev) => [...prev, { ...(m as ChatMessage), content }]);
+        setTypingUsers((prev) => prev.filter(id => id !== resolved.sender_id));
+
+        // Notificação: emitir evento global para nova mensagem recebida
+        try {
+          if (typeof window !== 'undefined' && user && m.sender_id !== user.id) {
+            const detail = {
+              module: 'equipe',
+              channelId,
+              message: resolved as ChatMessage,
+              // unreadTotal pode ser atualizado pelo módulo Equipe via outro evento agregado
+            } as any;
+            window.dispatchEvent(new CustomEvent('chat:message-received', { detail }));
+          }
+        } catch {
+          // ignore notification errors
+        }
+      })
+      .on('broadcast', { event: 'typing' }, (payload: any) => {
+        const otherId = payload?.payload?.user_id as string | undefined;
+        if (!otherId || otherId === user?.id) return;
+        const now = Date.now();
+        lastTypingTsRef.current[otherId] = now;
+        const lastMsgTs = lastMsgTsRef.current[otherId];
+        // Ignore late typing events that arrive shortly after a message from the same sender
+        if (lastMsgTs && now - lastMsgTs < 1200) {
+          return;
+        }
+        setTypingUsers((prev) => (prev.includes(otherId) ? prev : [...prev, otherId]));
+        // Clear after 2.5s
+        if (typingTimeoutsRef.current[otherId]) clearTimeout(typingTimeoutsRef.current[otherId]);
+        typingTimeoutsRef.current[otherId] = setTimeout(() => {
+          setTypingUsers((prev) => prev.filter(id => id !== otherId));
+          delete typingTimeoutsRef.current[otherId];
+        }, 2500);
+      })
+      .on('broadcast', { event: 'typing_stop' }, (payload: any) => {
+        const otherId = payload?.payload?.user_id as string | undefined;
+        if (!otherId || otherId === user?.id) return;
+        if (typingTimeoutsRef.current[otherId]) {
+          clearTimeout(typingTimeoutsRef.current[otherId]);
+          delete typingTimeoutsRef.current[otherId];
+        }
+        setTypingUsers((prev) => prev.filter(id => id !== otherId));
       })
       .subscribe();
+    realtimeChannelRef.current = channel;
     return () => { supabase.removeChannel(channel); };
   }, [channelId]);
 
@@ -314,22 +313,47 @@ export function useChannelMessages(channelId?: string) {
     if (!user || !channelId || !content.trim()) return;
     try {
       setSending(true);
-      // Try to encrypt content; fallback to plaintext
-      let payload = content;
-      let isEncrypted = false;
-      const encrypted = await encryptContent(content);
-      if (encrypted) {
-        payload = encrypted.ciphertext;
-        isEncrypted = true;
-      }
+      // Otimista: exibe imediatamente para o remetente (conteúdo em claro)
+      const optimistic: ChatMessage = {
+        id: `local-${crypto.randomUUID()}`,
+        channel_id: channelId,
+        sender_id: user.id,
+        content: content,
+        created_at: new Date().toISOString(),
+        is_encrypted: false,
+        attachment_path: null,
+        attachment_type: null,
+        isPending: true,
+      };
+      setMessages((prev) => [...prev, optimistic]);
       const { error } = await supabase
         .from('chat_messages')
-        .insert({ channel_id: channelId, sender_id: user.id, content: payload, is_encrypted: isEncrypted, organization_id: organizationId });
+        .insert({ channel_id: channelId, sender_id: user.id, content: content, organization_id: organizationId });
       if (error) throw error;
     } catch (err: any) {
-      toast({ title: 'Erro ao enviar mensagem', description: err.message, variant: 'destructive' });
+      toast({ title: 'Erro ao enviar mensagem', description: err.message || 'Falha ao enviar', variant: 'destructive' });
     } finally {
       setSending(false);
+    }
+  };
+
+  const emitTyping = async () => {
+    try {
+      const ch = realtimeChannelRef.current;
+      if (!ch || !user || !channelId) return;
+      await ch.send({ type: 'broadcast', event: 'typing', payload: { user_id: user.id, channel_id: channelId } });
+    } catch {
+      // ignore broadcast errors
+    }
+  };
+
+  const emitTypingStop = async () => {
+    try {
+      const ch = realtimeChannelRef.current;
+      if (!ch || !user || !channelId) return;
+      await ch.send({ type: 'broadcast', event: 'typing_stop', payload: { user_id: user.id, channel_id: channelId } });
+    } catch {
+      // ignore broadcast errors
     }
   };
 
@@ -338,17 +362,11 @@ export function useChannelMessages(channelId?: string) {
     try {
       setLoading(true);
       const before = oldestTs ?? new Date().toISOString();
-      const { data, error } = await supabase.rpc('get_channel_messages', { p_channel_id: channelId, p_before: before, p_limit: 20 });
+      const { data, error } = await supabase
+        .rpc('get_channel_messages_plain', { p_channel_id: channelId, p_before: before, p_limit: 20 });
       if (error) throw error;
       const rows = (data as any[]) || [];
-      const decrypted = await Promise.all(rows.map(async (m) => {
-        if (m.is_encrypted) {
-          const plain = await decryptContent(m.content);
-          return { ...m, content: plain ?? m.content } as ChatMessage;
-        }
-        return m as ChatMessage;
-      }));
-      setMessages((prev) => [...decrypted, ...prev]);
+      setMessages((prev) => [...rows, ...prev]);
       setHasMore(rows.length >= 20);
       setOldestTs(rows.length ? rows[rows.length - 1].created_at : oldestTs);
     } catch (err: any) {
@@ -402,11 +420,11 @@ export function useChannelMessages(channelId?: string) {
     return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
   }
 
-  return { messages, sendMessage, sending, loadOlder, hasMore, uploadAttachment };
+  return { messages, sendMessage, sending, loadOlder, hasMore, uploadAttachment, typingUsers, emitTyping, emitTypingStop };
 }
 
 // Hook: search members within the same organization
-export function useOrgMemberSearch(term: string) {
+export function useOrgMemberSearch(term: string, options?: { alwaysList?: boolean }) {
   const { organizationId } = useAuth();
   const { toast } = useToast();
   const [results, setResults] = useState<Array<{ id: string; email?: string | null; nome?: string | null }>>([]);
@@ -414,12 +432,14 @@ export function useOrgMemberSearch(term: string) {
 
   useEffect(() => {
     const run = async () => {
-      if (!organizationId || !term || term.trim().length < 2) { setResults([]); return; }
+      const alwaysList = !!options?.alwaysList;
+      if (!organizationId) { setResults([]); return; }
+      if (!alwaysList && (!term || term.trim().length < 2)) { setResults([]); return; }
       try {
         setLoading(true);
         // Use RPC to search members within org (handles RLS and filtering server-side)
         const { data, error } = await supabase
-          .rpc('search_org_members', { p_org_id: organizationId, p_term: term, p_limit: 20 });
+          .rpc('search_org_members', { p_org_id: organizationId, p_term: (term && term.trim().length >= 2) ? term : null, p_limit: 20 });
         if (error) throw error;
         setResults((data as any[]) || []);
       } catch (e: any) {
@@ -429,7 +449,7 @@ export function useOrgMemberSearch(term: string) {
       }
     };
     run();
-  }, [term, organizationId]);
+  }, [term, organizationId, options?.alwaysList]);
 
   return { results, loading };
 }

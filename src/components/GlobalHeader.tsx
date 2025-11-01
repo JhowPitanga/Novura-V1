@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
@@ -7,12 +7,34 @@ import { Bell, Users, BookOpen, MessageSquare, Hash, Image as ImageIcon, Papercl
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "react-router-dom";
-import { TeamChat } from "@/components/TeamChat";
+import { ChatTab } from "@/components/equipe/ChatTab";
+import { useChatChannels } from "@/hooks/useChat";
 
 export function GlobalHeader() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [notifTab, setNotifTab] = useState("novidades");
+  const { channels = [], directChannels = [], teamChannels = [] } = useChatChannels();
+  const [quickChannelId, setQuickChannelId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!quickChannelId) {
+      const first = (directChannels[0]?.id) || (teamChannels[0]?.id) || (channels[0]?.id) || null;
+      if (first) setQuickChannelId(first);
+    }
+  }, [channels, directChannels, teamChannels, quickChannelId]);
+
+  // Abrir drawer rápido ao receber evento do AppSidebar
+  useEffect(() => {
+    const handler = (e: any) => {
+      const chId = e?.detail?.channelId as string | undefined;
+      const fallback = (directChannels[0]?.id) || (teamChannels[0]?.id) || (channels[0]?.id) || null;
+      setQuickChannelId(chId || fallback);
+      setChatOpen(true);
+    };
+    window.addEventListener('chat:open-quick-drawer', handler);
+    return () => window.removeEventListener('chat:open-quick-drawer', handler);
+  }, [channels, directChannels, teamChannels]);
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 h-16 bg-white/90 backdrop-blur border-b border-gray-200 flex items-center px-4 sm:px-6 shadow-sm">
@@ -143,40 +165,37 @@ export function GlobalHeader() {
               </Button>
             </div>
 
-            {/* Lista de conversas/grupos ativos (resumo) */}
+            {/* Lista rápida de canais */}
             <div className="px-4 py-3 border-b bg-gradient-to-r from-gray-50 to-purple-50/30">
               <div className="flex items-center gap-2 text-sm text-gray-700">
                 <Hash className="w-4 h-4" />
-                Canais ativos: #logistica, #comercial, #marketing
+                <span className="mr-2">Canais:</span>
+                <div className="flex flex-wrap gap-2">
+                  {[...directChannels, ...teamChannels].slice(0, 6).map((ch) => (
+                    <button
+                      key={ch.id}
+                      className={`px-2 py-1 rounded-lg text-xs ${quickChannelId === ch.id ? 'bg-purple-600 text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                      onClick={() => setQuickChannelId(ch.id)}
+                    >
+                      {(ch.type === 'team' ? '#' : '@')}{ch.name || 'Direta'}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
-            {/* Chat Component */}
+            {/* Chat Component real */}
             <div className="flex-1 overflow-y-auto">
-              <TeamChat />
+              {quickChannelId ? (
+                <ChatTab channelId={quickChannelId} />
+              ) : (
+                <div className="p-6 text-sm text-gray-600">Selecione um canal acima para conversar rapidamente.</div>
+              )}
             </div>
 
-            {/* Barra de ações rápidas */}
-            <div className="p-4 border-t bg-white">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <span>Dicas: use </span>
-                  <Badge variant="outline" className="text-[10px]">#</Badge>
-                  <span>para mencionar pedido</span>
-                  <Badge variant="outline" className="ml-2 text-[10px]">@</Badge>
-                  <span>para mencionar pessoa</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" className="rounded-lg">
-                    <Paperclip className="w-4 h-4 mr-1" />
-                    Anexo
-                  </Button>
-                  <Button variant="outline" size="sm" className="rounded-lg">
-                    <ImageIcon className="w-4 h-4 mr-1" />
-                    Imagem
-                  </Button>
-                </div>
-              </div>
+            {/* Dicas de comandos */}
+            <div className="p-3 border-t bg-white text-xs text-gray-500">
+              Dicas: use <Badge variant="outline" className="text-[10px]">#</Badge> para módulos e <Badge variant="outline" className="text-[10px]">@</Badge> para pessoas.
             </div>
           </div>
         </DrawerContent>

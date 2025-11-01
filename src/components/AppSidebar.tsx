@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { 
   Home, 
   TrendingUp, 
@@ -62,6 +62,82 @@ const toolsModules: ModuleItem[] = [
 ];
 
 export function AppSidebar() {
+  const latestChannelRef = useRef<string | null>(null);
+  const [hasChatNotif, setHasChatNotif] = useState(false);
+  const [unreadTotal, setUnreadTotal] = useState<number>(0);
+  const [unreadMap, setUnreadMap] = useState<Record<string, number>>({});
+
+  // Efeito sonoro simples para nova mensagem
+  const playNotify = () => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.03, ctx.currentTime);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      setTimeout(() => { osc.stop(); ctx.close(); }, 180);
+    } catch {
+      // ignore audio errors
+    }
+  };
+
+  useEffect(() => {
+    setHasChatNotif(unreadTotal > 0);
+  }, [unreadTotal]);
+
+  useEffect(() => {
+    const onNewMsg = (e: any) => {
+      const detail = e?.detail || {};
+      const chId = detail?.channelId as string | undefined;
+      const module = (detail?.module as string | undefined) || 'equipe';
+      const incomingTotal = detail?.unreadTotal as number | undefined;
+      latestChannelRef.current = chId || null;
+      if (chId) sessionStorage.setItem('chat:lastReceivedChannelId', chId);
+      // Exibir dot apenas para módulo Equipe
+      if (module === 'equipe') setHasChatNotif(true);
+      // Se o payload já trouxer total não lido, atualiza badge imediatamente
+      if (typeof incomingTotal === 'number') {
+        setUnreadTotal(incomingTotal);
+      }
+      // Fallback: caso não venha total, busca agregado rapidamente
+      else {
+        (async () => {
+          try {
+            const { data } = await supabase
+              .from('chat_unread_counts')
+              .select('unread_count')
+              .eq('user_id', user?.id as string);
+            const total = (data as any[] || []).reduce((sum, r) => sum + ((r?.unread_count || 0) as number), 0);
+            setUnreadTotal(total);
+          } catch { /* noop */ }
+        })();
+      }
+      playNotify();
+    };
+    window.addEventListener('chat:message-received', onNewMsg);
+    return () => window.removeEventListener('chat:message-received', onNewMsg);
+  }, []);
+
+  // Agregado de não lidas vindo do módulo de chat
+  useEffect(() => {
+    const onTotal = (e: any) => {
+      const detail = e?.detail || {};
+      // Respeita origem: apenas atualiza quando vier do módulo Equipe
+      const source = (detail?.source as string | undefined) || 'equipe';
+      const total = detail?.total;
+      if (source !== 'equipe') return;
+      setUnreadTotal(typeof total === 'number' ? total : 0);
+    };
+    window.addEventListener('chat:unread-total', onTotal);
+    return () => window.removeEventListener('chat:unread-total', onTotal);
+  }, []);
+
+  // Carga inicial do agregado via Supabase (persistência)
+  // (movido para depois do useAuth para evitar TDZ com 'user')
   const { state } = useSidebar();
   const location = useLocation();
   const navigate = useNavigate();
@@ -70,6 +146,48 @@ export function AppSidebar() {
   const { user, signOut } = useAuth();
   const { hasModuleAccess, userRole } = usePermissions();
   const [dbName, setDbName] = useState<string | null>(null);
+
+  // Carga inicial do agregado via Supabase (persistência)
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        if (!user?.id) { if (mounted) setUnreadTotal(0); return; }
+        const { data, error } = await supabase
+          .from('chat_unread_counts')
+          .select('channel_id, unread_count')
+          .eq('user_id', user.id);
+        if (!error && data) {
+          const map: Record<string, number> = {};
+          (data as any[]).forEach((r) => { map[r.channel_id] = (r.unread_count || 0) as number; });
+          const total = Object.values(map).reduce((sum, n) => sum + (n || 0), 0);
+          if (mounted) { setUnreadMap(map); setUnreadTotal(total); }
+        }
+      } catch { if (mounted) setUnreadTotal(0); }
+    })();
+    return () => { mounted = false; };
+  }, [user?.id]);
+
+  // Assinatura em tempo real para atualizar badge quando chat_unread_counts mudar
+  useEffect(() => {
+    if (!user?.id) return;
+    const channel = supabase
+      .channel(`realtime-unread-sidebar-${user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_unread_counts', filter: `user_id=eq.${user.id}` }, (payload: any) => {
+        const row = (payload?.new || payload?.old || {}) as any;
+        const chId = row?.channel_id as string | undefined;
+        const count = (payload?.new?.unread_count ?? row?.unread_count ?? 0) as number;
+        if (!chId) return;
+        setUnreadMap(prev => {
+          const next = { ...prev, [chId]: count };
+          const total = Object.values(next).reduce((sum, n) => sum + (n || 0), 0);
+          setUnreadTotal(total);
+          return next;
+        });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user?.id]);
 
   useEffect(() => {
     let mounted = true;
@@ -161,12 +279,23 @@ export function AppSidebar() {
                               ? "bg-novura-primary text-white shadow-lg" // Cor padrão para ativo
                               : "text-gray-700 hover:bg-gray-100 hover:text-gray-900" // Cor de hover APENAS para inativo
                           }`}
+                          onClick={() => {
+                            if (item.url === '/equipe') {
+                              const chId = latestChannelRef.current || sessionStorage.getItem('chat:lastReceivedChannelId') || null;
+                              window.dispatchEvent(new CustomEvent('chat:open-quick-drawer', { detail: { channelId: chId } }));
+                              setHasChatNotif(false);
+                              sessionStorage.removeItem('chat:lastReceivedChannelId');
+                            }
+                          }}
                         >
                           <item.icon className={`w-5 h-5 flex-shrink-0 ${isCollapsed ? "mx-auto" : ""} ${
                             isActive(item.url) ? "text-white" : "text-gray-500 group-hover:text-gray-900"
                           }`} />
                           {!isCollapsed && (
                             <span className="font-medium text-sm">{item.title}</span>
+                          )}
+                          {item.url === '/equipe' && hasChatNotif && (
+                            <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full"></span>
                           )}
                         </NavLink>
                       </SidebarMenuButton>
@@ -203,6 +332,9 @@ export function AppSidebar() {
                           }`} />
                           {!isCollapsed && (
                             <span className="font-medium text-sm">{item.title}</span>
+                          )}
+                          {item.url === '/equipe' && unreadTotal > 0 && (
+                            <span className="absolute top-2 right-2 bg-red-500 text-white rounded-full text-xs min-w-[18px] h-5 px-1 flex items-center justify-center">{unreadTotal}</span>
                           )}
                         </NavLink>
                       </SidebarMenuButton>

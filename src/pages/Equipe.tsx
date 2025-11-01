@@ -1,7 +1,7 @@
 // Equipe.tsx (Código Completo Atualizado)
 
-import { useState } from "react";
-import { MessageSquare, Kanban, Plus, Users, Trophy, User, Target, Zap, Clock, Calendar, CheckSquare, Filter, ChevronDown, ListPlus, Search, MoreVertical } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { MessageSquare, Kanban, Plus, Users, Trophy, User, Target, Zap, Clock, Calendar, CheckSquare, Filter, ChevronDown, ListPlus, Search, MoreVertical, Check } from "lucide-react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
@@ -18,18 +18,19 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 // Importações para Task Management
 import { CreateTaskModal } from "@/components/equipe/CreateTaskModal";
 import { TaskBoard } from "@/components/equipe/TaskBoard"; // ATUALIZADO (Kanban)
-import { TaskBacklog } from "@/components/equipe/TaskBacklog";
-import { TaskRoadmap } from "@/components/equipe/TaskRoadmap";
-import { TaskViews } from "@/components/equipe/TaskViews"; 
+// Removido: Backlog, Roadmap e Views (não será utilizado)
 import { TaskDetailModal } from "@/components/equipe/TaskDetailModal"; // NOVO
 import { useChatChannels, useOrgMemberSearch } from "@/hooks/useChat";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogFooter } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select as UiSelect, SelectTrigger as UiSelectTrigger, SelectContent as UiSelectContent, SelectItem as UiSelectItem, SelectValue as UiSelectValue } from "@/components/ui/select";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 
 // --- INTERFACE DE TAREFA ---
 // Usar o tipo compartilhado do CreateTaskModal para garantir compatibilidade
 import type { Task, TaskPriority, TaskType, TaskStatus } from "@/components/equipe/CreateTaskModal";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 // --- DADOS MOCKADOS (Mantidos) ---
 const navigationItems = [
@@ -38,15 +39,7 @@ const navigationItems = [
     { title: "Gamificação", path: "/gamificacao", icon: Trophy, description: "Desempenho da equipe" },
 ];
 
-const initialTasks: Task[] = [
-    { id: 1, title: "Implementar API de pagamento", assignee: "Ana Silva", priority: "high", dueDate: "2024-01-20", type: "story", storyPoints: 8, status: "todo", sprint: "sprint-1", timeTracked: 120, labels: ["backend", "api"], dependencies: [] },
-    { id: 2, title: "Corrigir bug no checkout", assignee: "Carlos Lima", priority: "high", dueDate: "2024-01-18", type: "bug", storyPoints: 3, status: "doing", sprint: "sprint-1", timeTracked: 90, labels: ["frontend", "urgente"], dependencies: [] },
-    { id: 3, title: "Atualizar documentação", assignee: "Marina Costa", priority: "medium", dueDate: "2024-01-25", type: "task", storyPoints: 2, status: "todo", sprint: "sprint-1", timeTracked: 60, labels: ["docs"], dependencies: [] },
-    { id: 4, title: "Desenvolver dashboard analytics", assignee: "João Santos", priority: "high", dueDate: "2024-01-22", type: "epic", storyPoints: 13, status: "doing", sprint: "sprint-1", timeTracked: 300, labels: ["dashboard", "analytics"], dependencies: [1] },
-    { id: 5, title: "Otimizar performance mobile", assignee: "Ana Silva", priority: "medium", dueDate: "2024-01-24", type: "story", storyPoints: 5, status: "todo", sprint: "sprint-2", timeTracked: 45, labels: ["mobile", "performance"], dependencies: [] },
-    { id: 6, title: "Setup CI/CD pipeline", assignee: "Carlos Lima", priority: "medium", dueDate: "2024-01-15", type: "task", storyPoints: 8, status: "done", sprint: "sprint-1", timeTracked: 480, labels: ["devops", "ci/cd"], dependencies: [] },
-    { id: 7, title: "Implementar autenticação", assignee: "Marina Costa", priority: "high", dueDate: "2024-01-10", type: "story", storyPoints: 13, status: "done", sprint: "sprint-1", timeTracked: 360, labels: ["auth", "security"], dependencies: [] }
-];
+// Removido: dados mockados de tarefas; serão carregadas do Supabase
 
 const teamMembers = [
     { id: 1, name: "Ana Silva", role: "Desenvolvedora", avatar: "/placeholder.svg", points: 2850, level: 12, badges: ["🏆", "⚡", "🎯"], activities: { tasksCompleted: 45, packagesShipped: 0, codeReviews: 23, bugs: 8 } },
@@ -67,18 +60,170 @@ const ChatAvatar = ({ isGroup, color }: { isGroup: boolean, color: string }) => 
 // --- 1. MÓDULO CHAT (Design dos Anexos) ---
 function ChatModule() {
     const [searchTerm, setSearchTerm] = useState("");
+    const [showMemberDropdown, setShowMemberDropdown] = useState(false);
     const [showStarred, setShowStarred] = useState(true);
     const [showDMs, setShowDMs] = useState(true);
     const [showTeams, setShowTeams] = useState(true);
     const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
     const [createOpen, setCreateOpen] = useState(false);
     const [teamName, setTeamName] = useState("");
-    const [teamCategory, setTeamCategory] = useState("Geral");
+  // Removed teamCategory; groups now only have a name and member selection
     const [memberSearch, setMemberSearch] = useState("");
     const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
 
     const { channels = [], directChannels = [], teamChannels = [], toggleStar, deleteChannel, startDirectMessage, createTeam } = useChatChannels();
-    const { results: memberResults } = useOrgMemberSearch(memberSearch);
+    const { user, organizationId } = useAuth();
+    const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+    const [activeDisplayName, setActiveDisplayName] = useState<string | undefined>(undefined);
+    const allChannels = useMemo(() => [
+        ...(channels || []),
+        ...(directChannels || []),
+        ...(teamChannels || [])
+    ], [channels, directChannels, teamChannels]);
+    const activeChannel = useMemo(() => allChannels.find(c => c.id === activeChannelId) || null, [allChannels, activeChannelId]);
+    const { results: memberResults } = useOrgMemberSearch(memberSearch, { alwaysList: true });
+
+    // Total agregado de não lidas
+    const unreadTotal = useMemo(() => Object.values(unreadCounts).reduce((sum, n) => sum + (n || 0), 0), [unreadCounts]);
+
+    // Marcar canal como lido (estado + persistência via RPC)
+    const markChannelRead = (channelId: string) => {
+        setUnreadCounts(prev => {
+            if (!(channelId in prev)) return prev;
+            const next = { ...prev };
+            next[channelId] = 0;
+            return next;
+        });
+        // Persistência no Supabase (RPC usa auth.uid por padrão)
+        (async () => {
+            try {
+                await supabase.rpc('mark_channel_read', { p_channel_id: channelId });
+            } catch {}
+        })();
+    };
+
+    // Atualiza o nome exibido do canal ativo (DM mostra outro membro)
+    useEffect(() => {
+        let mounted = true;
+        (async () => {
+            try {
+                const ch: any = activeChannel;
+                if (!ch) { if (mounted) setActiveDisplayName(undefined); return; }
+                if (ch.type === 'team') {
+                    if (mounted) setActiveDisplayName(ch.name || 'Canal da Equipe');
+                    return;
+                }
+                // DM: resolver nome do outro membro
+                const members: string[] = Array.isArray(ch?.member_ids) ? ch.member_ids : [];
+                const otherId = members.find((id) => id !== user?.id);
+                if (!otherId) { if (mounted) setActiveDisplayName(ch.name || undefined); return; }
+                let nome: string | null = null;
+                let email: string | null = null;
+                try {
+                    const { data: profile } = await supabase
+                        .from('user_profiles')
+                        .select('id,nome,email')
+                        .eq('id', otherId)
+                        .single();
+                    if (profile) { nome = (profile as any).nome; email = (profile as any).email; }
+                } catch {}
+                if (!nome && !email && organizationId) {
+                    try {
+                        const { data: mems } = await supabase
+                            .rpc('search_org_members', { p_org_id: organizationId, p_term: null, p_limit: 200 });
+                        const found = (mems as any[])?.find((u) => u.id === otherId);
+                        nome = (found as any)?.nome ?? null; email = (found as any)?.email ?? null;
+                    } catch {}
+                }
+                if (mounted) setActiveDisplayName(nome || email || ch.name || undefined);
+            } catch { if (mounted) setActiveDisplayName((activeChannel as any)?.name); }
+        })();
+        return () => { mounted = false; };
+    }, [activeChannel, user, organizationId]);
+
+    // Carregar contadores persistidos no Supabase para o usuário
+    useEffect(() => {
+        let mounted = true;
+        (async () => {
+            if (!user?.id) return;
+            try {
+                const { data, error } = await supabase
+                    .from('chat_unread_counts')
+                    .select('channel_id, unread_count')
+                    .eq('user_id', user.id);
+                if (!error && data) {
+                    const map: Record<string, number> = {};
+                    (data as any[]).forEach((row) => { map[row.channel_id] = row.unread_count || 0; });
+                    if (mounted) setUnreadCounts(map);
+                }
+            } catch {}
+        })();
+        return () => { mounted = false; };
+    }, [user?.id, allChannels.length]);
+
+    // Ouvir novas mensagens e acumular não lidas em canais não ativos + persistência
+    useEffect(() => {
+        const handler = (ev: any) => {
+            const detail = ev?.detail || {};
+            const chId: string | undefined = detail?.channelId;
+            const msg = detail?.message || {};
+            if (!chId) return;
+            if (chId === activeChannelId) return; // canal ativo não acumula aqui
+            if (!!user && msg?.sender_id === user.id) return; // ignora próprias
+            let nextCount = 0;
+            setUnreadCounts(prev => {
+                nextCount = (prev[chId] || 0) + 1;
+                return { ...prev, [chId]: nextCount };
+            });
+            if (user?.id) {
+                try {
+                    supabase
+                        .from('chat_unread_counts')
+                        .upsert({ channel_id: chId, user_id: user.id, unread_count: nextCount }, { onConflict: 'channel_id,user_id' });
+                } catch {}
+            }
+        };
+        window.addEventListener('chat:message-received', handler as any);
+        return () => { window.removeEventListener('chat:message-received', handler as any); };
+    }, [activeChannelId, user]);
+
+    // Ouvir mudanças de não lidas do canal ativo (emitidas pelo ChatTab) e persistir
+    useEffect(() => {
+        const handler = (ev: any) => {
+            const { channelId, count } = ev?.detail || {};
+            if (!channelId || typeof count !== 'number') return;
+            setUnreadCounts(prev => ({ ...prev, [channelId]: count }));
+            // Persistência: quando zerar, chamar RPC para marcar lido (atualiza last_read_at)
+            if (count === 0) {
+                (async () => { try { await supabase.rpc('mark_channel_read', { p_channel_id: channelId }); } catch {} })();
+            }
+        };
+        window.addEventListener('chat:active-unread-changed', handler as any);
+        return () => { window.removeEventListener('chat:active-unread-changed', handler as any); };
+    }, [user?.id]);
+
+    // Assinar atualizações em tempo real de chat_unread_counts para este usuário
+    useEffect(() => {
+        if (!user?.id) return;
+        const channel = supabase
+            .channel(`realtime-unread-${user.id}`)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_unread_counts', filter: `user_id=eq.${user.id}` }, (payload: any) => {
+                const row = (payload?.new || payload?.old || {}) as any;
+                const chId = row?.channel_id;
+                // Preferir valor de new.unread_count quando disponível
+                const count = (payload?.new?.unread_count ?? row?.unread_count ?? 0) as number;
+                if (!chId) return;
+                setUnreadCounts(prev => ({ ...prev, [chId]: count }));
+            })
+            .subscribe();
+        return () => { supabase.removeChannel(channel); };
+    }, [user?.id]);
+
+    // Emitir total agregado para a barra lateral
+    useEffect(() => {
+        const total = Object.values(unreadCounts).reduce((sum, n) => sum + (n || 0), 0);
+        window.dispatchEvent(new CustomEvent('chat:unread-total', { detail: { total, source: 'equipe' } }));
+    }, [unreadCounts]);
 
     const filtered = (list: any[]) => list.filter(c => (c.name || 'Direta').toLowerCase().includes(searchTerm.toLowerCase()));
     const starred = filtered((channels || []).filter((c: any) => c.isStarred));
@@ -89,17 +234,63 @@ function ChatModule() {
         const isActive = ch.id === activeChannelId;
         const isGroup = ch.type === 'team';
         const color = isGroup ? 'purple' : 'gray';
+        const canDelete = !!user && ch?.created_by === user.id;
+        const [confirmOpen, setConfirmOpen] = useState(false);
+        const [otherName, setOtherName] = useState<string | null>(null);
+
+        useEffect(() => {
+            let mounted = true;
+            const loadOtherName = async () => {
+                if (isGroup) return;
+                const members: string[] = Array.isArray(ch?.member_ids) ? ch.member_ids : [];
+                const otherId = members.find((id) => id !== user?.id);
+                if (!otherId) return;
+                try {
+                    let nome: string | null = null;
+                    let email: string | null = null;
+                    const { data: profile, error: pErr } = await supabase
+                        .from('user_profiles')
+                        .select('id,nome,email')
+                        .eq('id', otherId)
+                        .single();
+                    if (!pErr && profile) { nome = (profile as any).nome; email = (profile as any).email; }
+                    if (!nome && !email && organizationId) {
+                        try {
+                            const { data: mems } = await supabase
+                                .rpc('search_org_members', { p_org_id: organizationId, p_term: null, p_limit: 200 });
+                            const found = (mems as any[])?.find((u) => u.id === otherId);
+                            nome = (found as any)?.nome ?? null; email = (found as any)?.email ?? null;
+                        } catch {}
+                    }
+                    if (mounted) setOtherName(nome || email || null);
+                } catch {}
+            };
+            loadOtherName();
+            return () => { mounted = false; };
+        }, [ch?.id, JSON.stringify(ch?.member_ids), user?.id, organizationId]);
         return (
             <div 
                 key={ch.id}
                 className={`flex items-center p-3 rounded-lg transition-colors cursor-pointer ${isActive ? 'bg-purple-50 border-l-4 border-purple-600' : 'hover:bg-gray-100'}`}
-                onClick={() => setActiveChannelId(ch.id)}
+                onClick={() => { 
+                    setActiveChannelId(ch.id);
+                    // Definir nome imediatamente sem fallback "Mensagem Direta" para evitar flicker
+                    const immediateName = isGroup ? (ch.name || 'Canal da Equipe') : (otherName || ch.name || '');
+                    setActiveDisplayName(immediateName);
+                    markChannelRead(ch.id);
+                }}
             >
                 <ChatAvatar isGroup={isGroup} color={color} />
                 <div className="flex-1 min-w-0">
-                    <h4 className="font-semibold text-gray-900 truncate">{ch.name || 'Mensagem Direta'}</h4>
+                    <h4 className="font-semibold text-gray-900 truncate">{isGroup ? (ch.name || 'Canal da Equipe') : (otherName || ch.name || '')}</h4>
                 </div>
-                <div className="ml-2">
+                <div className="ml-2 flex items-center gap-2">
+                    {/* Badge de não lidas por canal */}
+                    {!!unreadCounts[ch.id] && unreadCounts[ch.id] > 0 && (
+                        <Badge variant="secondary" className="bg-purple-600 text-white min-w-[22px] h-6 rounded-full px-2 flex items-center justify-center text-xs">
+                            {unreadCounts[ch.id]}
+                        </Badge>
+                    )}
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="text-gray-500 hover:bg-gray-100" onClick={(e) => e.stopPropagation()}>
@@ -110,12 +301,37 @@ function ChatModule() {
                             <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toggleStar(ch.id, !ch.isStarred); }}>
                                 {ch.isStarred ? 'Remover dos Estrelados' : 'Adicionar aos Estrelados'}
                             </DropdownMenuItem>
-                            <DropdownMenuItem className="text-red-600" onClick={(e) => { e.stopPropagation(); deleteChannel(ch.id); }}>
-                                Excluir conversa
+                            <DropdownMenuItem disabled={!canDelete} className={` ${canDelete ? 'text-red-600' : 'text-gray-400'} `} onClick={(e) => { e.stopPropagation(); if (canDelete) setConfirmOpen(true); }}>
+                                {canDelete ? 'Excluir conversa' : 'Apenas criador pode excluir'}
                             </DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
                 </div>
+                <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Excluir conversa?</AlertDialogTitle>
+                    </AlertDialogHeader>
+                    <p className="text-sm text-gray-600">Essa ação é irreversível. Confirme duas vezes para excluir.</p>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction onClick={async () => {
+                        // primeira confirmação
+                        setConfirmOpen(false);
+                        // segunda confirmação
+                        const again = window.confirm('Tem certeza? Esta é a segunda confirmação.');
+                        if (!again) return;
+                        const res = await deleteChannel(ch.id);
+                        if ((res as any)?.ok) {
+                          if (activeChannelId === ch.id) setActiveChannelId(null);
+                        } else {
+                          // opcional: feedback
+                          console.warn((res as any)?.error || 'Erro ao excluir');
+                        }
+                      }}>Confirmar</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
             </div>
         );
     };
@@ -128,7 +344,9 @@ function ChatModule() {
                     <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center space-x-2">
                             <span className="text-lg font-semibold text-gray-800">Mensagens</span>
-                            <Badge variant="secondary" className="bg-purple-100 text-purple-700">{(channels || []).length}</Badge>
+                            <Badge variant="secondary" className="bg-purple-600 text-white min-w-[22px] h-6 rounded-full px-2 flex items-center justify-center text-xs">
+                                {unreadTotal}
+                            </Badge>
                         </div>
                         <Button variant="ghost" size="icon" className="text-purple-600 hover:bg-purple-100" onClick={() => setCreateOpen(true)}>
                             <Plus className="w-5 h-5" />
@@ -136,14 +354,25 @@ function ChatModule() {
                     </div>
                     <div className="relative">
                         <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                        <Input placeholder="Encontre um DM ou Equipe" className="pl-9 h-9 bg-white border-gray-300 focus:border-purple-600" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-                        {(searchTerm.trim().length >= 2) && (
+                        <Input
+                          placeholder="Encontre um DM ou Equipe"
+                          className="pl-9 h-9 bg-white border-gray-300 focus:border-purple-600"
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          onFocus={() => setShowMemberDropdown(true)}
+                          onClick={() => setShowMemberDropdown(true)}
+                          onBlur={() => setTimeout(() => setShowMemberDropdown(false), 150)}
+                        />
+                        {showMemberDropdown && (
                             <div className="absolute z-10 mt-1 w-full bg-white border rounded-md shadow-sm max-h-56 overflow-auto">
-                                {memberResults.map((u: any) => (
-                                    <div key={u.id} className="px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer" onClick={async () => {
+                                {memberResults.filter((u: any) => u.id !== user?.id).map((u: any) => (
+                                    <div key={u.id} className="px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer" onMouseDown={async () => {
                                         const res = await startDirectMessage(u.id);
                                         if ((res as any)?.channelId) setActiveChannelId((res as any).channelId);
+                                        // Definir nome imediato ao iniciar DM
+                                        setActiveDisplayName(u.nome || u.email);
                                         setSearchTerm('');
+                                        setShowMemberDropdown(false);
                                     }}>
                                         {u.nome || u.email}
                                     </div>
@@ -200,7 +429,11 @@ function ChatModule() {
 
             <div className="flex-1 flex items-center justify-center w-full">
                 {activeChannelId ? (
-                    <ChatTab channelId={activeChannelId as string} />
+                    <ChatTab 
+                        channelId={activeChannelId as string} 
+                        channelName={activeDisplayName ?? (activeChannel as any)?.name} 
+                        channelType={(activeChannel as any)?.type}
+                    />
                 ) : (
                     <div className="flex flex-col items-center justify-center h-full w-full text-center text-gray-500 p-8">
                         <div className="w-40 h-40 bg-gray-100 rounded-full flex items-center justify-center mb-4">
@@ -215,26 +448,24 @@ function ChatModule() {
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogContent>
                 <DialogHeader>
-                    <DialogTitle>Criar Equipe</DialogTitle>
+                    <DialogTitle>Criar Grupo</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-3">
-                    <Input placeholder="Nome da equipe" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
-                    <UiSelect value={teamCategory} onValueChange={setTeamCategory}>
-                        <UiSelectTrigger className="w-full"><UiSelectValue placeholder="Categoria" /></UiSelectTrigger>
-                        <UiSelectContent>
-                            {['Logística','Comercial','Financeiro','Marketing','Geral'].map((c) => (
-                                <UiSelectItem key={c} value={c}>{c}</UiSelectItem>
-                            ))}
-                        </UiSelectContent>
-                    </UiSelect>
+                    <Input placeholder="Nome do grupo" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
                     <div>
-                        <Input placeholder="Buscar membros da organização" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
-                        <div className="mt-2 max-h-40 overflow-auto border rounded-md">
-                            {(memberResults || []).map((u: any) => {
+                        <Input placeholder="Buscar membros" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
+                        <div className="mt-2 max-h-40 overflow-auto border rounded-md divide-y">
+                            {(memberResults || []).filter((u: any) => u.id !== user?.id).map((u: any) => {
                                 const checked = selectedMembers.includes(u.id);
+                                const displayName = (u as any).nome || u.email || u.id;
                                 return (
-                                    <div key={u.id} className={`px-3 py-2 text-sm cursor-pointer ${checked ? 'bg-purple-50' : 'hover:bg-gray-50'}`} onClick={() => setSelectedMembers(prev => checked ? prev.filter(id => id !== u.id) : [...prev, u.id])}>
-                                        {(u as any).nome || u.email}
+                                    <div key={u.id} className={`flex items-center gap-3 px-3 py-2 text-sm cursor-pointer ${checked ? 'bg-purple-50' : 'hover:bg-gray-50'}`} onClick={() => setSelectedMembers(prev => checked ? prev.filter(id => id !== u.id) : [...prev, u.id])}>
+                                        <Avatar className="h-6 w-6">
+                                            <AvatarImage src={undefined as any} alt={displayName} />
+                                            <AvatarFallback>{(displayName || '').slice(0,2).toUpperCase()}</AvatarFallback>
+                                        </Avatar>
+                                        <span className="flex-1 truncate">{displayName}</span>
+                                        {checked && <Check className="w-4 h-4 text-purple-600" />}
                                     </div>
                                 );
                             })}
@@ -244,7 +475,7 @@ function ChatModule() {
                         <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancelar</Button>
                         <Button onClick={async () => {
                             if (!teamName.trim()) return;
-                            const res = await createTeam(teamName.trim(), teamCategory, selectedMembers);
+                            const res = await createTeam(teamName.trim(), selectedMembers);
                             if ((res as any)?.data?.id) {
                                 setActiveChannelId((res as any).data.id);
                             }
@@ -263,22 +494,207 @@ function ChatModule() {
 
 // --- 2. MÓDULO TASK (ATUALIZADO PARA KANBAN E MODAL) ---
 function TaskManagement() {
-    const [tasks, setTasks] = useState(initialTasks);
+    const [tasks, setTasks] = useState<Task[]>([]);
     const [currentTab, setCurrentTab] = useState("board");
-    const [currentView, setCurrentView] = useState("sprint-1"); 
+    const { organizationId, user } = useAuth();
+    const [createOpen, setCreateOpen] = useState(false);
+    const [memberMap, setMemberMap] = useState<Record<string, { nome?: string | null; email?: string | null }>>({});
+    const [taskExtras, setTaskExtras] = useState<Record<number, { assigned_to?: string | null; created_by?: string | null; visible_to_members?: string[] }>>({});
+
+    // Carregar tarefas reais do Supabase
+    async function loadTasks() {
+        if (!organizationId) return;
+        const { data, error } = await supabase
+            .from('tasks')
+            .select('id,title,priority,type,status,due_date,time_tracked,labels,dependencies,assigned_to,created_by,visible_to_members')
+            .eq('organizations_id', organizationId)
+            .order('created_at', { ascending: false });
+        if (error) {
+            console.error('Erro ao carregar tasks:', error.message);
+            return;
+        }
+        const mapped: Task[] = (data || []).map((row: any) => {
+            const primaryName = (row.assigned_to && (memberMap[row.assigned_to]?.nome || memberMap[row.assigned_to]?.email)) || '';
+            const addNames = (row.visible_to_members || []).map((id: string) => (memberMap[id]?.nome || memberMap[id]?.email)).filter(Boolean);
+            const startLabel = (row.labels || []).find((l: string) => typeof l === 'string' && l.startsWith('start:'));
+            const startDate = startLabel ? (startLabel as string).split(':')[1] : undefined;
+            return {
+                id: row.id,
+                title: row.title,
+                assignee: primaryName,
+                assignees: [primaryName, ...addNames].filter(Boolean),
+                priority: (row.priority ?? 'medium') as TaskPriority,
+                dueDate: row.due_date ?? '',
+                startDate,
+                type: (row.type ?? 'task') as TaskType,
+                storyPoints: 0,
+                status: (row.status ?? 'todo') as TaskStatus,
+                timeTracked: row.time_tracked ?? 0,
+                labels: row.labels ?? [],
+                dependencies: row.dependencies ?? [],
+            } as Task;
+        });
+        const extras: Record<number, { assigned_to?: string | null; created_by?: string | null; visible_to_members?: string[] }> = {};
+        for (const row of (data || [])) {
+            extras[row.id] = {
+                assigned_to: row.assigned_to || null,
+                created_by: row.created_by || null,
+                visible_to_members: row.visible_to_members || [],
+            };
+        }
+        setTaskExtras(extras);
+        setTasks(mapped);
+    }
+
+    // Inicialização
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => { loadTasks(); }, [organizationId, memberMap]);
+
+    // Carregar mapa de membros para resolver nomes/emails
+    useEffect(() => {
+        const loadMembers = async () => {
+            if (!organizationId) return;
+            const { data, error } = await supabase
+                .rpc('search_org_members', { p_org_id: organizationId, p_term: null, p_limit: 200 });
+            if (error) {
+                console.error('Erro ao carregar membros:', error.message);
+                return;
+            }
+            const map: Record<string, { nome?: string | null; email?: string | null }> = {};
+            for (const u of (data as any[]) || []) {
+                map[u.id] = { nome: (u as any).nome, email: u.email };
+            }
+            setMemberMap(map);
+        };
+        loadMembers();
+    }, [organizationId]);
 
     // NOVO ESTADO: Para gerenciar a abertura/dados do modal de detalhe
     const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
-    const [selectedTaskDetail, setSelectedTaskDetail] = useState<Task | null>(null);
+    const [selectedTaskDetail, setSelectedTaskDetail] = useState<any | null>(null);
 
-    const handleCreateTask = (newTask: Task) => {
-        setTasks(prev => [...prev, { ...newTask, id: Date.now(), status: 'todo' }]);
+    const handleCreateTask = async (newTask: Task & { visibility?: 'private'|'team'|'members', visibleMemberIds?: string[], assignedToId?: string | null }) => {
+        if (!organizationId || !user?.id) return;
+        const { data, error } = await supabase
+            .from('tasks')
+            .insert({
+                organizations_id: organizationId,
+                created_by: user.id,
+                assigned_to: (newTask as any).assignedToId || null,
+                title: newTask.title,
+                description: null,
+                priority: newTask.priority,
+                type: newTask.type,
+                status: newTask.status ?? 'todo',
+                due_date: newTask.dueDate ? newTask.dueDate : null,
+                time_tracked: newTask.timeTracked ?? 0,
+                labels: newTask.labels ?? [],
+                dependencies: newTask.dependencies ?? [],
+                visibility: newTask.visibility ?? 'team',
+                visible_to_members: newTask.visibleMemberIds ?? [],
+            })
+            .select();
+        if (error) {
+            console.error('Erro ao criar task:', error.message);
+            return;
+        }
+        await loadTasks();
+        setCreateOpen(false);
     };
 
-    const handleUpdateTask = (taskId: number, updates: Partial<Task>) => {
-        setTasks(prev => prev.map(task => 
-            task.id === taskId ? { ...task, ...updates } : task
-        ));
+    // Alternar co-responsáveis (persistir em visible_to_members)
+    const handleToggleCoAssignee = async (taskId: number, member: { id: string, name: string }) => {
+        const extras = taskExtras[taskId] || { visible_to_members: [] };
+        const current = Array.isArray(extras.visible_to_members) ? extras.visible_to_members : [];
+        const exists = current.includes(member.id);
+        const next = exists ? current.filter(m => m !== member.id) : [...current, member.id];
+        const { error } = await supabase
+            .from('tasks')
+            .update({ visible_to_members: next })
+            .eq('id', taskId);
+        if (error) {
+            console.error('Erro ao alternar co-responsável:', error.message);
+            return;
+        }
+        await loadTasks();
+    };
+
+    const handleUpdateTask = async (taskId: number, updates: Partial<Task>) => {
+        // Atualização otimista na UI
+        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, ...updates } : task));
+        // Persistir no Supabase (apenas campos relevantes)
+        try {
+            if (!organizationId) return;
+            const payload: any = {};
+            if (typeof updates.status !== 'undefined') payload.status = updates.status;
+            if (typeof updates.priority !== 'undefined') payload.priority = updates.priority;
+            if (typeof updates.type !== 'undefined') payload.type = updates.type;
+            if (typeof updates.dueDate !== 'undefined') payload.due_date = updates.dueDate || null;
+
+            // Manter/atualizar label de start date e mesclar com alterações de labels
+            const currentTask = tasks.find(t => t.id === taskId);
+            const currentLabels: string[] = currentTask?.labels || [];
+            let newLabels: string[] = [...currentLabels];
+            const hasStartUpdate = Object.prototype.hasOwnProperty.call(updates, 'startDate');
+            if (hasStartUpdate) {
+                newLabels = newLabels.filter(l => !String(l).startsWith('start:'));
+                if (updates.startDate) newLabels.push(`start:${updates.startDate}`);
+            }
+            if (typeof updates.labels !== 'undefined') {
+                // Mescla rótulos vindos da UI (ex.: urgent) com o start:
+                const startOnly = newLabels.filter(l => String(l).startsWith('start:'));
+                newLabels = Array.from(new Set([...(updates.labels || []), ...startOnly]));
+            }
+            if (hasStartUpdate || typeof updates.labels !== 'undefined') {
+                payload.labels = newLabels;
+            }
+            if (Object.keys(payload).length === 0) return; // nada para persistir
+
+            const { error } = await supabase
+                .from('tasks')
+                .update(payload)
+                .eq('id', taskId)
+                .eq('organizations_id', organizationId);
+            if (error) throw error;
+        } catch (e: any) {
+            console.error('Erro ao atualizar task:', e.message || e);
+            await loadTasks();
+        }
+    };
+
+    const handleAssignTask = async (taskId: number, assignee: { id: string, name: string }) => {
+        // Atualização otimista
+        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, assignee: assignee.name } : task));
+        setTaskExtras(prev => ({ ...prev, [taskId]: { ...(prev[taskId] || {}), assigned_to: assignee.id } }));
+        try {
+            if (!organizationId) return;
+            const { error } = await supabase
+                .from('tasks')
+                .update({ assigned_to: assignee.id })
+                .eq('id', taskId)
+                .eq('organizations_id', organizationId);
+            if (error) throw error;
+        } catch (e: any) {
+            console.error('Erro ao atribuir responsável:', e.message || e);
+            await loadTasks();
+        }
+    };
+
+    const handleDeleteTask = async (taskId: number) => {
+        try {
+            if (!organizationId) return;
+            const { error } = await supabase
+                .from('tasks')
+                .delete()
+                .eq('id', taskId)
+                .eq('organizations_id', organizationId);
+            if (error) throw error;
+            setTasks(prev => prev.filter(t => t.id !== taskId));
+            setTaskExtras(prev => { const copy = { ...prev }; delete copy[taskId]; return copy; });
+        } catch (e: any) {
+            console.error('Erro ao excluir task:', e.message || e);
+            await loadTasks();
+        }
     };
 
     const handleStartTimer = (taskId: number) => { console.log(`Timer iniciado para tarefa ${taskId}`); };
@@ -286,7 +702,10 @@ function TaskManagement() {
 
     // NOVA FUNÇÃO: Abre o modal e define a tarefa selecionada
     const handleOpenTaskDetail = (task: Task) => {
-        setSelectedTaskDetail(task);
+        const extras = taskExtras[task.id] || {};
+        const creatorName = extras.created_by ? (memberMap[extras.created_by]?.nome || memberMap[extras.created_by]?.email) : undefined;
+        const participantNames = (extras.visible_to_members || []).map((id) => (memberMap[id]?.nome || memberMap[id]?.email)).filter(Boolean);
+        setSelectedTaskDetail({ ...task, creatorName, participantNames });
         setIsDetailModalOpen(true);
     };
 
@@ -296,89 +715,42 @@ function TaskManagement() {
     };
 
     return (
-        <div className="space-y-4">
-            {/* Header de Gerenciamento de Tarefas */}
-            <div className="bg-white p-4 rounded-lg shadow-sm flex items-center justify-between border">
-                {/* Seleção de Projeto/Sprint (View Context) */}
-                <div className="flex items-center space-x-3">
-                    <h2 className="text-xl font-bold text-gray-900">Novura ERP V2</h2> {/* Nome do projeto do anexo */}
-                    <Select value={currentView} onValueChange={setCurrentView}>
-                        <SelectTrigger className="w-40 text-sm font-medium border-purple-300 bg-purple-50 text-purple-700">
-                            <ListPlus className="w-4 h-4 mr-2" />
-                            <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="sprint-1">Sprint 1 (Atual)</SelectItem>
-                            <SelectItem value="sprint-2">Sprint 2</SelectItem>
-                            <SelectItem value="backlog-geral">Backlog Geral</SelectItem>
-                        </SelectContent>
-                    </Select>
-                </div>
-                
-                {/* Botões de Ação */}
-                <div className="flex items-center space-x-3">
-                    <Button variant="outline" className="text-gray-700 hover:bg-gray-100">
-                        <Filter className="w-4 h-4 mr-2" /> Filtros
-                    </Button>
-                    {/* O modal de criação de tarefa precisa ser atualizado para usar a interface 'Task' */}
-                    <CreateTaskModal onCreateTask={handleCreateTask} /> 
-                </div>
-            </div>
+        <div className="space-y-2">
+            {/* Modal de criação controlado externamente; sem cabeçalho extra */}
+            <CreateTaskModal onCreateTask={handleCreateTask} openExternal={createOpen} onOpenChange={setCreateOpen} showDefaultTrigger={false} />
 
-            {/* Abas de Visualização (Board, Backlog, Roadmap, etc) */}
+            {/* Abas de Visualização (somente Quadro/Kanban) */}
             <Tabs value={currentTab} onValueChange={setCurrentTab} className="w-full">
-                <TabsList className="bg-white border w-full justify-start h-12">
+                <TabsList className="bg-white border w-full justify-start h-11">
                     <TabsTrigger value="board" className="font-semibold text-gray-700 data-[state=active]:bg-purple-100 data-[state=active]:text-purple-800">
                         <Kanban className="w-4 h-4 mr-2" /> Quadro
                     </TabsTrigger>
-                    <TabsTrigger value="backlog" className="font-semibold text-gray-700 data-[state=active]:bg-purple-100 data-[state=active]:text-purple-800">
-                        <Calendar className="w-4 h-4 mr-2" /> Backlog & Sprints
-                    </TabsTrigger>
-                    <TabsTrigger value="roadmap" className="font-semibold text-gray-700 data-[state=active]:bg-purple-100 data-[state=active]:text-purple-800">
-                        <Target className="w-4 h-4 mr-2" /> Roadmap
-                    </TabsTrigger>
-                    <TabsTrigger value="views" className="font-semibold text-gray-700 data-[state=active]:bg-purple-100 data-[state=active]:text-purple-800">
-                        <ListPlus className="w-4 h-4 mr-2" /> Outras Views
-                    </TabsTrigger>
                 </TabsList>
 
-                <TabsContent value="board" className="pt-4 h-[calc(100vh-280px)]"> 
+                <TabsContent value="board" className="pt-0 h-[calc(100vh-240px)]">
                     {/* O TaskBoard agora é a visualização Kanban */}
                     <TaskBoard 
-                        tasks={tasks.filter(t => t.sprint === currentView)} // Filtra por Sprint/View
-                        onUpdateTask={handleUpdateTask}
-                        onStartTimer={handleStartTimer}
-                        onStopTimer={handleStopTimer}
-                        onOpenTaskDetail={handleOpenTaskDetail} // Passa a nova função para abrir o modal
-                    />
-                </TabsContent>
-
-                <TabsContent value="backlog" className="pt-4">
-                    <TaskBacklog 
-                        tasks={tasks}
-                        onUpdateTask={handleUpdateTask}
-                    />
-                </TabsContent>
-
-                <TabsContent value="roadmap" className="pt-4">
-                    <TaskRoadmap tasks={tasks} />
-                </TabsContent>
-
-                <TabsContent value="views" className="pt-4">
-                    <TaskViews 
                         tasks={tasks}
                         onUpdateTask={handleUpdateTask}
                         onStartTimer={handleStartTimer}
                         onStopTimer={handleStopTimer}
+                        onOpenTaskDetail={handleOpenTaskDetail}
+                        onAddTask={() => setCreateOpen(true)}
+                        onCreateTask={handleCreateTask}
+                        onDeleteTask={handleDeleteTask}
+                        onAssignTask={handleAssignTask}
+                        onToggleCoAssignee={handleToggleCoAssignee}
                     />
                 </TabsContent>
             </Tabs>
 
-            {/* Modal de Detalhes da Tarefa (NOVO) */}
+            {/* Modal de Detalhes da Tarefa */}
             <TaskDetailModal 
                 task={selectedTaskDetail} 
                 isOpen={isDetailModalOpen} 
-                onClose={handleCloseTaskDetail} 
+                onClose={handleCloseTaskDetail}
+                onUpdateTask={handleUpdateTask}
+                onToggleParticipant={(taskId, member) => handleToggleCoAssignee(taskId, member)}
             />
         </div>
     );

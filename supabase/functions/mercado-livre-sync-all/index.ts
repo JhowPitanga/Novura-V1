@@ -5,7 +5,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 function jsonResponse(body: any, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
+    headers: {   
       "content-type": "application/json",
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "POST, OPTIONS",
