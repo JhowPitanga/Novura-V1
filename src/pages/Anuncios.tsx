@@ -53,11 +53,15 @@ export default function Anuncios() {
 
     // Helper para colorização do medidor por nível de qualidade
     const getQualityStrokeColor = (level?: string | null) => {
-        const s = String(level || '').toLowerCase();
-        if (s.includes('prof')) return '#7C3AED'; // roxo Novura
-        if (s.includes('satis')) return '#F59E0B'; // âmbar
-        if (s.includes('bás') || s.includes('bas')) return '#EF4444'; // vermelho
-        return '#6B7280'; // cinza
+        const s = String(level || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '');
+        // Priorizar correspondências específicas para evitar colisões de substring
+        if (s.includes('bas')) return '#EF4444'; // vermelho (básica)
+        if (s.includes('satis')) return '#F59E0B'; // âmbar (satisfatória)
+        if (s.includes('prof')) return '#7C3AED'; // roxo Novura (profissional)
+        return '#6B7280'; // cinza (desconhecido)
     };
 
     const loadItems = async () => {
@@ -1144,22 +1148,26 @@ export default function Anuncios() {
                                                                                 <path
                                                                                     d={`M12,46 A30,30 0 0,1 72,46`}
                                                                                     fill="none"
-                                                                                    stroke="#7C3AED"
+                                                                                    stroke={getQualityStrokeColor(ad.qualityLevel)}
                                                                                     strokeWidth="8"
                                                                                     strokeLinecap="round"
                                                                                     strokeDasharray={`${dash} ${remain}`}
                                                                                 />
                                                                             );
                                                                         })()}
-                                                                        <text x="42" y="35" textAnchor="middle" dominantBaseline="middle" fontSize="14" fill="#7C3AED" fontWeight="700">
+                                                                        <text x="42" y="35" textAnchor="middle" dominantBaseline="middle" fontSize="14" fill={getQualityStrokeColor(ad.qualityLevel)} fontWeight="700">
                                                                             {Math.max(0, Math.min(100, Number(ad.quality) || 0))}
                                                                         </text>
                                                                     </svg>
                                                                     {ad.qualityLevel && (() => {
                                                                         const raw = String(ad.qualityLevel || '').toLowerCase();
                                                                         const label = raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
+                                                                        const labelColor = getQualityStrokeColor(ad.qualityLevel);
                                                                         return (
-                                                                            <div className="mt-1 px-2 py-0.5 text-[10px] leading-4 border-2 border-[#7C3AED] text-[#7C3AED] rounded-full">
+                                                                            <div
+                                                                                className="mt-1 px-2 py-0.5 text-[10px] leading-4 border-2 rounded-full"
+                                                                                style={{ borderColor: labelColor, color: labelColor }}
+                                                                            >
                                                                                 {label}
                                                                             </div>
                                                                         );
