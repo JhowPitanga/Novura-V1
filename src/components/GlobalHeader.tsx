@@ -38,15 +38,19 @@ export function GlobalHeader() {
 
   return (
     <>
-    <header className="fixed top-0 left-0 right-0 z-50 h-[58px] bg-white/90 backdrop-blur border-b border-gray-200 flex items-center px-4 sm:px-6 shadow-sm rounded-b-xl">
+    <header className="fixed top-0 left-0 right-0 z-50 8px50g-white/90 backdrop-blur border-b border-gray-200 flex items-center px-4 sm:px-6 shadow-sm rounded-b-xl">
       {/* SidebarTrigger removido para evitar dependência de provider */}
       <div className="flex-1 flex items-center justify-between">
         {/* Left: Brand / Title */}
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-novura-primary to-purple-600 text-white flex items-center justify-center shadow">
-            <span className="text-sm font-semibold">N</span>
-          </div>
-          <h1 className="text-base sm:text-lg font-semibold text-gray-900">Novura ERP Hub</h1>
+        <div className="flex items-center space-x-5">
+          <Link to="/" aria-label="Ir para Início" title="Ir para Início" className="flex items-center">
+            <img
+              src="/novura-logo.svg"
+              alt="Novura logo"
+              className="h-[180px68ursor-pointer select-none transition-transform duration-200 ease-out hover:scale-[1.02] hover:opacity-90 active:scale-[0.98]"
+              style={{ width: "calc(var(--sidebar-width) / 2)" }}
+            />
+          </Link>
         </div>
 
         {/* Right: Actions */}

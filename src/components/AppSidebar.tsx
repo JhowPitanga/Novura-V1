@@ -29,7 +29,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
 import { NavUser } from "@/components/NavUser";
@@ -269,13 +268,9 @@ export function AppSidebar() {
         collapsible="icon"
         variant="inset"
       >
-        <SidebarContent className="bg-white flex flex-col h-full"> 
+        <SidebarContent className="bg-white flex flex-col h-full pt-[50px]"> 
           
-          {/* Header APENAS com o Botão de Compactar */}
-          {/* Botão de Compactar visível em todas as telas */}
-          <div className={`p-4 border-b border-gray-100 flex items-center ${isCollapsed ? 'justify-center' : 'justify-end'}`}>
-            <SidebarTrigger className="h-8 w-8 rounded-full bg-gray-100 text-gray-700 hover:bg-gray-200" icon={ChevronLeft} />
-          </div>
+          {/* Barra superior removida: sem espaçamento e sem botão de compactar */}
           
           {/* Conteúdo com rolagem (Módulos) */}
           {/* Adicionada classe customizada para o scroll overlay */}

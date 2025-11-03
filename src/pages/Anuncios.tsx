@@ -927,7 +927,7 @@ export default function Anuncios() {
 
                                     <div className="mt-2 flex items-center justify-between">
                                         <label className="flex items-center space-x-2">
-                                            <Checkbox checked={isAllSelected} onCheckedChange={toggleSelectAll} />
+                                            <Checkbox size="md" indicatorStyle="square" checked={isAllSelected} onCheckedChange={toggleSelectAll} />
                                             <span className="text-sm text-gray-700">Selecionar todos</span>
                                         </label>
                                         {selectedItems.size > 0 && (
@@ -947,28 +947,31 @@ export default function Anuncios() {
                                                 
                                                 return (
                                                 <div key={ad.id} className="relative bg-white border border-gray-200 rounded-lg">
-                                                    <div className="grid grid-cols-12 gap-4 items-center p-5">
+                                                    <div className="grid grid-cols-12 gap-y-4 gap-x-2 items-center p-5">
                                                         
-                                                        {/* Checkbox + Botão de Variações */}
-                                                        <div className="col-span-1 flex flex-col items-start space-y-1 -ml-3">
-                                                            <Checkbox
-                                                                checked={selectedItems.has(ad.id)}
-                                                                onCheckedChange={() => toggleItemSelection(ad.id)}
-                                                            />
-                                                            {hasVariations && (
-                                                                <Button
-                                                                    variant="ghost"
-                                                                    size="icon"
-                                                                    onClick={() => toggleVariationsExpansion(ad.id)}
-                                                                    className="h-6 w-6 p-0 self-start text-novura-primary rounded-full hover:bg-purple-50"
-                                                                >
-                                                                    <ChevronDownIcon className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                                                                </Button>
-                                                            )}
-                                                        </div>
+                                                    {/* Coluna de seleção e variações (checkbox acima da seta) */}
+                                                    <div className="col-span-1 flex flex-col items-start space-y-2 -ml-1">
+                                                        <Checkbox
+                                                            size="md"
+                                                            indicatorStyle="square"
+                                                            checked={selectedItems.has(ad.id)}
+                                                            onCheckedChange={() => toggleItemSelection(ad.id)}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                        />
+                                                        {hasVariations && (
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                onClick={() => toggleVariationsExpansion(ad.id)}
+                                                                className="h-6 w-6 p-0 self-start text-novura-primary rounded-full hover:bg-purple-50"
+                                                            >
+                                                                <ChevronDownIcon className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                                                            </Button>
+                                                        )}
+                                                    </div>
                                                         
                                                         {/* Coluna do Anúncio */}
-                                                        <div className="flex items-start space-x-4 col-span-3 -ml-3">
+                                                        <div className="flex items-start space-x-4 col-span-3 -ml-2">
                                                             <img
                                                                 src={ad.image}
                                                                 alt={ad.title}
@@ -976,7 +979,9 @@ export default function Anuncios() {
                                                             />
                                                             <div className="flex flex-col h-full justify-between min-w-0">
                                                                 <div className="max-w-full">
-                                                                    <div className="font-semibold text-base text-gray-900 break-words whitespace-normal">{ad.title}</div>
+                                                                    <div className="flex items-center">
+                                                                        <div className="font-semibold text-base text-gray-900 break-words whitespace-normal">{ad.title}</div>
+                                                                    </div>
                                                                 </div>
                                                                 <div className="mt-2 text-sm text-gray-500">
                                                                     <div className="flex items-center space-x-1">
