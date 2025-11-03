@@ -37,7 +37,8 @@ export function GlobalHeader() {
   }, [channels, directChannels, teamChannels]);
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 h-16 bg-white/90 backdrop-blur border-b border-gray-200 flex items-center px-4 sm:px-6 shadow-sm">
+    <>
+    <header className="fixed top-0 left-0 right-0 z-50 h-[58px] bg-white/90 backdrop-blur border-b border-gray-200 flex items-center px-4 sm:px-6 shadow-sm rounded-b-xl">
       {/* SidebarTrigger removido para evitar dependência de provider */}
       <div className="flex-1 flex items-center justify-between">
         {/* Left: Brand / Title */}
@@ -201,5 +202,8 @@ export function GlobalHeader() {
         </DrawerContent>
       </Drawer>
     </header>
+    {/* Spacer para empurrar conteúdo abaixo do header fixo */}
+    <div className="h-[58px]" />
+    </>
   );
 }

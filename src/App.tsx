@@ -8,6 +8,10 @@ import { AuthProvider } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { RestrictedRoute } from "@/components/RestrictedRoute";
 import { Suspense, lazy } from "react";
+import { SidebarProvider } from "@/components/ui/sidebar";
+import { AppSidebar } from "@/components/AppSidebar";
+import { GlobalHeader } from "@/components/GlobalHeader";
+import { Loader2 } from "lucide-react";
 const Index = lazy(() => import("./pages/Index"));
 const Desempenho = lazy(() => import("./pages/Desempenho"));
 const PesquisaMercado = lazy(() => import("./pages/PesquisaMercado"));
@@ -34,6 +38,24 @@ const MercadoLivreCallback = lazy(() => import("./pages/MercadoLivreCallback"));
 const ConviteAceito = lazy(() => import("./pages/ConviteAceito"));
 
 const queryClient = new QueryClient();
+
+// Fallback de carregamento para módulos protegidos mantendo o Sidebar fixo
+const ModuleLoadingFallback = () => (
+  <SidebarProvider>
+    <div className="min-h-screen flex w-full bg-gray-50">
+      <AppSidebar />
+      <div className="flex-1 flex flex-col">
+        <GlobalHeader />
+        <main className="flex-1 p-6 overflow-auto flex items-center justify-center">
+          <div className="text-center">
+            <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
+            <p className="text-gray-600">Carregando módulo...</p>
+          </div>
+        </main>
+      </div>
+    </div>
+  </SidebarProvider>
+);
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -81,7 +103,7 @@ const App = () => (
               path="/"
               element={
                 <ProtectedRoute>
-                  <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                  <Suspense fallback={<ModuleLoadingFallback />}>
                     <Index />
                   </Suspense>
                 </ProtectedRoute>
@@ -92,7 +114,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="desempenho" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <Desempenho />
                     </Suspense>
                   </RestrictedRoute>
@@ -104,7 +126,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="pesquisa_mercado" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <PesquisaMercado />
                     </Suspense>
                   </RestrictedRoute>
@@ -116,7 +138,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="produtos" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <Produtos />
                     </Suspense>
                   </RestrictedRoute>
@@ -128,7 +150,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <Anuncios />
                     </Suspense>
                   </RestrictedRoute>
@@ -140,7 +162,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="recursos_seller" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <RecursosSeller />
                     </Suspense>
                   </RestrictedRoute>
@@ -152,7 +174,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="recursos_seller" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <ProductDetailsPage />
                     </Suspense>
                   </RestrictedRoute>
@@ -164,7 +186,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="equipe" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <Equipe />
                     </Suspense>
                   </RestrictedRoute>
@@ -176,7 +198,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="aplicativos" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <Aplicativos />
                     </Suspense>
                   </RestrictedRoute>
@@ -188,7 +210,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="sac" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <SAC />
                     </Suspense>
                   </RestrictedRoute>
@@ -200,7 +222,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="pedidos" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <Pedidos />
                     </Suspense>
                   </RestrictedRoute>
@@ -212,7 +234,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="estoque" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <Estoque />
                     </Suspense>
                   </RestrictedRoute>
@@ -224,7 +246,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="notas_fiscais" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <NotasFiscais />
                     </Suspense>
                   </RestrictedRoute>
@@ -236,7 +258,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="configuracoes" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <Configuracoes />
                     </Suspense>
                   </RestrictedRoute>
@@ -248,7 +270,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="notas_fiscais" actions={["create","edit","view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <NovaEmpresa />
                     </Suspense>
                   </RestrictedRoute>
@@ -260,7 +282,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="novura_academy" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <NovuraAcademy />
                     </Suspense>
                   </RestrictedRoute>
@@ -272,7 +294,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="comunidade" actions={["view"]}>
-                    <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
                       <Comunidade />
                     </Suspense>
                   </RestrictedRoute>

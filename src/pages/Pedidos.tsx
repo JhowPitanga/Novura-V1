@@ -2065,7 +2065,7 @@ function Pedidos() {
     const statusBlocks = [
         { id: "todos", title: "Todos os Pedidos", count: (statusCountsGlobal?.['todos'] ?? (totalPedidosCount ?? baseFiltered.length)), description: "Sincronizados com marketplaces" },
         { id: "a-vincular", title: "A Vincular", count: (statusCountsGlobal?.['a-vincular'] ?? baseFiltered.filter(p => p.status === 'A vincular').length), description: "Pedidos sem vínculo de SKU" },
-        { id: "emissao-nf", title: "Emissão de NF", count: baseFiltered.filter(p => p.status === 'Emissao NF').length, description: "Aguardando emissão" },
+        { id: "emissao-nf", title: "Emissão de NFe", count: baseFiltered.filter(p => p.status === 'Emissao NF').length, description: "Aguardando emissão" },
         { id: "impressao", title: "Impressão", count: baseFiltered.filter(p => p.status === 'NF Emitida').length, description: "NF e etiqueta" },
         { id: "aguardando-coleta", title: "Aguardando Coleta", count: (statusCountsGlobal?.['aguardando-coleta'] ?? baseFiltered.filter(p => p.status === 'Aguardando Coleta').length), description: "Prontos para envio" },
         { id: "enviado", title: "Enviado", count: (statusCountsGlobal?.['enviado'] ?? baseFiltered.filter(p => p.status === 'Enviado').length), description: "Pedidos em trânsito" },
@@ -2096,7 +2096,7 @@ function Pedidos() {
 
     return (
         <TooltipProvider>
-            <SidebarProvider defaultOpen={false}>
+          <SidebarProvider>
                 <div className="min-h-screen flex w-full bg-gray-50">
                     <AppSidebar />
                     <div className="flex-1 flex flex-col">
@@ -2142,7 +2142,7 @@ function Pedidos() {
                                 })()}
                             </div>
 
-                            <div className="grid grid-cols-7 gap-4 mb-8">
+                            <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3 mb-8">
                                 {statusBlocks.map((block) => (
                                     <Card
                                         key={block.id}
@@ -2151,7 +2151,7 @@ function Pedidos() {
                                         }`}
                                         onClick={() => setActiveStatus(block.id)}
                                     >
-                                        <CardContent className="p-6 text-center relative z-10">
+                                        <CardContent className="p-4 text-center relative z-10">
                                             <div className="text-3xl font-bold mb-2">{block.count}</div>
                                             <div className="text-sm font-medium">{block.title}</div>
                                             <div className="text-xs opacity-80 mt-1">{block.description}</div>
@@ -2212,14 +2212,13 @@ function Pedidos() {
                                             <PopoverTrigger asChild>
                                                 <Button
                                                     variant="outline"
-                                                    className={`h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 ${!dateRange.from && "text-gray-500"}`}
+                                                    aria-label="Filtrar por data"
+                                                    className={`group h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 ${!dateRange.from && "text-gray-500"} ${isDatePopoverOpen ? 'gap-[1px]' : 'gap-0 group-hover:gap-[1px]'} justify-center`}
                                                 >
-                                                    <Calendar className="mr-2 h-4 w-4" />
-                                                    {dateRange.from ? 
-                                                        dateRange.to ? 
-                                                            `${formatDateSP(dateRange.from)} - ${formatDateSP(dateRange.to)}`
-                                                            : formatDateSP(dateRange.from)
-                                                    : "Filtrar por Data"}
+                                                    <Calendar className="h-4 w-4" />
+                                                    <span className={`overflow-hidden whitespace-nowrap max-w-0 opacity-0 transition-all duration-300 ease-out ${isDatePopoverOpen ? 'max-w-[140px] opacity-100' : 'group-hover:max-w-[140px] group-hover:opacity-100'}`}>
+                                                        Filtrar por data
+                                                    </span>
                                                 </Button>
                                             </PopoverTrigger>
                                             <PopoverContent className="w-auto p-0" align="start" side="bottom" sideOffset={8}>
@@ -2236,25 +2235,33 @@ function Pedidos() {
                                                 </div>
                                             </PopoverContent>
                                         </Popover>
-                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={handleExportCSV}>
-                                            <Download className="w-4 h-4 mr-2" />
-                                            Exportar CSV
+                                        <Button
+                                            className="group h-12 px-4 rounded-2xl bg-primary shadow-lg text-white gap-0 group-hover:gap-2"
+                                            onClick={handleExportCSV}
+                                            aria-label="Exportar CSV"
+                                        >
+                                            <Download className="h-4 w-4" />
+                                            <span className="overflow-hidden whitespace-nowrap max-w-0 opacity-0 transition-all duration-300 ease-out group-hover:max-w-[120px] group-hover:opacity-100">
+                                                Exportar CSV
+                                            </span>
                                         </Button>
-                                        <Button variant="outline" className="h-12 px-6 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60" onClick={(e) => {
-                                            console.log('[Pedidos] Clique no botão Colunas');
-                                            console.log('[Pedidos] Estados antes do clique:', { isFilterDrawerOpen, isColumnsDrawerOpen });
-                                            e.stopPropagation();
-                                            (e.currentTarget as HTMLButtonElement).blur();
-                                            // Feche o drawer de filtros primeiro e abra o de colunas no próximo tick
-                                            // Isso evita conflitos de overlay/estado quando os dois drawers alternam rapidamente
-                                            setIsFilterDrawerOpen(false);
-                                            setTimeout(() => {
-                                                console.log('[Pedidos] Abrindo Drawer de Colunas (setIsColumnsDrawerOpen(true))');
-                                                setIsColumnsDrawerOpen(true);
-                                            }, 0);
-                                        }} data-columns-trigger>
-                                            <Table className="w-4 h-4 mr-2" />
-                                            Colunas
+                                        <Button variant="outline" className="group h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 gap-0 group-hover:gap-2" onClick={(e) => {
+                                                console.log('[Pedidos] Clique no botão Colunas');
+                                                console.log('[Pedidos] Estados antes do clique:', { isFilterDrawerOpen, isColumnsDrawerOpen });
+                                                e.stopPropagation();
+                                                (e.currentTarget as HTMLButtonElement).blur();
+                                                // Feche o drawer de filtros primeiro e abra o de colunas no próximo tick
+                                                // Isso evita conflitos de overlay/estado quando os dois drawers alternam rapidamente
+                                                setIsFilterDrawerOpen(false);
+                                                setTimeout(() => {
+                                                    console.log('[Pedidos] Abrindo Drawer de Colunas (setIsColumnsDrawerOpen(true))');
+                                                    setIsColumnsDrawerOpen(true);
+                                                }, 0);
+                                                }} data-columns-trigger aria-label="Colunas">
+                                            <Table className="h-4 w-4" />
+                                            <span className="overflow-hidden whitespace-nowrap max-w-0 opacity-0 transition-all duration-300 ease-out group-hover:max-w-[80px] group-hover:opacity-100">
+                                                Colunas
+                                            </span>
                                         </Button>
                                         <div className="w-[150px]">
                                             <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v))}>
@@ -2405,7 +2412,6 @@ function Pedidos() {
                                                     <span className={`text-sm ${marketplaceFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
                                                         {marketplaceFilter !== 'all' ? (marketplaceFilter === 'mercado-livre' ? 'Mercado Livre' : '') : 'Marketplace'}
                                                     </span>
-                                                    <ChevronDown className="w-4 h-4 text-gray-500" />
                                                     <span className="sr-only">
                                                         <SelectValue placeholder="Marketplace" />
                                                     </span>
@@ -2429,7 +2435,6 @@ function Pedidos() {
                                                             : ''
                                                         ) : 'Tipo de Envio'}
                                                     </span>
-                                                    <ChevronDown className="w-4 h-4 text-gray-500" />
                                                     <span className="sr-only">
                                                         <SelectValue placeholder="Tipo de envio" />
                                                     </span>
@@ -2443,38 +2448,24 @@ function Pedidos() {
                                                 </SelectContent>
                                             </Select>
                                         </div>
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <Button
-                                                    size="icon"
-                                                    className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
-                                                    onClick={handlePrintPickingList}
-                                                    disabled={selectedPedidosImpressao.length === 0}
-                                                    aria-label={`Imprimir lista de separação (${selectedPedidosImpressao.length})`}
-                                                >
-                                                    <ListChecks className="w-5 h-5" />
-                                                </Button>
-                                            </TooltipTrigger>
-                                            <TooltipContent>
-                                                <p>Lista de Separação ({selectedPedidosImpressao.length})</p>
-                                            </TooltipContent>
-                                        </Tooltip>
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <Button
-                                                    size="icon"
-                                                    className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
-                                                    onClick={handlePrintLabels}
-                                                    disabled={selectedPedidosImpressao.length === 0}
-                                                    aria-label={`Imprimir etiquetas (${selectedPedidosImpressao.length})`}
-                                                >
-                                                    <FileBadge className="w-5 h-5" />
-                                                </Button>
-                                            </TooltipTrigger>
-                                            <TooltipContent>
-                                                <p>Etiquetas ({selectedPedidosImpressao.length})</p>
-                                            </TooltipContent>
-                                        </Tooltip>
+                                        <Button
+                                            size="icon"
+                                            className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
+                                            onClick={handlePrintPickingList}
+                                            disabled={selectedPedidosImpressao.length === 0}
+                                            aria-label={`Imprimir lista de separação (${selectedPedidosImpressao.length})`}
+                                        >
+                                            <ListChecks className="w-5 h-5" />
+                                        </Button>
+                                        <Button
+                                            size="icon"
+                                            className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
+                                            onClick={handlePrintLabels}
+                                            disabled={selectedPedidosImpressao.length === 0}
+                                            aria-label={`Imprimir etiquetas (${selectedPedidosImpressao.length})`}
+                                        >
+                                            <FileBadge className="w-5 h-5" />
+                                        </Button>
                                         <Button className="h-12 px-6 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsScannerOpen(true)}>
                                             <Scan className="w-4 h-4 mr-2" />
                                             Scanner
@@ -2556,7 +2547,6 @@ function Pedidos() {
                                                     <span className={`text-sm ${marketplaceFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
                                                         {marketplaceFilter !== 'all' ? (marketplaceFilter === 'mercado-livre' ? 'Mercado Livre' : '') : 'Marketplace'}
                                                     </span>
-                                                    <ChevronDown className="w-4 h-4 text-gray-500" />
                                                     <span className="sr-only">
                                                         <SelectValue placeholder="Marketplace" />
                                                     </span>
@@ -2580,7 +2570,6 @@ function Pedidos() {
                                                             : ''
                                                         ) : 'Tipo de Envio'}
                                                     </span>
-                                                    <ChevronDown className="w-4 h-4 text-gray-500" />
                                                     <span className="sr-only">
                                                         <SelectValue placeholder="Tipo de envio" />
                                                     </span>

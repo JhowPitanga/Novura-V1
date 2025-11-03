@@ -32,6 +32,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { NavUser } from "@/components/NavUser";
 import { useAuth } from "@/hooks/useAuth";
 import { usePermissions } from "@/hooks/usePermissions";
 import { supabase } from "@/integrations/supabase/client";
@@ -240,6 +241,22 @@ export function AppSidebar() {
 
   const isActive = (path: string) => currentPath === path || currentPath.startsWith(path + "/");
 
+  // Persistir rolagem do Sidebar
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const key = "sidebar:scrollTop";
+    const saved = sessionStorage.getItem(key);
+    if (saved) {
+      const top = parseInt(saved, 10);
+      if (!Number.isNaN(top)) el.scrollTop = top;
+    }
+    const onScroll = () => sessionStorage.setItem(key, String(el.scrollTop));
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
   const handleConfigClick = () => {
     navigate('/configuracoes');
   };
@@ -249,8 +266,8 @@ export function AppSidebar() {
     <>
       <Sidebar 
         className="border-r-0 bg-white" 
-        collapsible="icon" 
-        style={{ minWidth: isCollapsed ? '90px' : '280px', width: isCollapsed ? '90px' : '280px' }}
+        collapsible="icon"
+        variant="inset"
       >
         <SidebarContent className="bg-white flex flex-col h-full"> 
           
@@ -262,7 +279,7 @@ export function AppSidebar() {
           
           {/* Conteúdo com rolagem (Módulos) */}
           {/* Adicionada classe customizada para o scroll overlay */}
-          <div className="flex-1 overflow-y-auto overflow-x-hidden sidebar-scroll-overlay">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden sidebar-scroll-overlay">
 
             {/* Início */}
             <SidebarGroup className="mt-4 px-4">
@@ -271,12 +288,12 @@ export function AppSidebar() {
                 <SidebarMenu className="space-y-1">
                   {startModule.map((item) => (
                     <SidebarMenuItem key={item.title}>
-                      <SidebarMenuButton tooltip={item.title} asChild>
+                      <SidebarMenuButton tooltip={item.title} asChild isActive={isActive(item.url)}>
                         <NavLink
                           to={item.url}
                           className={`flex items-center w-full ${isCollapsed ? "justify-center px-0 py-5" : "space-x-4 px-4 py-5"} rounded-xl transition-all duration-300 group relative overflow-hidden text-base ${
                             isActive(item.url)
-                              ? "bg-novura-primary text-white shadow-lg" // Cor padrão para ativo
+                              ? "bg-novura-primary text-white" // Cor padrão para ativo (sem sombra)
                               : "text-gray-700 hover:bg-gray-100 hover:text-gray-900" // Cor de hover APENAS para inativo
                           }`}
                           onClick={() => {
@@ -318,12 +335,12 @@ export function AppSidebar() {
                     })
                     .map((item) => (
                     <SidebarMenuItem key={item.title}>
-                      <SidebarMenuButton tooltip={item.title} asChild>
+                      <SidebarMenuButton tooltip={item.title} asChild isActive={isActive(item.url)}>
                         <NavLink
                           to={item.url}
                           className={`flex items-center w-full ${isCollapsed ? "justify-center px-0 py-5" : "space-x-4 px-4 py-5"} rounded-xl transition-all duration-300 group relative overflow-hidden text-base ${
                             isActive(item.url)
-                              ? "bg-novura-primary text-white shadow-lg" // Cor padrão para ativo
+                              ? "bg-novura-primary text-white" // Cor padrão para ativo (sem sombra)
                               : "text-gray-700 hover:bg-gray-100 hover:text-gray-900" // Cor de hover APENAS para inativo
                           }`}
                         >
@@ -356,12 +373,12 @@ export function AppSidebar() {
                     })
                     .map((item) => (
                     <SidebarMenuItem key={item.title}>
-                      <SidebarMenuButton tooltip={item.title} asChild>
+                      <SidebarMenuButton tooltip={item.title} asChild isActive={isActive(item.url)}>
                         <NavLink
                           to={item.url}
                           className={`flex items-center w-full ${isCollapsed ? "justify-center px-0 py-5" : "space-x-4 px-4 py-5"} rounded-xl transition-all duration-300 group relative overflow-hidden text-base ${
                             isActive(item.url)
-                              ? "bg-novura-primary text-white shadow-lg" // Cor padrão para ativo
+                              ? "bg-novura-primary text-white" // Cor padrão para ativo (sem sombra)
                               : "text-gray-700 hover:bg-gray-100 hover:text-gray-900" // Cor de hover APENAS para inativo
                           }`}
                         >
@@ -380,48 +397,20 @@ export function AppSidebar() {
             </SidebarGroup>
           </div>
 
-          {/* User Profile - Fixo na parte inferior */}
-          <div className={`mt-auto ${isCollapsed ? "p-3" : "p-6"} border-t border-gray-100`}> 
-            {/* Bloco do Perfil (Visível quando expandido) */}
-            {!isCollapsed && (
-              <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3"> 
-                    <div className="w-10 h-10 bg-novura-primary rounded-full flex items-center justify-center shadow-lg">
-                      <User className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                      <span className="text-sm font-semibold text-gray-900">{displayName}</span>
-                      <p className="text-xs text-gray-600">{userRole === 'admin' ? 'admin' : 'membro'}</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={handleConfigClick}
-                    className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm border border-gray-100 hover:bg-gray-50 transition-colors"
-                  >
-                    <Settings className="w-4 h-4 text-gray-600" />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Logout (Último item) */}
-            <button
-              onClick={async () => { await signOut(); navigate('/auth'); }}
-              className={`w-full h-10 rounded-xl flex items-center transition-colors text-gray-800 font-medium mt-3 ${isCollapsed ? "justify-center" : "justify-start gap-3 hover:bg-gray-100 px-4"}`}
-            >
-              <LogOut className={`w-5 h-5 ${isCollapsed ? "text-gray-500" : "text-gray-700"}`} />
-              {!isCollapsed && <span className="text-sm">Sair</span>}
-            </button>
-            
-            {/* Perfil (Visível quando compactado) */}
-            {isCollapsed && (
-              <div className="w-full mt-3 flex justify-center">
-                  <div className="w-10 h-10 bg-novura-primary rounded-full flex items-center justify-center shadow-lg">
-                      <User className="w-5 h-5 text-white" />
-                  </div>
-              </div>
-            )}
+          {/* User Profile compacto com popover */}
+          <div className={`mt-auto p-2 border-t border-gray-100`}>
+            <NavUser
+              user={{
+                name: displayName,
+                email: user?.email || "",
+                avatar: (user?.user_metadata as any)?.avatar_url || "",
+              }}
+              onConfig={handleConfigClick}
+              onLogout={async () => {
+                await signOut();
+                navigate('/auth');
+              }}
+            />
           </div>
         </SidebarContent>
       </Sidebar>

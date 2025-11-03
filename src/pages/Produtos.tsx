@@ -5,6 +5,7 @@ import { CleanNavigation } from "@/components/CleanNavigation";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
+import { GlobalHeader } from "@/components/GlobalHeader";
 import { CriarProduto } from "@/components/produtos/CriarProduto";
 import { EditarProduto } from "@/components/produtos/EditarProduto";
 import { EditarVariacao } from "@/components/produtos/EditarVariacao";
@@ -32,6 +33,7 @@ export default function Produtos() {
         <AppSidebar />
         
         <div className="flex-1 flex flex-col">
+          <GlobalHeader />
           <ProdutosHeader />
 
           {/* Navigation - Only show on main listing pages */}
