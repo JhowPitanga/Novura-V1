@@ -26,15 +26,37 @@ serve(async (req) => {
     const rid = (crypto as any)?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     const contentType = req.headers.get('content-type') || '';
     const raw = await req.text();
-    let parsed: any = {}; try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = {}; }
-    const organizationId = parsed?.organizationId || new URL(req.url).searchParams.get('organizationId');
+    let parsed: any = {};
+    try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = {}; }
+
+    const urlObj = new URL(req.url);
+    const organizationId = parsed?.organizationId || urlObj.searchParams.get('organizationId');
+    const forceParam = urlObj.searchParams.get('force');
+    const force = Boolean(
+      parsed?.force === true || parsed?.force === "1" ||
+      (forceParam && forceParam.toLowerCase() !== "0" && forceParam.toLowerCase() !== "false")
+    );
+    const debugParam = urlObj.searchParams.get('debug') || req.headers.get('x-debug') || undefined;
+    const debug = Boolean(
+      parsed?.debug === true || parsed?.debug === "1" || parsed?.debug === "true" ||
+      (debugParam && ["1","true","yes","on"].includes(String(debugParam).toLowerCase()))
+    );
+
+    // Log de entrada para diagnóstico
+    const hdrLog = {
+      authorization_present: !!req.headers.get('authorization'),
+      apikey_present: !!req.headers.get('apikey'),
+      x_internal_call_present: !!req.headers.get('x-internal-call'),
+    };
+    console.log("[orchestrate-sync] inbound", { rid, url: req.url, contentType, headers: hdrLog, bodyPreview: raw?.slice(0, 500) || null, parsedKeys: Object.keys(parsed || {}) });
+
     if (!organizationId) return jsonResponse({ error: "organizationId required", rid }, 400);
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-    // 1) Sincroniza itens (IDs e detalhes via multiget dentro da função)
+    // 1) Sincroniza itens (IDs e detalhes)
     const syncRes = await admin.functions.invoke('mercado-livre-sync-items', {
-      body: { organizationId },
+      body: { organizationId, force, debug },
       headers: {
         Authorization: req.headers.get('authorization') || '',
         apikey: SERVICE_ROLE_KEY,
@@ -43,7 +65,14 @@ serve(async (req) => {
     });
 
     if (syncRes.error) {
-      return jsonResponse({ error: 'sync-items failed', details: syncRes.error?.message || syncRes.error, rid }, 500);
+      const err: any = syncRes.error as any;
+      const status = err?.context?.status;
+      const bodyRaw = err?.context?.error || err?.context?.body;
+      const bodyPreview = bodyRaw && typeof bodyRaw === 'object' ? JSON.stringify(bodyRaw).slice(0, 500) : String(bodyRaw || '').slice(0, 500);
+      const errObj = { name: err?.name, message: err?.message, status, bodyPreview };
+      console.warn("[orchestrate-sync] sync-items failed", { rid, error: errObj });
+      // Não retornar 500 para facilitar diagnóstico no cliente; propagar status ou 200
+      return jsonResponse({ ok: false, rid, step: 'sync-items', error: errObj }, (status && status < 500) ? status : 200);
     }
 
     // 2) Descrições e Qualidade em paralelo para preparar dados e minimizar chamadas duplicadas

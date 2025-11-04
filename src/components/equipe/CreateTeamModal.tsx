@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 // Removed category select per new group creation UX
 import { useAuth } from "@/hooks/useAuth";
@@ -76,9 +77,13 @@ export function CreateTeamModal({ open, onOpenChange }: Props) {
                 const checked = selectedMemberIds.includes(m.id);
                 return (
                   <label key={m.id} className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={checked} onChange={() => {
-                      setSelectedMemberIds(prev => checked ? prev.filter(id => id !== m.id) : [...prev, m.id]);
-                    }} />
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={(val) => {
+                        const isChecked = Boolean(val);
+                        setSelectedMemberIds(prev => isChecked ? [...prev, m.id] : prev.filter(id => id !== m.id));
+                      }}
+                    />
                     <span>{m.nome || m.email || m.id}</span>
                   </label>
                 );

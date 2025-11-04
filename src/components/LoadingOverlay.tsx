@@ -10,9 +10,11 @@ const MESSAGES = [
 
 interface LoadingOverlayProps {
   durationMs?: number;
+  fullscreen?: boolean;
+  message?: string;
 }
 
-export default function LoadingOverlay({ durationMs = 5000 }: LoadingOverlayProps) {
+export default function LoadingOverlay({ durationMs = 5000, fullscreen = false, message }: LoadingOverlayProps) {
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
@@ -23,14 +25,14 @@ export default function LoadingOverlay({ durationMs = 5000 }: LoadingOverlayProp
   }, []);
 
   return (
-    <div className="fixed inset-0 z-[1000] bg-white flex flex-col items-center justify-center">
+    <div className={`${fullscreen ? "fixed" : "absolute"} inset-0 z-[1000] bg-white flex flex-col items-center justify-center`}>
       <UniqueLoading variant="morph" size="lg" className="mb-6" />
       <div className="h-7">
         <span
           key={index}
           className="text-primary font-medium transition-opacity duration-500 ease-in-out"
         >
-          {MESSAGES[index]}
+          {message ?? MESSAGES[index]}
         </span>
       </div>
     </div>

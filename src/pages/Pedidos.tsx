@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Checkbox as CustomCheckbox } from "@/components/ui/checkbox";
+// LoadingOverlay removido desta aba para evitar telas de carregamento ao trocar quadros
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { AppSidebar } from "@/components/AppSidebar";
@@ -49,7 +50,8 @@ function mapTipoEnvioLabel(v?: string) {
     const s = String(v || '').toLowerCase();
     if (s === 'full' || s === 'fulfillment' || s === 'fbm') return 'Full';
     if (s === 'flex' || s === 'self_service') return 'Flex';
-    if (s === 'agencia' || s === 'me2' || s === 'drop_off' || s === 'xd_drop_off' || s === 'cross_docking') return 'Agência';
+    if (s === 'envios' || s === 'me2' || s === 'xd_drop_off' || s === 'cross_docking' || s === 'custom') return 'Envios';
+    if (s === 'correios' || s === 'drop_off') return 'Correios';
     if (s === 'no_shipping') return 'Sem Envio';
     return s ? s : '—';
 }
@@ -60,9 +62,18 @@ function normalizeShippingType(input?: string | null): string {
     if (!s) return '';
     if (s === 'full' || s === 'fulfillment' || s === 'fbm') return 'full';
     if (s === 'flex' || s === 'self_service') return 'flex';
-    if (s === 'agencia' || s === 'me2' || s === 'drop_off' || s === 'xd_drop_off' || s === 'cross_docking' || s === 'custom') return 'agencia';
+    if (s === 'envios' || s === 'me2' || s === 'xd_drop_off' || s === 'cross_docking' || s === 'custom') return 'envios';
+    if (s === 'correios' || s === 'drop_off') return 'correios';
     if (s === 'no_shipping') return 'no_shipping';
     return s;
+}
+
+// Garante que o permalink tenha esquema http/https
+function ensureHttpUrl(url?: string | null): string | null {
+    if (!url) return null;
+    const s = String(url).trim();
+    if (/^https?:\/\//i.test(s)) return s;
+    return `https://${s}`;
 }
 
 
@@ -139,7 +150,7 @@ async function enrichPedidosWithMLImages(parsedPedidos: any[], marketplaceByOrde
     // Buscar dados dos itens no backend (tabela marketplace_items) — evita chamadas à API pública do ML
     let itemRows: any[] = [];
     try {
-        const { data: rows, error } = await supabase
+        const { data: rows, error } = await (supabase as any)
             .from('marketplace_items')
             .select('marketplace_item_id, pictures, variations, data, marketplace_name')
             .eq('marketplace_name', 'Mercado Livre')
@@ -200,7 +211,7 @@ async function enrichPedidosWithMLImages(parsedPedidos: any[], marketplaceByOrde
 }
 
 // --- Mockup de PDF de Lista de Separação (Novo Componente) ---
-const PickingListPDFMockup = ({ pedidos, settings, onPrint }) => {
+const PickingListPDFMockup = ({ pedidos, settings, onPrint }: { pedidos: any[]; settings: any; onPrint?: () => void }) => {
     // Agrupa itens por SKU se a configuração estiver ativada
     const groupedItems = {};
     if (settings.groupByProduct) {
@@ -300,7 +311,7 @@ const PickingListPDFMockup = ({ pedidos, settings, onPrint }) => {
 
 
 // --- Mockup de PDF de Etiqueta (Novo Componente) ---
-const LabelPDFMockup = ({ settings, pedidos }) => {
+const LabelPDFMockup = ({ settings, pedidos }: { settings: any; pedidos: any[] }) => {
     const renderLabelContent = (pedido) => {
         if (settings.labelSize === "10x15") {
             return (
@@ -510,8 +521,9 @@ function Pedidos() {
     const [totalPedidosCount, setTotalPedidosCount] = useState<number | null>(null);
     const [statusCountsGlobal, setStatusCountsGlobal] = useState<Record<string, number> | null>(null);
     const [marketplaceFilter, setMarketplaceFilter] = useState<'all' | 'mercado-livre'>('all');
-    const [shippingTypeFilter, setShippingTypeFilter] = useState<'all' | 'full' | 'flex' | 'agencia' | 'no_shipping'>('all');
+    const [shippingTypeFilter, setShippingTypeFilter] = useState<'all' | 'full' | 'flex' | 'envios' | 'correios' | 'no_shipping'>('all');
     const columnsDrawerRef = useRef<HTMLDivElement | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
 
     const { user, organizationId } = useAuth();
 
@@ -588,10 +600,10 @@ function Pedidos() {
 
             // Helper para construir consulta base com filtros comuns
             const buildBase = () => {
-                let qb = supabase
+                let qb: any = (supabase as any)
                     .from('marketplace_orders_presented')
-                    .select('id, shipment_status, first_item_sku, payment_status', { count: 'exact' })
-                    .eq('marketplace', 'Mercado Livre');
+                .select('id, shipment_status, shipment_substatus, first_item_sku, payment_status', { count: 'exact' })
+                .eq('marketplace', 'Mercado Livre');
                 if (fromIso) qb = (qb as any).or(`payment_date_approved.gte.${fromIso},created_at.gte.${fromIso}`);
                 if (toIso) qb = (qb as any).or(`payment_date_approved.lte.${toIso},created_at.lte.${toIso}`);
                 if (pattern) qb = (qb as any).or(`marketplace_order_id.ilike.${pattern},customer_name.ilike.${pattern},first_item_sku.ilike.${pattern},first_item_title.ilike.${pattern}`);
@@ -609,7 +621,8 @@ function Pedidos() {
 
             // Aguardando Coleta: pronto para envio
             const { count: countAguardandoColeta } = await (buildBase() as any)
-                .eq('shipment_status', 'ready_to_ship');
+                .eq('shipment_status', 'ready_to_ship')
+                .eq('shipment_substatus', 'printed');
 
             // Enviado: entregue
             const { count: countEnviado } = await (buildBase() as any)
@@ -652,7 +665,9 @@ function Pedidos() {
         };
     }, []);
 
-    const loadPedidos = async () => {
+    const loadPedidos = async (opts?: { background?: boolean }) => {
+        const background = Boolean(opts?.background);
+        if (!background) setIsLoading(true);
         try {
             if (!user) {
                 setPedidos([]);
@@ -681,7 +696,7 @@ function Pedidos() {
             const term = (searchTerm || '').trim();
             const pattern = term ? `%${term}%` : null;
 
-            let q = supabase
+            let q: any = (supabase as any)
                 .from("marketplace_orders_presented")
                 .select(`
                     id,
@@ -701,17 +716,23 @@ function Pedidos() {
                     items_total_amount,
                     items_total_sale_fee,
                     first_item_title,
+                    first_item_permalink,
                     first_item_sku,
                     shipping_city_name,
                     shipping_state_name,
                     shipping_state_uf,
                     shipment_status,
+                    shipment_substatus,
                     shipping_method_name,
                     shipment_sla_status,
                     shipment_sla_service,
                     shipment_sla_expected_date,
                     shipment_sla_last_updated,
-                    shipment_delays
+                    shipment_delays,
+                    label_cached,
+                    label_response_type,
+                    label_fetched_at,
+                    label_size_bytes
                 `, { count: 'exact' })
                 ;
 
@@ -729,16 +750,7 @@ function Pedidos() {
                 q = (q as any).or(`marketplace_order_id.ilike.${pattern},customer_name.ilike.${pattern},first_item_sku.ilike.${pattern},first_item_title.ilike.${pattern}`);
             }
 
-            // Status específico por quadro (quando possível)
-            if (activeStatus === 'a-vincular') {
-                q = (q as any).or('shipment_status.eq.pending,first_item_sku.is.null');
-            } else if (activeStatus === 'aguardando-coleta') {
-                q = q.eq('shipment_status', 'ready_to_ship');
-            } else if (activeStatus === 'enviado') {
-                q = q.eq('shipment_status', 'delivered');
-            } else if (activeStatus === 'cancelado') {
-                q = (q as any).or('payment_status.eq.canceled,payment_status.eq.cancelled,payment_status.eq.refunded,shipment_status.eq.canceled,shipment_status.eq.cancelled');
-            }
+            // Não aplicar filtro por quadro no servidor; filtrar no cliente
 
             // Filtro por tipo de envio (aceita valores da view e normalizados)
             if (shippingTypeFilter !== 'all') {
@@ -746,9 +758,11 @@ function Pedidos() {
                     ? ['full', 'fulfillment', 'fbm']
                     : (shippingTypeFilter === 'flex'
                         ? ['flex', 'self_service']
-                        : (shippingTypeFilter === 'agencia'
-                            ? ['agencia', 'drop_off', 'xd_drop_off', 'cross_docking', 'me2', 'custom']
-                            : ['no_shipping']));
+                        : (shippingTypeFilter === 'envios'
+                            ? ['envios', 'xd_drop_off', 'cross_docking', 'me2', 'custom']
+                            : (shippingTypeFilter === 'correios'
+                                ? ['correios', 'drop_off']
+                                : ['no_shipping'])));
                 q = (q as any).in('shipping_type', map);
             }
 
@@ -767,8 +781,8 @@ function Pedidos() {
                      .order('created_at', { ascending });
             }
 
-            // Faixa paginada
-            q = q.range(start, end);
+            // Não paginar no servidor; limitar lote inicial amplo
+            q = q.limit(1000);
 
             const { data, count, error } = await q;
 
@@ -782,7 +796,8 @@ function Pedidos() {
                 return false;
             };
             const paidRows: any[] = Array.isArray(data) ? data.filter(isRowPaid) : [];
-            setTotalPedidosCount(typeof count === 'number' ? count : null);
+            // Usar paginação local; não considerar paginação de servidor
+            setTotalPedidosCount(null);
 
             // Renderização imediata: construir uma lista leve apenas com dados agregados da view
             const lightParsed = paidRows.map((o: any) => {
@@ -801,6 +816,7 @@ function Pedidos() {
                     marketplace: o.marketplace,
                     marketplaceItemId: null,
                     variationId: '',
+                    permalink: o.first_item_permalink || null,
                 }];
 
                 const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
@@ -828,6 +844,7 @@ function Pedidos() {
                     marketplace: o.marketplace,
                     produto: items[0]?.nome || "",
                     sku: items[0]?.sku || null,
+                    permalink: o.first_item_permalink || null,
                     cliente: o.customer_name || '',
                     valor: orderTotal,
                     data: o.created_at,
@@ -883,9 +900,9 @@ function Pedidos() {
             if (orderIds.length > 0) {
                 try {
                     // 1) Tentativa com filtro por organização (quando disponível)
-                    let mq1 = supabase
+                    let mq1: any = (supabase as any)
                         .from('marketplace_orders_raw')
-                        .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer')
+                        .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer, labels')
                         .in('marketplace_order_id', orderIds);
                     if (organizationId) mq1 = (mq1 as any).eq('organizations_id', organizationId);
                     const { data: mqRows1, error: mqErr1 } = await mq1;
@@ -894,9 +911,9 @@ function Pedidos() {
                         rows = mqRows1 as any[];
                     } else {
                         // 2) Fallback sem filtro de organização (aproveita políticas RLS existentes)
-                        const { data: mqRows2, error: mqErr2 } = await supabase
+                        const { data: mqRows2, error: mqErr2 } = await (supabase as any)
                             .from('marketplace_orders_raw')
-                            .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer')
+                            .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer, labels')
                             .in('marketplace_order_id', orderIds);
                         if (!mqErr2 && Array.isArray(mqRows2)) rows = mqRows2 as any[];
                     }
@@ -909,9 +926,9 @@ function Pedidos() {
                     }
                     // 3) Buscar envios normalizados em marketplace_shipments
                     try {
-                        let sh1 = supabase
+                        let sh1: any = (supabase as any)
                             .from('marketplace_shipments')
-                            .select('marketplace_order_id, status, substatus, logistic_type, mode, shipping_mode, service_id, carrier, tracking_number, tracking_url, tracking_history, receiver_address, sender_address, costs, items, promise, tags, dimensions, data, date_created, last_updated, date_ready_to_ship, date_first_printed, last_synced_at, sla_status, sla_service, sla_expected_date, sla_last_updated, delays')
+                            .select('marketplace_order_id, marketplace_shipment_id, status, substatus, logistic_type, mode, shipping_mode, service_id, carrier, tracking_number, tracking_url, tracking_history, receiver_address, sender_address, costs, items, promise, tags, dimensions, data, date_created, last_updated, date_ready_to_ship, date_first_printed, last_synced_at, sla_status, sla_service, sla_expected_date, sla_last_updated, delays')
                             .eq('marketplace_name', 'Mercado Livre')
                             .in('marketplace_order_id', orderIds);
                         if (organizationId) sh1 = (sh1 as any).eq('organizations_id', organizationId);
@@ -1009,6 +1026,8 @@ function Pedidos() {
                             marketplace: o.marketplace,
                             marketplaceItemId: itemId,
                             variationId: (rit?.variation_id !== undefined && rit?.variation_id !== null) ? String(rit.variation_id) : '',
+                            // Fallback: usar o permalink do primeiro item quando disponível
+                            permalink: ensureHttpUrl(o.first_item_permalink || null),
                         };
                     });
                 } else {
@@ -1027,6 +1046,8 @@ function Pedidos() {
                         marketplace: o.marketplace,
                         marketplaceItemId: null,
                         variationId: '',
+                        // Fallback: usar o permalink agregado do primeiro item
+                        permalink: ensureHttpUrl(o.first_item_permalink || null),
                     }];
                 }
 
@@ -1135,6 +1156,7 @@ function Pedidos() {
                 const hasPendingShipment = shippingStatuses.includes('pending');
                 const hasReadyToShip = shippingStatuses.includes('ready_to_ship');
                 const hasReadyToPrint = shippingStatuses.includes('ready_to_print');
+                const hasPrinted = shippingStatuses.includes('printed');
 
                 // Nome do cliente a partir do marketplace (buyer first/last), com limite de 3 palavras; fallback ao nome da tabela orders
                 const buyer = mq?.buyer || orderDataRaw?.buyer || {};
@@ -1185,7 +1207,8 @@ function Pedidos() {
                 } else if (isDelivered || isShipped) {
                     // Pedidos recebidos (pelo comprador) ou entregues entram no quadro "Enviado"
                     statusUI = 'Enviado';
-                } else if (isReadyToShip) {
+                } else if (hasPrinted) {
+                    // Aba Aguardando Coleta mostra somente pedidos com etiqueta impressa (substatus 'printed')
                     statusUI = 'Aguardando Coleta';
                 } else if (items.some((it: any) => !it.vinculado)) {
                     // Itens do pedido sem SKU vinculado => colocar na aba "A vincular"
@@ -1210,8 +1233,9 @@ function Pedidos() {
                     if (!lt) return null;
                     if (lt === 'fulfillment' || lt === 'fbm') return 'full';
                     if (lt === 'self_service') return 'flex';
-                    if (lt === 'drop_off' || lt === 'xd_drop_off' || lt === 'cross_docking') return 'agencia';
-                    if (lt === 'me2' || lt === 'custom') return 'agencia';
+                    if (lt === 'xd_drop_off' || lt === 'cross_docking') return 'envios';
+                    if (lt === 'drop_off') return 'correios';
+                    if (lt === 'me2' || lt === 'custom') return 'envios';
                     return null;
                 };
 
@@ -1224,6 +1248,29 @@ function Pedidos() {
                     return '';
                 })();
 
+                // Dados adicionais para impressão e filtragem
+                const shipmentSubstatus = o?.shipment_substatus || (firstShipment?.substatus ?? null);
+                const shipmentId = (firstShipment?.marketplace_shipment_id ?? firstShipment?.id) ?? null;
+                const hasPrintedSubstatus = hasPrinted || (Array.isArray(shipments) && shipments.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
+                const hasFirstPrintedDate = Array.isArray(shipments) && shipments.some((s: any) => Boolean(s?.date_first_printed));
+                const impressoEtiquetaComputed = Boolean(hasPrintedSubstatus || hasFirstPrintedDate);
+
+                // Indicadores e conteúdo de etiqueta (cache)
+                const rawLabels = (mq?.labels || null) as any;
+                const hasPdf = Boolean(rawLabels?.pdf_base64);
+                const hasZpl = Boolean(rawLabels?.zpl2_base64);
+                const topContent = rawLabels?.content_base64 || (hasPdf ? rawLabels?.pdf_base64 : (hasZpl ? rawLabels?.zpl2_base64 : null));
+                const topType = rawLabels?.content_type || (hasPdf ? 'application/pdf' : (hasZpl ? 'text/plain' : null));
+                const labelInfo = {
+                    cached: Boolean(o?.label_cached || topContent),
+                    response_type: (o?.label_response_type || rawLabels?.response_type || (hasPdf ? 'pdf' : (hasZpl ? 'zpl2' : null))) as string | null,
+                    fetched_at: (o?.label_fetched_at || rawLabels?.fetched_at || null) as string | null,
+                    size_bytes: (typeof o?.label_size_bytes === 'number' ? o.label_size_bytes : Number(o?.label_size_bytes)) || (typeof rawLabels?.size_bytes === 'number' ? rawLabels.size_bytes : Number(rawLabels?.size_bytes)) || null,
+                    shipment_ids: Array.isArray(rawLabels?.shipment_ids) ? rawLabels.shipment_ids.map((x: any) => String(x)) : [],
+                    content_base64: topContent,
+                    content_type: topType,
+                } as const;
+
                 return {
                     id: o.marketplace_order_id || o.id,
                     marketplace: marketplaceName,
@@ -1234,6 +1281,11 @@ function Pedidos() {
                     data: o.created_at,
                     status: statusUI,
                     shipment_status: o?.shipment_status || (firstShipment?.status ?? null),
+                    shipment_substatus: shipmentSubstatus,
+                    shipment_id: shipmentId,
+                    // Permalink do primeiro item (para evitar desaparecimento do link)
+                    permalink: ensureHttpUrl(o.first_item_permalink || null),
+                    first_item_permalink: ensureHttpUrl(o.first_item_permalink || null),
                     // SLA de despacho e atrasos: prioriza colunas da view presented
                     slaDespacho: {
                         status: o?.shipment_sla_status ?? (firstShipment?.sla_status ?? null),
@@ -1270,8 +1322,9 @@ function Pedidos() {
                         pagamentos: payments,
                         envios: shipments,
                     },
-                    impressoEtiqueta: false,
+                    impressoEtiqueta: impressoEtiquetaComputed,
                     impressoLista: false,
+                    label: labelInfo,
                 };
             });
 
@@ -1287,12 +1340,20 @@ function Pedidos() {
         } catch (err) {
             console.error("Erro ao buscar pedidos:", err);
             setPedidos([]);
+        } finally {
+            if (!background) setIsLoading(false);
         }
     };
 
+    // Carregar pedidos somente ao entrar no módulo
     useEffect(() => {
         loadPedidos();
-    }, [user, currentPage, pageSize, sortKey, sortDir, activeStatus, dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // Removida a sincronização automática; sincronizar apenas ao clicar no botão
+
+    // Não atualizar ao alternar quadro para evitar remoções e telas de recarga
 
     const handleSyncOrders = async () => {
         try {
@@ -1448,10 +1509,10 @@ function Pedidos() {
 
     // Definição das colunas da tabela (valores padrão)
     const [columns, setColumns] = useState([
-        { id: "produto", name: "Produto", enabled: true, alwaysVisible: true, render: (pedido) => (
+        { id: "produto", name: "Produto", enabled: true, alwaysVisible: true, render: (pedido: any) => (
             <div className="flex flex-col space-y-2">
                 {pedido.itens?.map((it: any, idx: number) => (
-                    <div key={idx} className="flex items-center space-x-3 h-12">
+                    <div key={idx} className="flex items-center space-x-2 h-12">
                         <img
                             src={((idx === 0 ? (pedido.imagem || it?.imagem) : it?.imagem) || '/placeholder.svg')}
                             alt={(idx === 0 ? (pedido.produto || it?.nome || 'Produto') : (it?.nome || 'Produto'))}
@@ -1459,9 +1520,32 @@ function Pedidos() {
                         />
                         <div className="min-w-0 flex-1">
                             <div className={`text-sm font-medium text-gray-900 ${pedido.quantidadeTotal >= 2 ? 'font-bold' : ''}`}>
-                                <span className="line-clamp-2">
-                                    {idx === 0 ? (pedido.produto || it?.nome || 'Produto') : (it?.nome || 'Produto')}
-                                </span>
+                                {(() => {
+                                    const title: string = idx === 0 ? (pedido.produto || it?.nome || 'Produto') : (it?.nome || 'Produto');
+                                    const link: string | null = (
+                                        idx === 0
+                                            ? (pedido?.permalink || pedido?.first_item_permalink || it?.permalink || null)
+                                            : (it?.permalink || pedido?.first_item_permalink || null)
+                                    );
+                                    if (link) {
+                                        return (
+                                            <a
+                                                href={ensureHttpUrl(link)}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="line-clamp-1 sm:line-clamp-2 lg:line-clamp-3 text-gray-900 hover:text-purple-600 group-hover:text-purple-600 hover:underline group-hover:underline underline-offset-2 cursor-pointer transition-colors"
+                                                title={title}
+                                            >
+                                                {title}
+                                            </a>
+                                        );
+                                    }
+                                    return (
+                                        <span className="line-clamp-1 sm:line-clamp-2 lg:line-clamp-3" title={title}>
+                                            {title}
+                                        </span>
+                                    );
+                                })()}
                             </div>
                             <div className="text-xs text-gray-500">SKU: {idx === 0 ? (pedido.sku ?? it?.sku ?? 'Não Vinculado') : (it?.sku ?? 'Não Vinculado')}</div>
                         </div>
@@ -1519,7 +1603,7 @@ function Pedidos() {
             }
             return (
                 <div className="flex flex-col gap-1">
-                    <Badge className={`uppercase bg-purple-600 text-white hover:bg-purple-700`}>
+                    <Badge className={`uppercase bg-purple-600 text-white hover:bg-purple-700 h-5 px-2 text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md`}>
                         {mapTipoEnvioLabel(pedido.tipoEnvio)}
                     </Badge>
                     {countdown}
@@ -1878,7 +1962,13 @@ function Pedidos() {
         link.click();
     };
 
-    const pedidosImpressao = pedidos.filter(p => p.status === 'NF Emitida');
+    // Impressão: somente pedidos ME2 não-Full com substatus 'ready_to_print'
+    const pedidosImpressao = pedidos.filter(p => {
+        const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+        const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
+            (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
+        return isNonFull && hasReadyToPrintSub;
+    });
     const pedidosNaoImpressos = pedidosImpressao.filter(p => !p.impressoEtiqueta || !p.impressoLista);
     const pedidosImpressos = pedidosImpressao.filter(p => p.impressoEtiqueta && p.impressoLista);
 
@@ -1909,7 +1999,18 @@ function Pedidos() {
 
     let filteredPedidos = baseFiltered.filter(p => {
         if (activeStatus === "todos") return true;
-        if (activeStatus === "impressao") return p.status === 'NF Emitida';
+        if (activeStatus === "impressao") {
+            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+            const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
+            return isNonFull && hasReadyToPrintSub;
+        }
+        if (activeStatus === "aguardando-coleta") {
+            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+            const hasPrintedSub = String(p?.shipment_substatus || '').toLowerCase() === 'printed' ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
+            return isNonFull && hasPrintedSub;
+        }
         if (activeStatus === "cancelado") {
             // Incluir devoluções na aba Cancelados
             return p.status === 'Cancelado' || p.status === 'Devolvido' || p.status === 'Devolução';
@@ -1952,7 +2053,7 @@ function Pedidos() {
             return av > bv ? dir : -dir;
         }
         if (sortKey === 'shipping') {
-            const order = ['full', 'flex', 'agencia', 'no_shipping', ''];
+            const order = ['full', 'flex', 'envios', 'correios', 'no_shipping', ''];
             const as = normalizeShippingType(String(a?.tipoEnvio ?? ''));
             const bs = normalizeShippingType(String(b?.tipoEnvio ?? ''));
             const ai = order.indexOf(as);
@@ -2066,8 +2167,18 @@ function Pedidos() {
         { id: "todos", title: "Todos os Pedidos", count: (statusCountsGlobal?.['todos'] ?? (totalPedidosCount ?? baseFiltered.length)), description: "Sincronizados com marketplaces" },
         { id: "a-vincular", title: "A Vincular", count: (statusCountsGlobal?.['a-vincular'] ?? baseFiltered.filter(p => p.status === 'A vincular').length), description: "Pedidos sem vínculo de SKU" },
         { id: "emissao-nf", title: "Emissão de NFe", count: baseFiltered.filter(p => p.status === 'Emissao NF').length, description: "Aguardando emissão" },
-        { id: "impressao", title: "Impressão", count: baseFiltered.filter(p => p.status === 'NF Emitida').length, description: "NF e etiqueta" },
-        { id: "aguardando-coleta", title: "Aguardando Coleta", count: (statusCountsGlobal?.['aguardando-coleta'] ?? baseFiltered.filter(p => p.status === 'Aguardando Coleta').length), description: "Prontos para envio" },
+        { id: "impressao", title: "Impressão", count: baseFiltered.filter(p => {
+            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+            const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
+            return isNonFull && hasReadyToPrintSub;
+        }).length, description: "NF e etiqueta" },
+        { id: "aguardando-coleta", title: "Aguardando Coleta", count: (statusCountsGlobal?.['aguardando-coleta'] ?? baseFiltered.filter(p => {
+            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+            const hasPrintedSub = String(p?.shipment_substatus || '').toLowerCase() === 'printed' ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
+            return isNonFull && hasPrintedSub;
+        }).length), description: "Prontos para envio" },
         { id: "enviado", title: "Enviado", count: (statusCountsGlobal?.['enviado'] ?? baseFiltered.filter(p => p.status === 'Enviado').length), description: "Pedidos em trânsito" },
         { id: "cancelado", title: "Cancelados", count: (statusCountsGlobal?.['cancelado'] ?? baseFiltered.filter(p => (p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido')).length), description: "Pedidos cancelados/devolvidos" },
     ];
@@ -2083,15 +2194,158 @@ function Pedidos() {
         setSelectedPedidosEnviado([]);
     };
 
-    const handlePrintLabels = () => {
-        const pedidosToPrint = pedidos.filter(p => selectedPedidosImpressao.includes(p.id));
-        const pdfUrl = generateFunctionalLabelPDF(pedidosToPrint, printSettings);
-        window.open(pdfUrl, '_blank');
-        // Limpa seleções após ação
-        setSelectedPedidosImpressao([]);
-        setSelectedPedidosEmissao([]);
-        setSelectedPedidos([]);
-        setSelectedPedidosEnviado([]);
+    const handlePrintLabels = async () => {
+        try {
+            const pedidosToPrint = pedidos.filter(p => selectedPedidosImpressao.includes(p.id));
+            if (pedidosToPrint.length === 0) return;
+
+            // Coleta shipment_ids (preferindo marketplace_shipment_id) dos envios presentes
+            const shipmentIds = Array.from(new Set(pedidosToPrint.flatMap((p: any) => {
+                const envios = Array.isArray(p?.financeiro?.envios) ? p.financeiro.envios : [];
+                const idsFromEnvios = envios.map((s: any) => s?.marketplace_shipment_id || s?.id).filter(Boolean);
+                const fallbackId = p?.shipment_id ? [p.shipment_id] : [];
+                return [...idsFromEnvios, ...fallbackId];
+            }).map(String)));
+
+            if (shipmentIds.length === 0) {
+                console.warn('Nenhum shipment_id encontrado para impressão.');
+                return;
+            }
+
+            // Seleção do tipo de resposta: ZPL2 para impressoras Zebra; caso contrário, PDF
+            const printerName = String(printSettings?.printer || '').toLowerCase();
+            const responseType = printerName.includes('zebra') ? 'zpl2' : 'pdf';
+
+            // Sessão atual para Authorization
+            const { data: sess } = await supabase.auth.getSession();
+            const authHeader = sess?.session?.access_token ? `Bearer ${sess.session.access_token}` : undefined;
+            const body = JSON.stringify({ organizationId, shipment_ids: shipmentIds, response_type: responseType });
+
+            const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-shipment-labels`, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'apikey': SUPABASE_PUBLISHABLE_KEY,
+                    ...(authHeader ? { 'Authorization': authHeader } : {}),
+                },
+                body,
+            });
+
+            if (!resp.ok) {
+                const txt = await resp.text();
+                console.error('Falha ao buscar etiquetas ML:', resp.status, txt);
+                return;
+            }
+
+            const data = await resp.json();
+            const base64 = data?.content_base64;
+            const contentType = data?.content_type || (responseType === 'pdf' ? 'application/pdf' : 'text/plain');
+            if (!base64) {
+                console.warn('Resposta sem conteúdo de etiqueta.');
+                return;
+            }
+            const binStr = atob(base64);
+            const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
+            const blob = new Blob([bytes], { type: contentType });
+            const url = URL.createObjectURL(blob);
+            window.open(url, '_blank');
+
+            // Atualiza estado local para refletir etiqueta impressa
+            setPedidos(prev => prev.map(p => selectedPedidosImpressao.includes(p.id) ? { ...p, impressoEtiqueta: true } : p));
+
+            // Limpa seleções após ação
+            setSelectedPedidosImpressao([]);
+            setSelectedPedidosEmissao([]);
+            setSelectedPedidos([]);
+            setSelectedPedidosEnviado([]);
+        } catch (err) {
+            console.error('Erro ao imprimir etiquetas ML:', err);
+        }
+    };
+
+    // Reimprime a etiqueta para um único pedido na aba "Aguardando Coleta"
+    const handleReprintLabel = async (pedido: any) => {
+        try {
+            if (!pedido) return;
+
+            // Coleta shipment_ids (preferindo marketplace_shipment_id) dos envios do pedido
+            const envios = Array.isArray(pedido?.financeiro?.envios) ? pedido.financeiro.envios : [];
+            const shipmentIds = Array.from(new Set([
+                ...envios.map((s: any) => s?.marketplace_shipment_id || s?.id).filter(Boolean),
+                ...(pedido?.shipment_id ? [pedido.shipment_id] : []),
+            ].map(String)));
+
+            if (shipmentIds.length === 0) {
+                console.warn('Nenhum shipment_id encontrado para reimpressão.');
+                return;
+            }
+
+            // Seleção do tipo de resposta: ZPL2 para impressoras Zebra; caso contrário, PDF
+            const printerName = String(printSettings?.printer || '').toLowerCase();
+            const responseType = printerName.includes('zebra') ? 'zpl2' : 'pdf';
+
+            // Tentar usar etiqueta do cache local (marketplace_orders_raw.labels)
+            const normalize = (arr: any[]): string[] => Array.isArray(arr) ? arr.map((x) => String(x)).filter(Boolean) : [];
+            const sameSet = (a: string[], b: string[]) => {
+                if (a.length !== b.length) return false;
+                const sa = [...a].sort();
+                const sb = [...b].sort();
+                for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+                return true;
+            };
+            const lbl = pedido?.label || {};
+            const lblIds = normalize(lbl?.shipment_ids || []);
+            if (lbl?.cached && lbl?.content_base64 && lbl?.response_type === responseType && sameSet(lblIds, shipmentIds)) {
+                const base64 = String(lbl.content_base64);
+                const contentType = String(lbl.content_type || (responseType === 'pdf' ? 'application/pdf' : 'text/plain'));
+                const binStr = atob(base64);
+                const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
+                const blob = new Blob([bytes], { type: contentType });
+                const url = URL.createObjectURL(blob);
+                window.open(url, '_blank');
+                setPedidos(prev => prev.map(p => p.id === pedido.id ? { ...p, impressoEtiqueta: true } : p));
+                return;
+            }
+
+            // Sessão atual para Authorization
+            const { data: sess } = await supabase.auth.getSession();
+            const authHeader = sess?.session?.access_token ? `Bearer ${sess.session.access_token}` : undefined;
+            const body = JSON.stringify({ organizationId, shipment_ids: shipmentIds, response_type: responseType });
+
+            const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-shipment-labels`, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'apikey': SUPABASE_PUBLISHABLE_KEY,
+                    ...(authHeader ? { 'Authorization': authHeader } : {}),
+                },
+                body,
+            });
+
+            if (!resp.ok) {
+                const txt = await resp.text();
+                console.error('Falha ao reimprimir etiqueta ML:', resp.status, txt);
+                return;
+            }
+
+            const data = await resp.json();
+            const base64 = data?.content_base64;
+            const contentType = data?.content_type || (responseType === 'pdf' ? 'application/pdf' : 'text/plain');
+            if (!base64) {
+                console.warn('Resposta sem conteúdo de etiqueta.');
+                return;
+            }
+            const binStr = atob(base64);
+            const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
+            const blob = new Blob([bytes], { type: contentType });
+            const url = URL.createObjectURL(blob);
+            window.open(url, '_blank');
+
+            // Atualiza estado local para refletir etiqueta impressa
+            setPedidos(prev => prev.map(p => p.id === pedido.id ? { ...p, impressoEtiqueta: true } : p));
+        } catch (err) {
+            console.error('Erro ao reimprimir etiqueta ML:', err);
+        }
     };
 
     return (
@@ -2101,7 +2355,7 @@ function Pedidos() {
                     <AppSidebar />
                     <div className="flex-1 flex flex-col">
                         <GlobalHeader />
-                        <main className="flex-1 overflow-auto p-6">
+                        <main className="flex-1 overflow-auto p-6 relative">
                             <div className="flex items-center justify-between mb-8">
                                 <h1 className="text-3xl font-bold text-gray-900">Gestão de Pedidos</h1>
                                 {(() => {
@@ -2427,13 +2681,14 @@ function Pedidos() {
                                             <Select value={shippingTypeFilter} onValueChange={(v) => setShippingTypeFilter(v as any)}>
                                                 <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
                                                     <span className={`text-sm ${shippingTypeFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
-                                                        {shippingTypeFilter !== 'all' ? (
-                                                            shippingTypeFilter === 'full' ? 'Full'
-                                                            : shippingTypeFilter === 'flex' ? 'Flex'
-                                                            : shippingTypeFilter === 'agencia' ? 'Agência'
-                                                            : shippingTypeFilter === 'no_shipping' ? 'Sem envio'
-                                                            : ''
-                                                        ) : 'Tipo de Envio'}
+                                                    {shippingTypeFilter !== 'all' ? (
+                                                        shippingTypeFilter === 'full' ? 'Full'
+                                                        : shippingTypeFilter === 'flex' ? 'Flex'
+                                                        : shippingTypeFilter === 'envios' ? 'Envios'
+                                                        : shippingTypeFilter === 'correios' ? 'Correios'
+                                                        : shippingTypeFilter === 'no_shipping' ? 'Sem envio'
+                                                        : ''
+                                                    ) : 'Tipo de Envio'}
                                                     </span>
                                                     <span className="sr-only">
                                                         <SelectValue placeholder="Tipo de envio" />
@@ -2443,7 +2698,8 @@ function Pedidos() {
                                                     <SelectItem value="all">Todos</SelectItem>
                                                     <SelectItem value="full">Full</SelectItem>
                                                     <SelectItem value="flex">Flex</SelectItem>
-                                                    <SelectItem value="agencia">Agência</SelectItem>
+                                                    <SelectItem value="envios">Envios</SelectItem>
+                                                    <SelectItem value="correios">Correios</SelectItem>
                                                     <SelectItem value="no_shipping">Sem envio</SelectItem>
                                                 </SelectContent>
                                             </Select>
@@ -2562,13 +2818,14 @@ function Pedidos() {
                                             <Select value={shippingTypeFilter} onValueChange={(v) => setShippingTypeFilter(v as any)}>
                                                 <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
                                                     <span className={`text-sm ${shippingTypeFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
-                                                        {shippingTypeFilter !== 'all' ? (
-                                                            shippingTypeFilter === 'full' ? 'Full'
-                                                            : shippingTypeFilter === 'flex' ? 'Flex'
-                                                            : shippingTypeFilter === 'agencia' ? 'Agência'
-                                                            : shippingTypeFilter === 'no_shipping' ? 'Sem envio'
-                                                            : ''
-                                                        ) : 'Tipo de Envio'}
+                                                    {shippingTypeFilter !== 'all' ? (
+                                                        shippingTypeFilter === 'full' ? 'Full'
+                                                        : shippingTypeFilter === 'flex' ? 'Flex'
+                                                        : shippingTypeFilter === 'envios' ? 'Envios'
+                                                        : shippingTypeFilter === 'correios' ? 'Correios'
+                                                        : shippingTypeFilter === 'no_shipping' ? 'Sem envio'
+                                                        : ''
+                                                    ) : 'Tipo de Envio'}
                                                     </span>
                                                     <span className="sr-only">
                                                         <SelectValue placeholder="Tipo de envio" />
@@ -2578,7 +2835,8 @@ function Pedidos() {
                                                     <SelectItem value="all">Todos</SelectItem>
                                                     <SelectItem value="full">Full</SelectItem>
                                                     <SelectItem value="flex">Flex</SelectItem>
-                                                    <SelectItem value="agencia">Agência</SelectItem>
+                                                    <SelectItem value="envios">Envios</SelectItem>
+                                                    <SelectItem value="correios">Correios</SelectItem>
                                                     <SelectItem value="no_shipping">Sem envio</SelectItem>
                                                 </SelectContent>
                                             </Select>
@@ -2606,16 +2864,14 @@ function Pedidos() {
                                                         <tr>
                                                             <th className="w-16 px-6 py-3 text-left text-xs font-medium tracking-wider bg-purple-600">
                                                                 {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
-                                                                    <Checkbox
-                                                                        size="md"
-                                                                        indicatorStyle="square"
+                                                                    <CustomCheckbox
                                                                         checked={
                                                                             (activeStatus === "todos" && selectedPedidos.length > 0 && selectedPedidos.length === filteredPedidos.length) ||
                                                                             (activeStatus === "emissao-nf" && selectedPedidosEmissao.length > 0 && selectedPedidosEmissao.length === filteredPedidos.length) ||
                                                                             (activeStatus === "impressao" && selectedPedidosImpressao.length > 0 && selectedPedidosImpressao.length === filteredPedidos.length) ||
                                                                             (activeStatus === "enviado" && selectedPedidosEnviado.length > 0 && selectedPedidosEnviado.length === filteredPedidos.length)
                                                                         }
-                                                                        onCheckedChange={() => {
+                                                                        onChange={() => {
                                                                             if (activeStatus === "todos") handleSelectAll(selectedPedidos, setSelectedPedidos);
                                                                             if (activeStatus === "emissao-nf") handleSelectAll(selectedPedidosEmissao, setSelectedPedidosEmissao);
                                                                             if (activeStatus === "impressao") handleSelectAll(selectedPedidosImpressao, setSelectedPedidosImpressao);
@@ -2632,35 +2888,35 @@ function Pedidos() {
                                                 }
                                                 return (
                                                     <tr>
-                                                        <th className="w-16 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                        <th className="w-12 px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
-                                                                <Checkbox
-                                                                    size="md"
-                                                                    indicatorStyle="square"
+                                                                <div className="w-5 h-5 flex items-center justify-center">
+                                                                <CustomCheckbox
                                                                     checked={
                                                                         (activeStatus === "todos" && selectedPedidos.length > 0 && selectedPedidos.length === filteredPedidos.length) ||
                                                                         (activeStatus === "emissao-nf" && selectedPedidosEmissao.length > 0 && selectedPedidosEmissao.length === filteredPedidos.length) ||
                                                                         (activeStatus === "impressao" && selectedPedidosImpressao.length > 0 && selectedPedidosImpressao.length === filteredPedidos.length) ||
                                                                         (activeStatus === "enviado" && selectedPedidosEnviado.length > 0 && selectedPedidosEnviado.length === filteredPedidos.length)
                                                                     }
-                                                                    onCheckedChange={() => {
+                                                                    onChange={() => {
                                                                         if (activeStatus === "todos") handleSelectAll(selectedPedidos, setSelectedPedidos);
                                                                         if (activeStatus === "emissao-nf") handleSelectAll(selectedPedidosEmissao, setSelectedPedidosEmissao);
                                                                         if (activeStatus === "impressao") handleSelectAll(selectedPedidosImpressao, setSelectedPedidosImpressao);
                                                                         if (activeStatus === "enviado") handleSelectAll(selectedPedidosEnviado, setSelectedPedidosEnviado);
                                                                     }}
                                                                 />
+                                                                </div>
                                                             )}
                                                         </th>
                                                         {columns.filter(col => col.enabled).map(col => (
                                                                 <th
                                                                     key={col.id}
-                                                                    className={`px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'min-w-[220px] md:min-w-[300px] lg:min-w-[380px]' : ''} ${col.id === 'itens' ? 'w-28 md:w-32' : ''} ${col.id === 'cliente' ? 'w-[200px] md:w-[260px] lg:w-[300px] pr-2' : ''} ${col.id === 'valor' ? 'w-28 md:w-32 pl-2' : ''}`}
+                                                                    className={`px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'text-left min-w-[160px] sm:min-w-[200px] md:min-w-[240px] lg:min-w-[300px] xl:min-w-[360px]' : ''} ${col.id === 'itens' ? 'text-left w-24 md:w-28' : ''} ${col.id === 'cliente' ? 'text-left w-[140px] md:w-[200px] lg:w-[220px] pr-1' : ''} ${col.id === 'valor' ? 'text-right w-24 md:w-28' : ''} ${col.id === 'tipoEnvio' ? 'text-center w-[120px] md:w-[140px]' : ''} ${col.id === 'marketplace' ? 'text-left w-[110px] md:w-[120px]' : ''} ${col.id === 'idPlataforma' ? 'text-left w-[140px]' : ''} ${col.id === 'status' ? 'text-center w-[130px]' : ''}`}
                                                                 >
                                                                     {col.name}
                                                                 </th>
                                                             ))}
-                                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Detalhes</th>
+                                                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Detalhes</th>
                                                     </tr>
                                                 );
                                             })()}
@@ -2679,19 +2935,18 @@ function Pedidos() {
                                                             ? 'Pagamento cancelado'
                                                             : (isRefundedRow ? 'Pagamento reembolsado' : 'Abrir vinculação'));
                                                     return (
-                                                    <tr key={pedido.id} className="hover:bg-gray-50 transition-colors">
-                                                        <td className="w-16 px-6 py-4 whitespace-nowrap">
+                                                    <tr key={pedido.id} className="group hover:bg-gray-50 transition-colors">
+                                                        <td className="w-12 px-3 py-2 whitespace-nowrap">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
-                                                                <Checkbox
-                                                                    size="md"
-                                                                    indicatorStyle="square"
+                                                                <div className="w-5 h-5 flex items-center justify-center">
+                                                                <CustomCheckbox
                                                                     checked={
                                                                         (activeStatus === "todos" && selectedPedidos.includes(pedido.id)) ||
                                                                         (activeStatus === "emissao-nf" && selectedPedidosEmissao.includes(pedido.id)) ||
                                                                         (activeStatus === "impressao" && selectedPedidosImpressao.includes(pedido.id)) ||
                                                                         (activeStatus === "enviado" && selectedPedidosEnviado.includes(pedido.id))
                                                                     }
-                                                                    onCheckedChange={() => {
+                                                                    onChange={() => {
                                                                         if (activeStatus === "todos") handleCheckboxChange(pedido.id, selectedPedidos, setSelectedPedidos);
                                                                         if (activeStatus === "emissao-nf") handleCheckboxChange(pedido.id, selectedPedidosEmissao, setSelectedPedidosEmissao);
                                                                         if (activeStatus === "impressao") handleCheckboxChange(pedido.id, selectedPedidosImpressao, setSelectedPedidosImpressao);
@@ -2699,17 +2954,18 @@ function Pedidos() {
                                                                     }}
                                                                     onClick={(e) => e.stopPropagation()}
                                                                 />
+                                                                </div>
                                                             )}
                                                         </td>
                                                         {columns.filter(col => col.enabled).map(col => (
                                                             <td
                                                                 key={col.id}
-                                                                className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${col.id === 'produto' ? 'min-w-[220px] md:min-w-[300px] lg:min-w-[380px]' : ''} ${col.id === 'itens' ? 'w-28 md:w-32' : ''} ${col.id === 'cliente' ? 'w-[200px] md:w-[260px] lg:w-[300px] pr-2' : ''} ${col.id === 'valor' ? 'w-28 md:w-32 pl-2 text-right' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
+                                                                className={`px-3 py-2 whitespace-nowrap text-sm text-gray-500 ${col.id === 'produto' ? 'min-w-[160px] sm:min-w-[200px] md:min-w-[240px] lg:min-w-[300px] xl:min-w-[360px]' : ''} ${col.id === 'itens' ? 'w-24 md:w-28' : ''} ${col.id === 'cliente' ? 'w-[140px] md:w-[200px] lg:w-[220px] pr-1' : ''} ${col.id === 'valor' ? 'w-24 md:w-28 text-right' : ''} ${col.id === 'tipoEnvio' ? 'w-[120px] md:w-[140px] text-center' : ''} ${col.id === 'marketplace' ? 'w-[110px] md:w-[120px]' : ''} ${col.id === 'idPlataforma' ? 'w-[140px]' : ''} ${col.id === 'status' ? 'w-[130px] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
                                                             >
                                                                 {col.render(pedido)}
                                                             </td>
                                                         ))}
-                                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                        <td className="px-3 py-2 whitespace-nowrap text-right text-sm font-medium">
                                                             {activeStatus === "a-vincular" ? (
                                                                 <TooltipProvider>
                                                                     <Tooltip>
@@ -2728,6 +2984,19 @@ function Pedidos() {
                                                                         </TooltipContent>
                                                                     </Tooltip>
                                                                 </TooltipProvider>
+                                                            ) : activeStatus === "aguardando-coleta" ? (
+                                                                <div className="flex items-center justify-end gap-2">
+                                                                    <Button
+                                                                        variant="outline"
+                                                                        className="h-8 px-4"
+                                                                        onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
+                                                                    >
+                                                                        Reimprimir
+                                                                    </Button>
+                                                                    <Button variant="outline" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
+                                                                        <ChevronDown className="h-4 w-4" />
+                                                                    </Button>
+                                                                </div>
                                                             ) : (
                                                                 <Button variant="outline" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
                                                                     <ChevronDown className="h-4 w-4" />
@@ -2895,9 +3164,9 @@ function Pedidos() {
                                         >
                                             <div className="flex items-center space-x-2">
                                                 {!col.alwaysVisible && (
-                                                    <Checkbox
+                                                    <CustomCheckbox
                                                         checked={col.enabled}
-                                                        onCheckedChange={(checked) => setColumns(prev => prev.map(c => c.id === col.id ? { ...c, enabled: !!checked } : c))}
+                                                        onChange={(e) => setColumns(prev => prev.map(c => c.id === col.id ? { ...c, enabled: !!(e.target as HTMLInputElement).checked } : c))}
                                                     />
                                                 )}
                                                 <span className="text-sm">{col.name}</span>
@@ -3156,9 +3425,9 @@ function Pedidos() {
                                                         </Select>
                                                     </div>
                                                     <label className="flex items-center space-x-2 cursor-pointer">
-                                                        <Checkbox
+                                                        <CustomCheckbox
                                                             checked={printSettings.separateLabelPerItem}
-                                                            onCheckedChange={(checked) => setPrintSettings({...printSettings, separateLabelPerItem: checked})}
+                                                            onChange={(e) => setPrintSettings({...printSettings, separateLabelPerItem: (e.target as HTMLInputElement).checked})}
                                                         />
                                                         <span className="text-sm text-gray-700">Imprimir uma etiqueta por item</span>
                                                     </label>
@@ -3173,23 +3442,23 @@ function Pedidos() {
                                                 </h3>
                                                 <div className="space-y-4">
                                                     <label className="flex items-center space-x-2 cursor-pointer">
-                                                        <Checkbox
+                                                        <CustomCheckbox
                                                             checked={printSettings.groupByProduct}
-                                                            onCheckedChange={(checked) => setPrintSettings({...printSettings, groupByProduct: checked})}
+                                                            onChange={(e) => setPrintSettings({...printSettings, groupByProduct: (e.target as HTMLInputElement).checked})}
                                                         />
                                                         <span className="text-sm text-gray-700">Agrupar por produto (Picking List)</span>
                                                     </label>
                                                     <label className="flex items-center space-x-2 cursor-pointer">
-                                                        <Checkbox
+                                                        <CustomCheckbox
                                                             checked={printSettings.includeBarcode}
-                                                            onCheckedChange={(checked) => setPrintSettings({...printSettings, includeBarcode: checked})}
+                                                            onChange={(e) => setPrintSettings({...printSettings, includeBarcode: (e.target as HTMLInputElement).checked})}
                                                         />
                                                         <span className="text-sm text-gray-700">Incluir código de barras no SKU</span>
                                                     </label>
                                                     <label className="flex items-center space-x-2 cursor-pointer">
-                                                        <Checkbox
+                                                        <CustomCheckbox
                                                             checked={printSettings.includeOrderNumber}
-                                                            onCheckedChange={(checked) => setPrintSettings({...printSettings, includeOrderNumber: checked})}
+                                                            onChange={(e) => setPrintSettings({...printSettings, includeOrderNumber: (e.target as HTMLInputElement).checked})}
                                                         />
                                                         <span className="text-sm text-gray-700">Incluir número do pedido</span>
                                                     </label>
@@ -3260,7 +3529,7 @@ function Pedidos() {
                 </Drawer>
             </SidebarProvider>
         </TooltipProvider>
-    );
+        );
 }
 
 export default Pedidos;

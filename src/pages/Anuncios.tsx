@@ -50,6 +50,8 @@ export default function Anuncios() {
     const [listingPricesByItemId, setListingPricesByItemId] = useState<Record<string, any>>({});
     const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
     const [expandedVariations, setExpandedVariations] = useState<Set<string>>(new Set());
+    // Capacidades/flags de envio do seller (derivadas de shipping_preferences)
+    const [shippingCaps, setShippingCaps] = useState<{ flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean } | null>(null);
 
     // Helper para colorização do medidor por nível de qualidade
     const getQualityStrokeColor = (level?: string | null) => {
@@ -156,6 +158,33 @@ export default function Anuncios() {
             } catch (distCatchErr) {
                 console.error('Falha ao carregar distribuição de estoque:', distCatchErr);
             }
+
+            // Buscar flags de shipping_preferences da integração Mercado Livre e consolidar
+            try {
+                const { data: integRows, error: integErr } = await (supabase as any)
+                    .from('marketplace_integrations')
+                    .select('flex_enabled, envios_enabled, correios_enabled, full_enabled, preferences_fetched_at, marketplace_name')
+                    .eq('organizations_id', organizationId)
+                    .eq('marketplace_name', 'Mercado Livre');
+                if (integErr) {
+                    console.error('Erro ao buscar marketplace_integrations:', integErr);
+                } else {
+                    const caps = { flex: false, envios: false, correios: false, full: false } as { flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean };
+                    const rows = integRows || [];
+                    rows.forEach((r: any) => {
+                        if (r?.flex_enabled === true) caps.flex = true;
+                        if (r?.envios_enabled === true) caps.envios = true;
+                        if (r?.correios_enabled === true) caps.correios = true;
+                        if (r?.full_enabled === true) caps.full = true;
+                    });
+                    const hasFetched = rows.some((r: any) => !!r?.preferences_fetched_at);
+                    const anyEnabled = !!(caps.flex || caps.envios || caps.correios || caps.full);
+                    // Só filtra quando já buscamos preferências e há ao menos um método habilitado
+                    setShippingCaps(hasFetched && anyEnabled ? caps : null);
+                }
+            } catch (capsCatchErr) {
+                console.error('Falha ao carregar shipping caps:', capsCatchErr);
+            }
         } catch (e: any) {
             console.error("Erro ao buscar anúncios:", e);
             // Fallback para tabela original se a view não existir ainda
@@ -246,6 +275,32 @@ export default function Anuncios() {
                     }
                 } catch (distCatchErr) {
                     console.error('Falha ao carregar distribuição de estoque (fallback):', distCatchErr);
+                }
+
+                // Buscar flags de shipping_preferences também no fallback
+                try {
+                    const { data: integRows, error: integErr } = await (supabase as any)
+                        .from('marketplace_integrations')
+                        .select('flex_enabled, envios_enabled, correios_enabled, full_enabled, preferences_fetched_at, marketplace_name')
+                        .eq('organizations_id', organizationId)
+                        .eq('marketplace_name', 'Mercado Livre');
+                    if (integErr) {
+                        console.error('Erro ao buscar marketplace_integrations (fallback):', integErr);
+                    } else {
+                        const caps = { flex: false, envios: false, correios: false, full: false } as { flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean };
+                        const rows = integRows || [];
+                        rows.forEach((r: any) => {
+                            if (r?.flex_enabled === true) caps.flex = true;
+                            if (r?.envios_enabled === true) caps.envios = true;
+                            if (r?.correios_enabled === true) caps.correios = true;
+                            if (r?.full_enabled === true) caps.full = true;
+                        });
+                        const hasFetched = rows.some((r: any) => !!r?.preferences_fetched_at);
+                        const anyEnabled = !!(caps.flex || caps.envios || caps.correios || caps.full);
+                        setShippingCaps(hasFetched && anyEnabled ? caps : null);
+                    }
+                } catch (capsCatchErr) {
+                    console.error('Falha ao carregar shipping caps (fallback):', capsCatchErr);
                 }
             } catch (fallbackError: any) {
                 console.error("Erro no fallback:", fallbackError);
@@ -583,16 +638,58 @@ export default function Anuncios() {
         const originalPrice = Number(row?.original_price) || null;
         const hasPromo = !!originalPrice && originalPrice > priceNum;
         const promoPrice = hasPromo ? priceNum : null;
-        // Envio: consolidado de marketplace_stock_distribution ou fallback do marketplace_items
+        // Envio: união entre marketplace_stock_distribution e marketplace_items.stock_distribution
         let shippingTags: string[] = [];
         const idVal = row?.marketplace_item_id || row?.id;
-        if (idVal && Array.isArray(shippingTypesByItemId[idVal])) {
-            shippingTags = (shippingTypesByItemId[idVal] || []).map((s) => String(s || '').toLowerCase());
+        const distTags = (idVal && Array.isArray(shippingTypesByItemId[idVal]))
+            ? (shippingTypesByItemId[idVal] || []).map((s) => String(s || '').toLowerCase())
+            : [];
+        const sd = row?.stock_distribution;
+        const summaryTags = Array.isArray(sd?.shipping_types)
+            ? sd.shipping_types.map((s: any) => String(s || '').toLowerCase())
+            : [];
+        shippingTags = Array.from(new Set([ ...distTags, ...summaryTags ]));
+        // Ajuste baseado em shipping.data do item (logistic_type e tags self_service)
+        const shippingInfo = (row as any)?.data?.shipping || (row as any)?.shipping;
+        const logisticType = String(
+            (shippingInfo?.logistic_type ?? shippingInfo?.mode ?? '')
+        ).toLowerCase();
+        const baselineByLogistic: string[] = [];
+        if (logisticType) {
+            if (logisticType === 'fulfillment' || logisticType === 'fbm') baselineByLogistic.push('full');
+            else if (logisticType === 'self_service') baselineByLogistic.push('flex');
+            else if (logisticType === 'xd_drop_off' || logisticType === 'cross_docking' || logisticType === 'me2') baselineByLogistic.push('envios');
+            else if (logisticType === 'drop_off') baselineByLogistic.push('correios');
         }
-        if (!shippingTags.length) {
-            const sd = row?.stock_distribution;
-            const fromSd = Array.isArray(sd?.shipping_types) ? sd.shipping_types : [];
-            shippingTags = fromSd.map((s: any) => String(s || '').toLowerCase());
+        const rawTags: string[] = Array.isArray(shippingInfo?.tags)
+            ? (shippingInfo.tags as any[]).map((t: any) => String(t || '').toLowerCase())
+            : [];
+        const set = new Set<string>([...shippingTags, ...baselineByLogistic]);
+        if (rawTags.includes('self_service_in')) set.add('flex');
+        if (rawTags.includes('self_service_out') && logisticType !== 'self_service') set.delete('flex');
+        shippingTags = Array.from(set);
+        // Normalizar tags de logística para o novo módulo (full/flex/envios/correios/no_shipping)
+        const normalizeTag = (tag: string) => {
+            const t = String(tag || '').toLowerCase();
+            if (t.includes('full')) return 'full';
+            if (t.includes('flex')) return 'flex';
+            if (t.includes('correios') || t.includes('drop_off')) return 'correios';
+            if (t.includes('envios') || t.includes('xd_drop_off') || t.includes('cross_docking') || t.includes('me2') || t.includes('custom')) return 'envios';
+            if (t.includes('no_shipping')) return 'no_shipping';
+            return t;
+        };
+        shippingTags = Array.from(new Set(shippingTags.map(normalizeTag)));
+        // Filtrar pelos capabilities do seller quando disponíveis
+        if (shippingCaps) {
+            const allow = (t: string) => {
+                if (t === 'full') return !!shippingCaps.full;
+                if (t === 'flex') return !!shippingCaps.flex;
+                if (t === 'envios') return !!shippingCaps.envios;
+                if (t === 'correios') return !!shippingCaps.correios;
+                // Sem filtro para 'no_shipping'
+                return true;
+            };
+            shippingTags = shippingTags.filter(allow);
         }
         const listingTypeIdForItem = listingTypeByItemId[idVal] || null;
         const publicationTypeLabel = toPublicationLabel(listingTypeIdForItem);
@@ -1071,13 +1168,20 @@ export default function Anuncios() {
                                                             )}
 
                                                             {ad.shippingTags && ad.shippingTags.length > 0 ? (
-                                                                <div className="flex flex-wrap gap-1.5 mt-1">
+                                                                <div className="flex flex-wrap gap-1 mt-0.5">
                                                                     {ad.shippingTags.map((tag, index) => {
                                                                         const t = String(tag || '').toLowerCase();
-                                                                        const label = t.includes('full') ? 'Full' : t.includes('flex') ? 'Flex' : t.includes('ag') ? 'AG' : t.includes('correios') ? 'Correios' : (tag as string);
+                                                                        const label = (
+                                                                            t === 'full' ? 'Full'
+                                                                            : t === 'flex' ? 'Flex'
+                                                                            : t === 'envios' ? 'Envios'
+                                                                            : t === 'correios' ? 'Correios'
+                                                                            : t === 'no_shipping' ? 'Sem envio'
+                                                                            : (tag as string)
+                                                                        );
                                                                         return (
-                                                                            <Badge key={index} className="font-medium text-[10px] px-1.5 py-0.5 bg-[#7C3AED] text-white">
-                                                                                {t.includes('full') ? <Zap className="w-2.5 h-2.5 mr-1" /> : null}
+                                                                            <Badge key={index} className="font-medium text-[9px] px-1 py-[1px] rounded-sm bg-[#7C3AED] text-white">
+                                                                                {t === 'full' ? <Zap className="w-2 h-2 mr-0.5" /> : null}
                                                                                 {label}
                                                                             </Badge>
                                                                         );

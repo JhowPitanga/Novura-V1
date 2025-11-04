@@ -281,7 +281,7 @@ export default function Auth() {
 
   return (
     <div className="min-h-screen bg-background">
-      {activeTab === 'login' && isLoginLoading && <LoadingOverlay />}
+      {activeTab === 'login' && isLoginLoading && <LoadingOverlay fullscreen />}
       <div className="grid lg:grid-cols-2 h-full min-h-screen">
         {/* Lado esquerdo - animação personalizada para Login; mantém original no Signup */}
         <div className="hidden lg:flex flex-col border-r bg-white/70 backdrop-blur-sm relative">

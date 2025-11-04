@@ -322,18 +322,22 @@ serve(async (req) => {
       }
     }
 
-    // Build map of existing marketplace_orders last_updated for delta comparison
+    // Build map of existing marketplace_orders last_updated and whether labels exist
     const ids = Array.from(new Set(orders.map((o:any)=> String(o?.id)).filter(Boolean)));
     const existingMap = new Map<string, string | null>();
+    const existingLabelsMap = new Map<string, boolean>();
     if (ids.length > 0) {
       const { data: existingRows } = await admin
         .from("marketplace_orders_raw")
-        .select("marketplace_order_id,last_updated")
+        .select("marketplace_order_id,last_updated,labels")
         .eq("organizations_id", organizationId as string)
         .eq("marketplace_name", "Mercado Livre")
         .in("marketplace_order_id", ids);
       for (const r of (existingRows || [])) {
-        existingMap.set(String(r.marketplace_order_id), r.last_updated ? String(r.last_updated) : null);
+        const k = String(r.marketplace_order_id);
+        existingMap.set(k, r.last_updated ? String(r.last_updated) : null);
+        const hasLabels = r && typeof r.labels !== 'undefined' && r.labels !== null;
+        existingLabelsMap.set(k, !!hasLabels);
       }
     }
 
@@ -343,15 +347,17 @@ serve(async (req) => {
       const marketplaceOrderId = String(o?.id ?? "");
       if (!marketplaceOrderId) continue;
 
-      // Skip unchanged orders by comparing last_updated (desativado em modo forçado por IDs)
+      // Skip unchanged orders by comparing last_updated, BUT do not skip if labels are missing
       if (!forceUpdate) {
         const remoteUpdatedStr = String(o?.last_updated || o?.date_last_updated || o?.date_created || "");
         const existingUpdatedStr = existingMap.get(marketplaceOrderId) || null;
+        const hasExistingLabels = existingLabelsMap.get(marketplaceOrderId) === true;
         if (existingUpdatedStr && remoteUpdatedStr) {
           const remoteTs = Date.parse(remoteUpdatedStr);
           const localTs = Date.parse(existingUpdatedStr);
-          if (!Number.isNaN(remoteTs) && !Number.isNaN(localTs) && remoteTs <= localTs) {
-            // Already up-to-date, skip heavy work
+          const upToDate = (!Number.isNaN(remoteTs) && !Number.isNaN(localTs) && remoteTs <= localTs);
+          // Only skip if up-to-date AND labels already exist
+          if (upToDate && hasExistingLabels) {
             continue;
           }
         }
@@ -552,6 +558,129 @@ serve(async (req) => {
               costs_fetched_at: costs ? nowIso : (sh?.costs_fetched_at ?? null),
             });
           }
+
+          // Buscar e cachear etiquetas (shipment_labels) quando houver shipments candidatos
+          // Helper: busca etiquetas para um conjunto de shipments, com refresh de token
+          async function fetchShipmentLabels(
+            shipmentIds: string[],
+            responseType: "pdf" | "zpl2",
+          ): Promise<{ ok: boolean; content_base64?: string; content_type?: string; size_bytes?: number; fetched_at?: string; error?: any; }> {
+            if (shipmentIds.length === 0) return { ok: false };
+            const url = new URL("https://api.mercadolibre.com/shipment_labels");
+            url.searchParams.set("shipment_ids", shipmentIds.join(","));
+            // Mercado Livre espera valores em maiúsculas: PDF ou ZPL2
+            const respTypeParam = responseType.toUpperCase();
+            url.searchParams.set("response_type", respTypeParam);
+            const tryFetch = async (token: string) => fetch(url.toString(), { method: "GET", headers: { Authorization: `Bearer ${token}` } });
+
+            let mlResp = await tryFetch(accessToken);
+            if (!mlResp.ok && (mlResp.status === 401 || mlResp.status === 403) && integration.refresh_token) {
+              try {
+                const { data: appRow, error: appErr } = await admin
+                  .from("apps")
+                  .select("client_id, client_secret")
+                  .eq("name", integration.marketplace_name === "mercado_livre" ? "Mercado Livre" : integration.marketplace_name)
+                  .single();
+                if (!appErr && appRow) {
+                  let refreshTokenPlain: string | null = null;
+                  try { refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token); } catch { refreshTokenPlain = null; }
+                  if (refreshTokenPlain) {
+                    const form = new URLSearchParams();
+                    form.append("grant_type", "refresh_token");
+                    form.append("client_id", appRow.client_id);
+                    form.append("client_secret", appRow.client_secret);
+                    form.append("refresh_token", refreshTokenPlain);
+                    const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
+                      method: "POST",
+                      headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
+                      body: form.toString(),
+                    });
+                    const refreshJson = await refreshResp.json();
+                    if (refreshResp.ok) {
+                      const { access_token: newAccessToken, refresh_token: newRefreshToken, expires_in, user_id } = refreshJson;
+                      const newExpiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
+                      const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
+                      const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
+                      await admin
+                        .from("marketplace_integrations")
+                        .update({ access_token: newAccessTokenEnc, refresh_token: newRefreshTokenEnc, expires_in: newExpiresAtIso, meli_user_id: user_id })
+                        .eq("id", integration.id);
+                      // Atualiza token em escopo externo para próximas chamadas
+                      accessToken = newAccessToken;
+                      mlResp = await tryFetch(newAccessToken);
+                    }
+                  }
+                }
+              } catch (_) { /* ignore refresh failure */ }
+            }
+
+            const buf = await mlResp.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            const b64 = uint8ToB64(bytes);
+            const ct = responseType === "pdf" ? "application/pdf" : "text/plain";
+            if (mlResp.ok) {
+              return { ok: true, content_base64: b64, content_type: ct, size_bytes: bytes.byteLength, fetched_at: nowIso };
+            }
+            // Tentar decodificar erro para diagnóstico
+            let errJson: any = {};
+            try { errJson = JSON.parse(new TextDecoder().decode(bytes)); } catch { errJson = { raw: new TextDecoder().decode(bytes) }; }
+            return { ok: false, error: errJson };
+          }
+
+          // Buscar e cachear etiquetas (PDF e ZPL2), mantendo compatibilidade
+          let labelsObj: any | null = null;
+          try {
+            const labelIds = Array.from(candidateShipmentIds);
+            if (labelIds.length > 0) {
+              const pdf = await fetchShipmentLabels(labelIds, "pdf");
+              const zpl = await fetchShipmentLabels(labelIds, "zpl2");
+
+              if (pdf.ok || zpl.ok) {
+                // Por compatibilidade, usar campos de topo para o formato principal (prioriza PDF)
+                const primary = pdf.ok ? { type: "pdf", ...pdf } : { type: "zpl2", ...zpl };
+                labelsObj = {
+                  cached: true,
+                  response_type: primary.type,
+                  content_base64: primary.content_base64,
+                  content_type: primary.content_type || (primary.type === "pdf" ? "application/pdf" : "text/plain"),
+                  shipment_ids: labelIds,
+                  fetched_at: primary.fetched_at,
+                  size_bytes: primary.size_bytes,
+                  // Formatos adicionais
+                  pdf_base64: pdf.ok ? pdf.content_base64 : undefined,
+                  pdf_size_bytes: pdf.ok ? pdf.size_bytes : undefined,
+                  pdf_fetched_at: pdf.ok ? pdf.fetched_at : undefined,
+                  zpl2_base64: zpl.ok ? zpl.content_base64 : undefined,
+                  zpl2_size_bytes: zpl.ok ? zpl.size_bytes : undefined,
+                  zpl2_fetched_at: zpl.ok ? zpl.fetched_at : undefined,
+                };
+              } else {
+                labelsObj = {
+                  error: true,
+                  message: (pdf.error?.message || zpl.error?.message || "ML error"),
+                  shipment_ids: labelIds,
+                  fetched_at: nowIso,
+                };
+              }
+            } else {
+              // Nenhum shipment_id disponível: gravar objeto de erro para evitar NULL
+              labelsObj = {
+                error: true,
+                message: "no shipments found",
+                shipment_ids: [],
+                fetched_at: nowIso,
+              };
+            }
+          } catch (_) { /* ignore label fetch errors */ }
+          // Garantir que labels nunca seja NULL mesmo em caso de erro inesperado
+          if (!labelsObj) {
+            labelsObj = {
+              error: true,
+              message: "label fetch failed",
+              shipment_ids: Array.from(candidateShipmentIds),
+              fetched_at: nowIso,
+            };
+          }
           // Determina se é criação ou atualização no raw
           const isNewRaw = !existingMap.has(marketplaceOrderId);
           const upsertData = {
@@ -566,6 +695,7 @@ serve(async (req) => {
             seller: orderData.seller || null,
             payments: paymentsEnriched,
             shipments: Array.isArray(shipmentsNormalized) ? shipmentsNormalized : [],
+            labels: labelsObj,
             feedback: orderData.feedback || null,
             tags: Array.isArray(orderData.tags) ? orderData.tags : [],
             data: orderData,
@@ -575,14 +705,14 @@ serve(async (req) => {
             last_synced_at: nowIso,
             updated_at: nowIso,
           } as const;
-          try {
-            await admin
-              .from("marketplace_orders_raw")
-              .upsert(upsertData, { onConflict: "organizations_id,marketplace_name,marketplace_order_id" });
+          const { error: upErr } = await admin
+            .from("marketplace_orders_raw")
+            .upsert(upsertData, { onConflict: "organizations_id,marketplace_name,marketplace_order_id" });
+          if (upErr) {
+            console.warn("[SYNC-ORDERS] upsert error", { marketplace_order_id: marketplaceOrderId, message: upErr.message });
+          } else {
             if (isNewRaw) created++; else updated++;
-            // Upsert normalized shipments rows
-            // Não gravar mais em marketplace_shipments: todos os dados de envio ficam em marketplace_orders_raw.shipments
-          } catch (_) { /* ignore */ }
+          }
         }
       } catch (_) { /* ignore */ }
     }

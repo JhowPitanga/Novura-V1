@@ -17,6 +17,7 @@ function jsonResponse(body: any, status = 200) {
 function b64ToUint8(b64: string): Uint8Array { const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
 async function importAesGcmKey(base64Key: string): Promise<CryptoKey> { const keyBytes = b64ToUint8(base64Key); return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); }
 async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> { const parts = encStr.split(":"); if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); const iv = b64ToUint8(parts[2]); const ct = b64ToUint8(parts[3]); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); return new TextDecoder().decode(pt); }
+async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext)); const ivStr = btoa(String.fromCharCode(...iv)); const ctStr = btoa(String.fromCharCode(...new Uint8Array(ct))); return `enc:gcm:${ivStr}:${ctStr}`; }
 
 // Esta função é a porta de entrada para webhooks do Mercado Livre
 // Ela roteia as notificações para as funções específicas baseadas no tópico
@@ -90,6 +91,11 @@ serve(async (req) => {
         return jsonResponse({ ok: true, accepted: true, topic: "items", correlationId });
       }
 
+      case "shipments": {
+        setTimeout(() => { routeToShipmentsWebhook(notification, req.headers).catch((e) => console.error("sync-all bg shipments error", e)); }, 0);
+        return jsonResponse({ ok: true, accepted: true, topic: "shipments", correlationId });
+      }
+
       case "orders":
       case "orders_v2": {
         setTimeout(() => { routeToOrdersWebhook(notification, req.headers).catch((e) => console.error("sync-all bg orders error", e)); }, 0);
@@ -97,6 +103,7 @@ serve(async (req) => {
       }
 
       case "stock_locations":
+      case "stock-locations":
       case "available_quantity": {
         setTimeout(() => { routeToStockLocations(notification, req.headers).catch((e) => console.error("sync-all bg stock_locations error", e)); }, 0);
         return jsonResponse({ ok: true, accepted: true, topic: notification.topic, correlationId });
@@ -106,7 +113,7 @@ serve(async (req) => {
         console.warn("mercado-livre-sync-all unsupported_topic", { correlationId, topic: notification.topic });
         return jsonResponse({ 
           error: `Unsupported topic: ${notification.topic}`,
-          supported_topics: ["items", "orders", "orders_v2", "stock_locations"]
+          supported_topics: ["items", "orders", "orders_v2", "stock_locations", "stock-locations", "shipments"]
         }, 400);
       }
     }
@@ -221,7 +228,7 @@ async function routeToStockLocations(notification: any, headers?: Headers) {
   if (integErr || !integration) {
     console.warn("mercado-livre-sync-all -> available_quantity integration_missing", { correlationId, error: integErr?.message });
     // Não propagar erro: responder 200 para o webhook do ML
-    return jsonResponse({ ok: false, topic: "available-quantity", routed: false, error: "Integration not found", correlationId }, 200);
+    return jsonResponse({ ok: false, topic: notification.topic, routed: false, error: "Integration not found", correlationId }, 200);
   }
 
   const organizationId = integration.organizations_id;
@@ -268,7 +275,7 @@ async function routeToStockLocations(notification: any, headers?: Headers) {
       const bodyPreview = bodyRaw && typeof bodyRaw === 'object' ? JSON.stringify(bodyRaw).slice(0, 500) : String(bodyRaw || '').slice(0, 500);
       console.warn("mercado-livre-sync-all -> available_quantity invoke_error_details", { correlationId, status: (error as any)?.context?.status, bodyPreview });
       // Não propagar erro para o ML; responder 200
-      return jsonResponse({ ok: false, topic: "available_quantity", routed: true, error: errObj, correlationId }, 200);
+      return jsonResponse({ ok: false, topic: notification.topic, routed: true, error: errObj, correlationId }, 200);
     }
 
     console.log("mercado-livre-sync-all -> available_quantity invoke_success", {
@@ -278,11 +285,194 @@ async function routeToStockLocations(notification: any, headers?: Headers) {
     });
     const resultPreview = data && typeof data === 'object' ? JSON.stringify({ ok: (data as any)?.ok, keys: Object.keys(data).slice(0, 10) }).slice(0, 200) : String(data).slice(0, 200);
     console.log("mercado-livre-sync-all -> available_quantity invoke_success_preview", { correlationId, resultPreview });
-    return jsonResponse({ ok: true, topic: "available_quantity", routed: true, result: data, correlationId });
+    return jsonResponse({ ok: true, topic: notification.topic, routed: true, result: data, correlationId });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("mercado-livre-sync-all -> available_quantity invoke_exception", { correlationId, error: msg });
-    return jsonResponse({ ok: false, topic: "available_quantity", routed: true, error: msg, correlationId }, 200);
+    return jsonResponse({ ok: false, topic: notification.topic, routed: true, error: msg, correlationId }, 200);
+  }
+}
+
+// Função para rotear notificações de shipments
+async function routeToShipmentsWebhook(notification: any, headers?: Headers) {
+  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
+  const admin = createClient(SUPABASE_URL!, SERVICE_ROLE_KEY!);
+  const correlationId = headers?.get("x-request-id") || crypto.randomUUID();
+  const forwardedLog = {
+    authorization_present: !!headers?.get("authorization"),
+    "x-meli-signature": headers?.get("x-meli-signature") || null,
+    "x-request-id": headers?.get("x-request-id") || null,
+  };
+  console.log("mercado-livre-sync-all -> shipments invoke_start", {
+    correlationId,
+    topic: notification.topic,
+    user_id: String(notification.user_id),
+    resource: notification.resource,
+    forwarded_headers: forwardedLog,
+  });
+
+  function extractShipmentId(resource: string): string | null {
+    if (!resource) return null;
+    const r = resource.trim();
+    const patterns = [
+      /^(?:https?:\/\/[^\s]+)?\/?shipments\/?([A-Za-z0-9-_.]+)/,
+      /^\/?shipments\/?([A-Za-z0-9-_.]+)/,
+    ];
+    for (const p of patterns) {
+      const m = r.match(p);
+      if (m && m[1]) return m[1].split("?")[0].split("/")[0];
+    }
+    return null;
+  }
+
+  const shipmentId = extractShipmentId(String(notification.resource || ""));
+  if (!shipmentId) {
+    console.warn("mercado-livre-sync-all -> shipments invalid_resource", { correlationId, resource: notification.resource });
+    return jsonResponse({ ok: false, topic: "shipments", routed: false, error: "Invalid shipment resource", correlationId }, 200);
+  }
+
+  const { data: integration, error: integErr } = await admin
+    .from("marketplace_integrations")
+    .select("id, organizations_id, company_id, meli_user_id, marketplace_name, access_token, refresh_token")
+    .eq("meli_user_id", String(notification.user_id))
+    .eq("marketplace_name", "Mercado Livre")
+    .single();
+
+  if (integErr || !integration) {
+    console.warn("mercado-livre-sync-all -> shipments integration_missing", { correlationId, error: integErr?.message });
+    return jsonResponse({ ok: false, topic: "shipments", routed: false, error: "Integration not found", correlationId }, 200);
+  }
+
+  const invHeaders = {
+    'x-meli-signature': headers?.get('x-meli-signature') || '',
+    'x-request-id': headers?.get('x-request-id') || correlationId,
+    'x-correlation-id': correlationId,
+    'x-origin': 'webhook',
+    'apikey': SERVICE_ROLE_KEY!,
+    'x-internal-call': '1',
+  } as const;
+  const invHeadersLog = {
+    apikey_present: !!invHeaders['apikey'],
+    x_meli_signature_present: !!invHeaders['x-meli-signature'],
+    x_request_id: invHeaders['x-request-id'] || null,
+    x_correlation_id_present: !!invHeaders['x-correlation-id'],
+    x_origin: invHeaders['x-origin'],
+    x_internal_call: invHeaders['x-internal-call'],
+  };
+  console.log("mercado-livre-sync-all -> shipments headers_prepared", { correlationId, headers: invHeadersLog });
+
+  let accessToken: string | null = null;
+  try {
+    if (!ENC_KEY_B64) throw new Error("Missing TOKENS_ENCRYPTION_KEY");
+    const aesKey = await importAesGcmKey(ENC_KEY_B64);
+    accessToken = await aesGcmDecryptFromString(aesKey, integration.access_token);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn("mercado-livre-sync-all -> shipments decrypt_token_failed", { correlationId, error: msg });
+    if (typeof integration.access_token === 'string' && !integration.access_token.startsWith('enc:')) {
+      accessToken = integration.access_token;
+    }
+  }
+
+  if (!accessToken) {
+    console.warn("mercado-livre-sync-all -> shipments missing_access_token", { correlationId });
+    return jsonResponse({ ok: false, topic: "shipments", routed: false, error: "Access token unavailable", correlationId }, 200);
+  }
+
+  async function fetchShipmentDetails(shid: string, token: string, useNewFormat = false): Promise<any | null> {
+    try {
+      const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+      if (useNewFormat) headers["x-format-new"] = "true";
+      const resp = await fetch(`https://api.mercadolibre.com/shipments/${shid}`, { headers });
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch (_) { return null; }
+  }
+
+  let shipmentJson = await fetchShipmentDetails(shipmentId, accessToken, false) || await fetchShipmentDetails(shipmentId, accessToken, true);
+  if (!shipmentJson) {
+    try {
+      const ENC = ENC_KEY_B64 ? await importAesGcmKey(ENC_KEY_B64) : null;
+      if (ENC && integration.refresh_token) {
+        const { data: appRow, error: appErr } = await admin.from("apps").select("client_id, client_secret").eq("name", "Mercado Livre").single();
+        if (!appErr && appRow) {
+          let refreshTokenPlain: string | null = null;
+          try { refreshTokenPlain = await aesGcmDecryptFromString(ENC, integration.refresh_token); } catch { refreshTokenPlain = null; }
+          if (refreshTokenPlain) {
+            const tokenResp = await fetch("https://api.mercadolibre.com/oauth/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "refresh_token", client_id: String(appRow.client_id), client_secret: String(appRow.client_secret), refresh_token: refreshTokenPlain }) });
+            if (tokenResp.ok) {
+              const tokenJson = await tokenResp.json();
+              const newAccessEnc = await aesGcmEncryptToString(ENC, tokenJson.access_token);
+              const newRefreshEnc = await aesGcmEncryptToString(ENC, tokenJson.refresh_token);
+              const expiresAtIso = new Date(Date.now() + (Number(tokenJson.expires_in) || 3600) * 1000).toISOString();
+              await admin.from("marketplace_integrations").update({ access_token: newAccessEnc, refresh_token: newRefreshEnc, token_expires_at: expiresAtIso }).eq("id", integration.id);
+              accessToken = tokenJson.access_token;
+              shipmentJson = await fetchShipmentDetails(shipmentId, accessToken, false) || await fetchShipmentDetails(shipmentId, accessToken, true);
+            }
+          }
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  function resolveOrderId(obj: any): string | null {
+    if (!obj || typeof obj !== 'object') return null;
+    // Common shapes
+    if (obj.order_id) try { return String(obj.order_id); } catch { /* ignore */ }
+    if (obj.order && obj.order.id) try { return String(obj.order.id); } catch { /* ignore */ }
+    // Arrays of orders
+    if (Array.isArray(obj.orders) && obj.orders.length > 0) {
+      const first = obj.orders[0];
+      if (first && (first.id || first.order_id)) return String(first.id || first.order_id);
+    }
+    // Other possible fields
+    if (Array.isArray(obj.order_ids) && obj.order_ids.length > 0) return String(obj.order_ids[0]);
+    if (obj.orderId) try { return String(obj.orderId); } catch { /* ignore */ }
+    if (obj.shipping && obj.shipping.order_id) try { return String(obj.shipping.order_id); } catch { /* ignore */ }
+    return null;
+  }
+
+  const orderId = resolveOrderId(shipmentJson);
+  if (!orderId) {
+    console.warn("mercado-livre-sync-all -> shipments order_id_missing", { correlationId, shipment_id: shipmentId });
+    return jsonResponse({ ok: false, topic: "shipments", routed: false, error: "Order ID not found for shipment", correlationId, shipment_id: shipmentId }, 200);
+  }
+
+  try {
+    // Encaminhar para o webhook de pedidos com uma notificação sintética de orders
+    const forwardNotification = {
+      topic: "orders",
+      user_id: String(integration.meli_user_id),
+      resource: `/orders/${orderId}`,
+      _forwarded_from: "shipments",
+      _shipment_id: String(shipmentId),
+      _original: {
+        topic: notification.topic,
+        resource: notification.resource,
+        user_id: String(notification.user_id),
+      },
+    } as const;
+
+    const { data, error } = await admin.functions.invoke('mercado-livre-webhook-orders', {
+      body: forwardNotification,
+      headers: invHeaders,
+    });
+    if (error) {
+      const errObj = { name: (error as any)?.name, message: error.message, status: (error as any)?.context?.status, body: (error as any)?.context?.error || (error as any)?.context?.body };
+      console.warn("mercado-livre-sync-all -> shipments forwarded_to_orders_error", { correlationId, error: errObj });
+      const bodyRaw = (error as any)?.context?.body;
+      const bodyPreview = bodyRaw && typeof bodyRaw === 'object' ? JSON.stringify(bodyRaw).slice(0, 500) : String(bodyRaw || '').slice(0, 500);
+      console.warn("mercado-livre-sync-all -> shipments forwarded_to_orders_error_details", { correlationId, status: (error as any)?.context?.status, bodyPreview });
+      return jsonResponse({ ok: false, topic: "shipments", routed: true, forwarded_to: "orders", error: errObj, correlationId, order_id: String(orderId) }, 200);
+    }
+    console.log("mercado-livre-sync-all -> shipments forwarded_to_orders_success", { correlationId, order_id: String(orderId), result_keys: data && typeof data === 'object' ? Object.keys(data) : undefined });
+    return jsonResponse({ ok: true, topic: "shipments", routed: true, forwarded_to: "orders", result: data, correlationId, order_id: String(orderId) });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("mercado-livre-sync-all -> shipments invoke_exception", { correlationId, error: msg });
+    return jsonResponse({ ok: false, topic: "shipments", routed: true, error: msg, correlationId, order_id: String(orderId) }, 200);
   }
 }
 

@@ -82,8 +82,21 @@ serve(async (req) => {
 
     // Accept seller_id via query or POST body; accept organizationId via body
     const url = new URL(req.url);
-    const sellerIdFromQuery = url.searchParams.get("seller_id");
-    const debug = url.searchParams.get("debug") === "1";
+    let body: any = null;
+    if (req.method === "POST") {
+      try {
+        body = await req.json();
+        console.log("[meli-sync-items] Request body parsed");
+      } catch (e) {
+        body = null;
+      }
+    }
+    const sellerIdFromQuery = url.searchParams.get("seller_id") || url.searchParams.get("sellerId");
+    const debugParam = url.searchParams.get("debug") || req.headers.get("x-debug") || undefined;
+    const debug = Boolean(
+      body?.debug === true || body?.debug === "1" || body?.debug === "true" ||
+      (debugParam && ["1", "true", "yes", "on"].includes(debugParam.toLowerCase()))
+    );
 
     console.log("[meli-sync-items] Request parameters:", {
       url: req.url,
@@ -91,24 +104,22 @@ serve(async (req) => {
       debug
     });
 
-    let body: any = null;
-    if (req.method === "POST") {
-      try { 
-        body = await req.json(); 
-    console.log("[meli-sync-items] Request body parsed");
-      } catch (e) { 
-        body = null; 
-      }
-    }
-
     let siteId: string = (body?.siteId as string) || "MLB";
     let organizationId: string | undefined = body?.organizationId as string | undefined;
     const sellerIdInput: string | undefined = (body?.seller_id as string) || (body?.sellerId as string) || sellerIdFromQuery || undefined;
+    const forceParam = url.searchParams.get("force") || url.searchParams.get("resync") || url.searchParams.get("ignore_recent") || url.searchParams.get("bypass_cache");
+    const force = Boolean(
+      body?.force === true || body?.force === "1" ||
+      (forceParam && forceParam.toLowerCase() !== "0" && forceParam.toLowerCase() !== "false")
+    );
+    const itemIdInput: string | undefined = (body?.itemId as string) || url.searchParams.get("item_id") || url.searchParams.get("id") || undefined;
 
     console.log("[meli-sync-items] Parsed parameters:", {
       siteId,
       organizationId,
-      sellerIdInput
+      sellerIdInput,
+      force,
+      itemIdInput
     });
 
     if (!organizationId && !sellerIdInput) {
@@ -344,6 +355,11 @@ serve(async (req) => {
     // Paginated fetch from Mercado Livre: /users/{USER_ID}/items/search (recomendado)
     console.log(`[meli-sync-items] Starting paginated fetch for sellerId: ${sellerId}`);
     const items: any[] = [];
+    // If a specific itemId was requested, seed the list with it and skip pagination
+    if (itemIdInput) {
+      items.push(String(itemIdInput));
+      console.log(`[meli-sync-items] Single item sync requested: ${itemIdInput}`);
+    }
     let offset = 0;
     const limit = 50;
     // Cache/skip: load recently synced items to avoid refetching
@@ -356,10 +372,13 @@ serve(async (req) => {
       .eq("marketplace_name", "Mercado Livre")
       .gte("last_synced_at", recentSinceIso)
       .limit(5000);
-    const recentlySynced = new Set<string>((recentRows || []).map((r: any) => String(r.marketplace_item_id)));
+    const recentlySynced = force
+      ? new Set<string>()
+      : new Set<string>((recentRows || []).map((r: any) => String(r.marketplace_item_id)));
     const idSet = new Set<string>();
     
-    for (let page = 0; page < 200; page++) { // safety cap
+    // Only paginate when not syncing a single item
+    for (let page = 0; !itemIdInput && page < 200; page++) { // safety cap
       // Usar endpoint recomendado para obter itens da conta do vendedor
       const urlMl = new URL(`https://api.mercadolibre.com/users/${sellerId}/items/search`);
       // Não filtrar por status para incluir ativos, pausados e inativos
@@ -480,7 +499,13 @@ serve(async (req) => {
                     if (retryResp.ok) {
                       console.log("[meli-sync-items] Token refreshed and request succeeded");
                       const batch = Array.isArray(retryJson?.results) ? retryJson.results : [];
-                      items.push(...batch);
+                      for (const id of batch) {
+                        const idStr = String(id);
+                        if (!recentlySynced.has(idStr) && !idSet.has(idStr)) {
+                          idSet.add(idStr);
+                          items.push(idStr);
+                        }
+                      }
                       const total = Number(retryJson?.paging?.total || 0);
                       offset += batch.length;
                       if (offset >= total || batch.length === 0) break;
@@ -521,46 +546,71 @@ serve(async (req) => {
     }
 
     console.log(`[meli-sync-items] Finished fetching item IDs. Total item IDs: ${items.length}`);
+    if (force) {
+      console.log(`[meli-sync-items] Force mode enabled: ignoring recently synced filter`);
+    }
 
-    // Obter dados completos dos itens usando Multiget (apenas IDs não sincronizados recentemente)
-    console.log("[meli-sync-items] Fetching complete item details using Multiget...");
+    // Obter dados completos dos itens
     const completeItems: any[] = [];
-    const batchSize = 20; // Multiget permite até 20 itens por vez
-    
-    for (let i = 0; i < items.length; i += batchSize) {
-      const batch = items.slice(i, i + batchSize);
-      const itemIds = batch.join(',');
-      
-      console.log(`[meli-sync-items] Fetching details for batch ${Math.floor(i/batchSize) + 1}: ${batch.length} items`);
-      
+    if (itemIdInput && items.length === 1) {
+      // Quando um item específico foi solicitado, use o endpoint single para obter atributos completos
+      console.log(`[meli-sync-items] Fetching single item details for ${itemIdInput} (include_attributes=all)`);
       try {
-        const multigetUrl = `https://api.mercadolibre.com/items?ids=${itemIds}`;
-        const multigetResp = await fetch(multigetUrl, { 
-          headers: { 
-            Authorization: `Bearer ${accessToken}`, 
-            Accept: "application/json" 
-          } 
+        const singleUrl = `https://api.mercadolibre.com/items/${itemIdInput}?include_attributes=all`;
+        const singleResp = await fetch(singleUrl, {
+          headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" }
         });
-        
-        if (multigetResp.ok) {
-          const multigetData = await multigetResp.json();
-          console.log(`[meli-sync-items] Multiget response status: ${multigetResp.status}`);
-          
-          // Processar cada item da resposta
-          for (const itemResponse of multigetData) {
-            if (itemResponse.code === 200 && itemResponse.body) {
-              completeItems.push(itemResponse.body);
-              console.log(`[meli-sync-items] Added item: ${itemResponse.body.id} - ${itemResponse.body.title}`);
-            } else {
+        if (singleResp.ok) {
+          const singleData = await singleResp.json();
+          completeItems.push(singleData);
+          console.log(`[meli-sync-items] Added single item: ${singleData?.id} - ${singleData?.title}`);
+          // Logs de depuração para investigar atributos de variações
+          if (Array.isArray(singleData?.variations)) {
+            console.log(`[meli-sync-items] Variations count: ${singleData.variations.length}`);
+            const firstVar = singleData.variations[0];
+            if (firstVar) {
+              const attrs = Array.isArray(firstVar?.attributes) ? firstVar.attributes.map((a: any) => ({ id: a?.id, name: a?.name, value_name: a?.value_name })) : [];
+              const combos = Array.isArray(firstVar?.attribute_combinations) ? firstVar.attribute_combinations.map((a: any) => ({ id: a?.id, name: a?.name, value_name: a?.value_name })) : [];
+              console.log(`[meli-sync-items] First variation attributes:`, attrs);
+              console.log(`[meli-sync-items] First variation attribute_combinations:`, combos);
             }
           }
         } else {
-          // Fallback: usar dados básicos dos IDs
-          completeItems.push(...batch.map(id => ({ id })));
+          console.log(`[meli-sync-items] Single item fetch failed: ${singleResp.status}`);
+          completeItems.push({ id: itemIdInput });
         }
       } catch (e) {
-        // Fallback: usar dados básicos dos IDs
-        completeItems.push(...batch.map(id => ({ id })));
+        console.log(`[meli-sync-items] Error fetching single item: ${e}`);
+        completeItems.push({ id: itemIdInput });
+      }
+    } else {
+      // Multiget (apenas IDs não sincronizados recentemente)
+      console.log("[meli-sync-items] Fetching complete item details using Multiget...");
+      const batchSize = 20; // Multiget permite até 20 itens por vez
+      for (let i = 0; i < items.length; i += batchSize) {
+        const batch = items.slice(i, i + batchSize);
+        const itemIds = batch.join(',');
+        console.log(`[meli-sync-items] Fetching details for batch ${Math.floor(i/batchSize) + 1}: ${batch.length} items`);
+        try {
+          const multigetUrl = `https://api.mercadolibre.com/items?ids=${itemIds}`;
+          const multigetResp = await fetch(multigetUrl, { 
+            headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } 
+          });
+          if (multigetResp.ok) {
+            const multigetData = await multigetResp.json();
+            console.log(`[meli-sync-items] Multiget response status: ${multigetResp.status}`);
+            for (const itemResponse of multigetData) {
+              if (itemResponse.code === 200 && itemResponse.body) {
+                completeItems.push(itemResponse.body);
+                console.log(`[meli-sync-items] Added item: ${itemResponse.body.id} - ${itemResponse.body.title}`);
+              }
+            }
+          } else {
+            completeItems.push(...batch.map(id => ({ id })));
+          }
+        } catch (e) {
+          completeItems.push(...batch.map(id => ({ id })));
+        }
       }
     }
 
@@ -569,10 +619,65 @@ serve(async (req) => {
     // Map items to marketplace_items rows
     console.log("[meli-sync-items] Mapping items to database format...");
     const nowIso = new Date().toISOString();
+    // Helpers to derive SKU at variation level according to ML docs (attribute SELLER_SKU)
+    function getSkuFromAttrArray(arr: any[] | null | undefined): string | null {
+      if (!Array.isArray(arr)) return null;
+      for (const a of arr) {
+        const id = (a?.id || '').toString().toUpperCase();
+        const name = (a?.name || '').toString().toUpperCase();
+        // Mais tolerante: aceita qualquer atributo cujo id ou nome contenha "SKU"
+        if (id === 'SELLER_SKU' || id === 'SKU' || id.includes('SKU') || name.includes('SKU')) {
+          const v = a?.value_name
+            ?? a?.value
+            ?? a?.values?.[0]?.name
+            ?? (typeof a?.value_struct?.number !== 'undefined' ? String(a.value_struct.number) : null)
+            ?? null;
+          if (typeof v === 'string' && v.trim().length > 0) return v.trim();
+        }
+      }
+      return null;
+    }
+    // Deriva SKU da variação com fallback similar ao usado em /orders:
+    // 1- SELLER_SKU de atributos de variação
+    // 2- seller_custom_field de variação
+    // 3- SELLER_SKU de atributos de item
+    // 4- seller_custom_field de item
+    function deriveVariationSku(v: any, itemLevel: { itemAttrs?: any[]; itemSellerSku?: string | null; itemSellerCustomField?: string | null } = {}): string | null {
+      // Preferir campos explícitos se presentes na variação
+      const direct = (v?.seller_sku ?? v?.sku ?? v?.seller_custom_field ?? null);
+      if (typeof direct === 'string' && direct.trim().length > 0) return direct.trim();
+      // Procurar em attribute_combinations e attributes (variação)
+      const fromCombos = getSkuFromAttrArray(v?.attribute_combinations);
+      if (fromCombos) return fromCombos;
+      const fromAttrs = getSkuFromAttrArray(v?.attributes);
+      if (fromAttrs) return fromAttrs;
+      // Fallback para nível item
+      const itemAttrSku = getSkuFromAttrArray(itemLevel.itemAttrs);
+      if (itemAttrSku) return itemAttrSku;
+      const itemField = (itemLevel.itemSellerSku ?? itemLevel.itemSellerCustomField ?? null);
+      if (typeof itemField === 'string' && itemField.trim().length > 0) return itemField.trim();
+      return null;
+    }
     const upserts = completeItems.map((it) => {
       const pictures = Array.isArray(it?.pictures) ? it.pictures : [];
       const attributes = Array.isArray(it?.attributes) ? it.attributes : [];
-      const variations = Array.isArray(it?.variations) ? it.variations : null;
+      const rawVariations = Array.isArray(it?.variations) ? it.variations : null;
+      // Normalize variations to include a canonical seller_sku/sku when available
+      const variations = Array.isArray(rawVariations)
+        ? rawVariations.map((v: any) => {
+            const vsku = deriveVariationSku(v, {
+              itemAttrs: attributes,
+              itemSellerSku: typeof it?.seller_sku === 'string' ? it.seller_sku : null,
+              itemSellerCustomField: typeof it?.seller_custom_field === 'string' ? it.seller_custom_field : null,
+            });
+            return {
+              ...v,
+              // Include both keys to make downstream consumption simpler
+              seller_sku: vsku ?? v?.seller_sku ?? v?.seller_custom_field ?? null,
+              sku: vsku ?? v?.sku ?? v?.seller_custom_field ?? null,
+            };
+          })
+        : null;
       const tags = Array.isArray(it?.tags) ? it.tags : null;
       
       return {

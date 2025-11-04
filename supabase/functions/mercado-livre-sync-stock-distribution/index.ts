@@ -89,6 +89,13 @@ Deno.serve(async (req)=>{
     if (!sellerId) return jsonResponse({ error: "Missing meli_user_id" }, 400);
     const storesMap = new Map();
     const nodeMap = new Map();
+    // Flags globais de capacidades de envio do seller (derivadas de shipping_preferences)
+    let caps = {
+      flex_enabled: null as boolean | null,
+      envios_enabled: null as boolean | null,
+      correios_enabled: null as boolean | null,
+      full_enabled: null as boolean | null,
+    };
     try {
       const storesUrl = `https://api.mercadolibre.com/users/${sellerId}/stores/search?tags=stock_location`;
       const sResp = await fetch(storesUrl, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
@@ -96,6 +103,81 @@ Deno.serve(async (req)=>{
         const sj = await sResp.json();
         const results = Array.isArray(sj?.results) ? sj.results : [];
         for (const st of results){ const sid = String(st?.id ?? ""); const name = String(st?.description ?? st?.location?.address_line ?? sid); const nnid = st?.network_node_id ? String(st.network_node_id) : ""; if (sid) storesMap.set(sid, name); if (nnid) nodeMap.set(nnid, name); }
+      }
+    } catch (_) {}
+    // Buscar shipping_preferences do seller e persistir flags agregadas
+    try {
+      const prefsUrl = `https://api.mercadolibre.com/users/${sellerId}/shipping_preferences`;
+      const pResp = await fetch(prefsUrl, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
+      const pJson = await pResp.json();
+      if (pResp.ok && pJson) {
+        // Funções auxiliares para derivar flags a partir de diferentes formatos
+        const norm = (v: any) => (typeof v === 'string' ? v.toLowerCase() : v);
+        const isEnabledVal = (v: any) => {
+          const x = norm(v);
+          if (typeof x === 'boolean') return x;
+          if (typeof x === 'string') return x === 'enabled' || x === 'active' || x === 'true' || x === 'on';
+          return null;
+        };
+        const traverse = (obj: any, cb: (k: string, v: any)=>void) => {
+          if (!obj) return;
+          if (Array.isArray(obj)) { for (const it of obj) traverse(it, cb); return; }
+          if (typeof obj === 'object') {
+            for (const [k, v] of Object.entries(obj)) { cb(k.toLowerCase(), v); traverse(v, cb); }
+          }
+        };
+        const setIfKnown = (names: string[], v: any, setter: (b: boolean)=>void) => {
+          const val = isEnabledVal(v);
+          if (val === null) return;
+          const key = (Array.isArray(v) ? '' : (typeof v === 'object' ? '' : String(v))).toLowerCase();
+          // Apenas usa quando a chave tem correspondência clara
+          setter(val);
+        };
+        let flex: boolean | null = null;
+        let envios: boolean | null = null;
+        let correios: boolean | null = null;
+        let full: boolean | null = null;
+        // Varredura genérica por chaves e arrays conhecidas
+        traverse(pJson, (k, v)=>{
+          if (k.includes('shipping_modes') || k.includes('modes')) {
+            const arr = Array.isArray(v) ? v.map((x:any)=>String(x).toLowerCase()) : [];
+            if (arr.length) {
+              if (arr.includes('self_service')) flex = true;
+              if (arr.includes('me2') || arr.includes('xd_drop_off') || arr.includes('cross_docking') || arr.includes('custom')) envios = true;
+              if (arr.includes('drop_off')) correios = true;
+              if (arr.includes('fulfillment') || arr.includes('fbm')) full = true;
+            }
+          }
+          if (k.includes('self_service') || k.includes('me_flex') || k.includes('flex')) {
+            const val = isEnabledVal(v);
+            if (val !== null) flex = val;
+          }
+          if (k.includes('me2') || k.includes('xd_drop_off') || k.includes('cross_docking') || k.includes('envios') || k.includes('custom')) {
+            const val = isEnabledVal(v);
+            if (val !== null) envios = val;
+          }
+          if (k.includes('drop_off') || k.includes('correios')) {
+            const val = isEnabledVal(v);
+            if (val !== null) correios = val;
+          }
+          if (k.includes('fulfillment') || k.includes('fbm')) {
+            const val = isEnabledVal(v);
+            if (val !== null) full = val;
+          }
+        });
+        caps.flex_enabled = flex;
+        caps.envios_enabled = envios;
+        caps.correios_enabled = correios;
+        caps.full_enabled = full;
+        const nowIso = new Date().toISOString();
+        await admin.from('marketplace_integrations').update({
+          shipping_preferences: pJson,
+          preferences_fetched_at: nowIso,
+          flex_enabled: caps.flex_enabled,
+          envios_enabled: caps.envios_enabled,
+          correios_enabled: caps.correios_enabled,
+          full_enabled: caps.full_enabled,
+        }).eq('id', integration.id);
       }
     } catch (_) {}
     const TTL_MS = 6 * 60 * 60 * 1000;
@@ -135,12 +217,15 @@ Deno.serve(async (req)=>{
           const nodeId = loc?.network_node_id ? String(loc.network_node_id) : null;
           warehouse_id = storeId || nodeId || "seller_warehouse";
           warehouse_name = storeId && (storesMap.get(storeId) || `Loja ${storeId}`) || nodeId && (nodeMap.get(nodeId) || nodeId) || "Armazém do Vendedor";
-          // Por padrão, seller_warehouse tende a ser envio padrão (agência)
-          shipping_type = "agencia";
+          // Por padrão, seller_warehouse tende a ser envio padrão do Mercado Envios
+          shipping_type = "envios";
         } else if (type === "selling_address") {
           warehouse_id = "selling_address";
           warehouse_name = "Origem do Vendedor";
-          shipping_type = "flex";
+          // Atenção: "selling_address" não implica necessariamente Flex.
+          // Sem evidência explícita (logistic_type=self_service), tratamos como Envios por padrão.
+          // Se houver shippingInfo com logistic_type=self_service abaixo, será sobrescrito para "flex".
+          shipping_type = "envios";
         } else if (type === "meli_facility") {
           const nodeId = loc?.network_node_id ? String(loc.network_node_id) : null;
           warehouse_id = nodeId || "meli_facility";
@@ -154,13 +239,16 @@ Deno.serve(async (req)=>{
           // Mapeamento conforme docs ML:
           // - fulfillment/fbm => full
           // - self_service => flex (ME Flex)
-          // - drop_off, xd_drop_off, cross_docking => agencia (ME padrão)
+          // - xd_drop_off, cross_docking => envios (ME padrão)
+          // - drop_off => correios
           if (logisticType === "fulfillment" || logisticType === "fbm") {
             shipping_type = "full";
           } else if (logisticType === "self_service") {
             shipping_type = "flex";
-          } else if (logisticType === "drop_off" || logisticType === "xd_drop_off" || logisticType === "cross_docking") {
-            shipping_type = "agencia";
+          } else if (logisticType === "xd_drop_off" || logisticType === "cross_docking") {
+            shipping_type = "envios";
+          } else if (logisticType === "drop_off") {
+            shipping_type = "correios";
           }
         }
         
@@ -287,7 +375,17 @@ Deno.serve(async (req)=>{
         const logisticType = String(shippingInfo?.logistic_type || "").toLowerCase();
         if (logisticType === "fulfillment" || logisticType === "fbm") shippingTypesSet.add("full");
         else if (logisticType === "self_service") shippingTypesSet.add("flex");
-        else if (logisticType === "drop_off" || logisticType === "xd_drop_off" || logisticType === "cross_docking") shippingTypesSet.add("agencia");
+        else if (logisticType === "xd_drop_off" || logisticType === "cross_docking") shippingTypesSet.add("envios");
+        else if (logisticType === "drop_off") shippingTypesSet.add("correios");
+        // FLEX habilitado: tags incluem self_service_in (usuario ativou Flex)
+        const tags = Array.isArray((shippingInfo as any)?.tags)
+          ? ((shippingInfo as any).tags as any[]).map((t) => String(t || "").toLowerCase())
+          : [];
+        if (tags.includes("self_service_in")) shippingTypesSet.add("flex");
+        // FLEX desabilitado: se houver self_service_out e logistic_type não for self_service, não adicionar flex
+        if (tags.includes("self_service_out") && logisticType !== "self_service") {
+          if (shippingTypesSet.has("flex")) shippingTypesSet.delete("flex");
+        }
       }
       for (const loc of normalizedLocations) {
         if (loc?.shipping_type) shippingTypesSet.add(String(loc.shipping_type));
@@ -297,7 +395,17 @@ Deno.serve(async (req)=>{
         const lg = inferredLogistic.toLowerCase();
         if (lg === "fulfillment" || lg === "fbm") shippingTypesSet.add("full");
         else if (lg === "self_service") shippingTypesSet.add("flex");
-        else if (lg === "drop_off" || lg === "xd_drop_off" || lg === "cross_docking") shippingTypesSet.add("agencia");
+        else if (lg === "xd_drop_off" || lg === "cross_docking") shippingTypesSet.add("envios");
+        else if (lg === "drop_off") shippingTypesSet.add("correios");
+      }
+      // Filtra por capacidades globais do seller quando conhecido: remove métodos desativados
+      if (caps) {
+        const toDelete: string[] = [];
+        if (caps.flex_enabled === false && shippingTypesSet.has('flex')) toDelete.push('flex');
+        if (caps.envios_enabled === false && shippingTypesSet.has('envios')) toDelete.push('envios');
+        if (caps.correios_enabled === false && shippingTypesSet.has('correios')) toDelete.push('correios');
+        if (caps.full_enabled === false && shippingTypesSet.has('full')) toDelete.push('full');
+        for (const k of toDelete) shippingTypesSet.delete(k);
       }
       const shipping_types = Array.from(shippingTypesSet);
       const normalizedSummary = { ...summary || {}, locations: normalizedLocations, shipping_types };

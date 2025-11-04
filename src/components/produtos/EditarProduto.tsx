@@ -12,6 +12,7 @@ import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, Dr
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -23,15 +24,56 @@ const marketplaces = [
   { value: "americanas", label: "Americanas" }
 ];
 
+const marketplaceDisplayByValue: Record<string, string> = {
+  "mercado-livre": "Mercado Livre",
+  "amazon": "Amazon",
+  "shopee": "Shopee",
+  "magazine-luiza": "Magazine Luiza",
+  "americanas": "Americanas",
+};
+
+// Mapeamentos entre valores do Select (UI) e o nome no banco (marketplace_integrations/marketplace_items)
+const dbMarketplaceNameByValue: Record<string, string> = {
+  "mercado-livre": "mercado_livre",
+  "amazon": "amazon",
+  "shopee": "shopee",
+  "magazine-luiza": "magazine_luiza",
+  "americanas": "americanas",
+};
+
+const labelByDbName: Record<string, string> = {
+  "mercado_livre": "Mercado Livre",
+  "amazon": "Amazon",
+  "shopee": "Shopee",
+  "magazine_luiza": "Magazine Luiza",
+  "americanas": "Americanas",
+};
+
+const valueByDbName: Record<string, string> = {
+  "mercado_livre": "mercado-livre",
+  "amazon": "amazon",
+  "shopee": "shopee",
+  "magazine_luiza": "magazine-luiza",
+  "americanas": "americanas",
+};
+
 export function EditarProduto() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { organizationId } = useAuth();
   const [produto, setProduto] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [openMapeamento, setOpenMapeamento] = useState(false);
   const [selectedMarketplace, setSelectedMarketplace] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [existingLinks, setExistingLinks] = useState<any[]>([]);
+  const [itemsLoading, setItemsLoading] = useState(false);
+  const [items, setItems] = useState<any[]>([]);
+  // Chave de vinculação por item+variação para evitar colisões ao desabilitar botões
+  const [linkingItemId, setLinkingItemId] = useState<string | null>(null);
+  const [unlinkingKey, setUnlinkingKey] = useState<string | null>(null);
+  const [activeDbMarketplaceNames, setActiveDbMarketplaceNames] = useState<string[]>([]);
 
   const fetchProduct = async () => {
     if (!id) {
@@ -81,6 +123,7 @@ export function EditarProduto() {
       // Transform the data to match the expected structure
       const transformedProduct = {
         id: data.id,
+        companyId: data.company_id,
         nome: data.name,
         sku: data.sku,
         descricao: data.description || "",
@@ -100,8 +143,7 @@ export function EditarProduto() {
         cest: data.cest?.toString() || "",
         unidade: "UN", // Default value
         origem: data.tax_origin_code?.toString() || "0",
-        imagens: data.image_urls || [],
-        vinculos: [] // Mock data for now - marketplace integrations not implemented
+        imagens: data.image_urls || []
       };
 
       setProduto(transformedProduct);
@@ -122,8 +164,272 @@ export function EditarProduto() {
     fetchProduct();
   }, [id]);
 
+  const loadExistingLinks = async () => {
+    try {
+      if (!produto?.id || !organizationId) return;
+      const { data, error } = await (supabase as any)
+        .from('marketplace_item_product_links')
+        .select('marketplace_name, marketplace_item_id, variation_id, permanent, updated_at')
+        .eq('product_id', produto.id)
+        .eq('organizations_id', organizationId);
+      if (error) throw error;
+      setExistingLinks(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.warn('Falha ao carregar vínculos existentes:', e);
+      setExistingLinks([]);
+    }
+  };
+
+  useEffect(() => {
+    loadExistingLinks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organizationId, produto?.id]);
+
+  // Busca integrações de marketplaces ativas para a organização
+  const fetchActiveIntegrations = async () => {
+    try {
+      if (!organizationId) return;
+      const { data, error } = await (supabase as any)
+        .from('marketplace_integrations')
+        .select('marketplace_name')
+        .eq('organizations_id', organizationId);
+      if (error) throw error;
+      const names = Array.isArray(data) ? Array.from(new Set(data.map((r: any) => r.marketplace_name))) : [];
+      setActiveDbMarketplaceNames(names);
+      // Ajusta seleção padrão se necessário
+      if (names.length > 0) {
+        const defaultValue = valueByDbName[names[0]] || names[0];
+        setSelectedMarketplace((prev) => prev || defaultValue);
+      }
+    } catch (e) {
+      console.warn('Falha ao buscar integrações ativas:', e);
+      setActiveDbMarketplaceNames([]);
+    }
+  };
+
+  // Utilitário: extrair thumbnail da variação ou do item
+  const getThumbFromPictures = (variation: any, pictures: any): string => {
+    try {
+      const picIds = Array.isArray(variation?.picture_ids) ? variation.picture_ids : [];
+      const firstPicId = picIds.length > 0 ? picIds[0] : null;
+      const picsArr = Array.isArray(pictures) ? pictures : [];
+      if (firstPicId) {
+        const match = picsArr.find((p: any) => p?.id === firstPicId);
+        if (match?.url) return match.url;
+        if (match?.secure_url) return match.secure_url;
+      }
+      // Outros campos comuns em variações
+      if (typeof variation?.thumbnail === 'string') return variation.thumbnail;
+      if (typeof variation?.image === 'string') return variation.image;
+      if (Array.isArray(variation?.images) && typeof variation.images[0] === 'string') return variation.images[0];
+      // Fallback: primeira foto do item
+      const first = picsArr[0];
+      if (first?.url) return first.url;
+      if (first?.secure_url) return first.secure_url;
+      return '';
+    } catch {
+      return '';
+    }
+  };
+
+  // Utilitário: montar título com atributos da variação quando disponível
+  const buildVariationTitle = (itemTitle: string, variation: any): string => {
+    const combos = Array.isArray(variation?.attribute_combinations) ? variation.attribute_combinations : [];
+    const attrs = Array.isArray(variation?.attributes) ? variation.attributes : [];
+    const parts: string[] = [];
+    if (combos.length > 0) {
+      parts.push(
+        combos
+          .map((c: any) => [c?.name, c?.value_name].filter(Boolean).join(':'))
+          .join(' - ')
+      );
+    } else if (attrs.length > 0) {
+      parts.push(
+        attrs
+          .map((a: any) => [a?.name, a?.value_name || a?.value].filter(Boolean).join(':'))
+          .join(' - ')
+      );
+    } else if (variation?.name) {
+      parts.push(String(variation.name));
+    }
+    const suffix = parts.filter(Boolean).join(' | ');
+    return suffix ? `${itemTitle || ''} — ${suffix}`.trim() : (itemTitle || 'Anúncio');
+  };
+
+  // Deriva o SKU a partir do item ou da variação
+  const deriveSku = (item: any, variation: any): string => {
+    try {
+      // Prioriza SKU específico da variação
+      if (variation?.sku) return String(variation.sku);
+      if (variation?.seller_sku) return String(variation.seller_sku);
+      // Fallback para SKU do item
+      if (item?.sku) return String(item.sku);
+      // Procura em attribute_combinations
+      const combos = Array.isArray(variation?.attribute_combinations) ? variation.attribute_combinations : [];
+      const comboSku = combos.find((a: any) => a?.id === 'SELLER_SKU' || String(a?.name || '').toUpperCase() === 'SKU');
+      if (comboSku?.value_name) return String(comboSku.value_name);
+      if (comboSku?.value_id) return String(comboSku.value_id);
+      if (comboSku?.value) return String(comboSku.value);
+      // Procura em attributes
+      const attrs = Array.isArray(variation?.attributes) ? variation.attributes : [];
+      const attrSku = attrs.find((a: any) => a?.id === 'SELLER_SKU' || String(a?.name || '').toUpperCase() === 'SKU');
+      if (attrSku?.value_name) return String(attrSku.value_name);
+      if (attrSku?.value_id) return String(attrSku.value_id);
+      if (attrSku?.value) return String(attrSku.value);
+      return '';
+    } catch {
+      return '';
+    }
+  };
+
+  // Rótulo curto da variação (apenas valores), ex: "Azul / M"
+  const buildVariationLabel = (variation: any): string => {
+    try {
+      const combos = Array.isArray(variation?.attribute_combinations) ? variation.attribute_combinations : [];
+      return combos
+        .filter((a: any) => a?.id !== 'SELLER_SKU' && String(a?.name || '').toUpperCase() !== 'SKU')
+        .map((a: any) => a?.value_name || a?.value_id || '')
+        .filter(Boolean)
+        .join(' / ');
+    } catch {
+      return '';
+    }
+  };
+
+  // Busca itens de marketplace e achata para variações
+  const fetchMarketplaceItems = async () => {
+    try {
+      if (!organizationId) return;
+      setItemsLoading(true);
+      let q: any = (supabase as any)
+        .from('marketplace_items')
+        .select('marketplace_item_id, title, sku, marketplace_name, pictures, company_id, variations')
+        .eq('organizations_id', organizationId);
+      const dbMk = dbMarketplaceNameByValue[selectedMarketplace] || selectedMarketplace || null;
+      if (dbMk) q = q.eq('marketplace_name', dbMk);
+      const term = searchTerm.trim();
+      if (term) {
+        const like = `%${term}%`;
+        q = q.or(`title.ilike.${like},marketplace_item_id.ilike.${like},sku.ilike.${like}`);
+      }
+      const { data, error } = await q.limit(50);
+      if (error) throw error;
+      const raw = Array.isArray(data) ? data : [];
+      // Achatar para variações
+      const flattened: any[] = [];
+      raw.forEach((it: any) => {
+        const vars = Array.isArray(it?.variations) ? it.variations : [];
+        if (vars.length > 0) {
+          vars.forEach((v: any) => {
+            const vid = v?.id != null ? String(v.id) : (v?.variation_id != null ? String(v.variation_id) : (v?.sku != null ? String(v.sku) : ''));
+            const thumb = getThumbFromPictures(v, it?.pictures);
+            const sku = deriveSku(it, v);
+            const vlabel = buildVariationLabel(v);
+            flattened.push({
+              marketplace_item_id: it.marketplace_item_id,
+              marketplace_name: it.marketplace_name,
+              company_id: it.company_id,
+              variation_id: vid,
+              title: buildVariationTitle(it.title, v),
+              sku,
+              variation_label: vlabel,
+              thumbnail_url: thumb,
+            });
+          });
+        } else {
+          // Sem variações: apresentamos uma linha única com variação vazia
+          const thumb = getThumbFromPictures({}, it?.pictures);
+          const sku = deriveSku(it, {});
+          flattened.push({
+            marketplace_item_id: it.marketplace_item_id,
+            marketplace_name: it.marketplace_name,
+            company_id: it.company_id,
+            variation_id: '',
+            title: it.title || `Anúncio ${it.marketplace_item_id}`,
+            sku,
+            variation_label: '',
+            thumbnail_url: thumb,
+          });
+        }
+      });
+      setItems(flattened);
+    } catch (e) {
+      console.warn('Falha ao buscar itens do marketplace:', e);
+      setItems([]);
+    } finally {
+      setItemsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (openMapeamento && organizationId) {
+      fetchActiveIntegrations();
+      fetchMarketplaceItems();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openMapeamento, selectedMarketplace, searchTerm, organizationId]);
+
+  const handleLinkItem = async (item: any) => {
+    if (!produto?.id || !organizationId) {
+      toast({
+        title: 'Contexto inválido',
+        description: 'Organização não resolvida para vincular.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    try {
+      const key = `${item.marketplace_item_id}::${item.variation_id || ''}`;
+      setLinkingItemId(key);
+      const payload = {
+        organizations_id: organizationId,
+        company_id: item.company_id,
+        marketplace_name: item.marketplace_name,
+        marketplace_item_id: item.marketplace_item_id,
+        variation_id: item.variation_id || '',
+        product_id: produto.id,
+        permanent: true,
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await (supabase as any)
+        .from('marketplace_item_product_links')
+        .upsert([payload], { onConflict: 'organizations_id,marketplace_name,marketplace_item_id,variation_id' });
+      if (error) throw error;
+      toast({ title: 'Vínculo criado', description: 'Variação vinculada ao produto.' });
+      await loadExistingLinks();
+      setOpenMapeamento(false);
+    } catch (err: any) {
+      toast({ title: 'Erro ao vincular', description: err?.message || 'Tente novamente.', variant: 'destructive' });
+    } finally {
+      setLinkingItemId(null);
+    }
+  };
+
   const handleVoltar = () => {
     navigate("/produtos");
+  };
+
+  const handleUnlink = async (link: any) => {
+    if (!produto?.id || !organizationId) return;
+    const key = `${link.marketplace_item_id}::${link.variation_id || ''}`;
+    try {
+      setUnlinkingKey(key);
+      const { error } = await (supabase as any)
+        .from('marketplace_item_product_links')
+        .delete()
+        .eq('organizations_id', organizationId)
+        .eq('product_id', produto.id)
+        .eq('marketplace_name', link.marketplace_name)
+        .eq('marketplace_item_id', link.marketplace_item_id)
+        .eq('variation_id', link.variation_id || '');
+      if (error) throw error;
+      toast({ title: 'Vínculo removido', description: 'Anúncio desvinculado do produto.' });
+      await loadExistingLinks();
+    } catch (err: any) {
+      toast({ title: 'Erro ao desvincular', description: err?.message || 'Tente novamente.', variant: 'destructive' });
+    } finally {
+      setUnlinkingKey(null);
+    }
   };
 
   const handleSalvar = async () => {
@@ -533,16 +839,16 @@ export function EditarProduto() {
                 <div className="space-y-4">
                   <div className="flex justify-between items-center">
                     <h3 className="text-lg font-medium">Anúncios Vinculados</h3>
-                    <Drawer open={openMapeamento} onOpenChange={setOpenMapeamento}>
+                    <Drawer direction="right" open={openMapeamento} onOpenChange={setOpenMapeamento}>
                       <DrawerTrigger asChild>
                         <Button className="bg-novura-primary hover:bg-novura-primary/90">
                           <Plus className="w-4 h-4 mr-2" />
                           Adicionar Vínculo
                         </Button>
                       </DrawerTrigger>
-                      <DrawerContent>
+                      <DrawerContent className="w-[30%] right-0 overflow-hidden">
                         <DrawerHeader>
-                          <DrawerTitle>Adicionar Novo Vínculo</DrawerTitle>
+                          <DrawerTitle>{produto?.sku || 'SKU não definido'}</DrawerTitle>
                           <DrawerDescription>
                             Busque e vincule anúncios dos marketplaces
                           </DrawerDescription>
@@ -550,58 +856,156 @@ export function EditarProduto() {
                         <div className="p-6 space-y-4">
                           <div className="flex space-x-4">
                             <div className="flex-1">
-                              <Select value={selectedMarketplace} onValueChange={setSelectedMarketplace}>
-                                <SelectTrigger>
+                              <Select
+                                value={selectedMarketplace}
+                                onValueChange={setSelectedMarketplace}
+                                disabled={activeDbMarketplaceNames.length === 0}
+                              >
+                                <SelectTrigger disabled={activeDbMarketplaceNames.length === 0}>
                                   <SelectValue placeholder="Selecione o marketplace" />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  {marketplaces.map((marketplace) => (
-                                    <SelectItem key={marketplace.value} value={marketplace.value}>
-                                      {marketplace.label}
+                                  {activeDbMarketplaceNames.length === 0 ? (
+                                    <SelectItem value="no-integrations" disabled>
+                                      Nenhuma integração ativa encontrada
                                     </SelectItem>
-                                  ))}
+                                  ) : (
+                                    activeDbMarketplaceNames.map((dbName) => (
+                                      <SelectItem key={dbName} value={valueByDbName[dbName] || dbName}>
+                                        {labelByDbName[dbName] || dbName}
+                                      </SelectItem>
+                                    ))
+                                  )}
                                 </SelectContent>
                               </Select>
+                              {activeDbMarketplaceNames.length === 0 && (
+                                <p className="text-xs text-gray-600 mt-2">Nâo existe integrações ativas</p>
+                              )}
                             </div>
-                            <Button variant="outline">
-                              <Filter className="w-4 h-4 mr-2" />
-                              Filtros
-                            </Button>
                           </div>
                           
                           <div className="relative">
                             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
                             <Input
-                              placeholder="Buscar por SKU, ID do produto ou descrição..."
+                              placeholder="Buscar por SKU, ID ou descrição..."
                               value={searchTerm}
                               onChange={(e) => setSearchTerm(e.target.value)}
                               className="pl-10"
                             />
                           </div>
 
-                          <div className="space-y-2 max-h-96 overflow-y-auto">
-                            <Card>
-                              <CardContent className="p-4">
-                                <div className="flex justify-between items-center">
-                                  <div>
-                                    <p className="font-medium">Nenhum anúncio encontrado</p>
-                                    <p className="text-sm text-gray-500">Funcionalidade em desenvolvimento</p>
-                                  </div>
-                                </div>
-                              </CardContent>
-                            </Card>
+                          <div className="space-y-2 max-h-[70vh] overflow-y-auto overflow-x-hidden">
+                            {itemsLoading ? (
+                              <Card>
+                                <CardContent className="p-4">
+                                  <p className="text-sm text-gray-500">Carregando anúncios...</p>
+                                </CardContent>
+                              </Card>
+                            ) : items.length === 0 ? (
+                              <Card>
+                                <CardContent className="p-4">
+                                  <p className="font-medium">Nenhum anúncio encontrado</p>
+                                  <p className="text-sm text-gray-500">Ajuste filtros ou a busca para encontrar</p>
+                                </CardContent>
+                              </Card>
+                            ) : (
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead>Anúncio</TableHead>
+                                    <TableHead className="text-right">Ações</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {items.map((it: any) => (
+                                    <TableRow key={`${it.marketplace_item_id}::${it.variation_id || ''}`}>
+                                      <TableCell>
+                                        <div className="flex items-center gap-3 min-w-0">
+                                          {it.thumbnail_url ? (
+                                            <img src={it.thumbnail_url} alt="thumbnail" className="w-10 h-10 rounded object-cover bg-gray-100" />
+                                          ) : (
+                                            <div className="w-10 h-10 rounded bg-gray-200" />
+                                          )}
+                                          <div className="min-w-0">
+                                            <p className="font-medium truncate">{it.sku || 'SKU não disponível'}</p>
+                                            {Boolean(it.variation_label) && (
+                                              <p className="text-xs text-gray-500 truncate">{it.variation_label}</p>
+                                            )}
+                                            <p className="text-xs text-gray-500 truncate"><code>{it.marketplace_item_id}</code></p>
+                                          </div>
+                                        </div>
+                                      </TableCell>
+                                      <TableCell className="text-right">
+                                        <Button
+                                          size="sm"
+                                          className="bg-novura-primary hover:bg-novura-primary/90"
+                                          onClick={() => handleLinkItem(it)}
+                                          disabled={linkingItemId === `${it.marketplace_item_id}::${it.variation_id || ''}`}
+                                        >
+                                          {linkingItemId === `${it.marketplace_item_id}::${it.variation_id || ''}` ? 'Vinculando...' : 'Vincular variação'}
+                                        </Button>
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            )}
                           </div>
                         </div>
                       </DrawerContent>
                     </Drawer>
                   </div>
 
-                  <Card>
-                    <CardContent className="p-4 text-center text-gray-500">
-                      <p>Nenhum anúncio vinculado</p>
-                      <p className="text-sm">Use o botão acima para adicionar vínculos com marketplaces</p>
-                    </CardContent>
-                  </Card>
+                  {existingLinks.length === 0 ? (
+                    <Card>
+                      <CardContent className="p-4 text-center text-gray-500">
+                        <p>Nenhum anúncio vinculado</p>
+                        <p className="text-sm">Use o botão acima para adicionar vínculos com marketplaces</p>
+                      </CardContent>
+                    </Card>
+                  ) : (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm">Vínculos ativos</CardTitle>
+                      </CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Marketplace</TableHead>
+                              <TableHead>ID do Anúncio</TableHead>
+                              <TableHead>Variação</TableHead>
+                              <TableHead>Permanente</TableHead>
+                              <TableHead>Atualizado em</TableHead>
+                              <TableHead className="text-right">Ações</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {existingLinks.map((l: any, idx: number) => (
+                              <TableRow key={`${l.marketplace_item_id}-${idx}`}>
+                                <TableCell>{l.marketplace_name}</TableCell>
+                                <TableCell><code className="text-xs">{l.marketplace_item_id}</code></TableCell>
+                                <TableCell>{l.variation_id || '-'}</TableCell>
+                                <TableCell>{l.permanent ? 'Sim' : 'Não'}</TableCell>
+                                <TableCell>{new Date(l.updated_at).toLocaleString()}</TableCell>
+                                <TableCell className="text-right">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-red-600 border-red-200 hover:bg-red-50"
+                                    onClick={() => handleUnlink(l)}
+                                    disabled={unlinkingKey === `${l.marketplace_item_id}::${l.variation_id || ''}`}
+                                  >
+                                    {unlinkingKey === `${l.marketplace_item_id}::${l.variation_id || ''}` ? 'Removendo...' : 'Desvincular'}
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
                 </div>
               </AccordionContent>
             </AccordionItem>

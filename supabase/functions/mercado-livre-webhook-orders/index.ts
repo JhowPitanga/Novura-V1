@@ -262,8 +262,9 @@ serve(async (req) => {
       if (!lt) return null;
       if (lt === "fulfillment" || lt === "fbm") return "full";
       if (lt === "self_service") return "flex";
-      if (lt === "drop_off" || lt === "xd_drop_off" || lt === "cross_docking") return "agencia";
-      if (lt === "me2" || lt === "custom") return "agencia";
+      if (lt === "xd_drop_off" || lt === "cross_docking") return "envios";
+      if (lt === "drop_off") return "correios";
+      if (lt === "me2" || lt === "custom") return "envios";
       return null;
     }
 

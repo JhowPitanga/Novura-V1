@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Search, Check, X } from "lucide-react";
 import { useBindableProducts } from '@/hooks/useProducts';
 import { toast } from '@/components/ui/use-toast';
@@ -340,15 +342,18 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
                         </div>
                         <div className="text-xs text-gray-600">SKU: {produtoVinculado.sku}</div>
 
-                        <label className="inline-flex items-center gap-2 text-xs">
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4"
+                        <div className="inline-flex items-center gap-2 text-xs">
+                          <Checkbox
+                            id={`permanente-${anuncio.id}`}
                             checked={!!permanenteFlags[anuncio.id]}
-                            onChange={(e) => setPermanenteFlags(prev => ({ ...prev, [anuncio.id]: e.target.checked }))}
+                            onCheckedChange={(v) =>
+                              setPermanenteFlags(prev => ({ ...prev, [anuncio.id]: Boolean(v) }))
+                            }
                           />
-                          <span>Vincular permanente</span>
-                        </label>
+                          <Label htmlFor={`permanente-${anuncio.id}`} className="text-xs">
+                            Vincular permanente
+                          </Label>
+                        </div>
 
                         <div className="flex gap-2">
                           <Button variant="outline" className="text-xs" onClick={() => openProductPickerFor(anuncio.id)}>Alterar Produto</Button>

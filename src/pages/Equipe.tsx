@@ -20,6 +20,7 @@ import { CreateTaskModal } from "@/components/equipe/CreateTaskModal";
 import { TaskBoard } from "@/components/equipe/TaskBoard"; // ATUALIZADO (Kanban)
 // Removido: Backlog, Roadmap e Views (não será utilizado)
 import { TaskDetailModal } from "@/components/equipe/TaskDetailModal"; // NOVO
+import LoadingOverlay from "@/components/LoadingOverlay";
 import { useChatChannels, useOrgMemberSearch } from "@/hooks/useChat";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogFooter } from "@/components/ui/alert-dialog";
@@ -97,7 +98,7 @@ function ChatModule() {
         // Persistência no Supabase (RPC usa auth.uid por padrão)
         (async () => {
             try {
-                await supabase.rpc('mark_channel_read', { p_channel_id: channelId });
+                await (supabase as any).rpc('mark_channel_read', { p_channel_id: channelId });
             } catch {}
         })();
     };
@@ -129,7 +130,7 @@ function ChatModule() {
                 } catch {}
                 if (!nome && !email && organizationId) {
                     try {
-                        const { data: mems } = await supabase
+                    const { data: mems } = await (supabase as any)
                             .rpc('search_org_members', { p_org_id: organizationId, p_term: null, p_limit: 200 });
                         const found = (mems as any[])?.find((u) => u.id === otherId);
                         nome = (found as any)?.nome ?? null; email = (found as any)?.email ?? null;
@@ -147,7 +148,7 @@ function ChatModule() {
         (async () => {
             if (!user?.id) return;
             try {
-                const { data, error } = await supabase
+                const { data, error } = await (supabase as any)
                     .from('chat_unread_counts')
                     .select('channel_id, unread_count')
                     .eq('user_id', user.id);
@@ -177,7 +178,7 @@ function ChatModule() {
             });
             if (user?.id) {
                 try {
-                    supabase
+                    (supabase as any)
                         .from('chat_unread_counts')
                         .upsert({ channel_id: chId, user_id: user.id, unread_count: nextCount }, { onConflict: 'channel_id,user_id' });
                 } catch {}
@@ -195,7 +196,7 @@ function ChatModule() {
             setUnreadCounts(prev => ({ ...prev, [channelId]: count }));
             // Persistência: quando zerar, chamar RPC para marcar lido (atualiza last_read_at)
             if (count === 0) {
-                (async () => { try { await supabase.rpc('mark_channel_read', { p_channel_id: channelId }); } catch {} })();
+                (async () => { try { await (supabase as any).rpc('mark_channel_read', { p_channel_id: channelId }); } catch {} })();
             }
         };
         window.addEventListener('chat:active-unread-changed', handler as any);
@@ -500,50 +501,56 @@ function TaskManagement() {
     const [createOpen, setCreateOpen] = useState(false);
     const [memberMap, setMemberMap] = useState<Record<string, { nome?: string | null; email?: string | null }>>({});
     const [taskExtras, setTaskExtras] = useState<Record<number, { assigned_to?: string | null; created_by?: string | null; visible_to_members?: string[] }>>({});
+    const [isLoading, setIsLoading] = useState(false);
 
     // Carregar tarefas reais do Supabase
     async function loadTasks() {
         if (!organizationId) return;
+        setIsLoading(true);
         const { data, error } = await supabase
             .from('tasks')
             .select('id,title,priority,type,status,due_date,time_tracked,labels,dependencies,assigned_to,created_by,visible_to_members')
             .eq('organizations_id', organizationId)
             .order('created_at', { ascending: false });
-        if (error) {
-            console.error('Erro ao carregar tasks:', error.message);
-            return;
+        try {
+            if (error) {
+                console.error('Erro ao carregar tasks:', error.message);
+                return;
+            }
+            const mapped: Task[] = (data || []).map((row: any) => {
+                const primaryName = (row.assigned_to && (memberMap[row.assigned_to]?.nome || memberMap[row.assigned_to]?.email)) || '';
+                const addNames = (row.visible_to_members || []).map((id: string) => (memberMap[id]?.nome || memberMap[id]?.email)).filter(Boolean);
+                const startLabel = (row.labels || []).find((l: string) => typeof l === 'string' && l.startsWith('start:'));
+                const startDate = startLabel ? (startLabel as string).split(':')[1] : undefined;
+                return {
+                    id: row.id,
+                    title: row.title,
+                    assignee: primaryName,
+                    assignees: [primaryName, ...addNames].filter(Boolean),
+                    priority: (row.priority ?? 'medium') as TaskPriority,
+                    dueDate: row.due_date ?? '',
+                    startDate,
+                    type: (row.type ?? 'task') as TaskType,
+                    storyPoints: 0,
+                    status: (row.status ?? 'todo') as TaskStatus,
+                    timeTracked: row.time_tracked ?? 0,
+                    labels: row.labels ?? [],
+                    dependencies: row.dependencies ?? [],
+                } as Task;
+            });
+            const extras: Record<number, { assigned_to?: string | null; created_by?: string | null; visible_to_members?: string[] }> = {};
+            for (const row of (data || [])) {
+                extras[row.id] = {
+                    assigned_to: row.assigned_to || null,
+                    created_by: row.created_by || null,
+                    visible_to_members: row.visible_to_members || [],
+                };
+            }
+            setTaskExtras(extras);
+            setTasks(mapped);
+        } finally {
+            setIsLoading(false);
         }
-        const mapped: Task[] = (data || []).map((row: any) => {
-            const primaryName = (row.assigned_to && (memberMap[row.assigned_to]?.nome || memberMap[row.assigned_to]?.email)) || '';
-            const addNames = (row.visible_to_members || []).map((id: string) => (memberMap[id]?.nome || memberMap[id]?.email)).filter(Boolean);
-            const startLabel = (row.labels || []).find((l: string) => typeof l === 'string' && l.startsWith('start:'));
-            const startDate = startLabel ? (startLabel as string).split(':')[1] : undefined;
-            return {
-                id: row.id,
-                title: row.title,
-                assignee: primaryName,
-                assignees: [primaryName, ...addNames].filter(Boolean),
-                priority: (row.priority ?? 'medium') as TaskPriority,
-                dueDate: row.due_date ?? '',
-                startDate,
-                type: (row.type ?? 'task') as TaskType,
-                storyPoints: 0,
-                status: (row.status ?? 'todo') as TaskStatus,
-                timeTracked: row.time_tracked ?? 0,
-                labels: row.labels ?? [],
-                dependencies: row.dependencies ?? [],
-            } as Task;
-        });
-        const extras: Record<number, { assigned_to?: string | null; created_by?: string | null; visible_to_members?: string[] }> = {};
-        for (const row of (data || [])) {
-            extras[row.id] = {
-                assigned_to: row.assigned_to || null,
-                created_by: row.created_by || null,
-                visible_to_members: row.visible_to_members || [],
-            };
-        }
-        setTaskExtras(extras);
-        setTasks(mapped);
     }
 
     // Inicialização
@@ -554,17 +561,22 @@ function TaskManagement() {
     useEffect(() => {
         const loadMembers = async () => {
             if (!organizationId) return;
+            setIsLoading(true);
             const { data, error } = await supabase
                 .rpc('search_org_members', { p_org_id: organizationId, p_term: null, p_limit: 200 });
-            if (error) {
-                console.error('Erro ao carregar membros:', error.message);
-                return;
+            try {
+                if (error) {
+                    console.error('Erro ao carregar membros:', error.message);
+                    return;
+                }
+                const map: Record<string, { nome?: string | null; email?: string | null }> = {};
+                for (const u of (data as any[]) || []) {
+                    map[u.id] = { nome: (u as any).nome, email: u.email };
+                }
+                setMemberMap(map);
+            } finally {
+                setIsLoading(false);
             }
-            const map: Record<string, { nome?: string | null; email?: string | null }> = {};
-            for (const u of (data as any[]) || []) {
-                map[u.id] = { nome: (u as any).nome, email: u.email };
-            }
-            setMemberMap(map);
         };
         loadMembers();
     }, [organizationId]);
@@ -715,7 +727,8 @@ function TaskManagement() {
     };
 
     return (
-        <div className="space-y-2">
+        <div className="space-y-2 relative">
+            {isLoading && <LoadingOverlay message="Carregando dados..." />}
             {/* Modal de criação controlado externamente; sem cabeçalho extra */}
             <CreateTaskModal onCreateTask={handleCreateTask} openExternal={createOpen} onOpenChange={setCreateOpen} showDefaultTrigger={false} />
 

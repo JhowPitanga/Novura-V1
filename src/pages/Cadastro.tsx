@@ -4,6 +4,7 @@ import { Eye, EyeOff, ArrowLeft, Mail, Lock, User, Building, Sparkles } from "lu
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Link, useNavigate } from "react-router-dom";
@@ -22,6 +23,7 @@ export default function Cadastro() {
   const navigate = useNavigate();
   const { signUp } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -158,7 +160,7 @@ export default function Cadastro() {
               </div>
 
               <div className="flex items-start space-x-2">
-                <input type="checkbox" id="terms" className="rounded mt-1" required />
+                <Checkbox id="terms" className="mt-1" checked={termsAccepted} onCheckedChange={(v) => setTermsAccepted(Boolean(v))} required />
                 <Label htmlFor="terms" className="text-sm text-gray-600 leading-relaxed">
                   Eu aceito os{" "}
                   <Link to="/termos" className="text-novura-primary hover:underline">
