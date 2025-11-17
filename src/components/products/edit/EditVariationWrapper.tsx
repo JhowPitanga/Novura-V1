@@ -83,25 +83,22 @@ export function EditVariationWrapper() {
         return;
       }
 
-      // Fetch variations (products with same group ID)
       const { data: variations, error: variationsError } = await supabase
-        .from('product_group_members')
+        .from('products')
         .select(`
-          product_id,
-          products (
-            *,
-            products_stock (
-              current,
-              in_transit,
-              reserved,
-              storage (
-                id,
-                name
-              )
+          *,
+          products_stock (
+            current,
+            in_transit,
+            reserved,
+            storage (
+              id,
+              name
             )
           )
         `)
-        .eq('product_group_id', mainProduct.id);
+        .eq('type', 'VARIACAO_ITEM')
+        .eq('parent_id', mainProduct.id);
 
       if (variationsError) {
         console.error('Error fetching variations:', variationsError);
@@ -132,14 +129,14 @@ export function EditVariationWrapper() {
 
       // Transform variations to English format
       const transformedVariations: ProductVariation[] = variations?.map((v: any) => ({
-        id: v.products.id,
-        name: v.products.name,
-        sku: v.products.sku,
-        ean: v.products.barcode?.toString() || "",
-        costPrice: v.products.cost_price?.toString() || "",
-        images: [], // Initialize as empty File array - existing images would need to be converted
-        color: v.products.color || "",
-        size: v.products.size || "",
+        id: v.id,
+        name: v.name,
+        sku: v.sku,
+        ean: v.barcode?.toString() || "",
+        costPrice: v.cost_price?.toString() || "",
+        images: [],
+        color: v.color || "",
+        size: v.size || "",
         voltage: "",
         customType: "",
         customValue: "",

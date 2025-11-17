@@ -14,6 +14,7 @@ import { ProdutosHeader } from "@/components/produtos/ProdutosHeader";
 import { ProdutosUnicos } from "@/components/produtos/tabs/ProdutosUnicos";
 import { ProdutosVariacoes } from "@/components/produtos/tabs/ProdutosVariacoes";
 import { ProdutosKits } from "@/components/produtos/tabs/ProdutosKits";
+import { useAuth } from "@/hooks/useAuth";
 
 const navigationItems = [
   { title: "Únicos", path: "", description: "Produtos únicos" },
@@ -23,6 +24,8 @@ const navigationItems = [
 
 export default function Produtos() {
   const location = useLocation();
+  const { permissions, userRole } = useAuth();
+  const canCreate = Boolean((permissions as any)?.produtos?.create) || userRole === 'owner' || userRole === 'admin';
   
   // Check if we're on create or edit pages
   const isCreateOrEditPage = location.pathname.includes('/criar') || location.pathname.includes('/editar');
@@ -51,12 +54,14 @@ export default function Produtos() {
                     <h1 className="text-2xl font-bold text-gray-900">Gestão de Produtos</h1>
                     <p className="text-gray-600">Gerencie seus produtos de forma inteligente</p>
                   </div>
-                  <Button className="bg-novura-primary hover:bg-novura-primary/90" asChild>
-                    <a href="/produtos/criar">
-                      <Plus className="w-4 h-4 mr-2" />
-                      Novo Produto
-                    </a>
-                  </Button>
+                  {canCreate && (
+                    <Button className="bg-novura-primary hover:bg-novura-primary/90" asChild>
+                      <a href="/produtos/criar">
+                        <Plus className="w-4 h-4 mr-2" />
+                        Novo Produto
+                      </a>
+                    </Button>
+                  )}
                 </div>
               )}
 

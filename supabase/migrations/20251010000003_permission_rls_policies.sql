@@ -16,10 +16,14 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
       FROM public.organization_members om2
       WHERE om2.user_id = auth.uid()
       AND om2.role IN ('owner', 'admin', 'member')
+      ORDER BY CASE om2.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END
       LIMIT 1
     )
     AND om.user_id = auth.uid()
-    AND (om.permissions->p_module_name->p_action_name)::boolean = true
+    AND (
+      COALESCE((om.permissions->p_module_name->p_action_name)::boolean, false) = true
+      OR om.role IN ('owner', 'admin')
+    )
   );
 $$;
 

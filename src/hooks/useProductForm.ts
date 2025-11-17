@@ -14,8 +14,9 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
   const { createProduct, loading: createLoading } = useCreateProduct();
   const { toast } = useToast();
   // Chame hooks no topo do custom hook
-  const { user } = useAuth();
+  const { user, organizationId } = useAuth();
   const { triggerSync } = useProductSync();
+  const currentUserId = user?.id;
 
   const [currentStep, setCurrentStep] = useState(1);
   const [productType, setProductType] = useState<ProductType | "">("");
@@ -315,6 +316,7 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
       size: undefined,
       image_urls: [],
       custom_attributes: undefined,
+      stock_qnt: (() => { const n = parseInt(String(formData.stock)); return Number.isFinite(n) && n > 0 ? n : null; })(),
       };
 
       // Pré-checagem de unicidade de SKU do produto pai para evitar 409/23505
@@ -347,9 +349,37 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
       }
 
       // Vincula o produto ao usuário atual para passar nas políticas de RLS
+      // Valida sessão e permissão de criação conforme RLS
+      if (!currentUserId) {
+        toast({ title: "Erro", description: "Sessão inválida. Faça login novamente.", variant: "destructive" });
+        return;
+      }
+      const { data: canCreate } = await supabase.rpc('current_user_has_permission', { p_module_name: 'produtos', p_action_name: 'create' });
+      if (!canCreate) {
+        toast({ title: "Permissão necessária", description: "Você não tem permissão para criar produtos. Ajuste as permissões em Configurações > Usuários.", variant: "destructive" });
+        return;
+      }
+      let companyIdForOrg: string | null = null;
+      try {
+        if (organizationId) {
+          const { data: companiesForOrg } = await supabase
+            .from('companies')
+            .select('id, is_active')
+            .eq('organization_id', organizationId)
+            .order('is_active', { ascending: false })
+            .order('created_at', { ascending: true })
+            .limit(1);
+          if (companiesForOrg && Array.isArray(companiesForOrg) && companiesForOrg.length > 0) {
+            companyIdForOrg = String(companiesForOrg[0].id);
+          }
+        }
+      } catch (_) { /* noop: se não houver empresa, segue null */ }
+
       const createdProduct = await createProduct({
         ...baseProductData,
-        user_id: user?.id,
+        user_id: currentUserId,
+        company_id: companyIdForOrg || undefined,
+        organizations_id: organizationId || undefined,
       });
 
       // Pós-criação por tipo
@@ -387,33 +417,39 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
           const storageIdForSingle = formData.warehouse || defaultStorageId;
           if (storageIdForSingle) {
             const qty = formData.stock ? parseInt(String(formData.stock)) : 0;
-            const { error: stockError } = await supabase.rpc('upsert_product_stock', {
-              p_product_id: createdProduct.id,
-              p_storage_id: String(storageIdForSingle),
-              p_quantity: qty,
-              p_reserved: 0,
-              p_in_transit: 0,
-            });
-            if (stockError) throw stockError;
-            // Força atualização imediata do módulo de estoque
+            const storageId = String(storageIdForSingle);
+            const { data: existingStock, error: selectErr } = await supabase
+              .from('products_stock')
+              .select('id,current')
+              .eq('product_id', createdProduct.id)
+              .eq('storage_id', storageId)
+              .limit(1)
+              .maybeSingle();
+            if (selectErr) throw selectErr;
+            if (existingStock?.id) {
+              const { error: updErr } = await supabase
+                .from('products_stock')
+                .update({ current: qty, reserved: 0, in_transit: 0 })
+                .eq('id', existingStock.id);
+              if (updErr) throw updErr;
+            } else {
+              const { error: insErr } = await supabase
+                .from('products_stock')
+                .insert({
+                  product_id: createdProduct.id,
+                  storage_id: storageId,
+                  current: qty,
+                  reserved: 0,
+                  in_transit: 0,
+                });
+              if (insErr) throw insErr;
+            }
             triggerSync();
           }
         }
 
         if (baseProductData.type === 'VARIACAO_PAI') {
-          // Criar/garantir o grupo de variações com o mesmo ID do produto pai
-          const { error: groupErr } = await supabase
-            .from('product_groups')
-            .upsert([
-              { 
-                id: createdProduct.id,
-                name: formData.name || baseProductData.sku || 'Grupo de Variação',
-                type: 'VARIACAO_PAI',
-              }
-            ], { onConflict: 'id' });
-          if (groupErr) throw groupErr;
-
-          // Criar variações como produtos e vincular ao grupo do pai
+          // Criar variações como produtos vinculados ao pai via parent_id
           for (const [idx, v] of (variations || []).entries()) {
             // Definir SKU da variação e tentar inserir; se houver conflito (23505), re-tentar com sufixo aleatório
             let childSku = v.sku || `${baseProductData.sku}-${String(idx + 1).padStart(2, '0')}`;
@@ -425,6 +461,7 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
                   name: v.name || `${formData.name} - ${v.name || ''}`,
                   sku: skuToUse,
                   type: 'VARIACAO_ITEM',
+                  parent_id: createdProduct.id,
                   description: v.description || null,
                   // Campos obrigatórios com defaults seguros
                   cost_price: v.costPrice ? parseFloat(String(v.costPrice)) : 0,
@@ -453,7 +490,10 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
                     }
                     return Object.keys(attrs).length > 0 ? attrs : null;
                   })(),
-                  user_id: user?.id,
+                  user_id: currentUserId,
+                  company_id: companyIdForOrg || undefined,
+                  organizations_id: organizationId || undefined,
+                  stock_qnt: (() => { const q = (v as any).stock ?? (v as any).estoque; const n = parseInt(String(q)); return Number.isFinite(n) && n > 0 ? n : null; })(),
                 }])
                 .select()
                 .single();
@@ -471,60 +511,55 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
             // Prioriza galpão da variação, aceitando tanto "storage" quanto "armazem"; fallback para galpão do pai
             const childStorageId = (v as any).storage || (v as any).armazem || formData.warehouse || defaultStorageId;
             if (childStorageId) {
-              // Quantidade informada na etapa 3; aceita tanto "stock" quanto "estoque"
               const quantityRaw = (v as any).stock ?? (v as any).estoque;
               const parsed = Number(quantityRaw);
               const quantity = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
-              // Usar RPC para garantir upsert adequado do estoque
-              const { error: childStockErr } = await supabase.rpc('upsert_product_stock', {
-                p_product_id: child.id,
-                p_storage_id: String(childStorageId),
-                p_quantity: quantity,
-                p_reserved: 0,
-                p_in_transit: 0,
-              });
-              if (childStockErr) throw childStockErr;
-              // Força atualização imediata do módulo de estoque
+              const storageId = String(childStorageId);
+              const { data: existingChildStock, error: childSelectErr } = await supabase
+                .from('products_stock')
+                .select('id,current')
+                .eq('product_id', child.id)
+                .eq('storage_id', storageId)
+                .limit(1)
+                .maybeSingle();
+              if (childSelectErr) throw childSelectErr;
+              if (existingChildStock?.id) {
+                const { error: childUpdErr } = await supabase
+                  .from('products_stock')
+                  .update({ current: quantity, reserved: 0, in_transit: 0 })
+                  .eq('id', existingChildStock.id);
+                if (childUpdErr) throw childUpdErr;
+              } else {
+                const { error: childInsErr } = await supabase
+                  .from('products_stock')
+                  .insert({
+                    product_id: child.id,
+                    storage_id: storageId,
+                    current: quantity,
+                    reserved: 0,
+                    in_transit: 0,
+                  });
+                if (childInsErr) throw childInsErr;
+              }
               triggerSync();
             }
 
-            // Vincular variação ao grupo: verificar existência antes de inserir (evita 42P10 e 409)
-            const { data: existingLink, error: linkCheckErr } = await supabase
-              .from('product_group_members')
-              .select('id')
-              .eq('product_group_id', createdProduct.id)
-              .eq('product_id', child.id)
-              .limit(1);
-            if (linkCheckErr) throw linkCheckErr;
-            if (!existingLink || (Array.isArray(existingLink) && existingLink.length === 0)) {
-              const { error: linkErr } = await supabase
-                .from('product_group_members')
-                .insert([{ 
-                  product_group_id: createdProduct.id,
-                  product_id: child.id,
-                }]);
-              if (linkErr) throw linkErr;
-            }
-
-            // Registrar atributos de variante: já inseridos diretamente em 'products'
-            // Não usar tabela 'products_variantes' pois não existe no schema atual
+            // Registrar atributos já inseridos diretamente em 'products'
           }
         }
 
         if (baseProductData.type === 'ITEM') {
-          // Criar entrada de kit e seus itens
           const { data: kit, error: kitErr } = await supabase
             .from('product_kits')
             .insert([{ product_id: createdProduct.id }])
             .select()
             .single();
-          if (kitErr) throw kitErr;
-
+          const kitId = kit?.id ?? createdProduct.id;
           for (const k of kitItems) {
             const { error: kitItemErr } = await supabase
               .from('product_kit_items')
               .insert([{ 
-                kit_id: kit.id,
+                kit_id: kitId,
                 product_id: (k as any).product_id || k.id,
                 quantity: (k as any).quantity || 1,
               }]);

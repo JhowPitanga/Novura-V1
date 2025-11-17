@@ -10,7 +10,7 @@ export function useProducts() {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const { user } = useAuth();
+  const { user, organizationId } = useAuth();
   const { lastUpdate } = useProductSync();
 
   useEffect(() => {
@@ -20,7 +20,7 @@ export function useProducts() {
         return;
       }
       try {
-        const { data, error } = await supabase
+        let query = supabase
           .from('products')
           .select(`
             *,
@@ -38,9 +38,28 @@ export function useProducts() {
               )
             )
           `)
-          .eq('user_id', user.id)
           .in('type', ['UNICO', 'VARIACAO_ITEM', 'ITEM'])
           .order('name', { ascending: true });
+
+        if (organizationId) {
+          const { data: companiesForOrg } = await supabase
+            .from('companies')
+            .select('id')
+            .eq('organization_id', organizationId)
+            .order('is_active', { ascending: false })
+            .order('created_at', { ascending: true })
+            .limit(1);
+          const companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+          if (companyId) {
+            query = query.eq('company_id', companyId);
+          } else {
+            query = query.eq('user_id', user.id);
+          }
+        } else {
+          query = query.eq('user_id', user.id);
+        }
+
+        const { data, error } = await query;
 
         if (error) {
           throw error;
@@ -69,9 +88,36 @@ export const useCreateProduct = () => {
       setLoading(true);
       setError(null);
       try {
+        const { data: authUserData } = await supabase.auth.getUser();
+        const authUserId = authUserData?.user?.id;
+        if (!authUserId) {
+          throw new Error('Sessão inválida ou expirada');
+        }
+        let payload = { ...productData, user_id: productData?.user_id ?? authUserId };
+        if (!payload.company_id) {
+          try {
+            const { data: orgId } = await supabase.rpc('get_current_user_organization_id');
+            const organizationId = Array.isArray(orgId) ? orgId?.[0] : orgId;
+            if (organizationId) {
+              const { data: companiesForOrg } = await supabase
+                .from('companies')
+                .select('id')
+                .eq('organization_id', organizationId)
+                .order('is_active', { ascending: false })
+                .order('created_at', { ascending: true })
+                .limit(1);
+              const companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+              if (companyId) {
+                payload = { ...payload, company_id: companyId };
+              }
+              // Preenche organizations_id diretamente no product
+              payload = { ...payload, organizations_id: organizationId };
+            }
+          } catch { /* noop */ }
+        }
         const { data, error } = await supabase
           .from('products')
-          .insert([productData])
+          .insert([payload])
           .select()
           .single();
         if (error) throw error;

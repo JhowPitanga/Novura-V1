@@ -58,32 +58,30 @@ export function useVariations() {
       const variationGroupsWithVariations = await Promise.all(
         (parentProducts || []).map(async (parent) => {
           const { data: variations, error: variationsError } = await supabase
-            .from('product_group_members')
+            .from('products')
             .select(`
-              product_id,
-              products (
+              id,
+              name,
+              sku,
+              cost_price,
+              sell_price,
+              image_urls,
+              color,
+              size,
+              custom_attributes,
+              products_stock (
                 id,
-                name,
-                sku,
-                cost_price,
-                sell_price,
-                image_urls,
-                color,
-                size,
-                custom_attributes,
-                products_stock (
-                  id,
-                  storage_id,
-                  current,
-                  reserved,
-                  in_transit,
-                  storage (
-                    name
-                  )
+                storage_id,
+                current,
+                reserved,
+                in_transit,
+                storage (
+                  name
                 )
               )
             `)
-            .eq('product_group_id', parent.id);
+            .eq('type', 'VARIACAO_ITEM')
+            .eq('parent_id', parent.id);
 
           if (variationsError) {
             console.error('Error fetching variations for parent:', parent.id, variationsError);
@@ -95,8 +93,6 @@ export function useVariations() {
           }
 
           const formattedVariations = (variations || [])
-            .map(v => v.products)
-            .filter(Boolean)
             .map(variation => ({
               ...variation,
               total_current_stock: Array.isArray(variation.products_stock) 

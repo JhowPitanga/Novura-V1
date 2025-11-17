@@ -68,6 +68,7 @@ export async function fetchProductsWithDetailedStock(userId?: string, organizati
         sell_price,
         image_urls,
         type,
+        parent_id,
         category_id,
         categories (
           id,
@@ -87,8 +88,22 @@ export async function fetchProductsWithDetailedStock(userId?: string, organizati
       `)
       .in('type', ['UNICO', 'VARIACAO_ITEM']);
 
-    // Filtra por usuário atual para evitar dados fora de contexto e cumprir RLS
-    if (userId) {
+    // Filtra por organização (via companies) preferencialmente; fallback para user_id
+    if (organizationId) {
+      const { data: companiesForOrg } = await supabase
+        .from('companies')
+        .select('id')
+        .eq('organization_id', organizationId)
+        .order('is_active', { ascending: false })
+        .order('created_at', { ascending: true })
+        .limit(1);
+      const companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+      if (companyId) {
+        query = query.eq('company_id', companyId);
+      } else if (userId) {
+        query = query.eq('user_id', userId);
+      }
+    } else if (userId) {
       query = query.eq('user_id', userId);
     }
 
@@ -98,27 +113,9 @@ export async function fetchProductsWithDetailedStock(userId?: string, organizati
       throw productsError;
     }
 
-    // Resolver nomes dos produtos pais para produtos de variação via tabela product_group_members
-    const variationIds = Array.from(new Set(((productsData || []) as any[])
-      .filter((p: any) => p.type === 'VARIACAO_ITEM')
-      .map((p: any) => p.id))) as string[];
-
-    const variationToParentId = new Map<string, string>();
-    if (variationIds.length > 0) {
-      const { data: memberships, error: membershipsError } = await supabase
-        .from('product_group_members')
-        .select('product_id, product_group_id')
-        .in('product_id', variationIds);
-      if (!membershipsError && memberships) {
-        (memberships as any[]).forEach(m => {
-          if (m?.product_id && m?.product_group_id) {
-            variationToParentId.set(m.product_id, m.product_group_id);
-          }
-        });
-      }
-    }
-
-    const parentIds = Array.from(new Set([...variationToParentId.values()]));
+    const parentIds = Array.from(new Set(((productsData || []) as any[])
+      .filter((p: any) => p.type === 'VARIACAO_ITEM' && p.parent_id)
+      .map((p: any) => String(p.parent_id)))) as string[];
 
     let parentNameMap = new Map<string, string>();
     if (parentIds.length > 0) {
@@ -153,7 +150,7 @@ export async function fetchProductsWithDetailedStock(userId?: string, organizati
         total_reserved_stock: totalReserved,
         total_available_stock: totalAvailable,
         parent_product_name: product.type === 'VARIACAO_ITEM'
-          ? (parentNameMap.get(variationToParentId.get(product.id) || '') || null)
+          ? (parentNameMap.get(String((product as any).parent_id || '')) || null)
           : null,
         category_name: product.categories?.name ?? null,
         stock_by_location: stockArray.map(stock => ({

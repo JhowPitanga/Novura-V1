@@ -82,19 +82,38 @@ export function useKitData() {
         return;
       }
 
-      // Fetch kit items (products that are part of this kit)
-      const { data: kitMembers, error: membersError } = await supabase
-        .from('product_group_members')
+      const { data: kitData, error: kitDataError } = await supabase
+        .from('product_kits')
         .select(`
-          product_id,
-          products (
-            *
+          id,
+          product_kit_items (
+            id,
+            quantity,
+            product_id,
+            products (
+              *
+            )
           )
         `)
-        .eq('product_group_id', kitProduct.id);
+        .eq('product_id', kitProduct.id)
+        .single();
 
-      if (membersError) {
-        console.error('Error fetching kit members:', membersError);
+      let kitMembers: any[] = [];
+      if (!kitDataError && kitData) {
+        kitMembers = kitData.product_kit_items || [];
+      } else {
+        const { data: fallbackItems } = await supabase
+          .from('product_kit_items')
+          .select(`
+            id,
+            quantity,
+            product_id,
+            products (
+              *
+            )
+          `)
+          .eq('kit_id', kitProduct.id);
+        kitMembers = fallbackItems || [];
       }
 
       // Transform data to English format
@@ -125,8 +144,8 @@ export function useKitData() {
         id: member.products.id,
         name: member.products.name,
         sku: member.products.sku,
-        quantity: 1, // Default quantity, this should be stored in the junction table
-        type: member.products.type === 'VARIANT' ? 'variation' : 'single'
+        quantity: member.quantity || 1,
+        type: member.products.type === 'VARIACAO_ITEM' ? 'variation' : 'single'
       })) || [];
 
       setFormData(transformedFormData);

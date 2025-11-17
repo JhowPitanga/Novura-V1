@@ -91,27 +91,50 @@ export function useKits() {
             .eq('product_id', kit.id)
             .single();
 
-          if (kitDataError) {
-            console.error('Error fetching kit data for:', kit.id, kitDataError);
-            return {
-              ...kit,
-              kit_items: [],
-              available_kits: 0
-            };
+          let kitItems: any[] = [];
+          if (!kitDataError && kitData) {
+            kitItems = (kitData?.product_kit_items || []).map((item: any) => ({
+              id: item.id,
+              quantity: item.quantity,
+              product: {
+                id: item.products.id,
+                name: item.products.name,
+                sku: item.products.sku,
+                current_stock: Array.isArray(item.products.products_stock) 
+                  ? item.products.products_stock.reduce((sum: number, stock: any) => sum + (stock.current || 0), 0)
+                  : (item.products.products_stock?.current || 0)
+              }
+            }));
+          } else {
+            const { data: fallbackItems } = await supabase
+              .from('product_kit_items')
+              .select(`
+                id,
+                quantity,
+                product_id,
+                products (
+                  id,
+                  name,
+                  sku,
+                  products_stock (
+                    current
+                  )
+                )
+              `)
+              .eq('kit_id', kit.id);
+            kitItems = (fallbackItems || []).map((item: any) => ({
+              id: item.id,
+              quantity: item.quantity,
+              product: {
+                id: item.products.id,
+                name: item.products.name,
+                sku: item.products.sku,
+                current_stock: Array.isArray(item.products.products_stock) 
+                  ? item.products.products_stock.reduce((sum: number, stock: any) => sum + (stock.current || 0), 0)
+                  : (item.products.products_stock?.current || 0)
+              }
+            }));
           }
-
-          const kitItems = (kitData?.product_kit_items || []).map(item => ({
-            id: item.id,
-            quantity: item.quantity,
-            product: {
-              id: item.products.id,
-              name: item.products.name,
-              sku: item.products.sku,
-              current_stock: Array.isArray(item.products.products_stock) 
-                ? item.products.products_stock.reduce((sum, stock) => sum + (stock.current || 0), 0)
-                : (item.products.products_stock?.current || 0)
-            }
-          }));
 
           // Calcular quantos kits podem ser feitos baseado no item com menor estoque
           let availableKits = Number.MAX_SAFE_INTEGER;
