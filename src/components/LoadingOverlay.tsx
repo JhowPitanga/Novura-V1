@@ -12,9 +12,10 @@ interface LoadingOverlayProps {
   durationMs?: number;
   fullscreen?: boolean;
   message?: string;
+  topOffset?: number;
 }
 
-export default function LoadingOverlay({ durationMs = 5000, fullscreen = false, message }: LoadingOverlayProps) {
+export default function LoadingOverlay({ durationMs = 5000, fullscreen = false, message, topOffset = 0 }: LoadingOverlayProps) {
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
@@ -25,7 +26,10 @@ export default function LoadingOverlay({ durationMs = 5000, fullscreen = false, 
   }, []);
 
   return (
-    <div className={`${fullscreen ? "fixed" : "absolute"} inset-0 z-[1000] bg-white flex flex-col items-center justify-center`}>
+    <div
+      className={`${fullscreen ? "fixed inset-0" : "absolute left-0 right-0 bottom-0"} z-[1000] bg-white flex flex-col items-center justify-center`}
+      style={fullscreen ? undefined : { top: topOffset }}
+    >
       <UniqueLoading variant="morph" size="lg" className="mb-6" />
       <div className="h-7">
         <span

@@ -1,5 +1,2 @@
 [functions.mercado-livre-webhook-items]
 verify_jwt = false
-
-[functions.mercado-livre-webhook-orders]
-verify_jwt = false

@@ -73,7 +73,7 @@ serve(async (req) => {
   const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
   
   if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ENC_KEY_B64) {
-    return jsonResponse({ error: "Missing service configuration" }, 500);
+    return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
   }
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
@@ -81,21 +81,34 @@ serve(async (req) => {
 
   try {
     const notification = await req.json();
+    const correlationId = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || (notification?.correlation_id ? String(notification.correlation_id) : null) || crypto.randomUUID();
+    const hdrLog = {
+      authorization_present: !!req.headers.get("authorization"),
+      apikey_present: !!req.headers.get("apikey"),
+      x_internal_call_present: !!req.headers.get("x-internal-call"),
+      x_meli_signature_present: !!req.headers.get("x-meli-signature"),
+      x_origin: req.headers.get("x-origin") || null,
+      "x-request-id": req.headers.get("x-request-id") || null,
+      "x-correlation-id": req.headers.get("x-correlation-id") || null,
+    };
+    console.log("mercado-livre-webhook-orders inbound", { correlationId, method: req.method, url: req.url, headers: hdrLog, bodyPreview: JSON.stringify(notification).slice(0, 500) });
     
     // Validar estrutura da notificação
     if (!notification.resource || !notification.user_id || !notification.topic) {
-      return jsonResponse({ error: "Invalid notification format" }, 400);
+      return jsonResponse({ ok: false, error: "Invalid notification format" }, 200);
     }
 
     // Verificar se é notificação de orders (suporta 'orders' e 'orders_v2')
     if (notification.topic !== "orders_v2" && notification.topic !== "orders") {
-      return jsonResponse({ error: "Not an orders notification" }, 400);
+      console.warn("mercado-livre-webhook-orders not_orders_topic", { correlationId, topic: notification.topic });
+      return jsonResponse({ ok: false, error: "Not an orders notification", correlationId }, 200);
     }
 
     // Extrair order_id de forma robusta
     const orderId = extractResourceId(notification.resource, "orders");
     if (!orderId) {
-      return jsonResponse({ error: "Invalid or missing order resource" }, 400);
+      console.warn("mercado-livre-webhook-orders resource_extract_failed", { correlationId, resource: notification.resource });
+      return jsonResponse({ ok: false, error: "Invalid or missing order resource", correlationId }, 200);
     }
 
     // Buscar integração do usuário
@@ -107,19 +120,23 @@ serve(async (req) => {
       .single();
 
     if (integErr || !integration) {
-      return jsonResponse({ error: "Integration not found" }, 404);
+      console.warn("mercado-livre-webhook-orders integration_missing", { correlationId, error: integErr?.message });
+      return jsonResponse({ ok: false, error: "Integration not found", correlationId }, 200);
     }
+    console.log("mercado-livre-webhook-orders integration_ok", { correlationId, organizations_id: integration.organizations_id, integration_id: integration.id, seller_id: integration.meli_user_id });
 
     // Descriptografar access token
     const accessToken = await aesGcmDecryptFromString(aesKey, integration.access_token);
 
     // Buscar dados completos do pedido com fallback de refresh
+    console.log("mercado-livre-webhook-orders meli_fetch_start", { correlationId, orderId });
     let orderResp = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, {
       headers: { 
         Authorization: `Bearer ${accessToken}`, 
         Accept: "application/json" 
       }
     });
+    console.log("mercado-livre-webhook-orders meli_fetch_status", { correlationId, status: orderResp.status });
 
     // Tentar refresh em 401/403
     if (orderResp.status === 401 || orderResp.status === 403) {
@@ -142,6 +159,7 @@ serve(async (req) => {
             refresh_token: refreshTokenPlain
           })
         });
+        console.log("mercado-livre-webhook-orders token_refresh_status", { correlationId, status: tokenResp.status });
         if (!tokenResp.ok) throw new Error(`Token refresh failed: ${tokenResp.status}`);
         const tokenJson = await tokenResp.json();
         const newAccessEnc = await aesGcmEncryptToString(aesKey, tokenJson.access_token);
@@ -163,19 +181,21 @@ serve(async (req) => {
         orderResp = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, {
           headers: { Authorization: `Bearer ${newAccess}`, Accept: "application/json" }
         });
+        console.log("mercado-livre-webhook-orders meli_fetch_retry_status", { correlationId, status: orderResp.status });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        return jsonResponse({ error: `Token refresh attempt failed: ${msg}` }, 401);
+        console.error("mercado-livre-webhook-orders token_refresh_failed", { correlationId, error: msg });
+        return jsonResponse({ ok: false, error: `Token refresh attempt failed: ${msg}`, correlationId }, 200);
       }
     }
 
     if (!orderResp.ok) {
-      return jsonResponse({ error: "Failed to fetch order details" }, orderResp.status);
+      console.warn("mercado-livre-webhook-orders meli_fetch_failed", { correlationId, status: orderResp.status });
+      return jsonResponse({ ok: false, error: "Failed to fetch order details", status: orderResp.status, correlationId }, 200);
     }
 
     const orderData = await orderResp.json();
 
-    // Buscar shipment detalhado (x-format-new) quando possível
     async function fetchShipmentDetails(shipmentId: string, token: string): Promise<any | null> {
       if (!shipmentId) return null;
       try {
@@ -185,52 +205,6 @@ serve(async (req) => {
             Accept: "application/json",
             "x-format-new": "true",
           },
-        });
-        if (!resp.ok) return null;
-        return await resp.json();
-      } catch (_) { return null; }
-    }
-
-    // Sub-recursos do envio: tracking e costs
-    async function fetchShipmentTracking(shipmentId: string, token: string): Promise<any | null> {
-      if (!shipmentId) return null;
-      try {
-        const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/tracking`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-        });
-        if (!resp.ok) return null;
-        return await resp.json();
-      } catch (_) { return null; }
-    }
-
-    async function fetchShipmentCosts(shipmentId: string, token: string): Promise<any | null> {
-      if (!shipmentId) return null;
-      try {
-        const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/costs`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-        });
-        if (!resp.ok) return null;
-        return await resp.json();
-      } catch (_) { return null; }
-    }
-
-    // Novos sub-recursos: SLA de despacho e atrasos
-    async function fetchShipmentSLA(shipmentId: string, token: string): Promise<any | null> {
-      if (!shipmentId) return null;
-      try {
-        const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/sla`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-        });
-        if (!resp.ok) return null;
-        return await resp.json();
-      } catch (_) { return null; }
-    }
-
-    async function fetchShipmentDelays(shipmentId: string, token: string): Promise<any | null> {
-      if (!shipmentId) return null;
-      try {
-        const resp = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}/delays`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "x-format-new": "true" },
         });
         if (!resp.ok) return null;
         return await resp.json();
@@ -249,10 +223,10 @@ serve(async (req) => {
       }
     }
 
-    const shipmentsDetailed: any[] = [];
+    const shipmentsDetailed: Record<string, any> = {};
     for (const sid of candidateShipmentIds) {
       const det = await fetchShipmentDetails(sid, accessToken);
-      if (det) shipmentsDetailed.push(det);
+      if (det) shipmentsDetailed[String(sid)] = det;
     }
 
     // Classificador do tipo de envio a partir do shipment
@@ -273,8 +247,8 @@ serve(async (req) => {
 
     // Base de envios a enriquecer (detalhados ou fallback)
     const baseShipments: any[] = (
-      shipmentsDetailed.length > 0
-        ? shipmentsDetailed
+      (Object.keys(shipmentsDetailed).length > 0)
+        ? Array.from(candidateShipmentIds).map((sid) => shipmentsDetailed[String(sid)]).filter(Boolean)
         : (
             Array.isArray(orderData.shipments) && orderData.shipments.length > 0
               ? orderData.shipments
@@ -286,55 +260,42 @@ serve(async (req) => {
     const shipmentsNormalized: any[] = [];
     for (const sh of baseShipments) {
       const sid = (sh && (sh.id ?? sh.shipment_id)) ? String(sh.id ?? sh.shipment_id) : null;
-      let tracking: any | null = null;
-      let costs: any | null = null;
-      let sla: any | null = null;
-      let delays: any | null = null;
-      if (sid) {
-        tracking = await fetchShipmentTracking(sid, accessToken);
-        costs = await fetchShipmentCosts(sid, accessToken);
-        sla = await fetchShipmentSLA(sid, accessToken);
-        delays = await fetchShipmentDelays(sid, accessToken);
-      }
+      const det = sid ? shipmentsDetailed[String(sid)] : null;
+      const embeddedSla = (det?.sla ?? det?.dispatch_sla ?? sh?.sla ?? sh?.dispatch_sla) || null;
+      const embeddedDelays = (det?.delays ?? det?.tracking?.delays ?? sh?.delays ?? sh?.tracking?.delays) || null;
 
-      // Extrações resilientes de SLA direto do objeto de detalhes do envio (quando vier embutido)
-      const embeddedSla = sh?.sla || sh?.dispatch_sla || null;
-      const embeddedDelays = sh?.delays || sh?.tracking?.delays || null;
-
-      // Preparar campos normalizados com fallback em várias posições
       const sla_status = (
-        sla?.status ?? embeddedSla?.status ?? sh?.sla_status ?? null
+        embeddedSla?.status ?? sh?.sla_status ?? null
       );
       const sla_service = (
-        sla?.service ?? embeddedSla?.service ?? sh?.sla_service ?? null
+        embeddedSla?.service ?? sh?.sla_service ?? null
       );
       const sla_expected_date = (
-        sla?.expected_date ?? embeddedSla?.expected_date ?? sh?.sla_expected_date ?? null
+        embeddedSla?.expected_date ?? sh?.sla_expected_date ?? null
       );
       const sla_last_updated = (
-        sla?.last_updated ?? embeddedSla?.last_updated ?? sh?.sla_last_updated ?? null
+        embeddedSla?.last_updated ?? sh?.sla_last_updated ?? null
       );
-      const delaysArr = Array.isArray(delays?.delays)
-        ? delays.delays
-        : (Array.isArray(embeddedDelays) ? embeddedDelays : (Array.isArray(sh?.delays) ? sh.delays : null));
+      const delaysArr = Array.isArray(embeddedDelays)
+        ? embeddedDelays
+        : (Array.isArray(sh?.delays) ? sh.delays : null);
 
       shipmentsNormalized.push({
-        ...sh,
-        tracking: tracking ?? (sh?.tracking ?? null),
-        costs: costs ?? (sh?.costs ?? null),
-        tracking_fetched_at: tracking ? nowIso : (sh?.tracking_fetched_at ?? null),
-        costs_fetched_at: costs ? nowIso : (sh?.costs_fetched_at ?? null),
-        // Campos normalizados de SLA (com fallback em diferentes fontes)
+        ...(det || sh),
+        tracking: (det?.tracking ?? sh?.tracking ?? null),
+        costs: (det?.costs ?? sh?.costs ?? null),
+        tracking_fetched_at: det?.tracking ? nowIso : (sh?.tracking_fetched_at ?? null),
+        costs_fetched_at: det?.costs ? nowIso : (sh?.costs_fetched_at ?? null),
         sla_status,
         sla_service,
         sla_expected_date,
         sla_last_updated,
-        sla_fetched_at: (sla || embeddedSla) ? nowIso : (sh?.sla_fetched_at ?? null),
-        // Campos de atrasos (array)
+        sla_fetched_at: embeddedSla ? nowIso : (sh?.sla_fetched_at ?? null),
         delays: delaysArr ?? null,
-        delays_fetched_at: (delays || embeddedDelays) ? nowIso : (sh?.delays_fetched_at ?? null),
+        delays_fetched_at: embeddedDelays ? nowIso : (sh?.delays_fetched_at ?? null),
       });
     }
+    console.log("mercado-livre-webhook-orders shipments_normalized", { correlationId, count: shipmentsNormalized.length });
 
     const upsertData = {
       organizations_id: integration.organizations_id,
@@ -369,8 +330,10 @@ serve(async (req) => {
     }
 
     if (upErr) {
-      return jsonResponse({ error: `Failed to upsert order: ${upErr.message}` }, 500);
+      console.error("mercado-livre-webhook-orders upsert_failed", { correlationId, error: upErr.message });
+      return jsonResponse({ ok: false, error: `Failed to upsert order: ${upErr.message}`, correlationId }, 200);
     }
+    console.log("mercado-livre-webhook-orders upsert_ok", { correlationId, order_id: orderId, organizations_id: integration.organizations_id });
 
     return jsonResponse({ 
       ok: true, 
@@ -381,6 +344,7 @@ serve(async (req) => {
 
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return jsonResponse({ error: msg }, 500);
+    console.error("mercado-livre-webhook-orders unexpected_error", { error: msg });
+    return jsonResponse({ ok: false, error: msg }, 200);
   }
 });

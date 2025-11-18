@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, startTransition } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, startTransition } from "react";
 import { Search, Filter, Settings, FileText, Printer, Bot, TrendingUp, Zap, QrCode, Check, Calendar, Download, X, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Package, Truck, MinusCircle, CheckCircle2, Box, Scan, FileBadge, StickyNote, AudioWaveform, TextSelect, ListChecks, Table } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +39,8 @@ import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { formatDateTimeSP, formatDateSP, eventToSPEpochMs, calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs } from "@/lib/datetime";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
+import { DateRange } from "react-day-picker";
+import LoadingOverlay from "@/components/LoadingOverlay";
 import { PedidoDetailsDrawer } from "@/components/pedidos/PedidoDetailsDrawer";
 import { supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -213,7 +215,7 @@ async function enrichPedidosWithMLImages(parsedPedidos: any[], marketplaceByOrde
 // --- Mockup de PDF de Lista de Separação (Novo Componente) ---
 const PickingListPDFMockup = ({ pedidos, settings, onPrint }: { pedidos: any[]; settings: any; onPrint?: () => void }) => {
     // Agrupa itens por SKU se a configuração estiver ativada
-    const groupedItems = {};
+    const groupedItems: Record<string, { imagem?: string; nome?: string; sku?: string; quantidade: number }> = {};
     if (settings.groupByProduct) {
         pedidos.forEach(pedido => {
             pedido.itens.forEach(item => {
@@ -233,7 +235,7 @@ const PickingListPDFMockup = ({ pedidos, settings, onPrint }: { pedidos: any[]; 
                     {Object.values(groupedItems).map((item, itemIndex) => (
                         <li key={itemIndex} className="flex items-start space-x-4 border p-4 rounded-lg bg-gray-50">
                             <div className="w-16 h-16 flex-shrink-0">
-                                <img src={item.imagem || "/placeholder.svg"} alt={item.nome} className="w-full h-full object-cover rounded" />
+                                <img src={item.imagem || "/placeholder.svg"} alt={item.nome || ''} className="w-full h-full object-cover rounded" />
                             </div>
                             <div className="flex-1">
                                 <p className="font-medium text-lg">{item.nome}</p>
@@ -401,7 +403,7 @@ const generatePdfBlob = (content, orientation = 'P') => {
 const generateFunctionalPickingListPDF = (pedidos, settings) => {
     let content = '';
     if (settings.groupByProduct) {
-        const groupedItems = {};
+        const groupedItems: Record<string, { nome?: string; sku?: string; quantidade: number; pedidos: Set<string> }> = {};
         pedidos.forEach(p => p.itens.forEach(item => {
             if (!groupedItems[item.sku]) {
                 groupedItems[item.sku] = { ...item, quantidade: 0, pedidos: new Set() };
@@ -508,8 +510,8 @@ function Pedidos() {
     const [scannedPedido, setScannedPedido] = useState<any>(null);
     const [isCompleteModalOpen, setIsCompleteModalOpen] = useState(false);
     const [activePrintTab, setActivePrintTab] = useState("label");
-    const [dateRange, setDateRange] = useState({ from: undefined, to: undefined });
-    const [tempDateRange, setTempDateRange] = useState({ from: undefined, to: undefined });
+    const [dateRange, setDateRange] = useState<DateRange | undefined>(undefined);
+    const [tempDateRange, setTempDateRange] = useState<DateRange | undefined>(undefined);
     const [isColumnsDrawerOpen, setIsColumnsDrawerOpen] = useState(false);
     const [activeFilterStatus, setActiveFilterStatus] = useState("todos");
     const [selectedPedidos, setSelectedPedidos] = useState<string[]>([]);
@@ -523,9 +525,19 @@ function Pedidos() {
     const [marketplaceFilter, setMarketplaceFilter] = useState<'all' | 'mercado-livre'>('all');
     const [shippingTypeFilter, setShippingTypeFilter] = useState<'all' | 'full' | 'flex' | 'envios' | 'correios' | 'no_shipping'>('all');
     const columnsDrawerRef = useRef<HTMLDivElement | null>(null);
+    const listContainerRef = useRef<HTMLDivElement | null>(null);
+    const orgIdRef = useRef<string | null>(null);
+    const theadRef = useRef<HTMLTableSectionElement | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    
+    const [countsReady, setCountsReady] = useState(false);
+    const [listReady, setListReady] = useState(false);
+    const [listTopOffset, setListTopOffset] = useState<number>(64);
 
     const { user, organizationId } = useAuth();
+
+    const [processedConsume, setProcessedConsume] = useState<Record<string, boolean>>({});
+    const [processedRefund, setProcessedRefund] = useState<Record<string, boolean>>({});
 
     // Estado para animar suavemente o painel de colunas ao abrir
     const [columnsPanelAnimatedOpen, setColumnsPanelAnimatedOpen] = useState(false);
@@ -585,14 +597,16 @@ function Pedidos() {
         setSelectedPedidosEnviado([]);
     }, [activeStatus]);
 
+    
+
     // Carregar contagens globais (independente da paginação) aplicando filtros de data e busca
     const loadGlobalStatusCounts = async () => {
         try {
             // Intervalo em SP: mesma lógica usada no filtro local
-            const fromMs = dateRange.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
-            const toMs = dateRange.to
+            const fromMs = dateRange?.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
+            const toMs = dateRange?.to
                 ? calendarEndOfDaySPEpochMs(dateRange.to as Date)
-                : (dateRange.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
+                : (dateRange?.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
             const fromIso = typeof fromMs === 'number' ? new Date(fromMs).toISOString() : null;
             const toIso = typeof toMs === 'number' ? new Date(toMs).toISOString() : null;
             const term = (searchTerm || '').trim();
@@ -602,27 +616,47 @@ function Pedidos() {
             const buildBase = () => {
                 let qb: any = (supabase as any)
                     .from('marketplace_orders_presented')
-                .select('id, shipment_status, shipment_substatus, first_item_sku, payment_status', { count: 'exact' })
-                .eq('marketplace', 'Mercado Livre');
+                .select('id, shipment_status, shipment_substatus, first_item_sku, payment_status, has_unlinked_items', { count: 'exact' })
+                ;
+                if (marketplaceFilter === 'mercado-livre') qb = (qb as any).eq('marketplace', 'Mercado Livre');
                 if (fromIso) qb = (qb as any).or(`payment_date_approved.gte.${fromIso},created_at.gte.${fromIso}`);
                 if (toIso) qb = (qb as any).or(`payment_date_approved.lte.${toIso},created_at.lte.${toIso}`);
                 if (pattern) qb = (qb as any).or(`marketplace_order_id.ilike.${pattern},customer_name.ilike.${pattern},first_item_sku.ilike.${pattern},first_item_title.ilike.${pattern}`);
                 // Considerar somente pagos (equivalente ao isRowPaid)
                 qb = (qb as any).or('payment_status.eq.approved,payment_status.eq.paid,payment_status.eq.settled,payment_date_approved.not.is.null');
+                if (shippingTypeFilter !== 'all') {
+                    const map = shippingTypeFilter === 'full'
+                        ? ['full', 'fulfillment', 'fbm']
+                        : (shippingTypeFilter === 'flex'
+                            ? ['flex', 'self_service']
+                            : (shippingTypeFilter === 'envios'
+                                ? ['envios', 'xd_drop_off', 'cross_docking', 'me2', 'custom']
+                                : (shippingTypeFilter === 'correios'
+                                    ? ['correios', 'drop_off']
+                                    : ['no_shipping'])));
+                    qb = (qb as any).in('shipping_type', map);
+                }
                 return qb;
             };
 
             // Todos (pagos) com filtros aplicados
             const { count: totalPaid } = await buildBase();
 
-            // A vincular: shipment pending ou sem SKU do primeiro item (aproximação)
             const { count: countAVincular } = await (buildBase() as any)
-                .or('shipment_status.eq.pending,first_item_sku.is.null');
+                .eq('has_unlinked_items', true)
+                .eq('shipment_substatus', 'ready_to_print')
+                .neq('shipping_type', 'full')
+                .neq('payment_status', 'canceled')
+                .neq('payment_status', 'cancelled')
+                .neq('payment_status', 'refunded')
+                .neq('shipment_status', 'canceled')
+                .neq('shipment_status', 'cancelled');
 
             // Aguardando Coleta: pronto para envio
             const { count: countAguardandoColeta } = await (buildBase() as any)
                 .eq('shipment_status', 'ready_to_ship')
-                .eq('shipment_substatus', 'printed');
+                .eq('shipment_substatus', 'printed')
+                .neq('shipping_type', 'full');
 
             // Enviado: entregue
             const { count: countEnviado } = await (buildBase() as any)
@@ -642,13 +676,14 @@ function Pedidos() {
         } catch (e) {
             console.warn('Falha ao carregar contagens globais:', e);
         }
+        setCountsReady(true);
     };
 
-    // Atualizar contagens globais quando filtros mudarem
+    // Atualizar contagens globais quando filtros mudarem, somente após primeira listagem
     useEffect(() => {
         loadGlobalStatusCounts();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [dateRange, searchTerm]);
+    }, [dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
 
     useEffect(() => {
         const onError = (e: ErrorEvent) => {
@@ -674,12 +709,7 @@ function Pedidos() {
                 return;
             }
 
-            // Descobrir a organização do usuário para cruzar com marketplace_orders
-            let organizationId: string | null = null;
-            try {
-                const { data: orgRes } = await supabase.rpc('get_user_organization_id');
-                if (orgRes) organizationId = String(orgRes);
-            } catch (_) {}
+            
 
             // Consulta inicial otimizada com paginação no servidor
             const ascending = sortDir === 'asc';
@@ -687,10 +717,10 @@ function Pedidos() {
             const end = Math.max(start, start + pageSize - 1);
 
             // Filtros de data e busca
-            const fromMs = dateRange.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
-            const toMs = dateRange.to
+            const fromMs = dateRange?.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
+            const toMs = dateRange?.to
                 ? calendarEndOfDaySPEpochMs(dateRange.to as Date)
-                : (dateRange.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
+                : (dateRange?.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
             const fromIso = typeof fromMs === 'number' ? new Date(fromMs).toISOString() : null;
             const toIso = typeof toMs === 'number' ? new Date(toMs).toISOString() : null;
             const term = (searchTerm || '').trim();
@@ -708,8 +738,6 @@ function Pedidos() {
                     marketplace,
                     shipping_type,
                     payment_status,
-                    payment_marketplace_fee,
-                    payment_shipping_cost,
                     payment_date_created,
                     payment_date_approved,
                     items_total_quantity,
@@ -718,22 +746,16 @@ function Pedidos() {
                     first_item_title,
                     first_item_permalink,
                     first_item_sku,
-                    shipping_city_name,
-                    shipping_state_name,
-                    shipping_state_uf,
+                    has_unlinked_items,
+                    unlinked_items_count,
                     shipment_status,
                     shipment_substatus,
                     shipping_method_name,
                     shipment_sla_status,
                     shipment_sla_service,
                     shipment_sla_expected_date,
-                    shipment_sla_last_updated,
-                    shipment_delays,
-                    label_cached,
-                    label_response_type,
-                    label_fetched_at,
-                    label_size_bytes
-                `, { count: 'exact' })
+                    shipment_sla_last_updated
+                `)
                 ;
 
             // Marketplace (por padrão 'Todos')
@@ -826,15 +848,21 @@ function Pedidos() {
                 const taxaMarketplace = saleFeeOrderItems; // usar agregado inicialmente
 
                 const shipmentStatusLower = String(o?.shipment_status || '').toLowerCase();
+                const shipmentSubstatusLower = String(o?.shipment_substatus || '').toLowerCase();
                 let statusUI = o.status || 'Pendente';
-                if (shipmentStatusLower === 'pending') {
+                const tipoEnvioNorm = normalizeShippingType(o?.shipping_type);
+                if (tipoEnvioNorm === 'full') {
+                    statusUI = 'Enviado';
+                } else if (Boolean(o?.has_unlinked_items)) {
                     statusUI = 'A vincular';
-                } else if (shipmentStatusLower === 'ready_to_ship') {
+                } else if (shipmentStatusLower === 'pending') {
+                    statusUI = 'A vincular';
+                } else if (shipmentSubstatusLower === 'printed') {
                     statusUI = 'Aguardando Coleta';
+                } else if (shipmentSubstatusLower === 'ready_to_print') {
+                    statusUI = 'Impressao';
                 } else if (shipmentStatusLower === 'delivered') {
                     statusUI = 'Enviado';
-                } else if (items.some((it: any) => !it.vinculado)) {
-                    statusUI = 'A vincular';
                 }
 
                 const liquidoCalculado = (items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0) || orderTotal) + valorRecebidoFrete - taxaMarketplace;
@@ -849,6 +877,7 @@ function Pedidos() {
                     valor: orderTotal,
                     data: o.created_at,
                     status: statusUI,
+                    has_unlinked_items: Boolean(o?.has_unlinked_items),
                     shipment_status: o?.shipment_status || null,
                     slaDespacho: {
                         status: o?.shipment_sla_status ?? null,
@@ -890,67 +919,68 @@ function Pedidos() {
                 };
             });
 
-            // Atualiza imediatamente para dar percepção de velocidade
+            // Atualiza imediatamente com dados principais da view
             startTransition(() => setPedidos(lightParsed));
-
-            // Buscar dados brutos do marketplace para pagamentos e envios (em segundo plano)
-            const orderIds = Array.from(new Set(paidRows.map((o: any) => o.marketplace_order_id).filter(Boolean)));
-            let marketplaceByOrderId: Record<string, any> = {};
-            let shipmentsByOrderId: Record<string, any[]> = {};
-            if (orderIds.length > 0) {
-                try {
-                    // 1) Tentativa com filtro por organização (quando disponível)
-                    let mq1: any = (supabase as any)
-                        .from('marketplace_orders_raw')
-                        .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer, labels')
-                        .in('marketplace_order_id', orderIds);
-                    if (organizationId) mq1 = (mq1 as any).eq('organizations_id', organizationId);
-                    const { data: mqRows1, error: mqErr1 } = await mq1;
-                    let rows: any[] | null = null;
-                    if (!mqErr1 && Array.isArray(mqRows1) && mqRows1.length > 0) {
-                        rows = mqRows1 as any[];
-                    } else {
-                        // 2) Fallback sem filtro de organização (aproveita políticas RLS existentes)
-                        const { data: mqRows2, error: mqErr2 } = await (supabase as any)
+            // Se não há pedidos pagos, não há secundário a concluir
+            if (paidRows.length === 0) {
+                setListReady(true);
+            } else {
+                // Carregamento secundário: manter overlay até concluir
+                const orderIds = Array.from(new Set(paidRows.map((o: any) => o.marketplace_order_id).filter(Boolean)));
+                const orgPromise = orgIdRef.current ? Promise.resolve(orgIdRef.current) : (async () => { try { const { data: orgRes } = await supabase.rpc('get_user_organization_id'); const v = orgRes ? String(orgRes) : null; orgIdRef.current = v; return v; } catch (_){ return null; } })();
+                const organizationId = await orgPromise;
+                let marketplaceByOrderId: Record<string, any> = {};
+                let shipmentsByOrderId: Record<string, any[]> = {};
+                if (orderIds.length > 0) {
+                    try {
+                        let mq1: any = (supabase as any)
                             .from('marketplace_orders_raw')
                             .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer, labels')
                             .in('marketplace_order_id', orderIds);
-                        if (!mqErr2 && Array.isArray(mqRows2)) rows = mqRows2 as any[];
-                    }
-                    if (rows) {
-                        marketplaceByOrderId = rows.reduce((acc, row) => {
-                            const k = row?.marketplace_order_id;
-                            if (k) acc[k] = row;
-                            return acc;
-                        }, {} as Record<string, any>);
-                    }
-                    // 3) Buscar envios normalizados em marketplace_shipments
-                    try {
-                        let sh1: any = (supabase as any)
-                            .from('marketplace_shipments')
-                            .select('marketplace_order_id, marketplace_shipment_id, status, substatus, logistic_type, mode, shipping_mode, service_id, carrier, tracking_number, tracking_url, tracking_history, receiver_address, sender_address, costs, items, promise, tags, dimensions, data, date_created, last_updated, date_ready_to_ship, date_first_printed, last_synced_at, sla_status, sla_service, sla_expected_date, sla_last_updated, delays')
-                            .eq('marketplace_name', 'Mercado Livre')
-                            .in('marketplace_order_id', orderIds);
-                        if (organizationId) sh1 = (sh1 as any).eq('organizations_id', organizationId);
-                        const { data: shRows, error: shErr } = await sh1;
-                        if (!shErr && Array.isArray(shRows)) {
-                            shipmentsByOrderId = (shRows as any[]).reduce((acc, row) => {
-                                const k = row?.marketplace_order_id;
-                                if (!k) return acc;
-                                if (!acc[k]) acc[k] = [];
-                                acc[k].push(row);
-                                return acc;
-                            }, {} as Record<string, any[]>);
+                        if (organizationId) mq1 = (mq1 as any).eq('organizations_id', organizationId);
+                        const { data: mqRows1, error: mqErr1 } = await mq1;
+                        let rows: any[] | null = null;
+                        if (!mqErr1 && Array.isArray(mqRows1) && mqRows1.length > 0) {
+                            rows = mqRows1 as any[];
+                        } else {
+                            const { data: mqRows2, error: mqErr2 } = await (supabase as any)
+                                .from('marketplace_orders_raw')
+                                .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer, labels')
+                                .in('marketplace_order_id', orderIds);
+                            if (!mqErr2 && Array.isArray(mqRows2)) rows = mqRows2 as any[];
                         }
-                    } catch (shCatch) {
-                        console.warn('Falha ao buscar marketplace_shipments:', shCatch);
-                    }
+                        if (rows) {
+                            marketplaceByOrderId = rows.reduce((acc, row) => {
+                                const k = row?.marketplace_order_id;
+                                if (k) acc[k] = row;
+                                return acc;
+                            }, {} as Record<string, any>);
+                        }
+                        try {
+                            let sh1: any = (supabase as any)
+                                .from('marketplace_shipments')
+                                .select('marketplace_order_id, marketplace_shipment_id, status, substatus, logistic_type, mode, shipping_mode, service_id, carrier, tracking_number, tracking_url, tracking_history, receiver_address, sender_address, costs, items, promise, tags, dimensions, data, date_created, last_updated, date_ready_to_ship, date_first_printed, last_synced_at, sla_status, sla_service, sla_expected_date, sla_last_updated, delays')
+                                .eq('marketplace_name', 'Mercado Livre')
+                                .in('marketplace_order_id', orderIds);
+                            if (organizationId) sh1 = (sh1 as any).eq('organizations_id', organizationId);
+                            const { data: shRows, error: shErr } = await sh1;
+                            if (!shErr && Array.isArray(shRows)) {
+                                shipmentsByOrderId = (shRows as any[]).reduce((acc, row) => {
+                                    const k = row?.marketplace_order_id;
+                                    if (!k) return acc;
+                                    if (!acc[k]) acc[k] = [];
+                                    acc[k].push(row);
+                                    return acc;
+                                }, {} as Record<string, any[]>);
+                            }
+                        } catch (shCatch) {
+                            console.warn('Falha ao buscar marketplace_shipments:', shCatch);
+                        }
                     } catch (mqCatch) {
                         console.warn('Falha ao buscar marketplace_orders_presented:', mqCatch);
                     }
                 }
 
-                // Pré-busca: vínculos de anúncios -> produtos por item_id em todos os pedidos
                 let linkByItemIdGlobal: Record<string, { product_id: string, sku: string, name: string, variation_id: string }> = {};
                 try {
                     const uniqueItemIdsForLinks = new Set<string>();
@@ -964,13 +994,13 @@ function Pedidos() {
                         }
                     }
                     if (uniqueItemIdsForLinks.size > 0) {
-                        let q = supabase
+                        let ql: any = (supabase as any)
                             .from('marketplace_item_product_links')
                             .select('marketplace_item_id, variation_id, product:products (id, sku, name)')
                             .eq('marketplace_name', 'Mercado Livre')
                             .in('marketplace_item_id', Array.from(uniqueItemIdsForLinks));
-                        if (organizationId) q = (q as any).eq('organizations_id', organizationId);
-                        const { data: linkRows, error: linkErr } = await q;
+                        if (organizationId) ql = (ql as any).eq('organizations_id', organizationId);
+                        const { data: linkRows, error: linkErr } = await ql;
                         if (!linkErr && Array.isArray(linkRows)) {
                             for (const r of linkRows) {
                                 const k = String(r?.marketplace_item_id || '');
@@ -990,7 +1020,7 @@ function Pedidos() {
                     console.warn('Falha ao pré-buscar vínculos de anúncios:', linkCatch);
                 }
 
-            const parsed = paidRows.map((o: any) => {
+                const parsedHeavy = paidRows.map((o: any) => {
                 // Dados do marketplace bruto
                 const mq = o.marketplace_order_id ? marketplaceByOrderId[o.marketplace_order_id] : null;
                 const payments: any[] = Array.isArray(mq?.payments) ? mq.payments : [];
@@ -1198,6 +1228,11 @@ function Pedidos() {
                     }
                 } else if (isPaymentCancelled) {
                     statusUI = 'Cancelado';
+                } else if (normalizeShippingType(o?.shipping_type) === 'full') {
+                    statusUI = 'Enviado';
+                } else if (Boolean(o?.has_unlinked_items)) {
+                    // Prioridade máxima: pedidos sem vínculo vão para "A vincular"
+                    statusUI = 'A vincular';
                 } else if (hasPendingShipment) {
                     // Regra: shipment_status 'pending' => quadro "A vincular"
                     statusUI = 'A vincular';
@@ -1210,7 +1245,7 @@ function Pedidos() {
                 } else if (hasPrinted) {
                     // Aba Aguardando Coleta mostra somente pedidos com etiqueta impressa (substatus 'printed')
                     statusUI = 'Aguardando Coleta';
-                } else if (items.some((it: any) => !it.vinculado)) {
+                } else if (Boolean(o?.has_unlinked_items) || items.some((it: any) => !it.vinculado)) {
                     // Itens do pedido sem SKU vinculado => colocar na aba "A vincular"
                     statusUI = 'A vincular';
                 }
@@ -1280,6 +1315,7 @@ function Pedidos() {
                     valor: orderTotal,
                     data: o.created_at,
                     status: statusUI,
+                    has_unlinked_items: Boolean(o?.has_unlinked_items),
                     shipment_status: o?.shipment_status || (firstShipment?.status ?? null),
                     shipment_substatus: shipmentSubstatus,
                     shipment_id: shipmentId,
@@ -1328,14 +1364,19 @@ function Pedidos() {
                 };
             });
 
-            setPedidos(parsed);
-
-            // Pós-processamento: enriquecer imagens dos itens com base no MLB e variação
-            try {
-                const withImages = await enrichPedidosWithMLImages(parsed, marketplaceByOrderId);
-                setPedidos(withImages);
-            } catch (imgErr) {
-                console.warn('Falha ao enriquecer imagens MLB:', imgErr);
+                // Atualiza lista com dados secundários completos
+                startTransition(() => setPedidos(parsedHeavy));
+                // Lista pronta após secundário
+                setListReady(true);
+                // Enriquecimento de imagens pode seguir em segundo plano
+                (async () => {
+                    try {
+                        const withImages = await enrichPedidosWithMLImages(parsedHeavy, marketplaceByOrderId);
+                        startTransition(() => setPedidos(withImages));
+                    } catch (imgErr) {
+                        console.warn('Falha ao enriquecer imagens MLB:', imgErr);
+                    }
+                })();
             }
         } catch (err) {
             console.error("Erro ao buscar pedidos:", err);
@@ -1463,7 +1504,7 @@ function Pedidos() {
             if (!token) throw new Error('Sessão expirada ou ausente. Faça login novamente.');
 
             // Buscar o marketplace_order_id a partir do ID interno
-            const { data: row, error: rowErr } = await supabase
+            const { data: row, error: rowErr } = await (supabase as any)
                 .from('marketplace_orders_presented')
                 .select('marketplace_order_id, marketplace')
                 .eq('id', id)
@@ -1967,16 +2008,16 @@ function Pedidos() {
         const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
         const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
             (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
-        return isNonFull && hasReadyToPrintSub;
+        return isNonFull && hasReadyToPrintSub && !Boolean(p?.has_unlinked_items);
     });
     const pedidosNaoImpressos = pedidosImpressao.filter(p => !p.impressoEtiqueta || !p.impressoLista);
     const pedidosImpressos = pedidosImpressao.filter(p => p.impressoEtiqueta && p.impressoLista);
 
     // Intervalo na timezone de São Paulo (dias do calendário em SP)
-    const effectiveFromMs = dateRange.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
-    const effectiveToMs = dateRange.to
+    const effectiveFromMs = dateRange?.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
+    const effectiveToMs = dateRange?.to
         ? calendarEndOfDaySPEpochMs(dateRange.to as Date)
-        : (dateRange.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
+        : (dateRange?.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
 
     const baseFiltered = pedidos.filter(p => {
         const baseDateStr = p.dataPagamento || p.data;
@@ -2003,13 +2044,23 @@ function Pedidos() {
             const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
             const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
                 (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
-            return isNonFull && hasReadyToPrintSub;
+            return isNonFull && hasReadyToPrintSub && !Boolean(p?.has_unlinked_items);
         }
         if (activeStatus === "aguardando-coleta") {
             const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+            const isReadyToShip = String(p?.shipment_status || '').toLowerCase() === 'ready_to_ship' ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.status || '').toLowerCase() === 'ready_to_ship'));
             const hasPrintedSub = String(p?.shipment_substatus || '').toLowerCase() === 'printed' ||
                 (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
-            return isNonFull && hasPrintedSub;
+            return isNonFull && isReadyToShip && hasPrintedSub;
+        }
+        if (activeStatus === "a-vincular") {
+            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+            const isReadyToPrint = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
+            const isEmissaoNF = String(p?.status || '').toLowerCase() === 'emissao nf';
+            const isCancelado = p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido';
+            return isNonFull && Boolean(p?.has_unlinked_items) && (isReadyToPrint || isEmissaoNF) && !isCancelado;
         }
         if (activeStatus === "cancelado") {
             // Incluir devoluções na aba Cancelados
@@ -2036,6 +2087,7 @@ function Pedidos() {
         } else if (quickFilter === "Falha ao Enviar") {
             filteredPedidos = filteredPedidos.filter(p => p.subStatus === "Falha ao enviar");
         }
+        filteredPedidos = filteredPedidos.filter(p => String(p?.status || '').toLowerCase() === 'emissao nf' && !Boolean(p?.has_unlinked_items));
     }
 
     // Ordenação antes da paginação
@@ -2098,6 +2150,28 @@ function Pedidos() {
         setCurrentPage(1);
     }, [searchTerm, activeStatus, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
 
+    useEffect(() => {
+        if (!countsReady) return;
+        loadPedidos();
+    }, [activeStatus]);
+
+    useEffect(() => {
+        if (!countsReady) return;
+        loadPedidos();
+    }, [searchTerm, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
+
+    useLayoutEffect(() => {
+        const container = listContainerRef.current;
+        const thead = theadRef.current;
+        if (container && thead) {
+            const cr = container.getBoundingClientRect();
+            const tr = thead.getBoundingClientRect();
+            const offset = Math.max(0, Math.round(tr.bottom - cr.top));
+            setListTopOffset(offset);
+        }
+    }, [isLoading, activeStatus, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
+
+
     // Garantir que a página atual seja válida quando total de páginas mudar
     useEffect(() => {
         const tf = totalPedidosCount ?? filteredPedidos.length;
@@ -2106,6 +2180,38 @@ function Pedidos() {
             setCurrentPage(newTotalPages);
         }
     }, [totalPedidosCount, filteredPedidos.length, pageSize, currentPage]);
+
+    useEffect(() => {
+        if (activeStatus !== 'enviado') return;
+        const storageId = typeof window !== 'undefined' ? localStorage.getItem('defaultStorageId') : null;
+        if (!storageId) return;
+        const toProcess = filteredPedidos.filter((p: any) => p.status === 'Enviado' && !processedConsume[p.id]);
+        if (toProcess.length === 0) return;
+        Promise.all(toProcess.map(async (p: any) => {
+            const { error } = await (supabase as any).rpc('consume_reserved_stock_for_order', {
+                p_order_id: p.id,
+                p_storage_id: storageId,
+            });
+            setProcessedConsume(prev => ({ ...prev, [p.id]: true }));
+            if (error) console.warn('Falha ao consumir estoque para pedido', p.id, error.message);
+        })).catch(() => {});
+    }, [activeStatus, filteredPedidos, processedConsume]);
+
+    useEffect(() => {
+        if (activeStatus !== 'cancelado') return;
+        const storageId = typeof window !== 'undefined' ? localStorage.getItem('defaultStorageId') : null;
+        if (!storageId) return;
+        const toProcess = filteredPedidos.filter((p: any) => p.status === 'Cancelado' && !processedRefund[p.id]);
+        if (toProcess.length === 0) return;
+        Promise.all(toProcess.map(async (p: any) => {
+            const { error } = await (supabase as any).rpc('refund_reserved_stock_for_order', {
+                p_order_id: p.id,
+                p_storage_id: storageId,
+            });
+            setProcessedRefund(prev => ({ ...prev, [p.id]: true }));
+            if (error) console.warn('Falha ao estornar reserva para pedido', p.id, error.message);
+        })).catch(() => {});
+    }, [activeStatus, filteredPedidos, processedRefund]);
     
     const handleSelectAll = (list: string[], setList: (list: string[]) => void) => {
         if (list.length === filteredPedidos.length) {
@@ -2164,23 +2270,29 @@ function Pedidos() {
     };
 
     const statusBlocks = [
-        { id: "todos", title: "Todos os Pedidos", count: (statusCountsGlobal?.['todos'] ?? (totalPedidosCount ?? baseFiltered.length)), description: "Sincronizados com marketplaces" },
-        { id: "a-vincular", title: "A Vincular", count: (statusCountsGlobal?.['a-vincular'] ?? baseFiltered.filter(p => p.status === 'A vincular').length), description: "Pedidos sem vínculo de SKU" },
-        { id: "emissao-nf", title: "Emissão de NFe", count: baseFiltered.filter(p => p.status === 'Emissao NF').length, description: "Aguardando emissão" },
-        { id: "impressao", title: "Impressão", count: baseFiltered.filter(p => {
+        { id: "todos", title: "Todos os Pedidos", count: (listReady ? (statusCountsGlobal?.['todos'] ?? (totalPedidosCount ?? baseFiltered.length)) : 0), description: "Sincronizados com marketplaces" },
+        { id: "a-vincular", title: "A Vincular", count: (listReady ? (statusCountsGlobal?.['a-vincular'] ?? baseFiltered.filter(p => {
+            const isPrinted = String(p?.shipment_substatus || '').toLowerCase() === 'printed' ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
+            const isEmissaoNF = String(p?.status || '').toLowerCase() === 'emissao nf';
+            const isCancelado = p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido';
+            return Boolean(p?.has_unlinked_items) && !isPrinted && !isEmissaoNF && !isCancelado;
+        }).length) : 0), description: "Pedidos sem vínculo de SKU" },
+        { id: "emissao-nf", title: "Emissão de NFe", count: (listReady ? baseFiltered.filter(p => p.status === 'Emissao NF').length : 0), description: "Aguardando emissão" },
+        { id: "impressao", title: "Impressão", count: (listReady ? baseFiltered.filter(p => {
             const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
             const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
                 (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
-            return isNonFull && hasReadyToPrintSub;
-        }).length, description: "NF e etiqueta" },
-        { id: "aguardando-coleta", title: "Aguardando Coleta", count: (statusCountsGlobal?.['aguardando-coleta'] ?? baseFiltered.filter(p => {
+            return isNonFull && hasReadyToPrintSub && !Boolean(p?.has_unlinked_items);
+        }).length : 0), description: "NF e etiqueta" },
+        { id: "aguardando-coleta", title: "Aguardando Coleta", count: (listReady ? (statusCountsGlobal?.['aguardando-coleta'] ?? baseFiltered.filter(p => {
             const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
             const hasPrintedSub = String(p?.shipment_substatus || '').toLowerCase() === 'printed' ||
                 (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
             return isNonFull && hasPrintedSub;
-        }).length), description: "Prontos para envio" },
-        { id: "enviado", title: "Enviado", count: (statusCountsGlobal?.['enviado'] ?? baseFiltered.filter(p => p.status === 'Enviado').length), description: "Pedidos em trânsito" },
-        { id: "cancelado", title: "Cancelados", count: (statusCountsGlobal?.['cancelado'] ?? baseFiltered.filter(p => (p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido')).length), description: "Pedidos cancelados/devolvidos" },
+        }).length) : 0), description: "Prontos para envio" },
+        { id: "enviado", title: "Enviado", count: (listReady ? (statusCountsGlobal?.['enviado'] ?? baseFiltered.filter(p => p.status === 'Enviado').length) : 0), description: "Pedidos em trânsito" },
+        { id: "cancelado", title: "Cancelados", count: (listReady ? (statusCountsGlobal?.['cancelado'] ?? baseFiltered.filter(p => (p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido')).length) : 0), description: "Pedidos cancelados/devolvidos" },
     ];
 
     const handlePrintPickingList = () => {
@@ -2213,7 +2325,7 @@ function Pedidos() {
             }
 
             // Seleção do tipo de resposta: ZPL2 para impressoras Zebra; caso contrário, PDF
-            const printerName = String(printSettings?.printer || '').toLowerCase();
+            const printerName = String(printSettings?.labelPrinter || '').toLowerCase();
             const responseType = printerName.includes('zebra') ? 'zpl2' : 'pdf';
 
             // Sessão atual para Authorization
@@ -2281,7 +2393,7 @@ function Pedidos() {
             }
 
             // Seleção do tipo de resposta: ZPL2 para impressoras Zebra; caso contrário, PDF
-            const printerName = String(printSettings?.printer || '').toLowerCase();
+            const printerName = String(printSettings?.labelPrinter || '').toLowerCase();
             const responseType = printerName.includes('zebra') ? 'zpl2' : 'pdf';
 
             // Tentar usar etiqueta do cache local (marketplace_orders_raw.labels)
@@ -2467,7 +2579,7 @@ function Pedidos() {
                                                 <Button
                                                     variant="outline"
                                                     aria-label="Filtrar por data"
-                                                    className={`group h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 ${!dateRange.from && "text-gray-500"} ${isDatePopoverOpen ? 'gap-[1px]' : 'gap-0 group-hover:gap-[1px]'} justify-center`}
+                                                    className={`group h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 ${!dateRange?.from && "text-gray-500"} ${isDatePopoverOpen ? 'gap-[1px]' : 'gap-0 group-hover:gap-[1px]'} justify-center`}
                                                 >
                                                     <Calendar className="h-4 w-4" />
                                                     <span className={`overflow-hidden whitespace-nowrap max-w-0 opacity-0 transition-all duration-300 ease-out ${isDatePopoverOpen ? 'max-w-[140px] opacity-100' : 'group-hover:max-w-[140px] group-hover:opacity-100'}`}>
@@ -2479,12 +2591,12 @@ function Pedidos() {
                                                 <CalendarComponent
                                                     mode="range"
                                                     selected={tempDateRange}
-                                                    onSelect={setTempDateRange}
+                                                    onSelect={(range: any) => setTempDateRange(range)}
                                                     locale={ptBR}
                                                     initialFocus
                                                 />
                                                 <div className="p-2 border-t flex justify-end space-x-2">
-                                                    <Button variant="ghost" className="text-gray-500" onClick={() => { setDateRange({ from: undefined, to: undefined }); setIsDatePopoverOpen(false); }}>Remover Filtro</Button>
+                                                    <Button variant="ghost" className="text-gray-500" onClick={() => { setDateRange(undefined); setIsDatePopoverOpen(false); }}>Remover Filtro</Button>
                                                     <Button onClick={() => { setDateRange(tempDateRange); setIsDatePopoverOpen(false); }}>Aplicar</Button>
                                                 </div>
                                             </PopoverContent>
@@ -2845,10 +2957,13 @@ function Pedidos() {
                                 </div>
                             )}
 
-                            <div className="rounded-2xl bg-white shadow-lg overflow-hidden">
+                            <div ref={listContainerRef} className="rounded-2xl bg-white shadow-lg overflow-hidden relative">
+                                {isLoading && (
+                                    <LoadingOverlay fullscreen={false} topOffset={listTopOffset} message={"Carregando pedidos..."} />
+                                )}
                                 <div className="overflow-x-auto">
                                     <table className="min-w-full table-fixed divide-y divide-gray-200">
-                                        <thead className="bg-gray-50">
+                                        <thead ref={theadRef} className="bg-gray-50">
                                             {(() => {
                                                 const selectedCountHere = (
                                                     activeStatus === 'todos' ? selectedPedidos.length :
@@ -3486,7 +3601,7 @@ function Pedidos() {
                 </Dialog>
 
                 {/* Drawer de Carregamento de Emissão de NF */}
-                <Drawer open={isEmitting} onOpenChange={setIsEmitting} className="z-[9999]">
+                <Drawer open={isEmitting} onOpenChange={setIsEmitting}>
                     <DrawerContent className="w-[40%] mx-auto right-0 translate-x-[30%] p-6">
                         <DrawerHeader className="p-0 mb-4">
                             <DrawerTitle className="text-xl font-bold flex items-center space-x-2">

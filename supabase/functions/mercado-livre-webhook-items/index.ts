@@ -84,7 +84,7 @@ serve(async (req) => {
   const aesKey = await importAesGcmKey(ENC_KEY_B64);
 
   try {
-    const correlationId = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || crypto.randomUUID();
+    const correlationIdHeader = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || null;
     const hdrLog = {
       host: req.headers.get("host") || null,
       "content-type": req.headers.get("content-type") || null,
@@ -99,6 +99,16 @@ serve(async (req) => {
       "x-correlation-id": req.headers.get("x-correlation-id") || null,
     };
     const bodyText = await req.text();
+    let notification: any;
+    try {
+      notification = JSON.parse(bodyText);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const corr = correlationIdHeader || crypto.randomUUID();
+      console.error("mercado-livre-webhook-items invalid_json", { correlationId: corr, error: msg });
+      return jsonResponse({ ok: false, error: "Invalid JSON body", correlationId: corr }, 200);
+    }
+    const correlationId = correlationIdHeader || (notification?.correlation_id ? String(notification.correlation_id) : crypto.randomUUID());
     console.log("mercado-livre-webhook-items inbound", {
       correlationId,
       method: req.method,
@@ -106,14 +116,8 @@ serve(async (req) => {
       headers: hdrLog,
       bodyPreview: bodyText.slice(0, 500),
     });
-
-    let notification: any;
-    try {
-      notification = JSON.parse(bodyText);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error("mercado-livre-webhook-items invalid_json", { correlationId, error: msg });
-      return jsonResponse({ ok: false, error: "Invalid JSON body", correlationId }, 200);
+    if (notification?.correlation_id && !req.headers.get("x-correlation-id")) {
+      console.log("mercado-livre-webhook-items correlation_from_body", { correlationId_body: String(notification.correlation_id), correlationId_header: correlationIdHeader, correlationId_effective: correlationId });
     }
     
     // Validar estrutura da notificação

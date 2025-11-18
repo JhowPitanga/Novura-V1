@@ -241,16 +241,29 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
       return;
     }
 
-    // Reservar estoque para cada item vinculado
     const reservationErrors: string[] = [];
-    for (const item of linkedItems) {
-      const { error } = await supabase.rpc('reserve_stock_for_order_item', {
-        p_product_id: item.productId,
-        p_quantity_to_reserve: item.quantity,
-        p_storage_id: storageId,
-      });
-      if (error) {
-        reservationErrors.push(error.message);
+    let shouldReserve = false;
+    try {
+      const { data: ord } = await supabase
+        .from('marketplace_orders_presented')
+        .select('id, shipment_status, shipment_substatus')
+        .or(`id.eq.${pedidoId},marketplace_order_id.eq.${pedidoId}`)
+        .maybeSingle();
+      const ss = String(ord?.shipment_status || '').toLowerCase();
+      const ssub = String(ord?.shipment_substatus || '').toLowerCase();
+      shouldReserve = (ss === 'ready_to_ship') || (ssub === 'ready_to_print') || (ssub === 'printed');
+    } catch (_) {}
+
+    if (shouldReserve) {
+      for (const item of linkedItems) {
+        const { error } = await supabase.rpc('reserve_stock_for_order_item', {
+          p_product_id: item.productId,
+          p_quantity_to_reserve: item.quantity,
+          p_storage_id: storageId,
+        });
+        if (error) {
+          reservationErrors.push(error.message);
+        }
       }
     }
 
