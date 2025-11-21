@@ -1,6 +1,6 @@
 import { useToast } from '@/hooks/use-toast';
 import { Session, User } from '@supabase/supabase-js';
-import { ReactNode, createContext, useContext, useEffect, useState } from 'react';
+import { ReactNode, createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '../integrations/supabase/client';
 
 interface AuthContextType {
@@ -27,6 +27,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [organizationId, setOrganizationId] = useState<string | null>(null);
     const [permissions, setPermissions] = useState<Record<string, Record<string, boolean>> | null>(null);
     const [userRole, setUserRole] = useState<string | null>(null);
+    const initDoneRef = useRef(false);
 
     async function resolveOrganizationId(u: User | null) {
         try {
@@ -45,23 +46,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 return;
             }
 
-            // 2) Tenta via tabela public.users
-            const { data } = await supabase
-                .from('users')
-                .select('organization_id')
-                .eq('id', u.id)
-                .maybeSingle();
-            const orgId = (data as any)?.organization_id as string | undefined;
-            if (orgId) {
-                setOrganizationId(orgId);
-                await loadUserPermissionsAndRole(u.id, orgId);
-                return;
-            }
-
-            // 3) Fallback seguro: RPC que resolve organização atual por membership (evita criar org indevida)
+            // 2) Tenta via RPC que resolve organização atual por membership (evita criar org indevida)
             const { data: rpcOrgId, error: rpcErr } = await supabase.rpc('get_current_user_organization_id');
             if (rpcErr) {
-                console.warn('Falha ao obter organização via RPC get_current_user_organization_id:', rpcErr);
+                const m = String((rpcErr as any)?.message || (rpcErr as any)?.name || '').toLowerCase();
+                if (!m.includes('abort') && !m.includes('aborted')) {
+                    console.warn('Falha ao obter organização via RPC get_current_user_organization_id:', rpcErr);
+                }
             }
             const orgIdFromRpc = Array.isArray(rpcOrgId) ? (rpcOrgId?.[0] as string | undefined) : (rpcOrgId as string | undefined);
             if (orgIdFromRpc) {
@@ -70,32 +61,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 return;
             }
 
-            // 4) Último recurso: bootstrap (somente quando nenhum contexto de organização foi encontrado)
-            const { data: boot, error: bootErr } = await supabase.rpc('rpc_bootstrap_user_org', {
-                p_user_id: u.id,
-            });
-
-            if (bootErr) {
-                console.warn('Falha ao bootstrapar organização do usuário:', bootErr);
-                setOrganizationId(null);
-                setPermissions(null);
-                setUserRole(null);
-                return;
-            }
-
-            const bootRow = Array.isArray(boot) ? (boot[0] as any) : (boot as any);
-            const newOrgId = bootRow?.organization_id as string | undefined;
-
-            if (newOrgId) {
-                setOrganizationId(newOrgId);
-                await loadUserPermissionsAndRole(u.id, newOrgId);
-            } else {
-                setOrganizationId(null);
-                setPermissions(null);
-                setUserRole(null);
-            }
+            // 3) Sem organização resolvida: manter contexto vazio (evita chamadas RPC não tipadas)
+            setOrganizationId(null);
+            setPermissions(null);
+            setUserRole(null);
         } catch (e) {
-            console.warn('Falha ao resolver organization_id do usuário', e);
+            const m = String((e as any)?.message || (e as any)?.name || '').toLowerCase();
+            if (!m.includes('abort') && !m.includes('aborted')) {
+                console.warn('Falha ao resolver organization_id do usuário', e);
+            }
             setOrganizationId(null);
             setPermissions(null);
             setUserRole(null);
@@ -104,22 +78,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function loadUserPermissionsAndRole(userId: string, orgId: string) {
         try {
-            // Usa RPC com SECURITY DEFINER para evitar recursão/RLS complexa
-            const { data, error } = await supabase.rpc('rpc_get_member_permissions', {
+            const { data: perms, error: permsErr } = await supabase.rpc('get_user_permissions', {
                 p_user_id: userId,
                 p_organization_id: orgId,
             });
-
-            if (error) {
-                console.warn('Erro ao carregar permissões do usuário (RPC):', error);
+            if (permsErr) {
+                console.warn('Erro ao carregar permissões do usuário (RPC):', permsErr);
                 setPermissions({});
-                setUserRole('member');
-                return;
+            } else {
+                const p = Array.isArray(perms) ? (perms[0] as any) : (perms as any);
+                setPermissions(p || {});
             }
 
-            const row = Array.isArray(data) ? (data[0] as any) : (data as any);
-            setPermissions(row?.permissions || {});
-            setUserRole(row?.role || 'member');
+            const { data: memberRow } = await supabase
+                .from('organization_members')
+                .select('role')
+                .eq('organization_id', orgId)
+                .eq('user_id', userId)
+                .maybeSingle();
+            setUserRole((memberRow as any)?.role || 'member');
         } catch (e) {
             console.warn('Falha ao carregar permissões e role do usuário (RPC)', e);
             setPermissions({});
@@ -162,13 +139,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             (event, session) => {
-                // Atualiza sessão e usuário, e só libera loading após resolver organização
                 setSession(session);
                 const currentUser = session?.user ?? null;
                 setUser(currentUser);
                 (async () => {
-                    await resolveOrganizationId(currentUser);
-                    setLoading(false);
+                    if (!initDoneRef.current) {
+                        await resolveOrganizationId(currentUser);
+                        setLoading(false);
+                        initDoneRef.current = true;
+                    }
                 })();
             }
         );
@@ -179,6 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setUser(currentUser);
             await resolveOrganizationId(currentUser);
             setLoading(false);
+            initDoneRef.current = true;
         });
 
         return () => subscription.unsubscribe();

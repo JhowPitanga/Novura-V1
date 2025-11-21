@@ -58,6 +58,11 @@ function mapTipoEnvioLabel(v?: string) {
     return s ? s : '—';
 }
 
+function isAbortLikeError(e: any): boolean {
+    const m = String((e && ((e as any).message || (e as any).name)) || e || '').toLowerCase();
+    return m.includes('abort') || m.includes('failed to fetch') || m.includes('err_aborted');
+}
+
 // Normaliza valores de tipo de envio vindos de diferentes fontes (view, API, tags)
 function normalizeShippingType(input?: string | null): string {
     const s = String(input || '').toLowerCase();
@@ -196,10 +201,38 @@ async function enrichPedidosWithMLImages(parsedPedidos: any[], marketplaceByOrde
         return null;
     };
 
+    // Primeiro: resolver imagens do anúncio MLB a partir de marketplace_items
+    const mlbByItemId: Record<string, string> = {};
+    for (const [, target] of targetsByKey) {
+        const k = String(target.item_id);
+        const row = rowByItemId.get(k);
+        const url = resolveFromRow(row, target.variation_id) || null;
+        if (url) mlbByItemId[k] = url;
+    }
+
+    // Depois: buscar imagens do produto ERP vinculado e sobrescrever quando existir vínculo
+    const resolvedByItemId: Record<string, string> = { ...mlbByItemId };
+    try {
+        const { data: linkRowsAll } = await (supabase as any)
+            .from('marketplace_item_product_links')
+            .select('marketplace_item_id, product:products (image_urls)')
+            .eq('marketplace_name', 'Mercado Livre')
+            .in('marketplace_item_id', Array.from(uniqueItemIds));
+        if (Array.isArray(linkRowsAll)) {
+            for (const lr of linkRowsAll as any[]) {
+                const k = String(lr?.marketplace_item_id || '');
+                const prod = lr?.product || {};
+                const url = (Array.isArray(prod?.image_urls) ? prod.image_urls[0] : null) || null;
+                if (k && url) resolvedByItemId[k] = url;
+            }
+        }
+    } catch (_) {
+    }
+
     // Aplicar URLs resolvidas aos itens dos pedidos
     for (const [, target] of targetsByKey) {
-        const row = rowByItemId.get(String(target.item_id));
-        const url = resolveFromRow(row, target.variation_id) || "/placeholder.svg";
+        const k = String(target.item_id);
+        const url = resolvedByItemId[k] || "/placeholder.svg";
         for (const ap of target.apply) {
             pedidosClonados[ap.pedidoIndex].itens[ap.itemIndex].imagem = url;
         }
@@ -235,7 +268,7 @@ const PickingListPDFMockup = ({ pedidos, settings, onPrint }: { pedidos: any[]; 
                     {Object.values(groupedItems).map((item, itemIndex) => (
                         <li key={itemIndex} className="flex items-start space-x-4 border p-4 rounded-lg bg-gray-50">
                             <div className="w-16 h-16 flex-shrink-0">
-                                <img src={item.imagem || "/placeholder.svg"} alt={item.nome || ''} className="w-full h-full object-cover rounded" />
+                                <img src={item.imagem || "/placeholder.svg"} alt={item.nome || ''} className="w-full h-full object-cover rounded" loading="lazy" decoding="async" width="64" height="64" />
                             </div>
                             <div className="flex-1">
                                 <p className="font-medium text-lg">{item.nome}</p>
@@ -266,7 +299,7 @@ const PickingListPDFMockup = ({ pedidos, settings, onPrint }: { pedidos: any[]; 
                             {pedido.itens.map((item, itemIndex) => (
                                 <li key={itemIndex} className="flex items-start space-x-4 border p-4 rounded-lg bg-gray-50">
                                     <div className="w-16 h-16 flex-shrink-0">
-                                        <img src={item.imagem || "/placeholder.svg"} alt={item.nome} className="w-full h-full object-cover rounded" />
+                                        <img src={item.imagem || "/placeholder.svg"} alt={item.nome} className="w-full h-full object-cover rounded" loading="lazy" decoding="async" width="64" height="64" />
                                     </div>
                                     <div className="flex-1">
                                         <p className="font-medium text-lg">{item.nome}</p>
@@ -527,6 +560,10 @@ function Pedidos() {
     const columnsDrawerRef = useRef<HTMLDivElement | null>(null);
     const listContainerRef = useRef<HTMLDivElement | null>(null);
     const orgIdRef = useRef<string | null>(null);
+    const ordersRawCacheRef = useRef<Record<string, any>>({});
+    const shipmentsCacheRef = useRef<Record<string, any[]>>({});
+    const loadRunIdRef = useRef<number>(0);
+    const loadDebounceRef = useRef<number | null>(null);
     const theadRef = useRef<HTMLTableSectionElement | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     
@@ -538,6 +575,7 @@ function Pedidos() {
 
     const [processedConsume, setProcessedConsume] = useState<Record<string, boolean>>({});
     const [processedRefund, setProcessedRefund] = useState<Record<string, boolean>>({});
+    const [processedReserve, setProcessedReserve] = useState<Record<string, boolean>>({});
 
     // Estado para animar suavemente o painel de colunas ao abrir
     const [columnsPanelAnimatedOpen, setColumnsPanelAnimatedOpen] = useState(false);
@@ -602,95 +640,67 @@ function Pedidos() {
     // Carregar contagens globais (independente da paginação) aplicando filtros de data e busca
     const loadGlobalStatusCounts = async () => {
         try {
-            // Intervalo em SP: mesma lógica usada no filtro local
-            const fromMs = dateRange?.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
-            const toMs = dateRange?.to
-                ? calendarEndOfDaySPEpochMs(dateRange.to as Date)
-                : (dateRange?.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
-            const fromIso = typeof fromMs === 'number' ? new Date(fromMs).toISOString() : null;
-            const toIso = typeof toMs === 'number' ? new Date(toMs).toISOString() : null;
-            const term = (searchTerm || '').trim();
-            const pattern = term ? `%${term}%` : null;
+            let qBase: any = (supabase as any)
+                .from('marketplace_orders_presented')
+                .select('id', { count: 'exact' });
+            if (organizationId) qBase = (qBase as any).eq('organizations_id', organizationId);
+            if (marketplaceFilter === 'mercado-livre') {
+                qBase = (qBase as any).ilike('marketplace', '%Mercado%');
+            }
+            if (shippingTypeFilter !== 'all') {
+                const map = (
+                    shippingTypeFilter === 'full' ? ['full'] :
+                    (shippingTypeFilter === 'flex' ? ['flex', 'self_service'] :
+                        (shippingTypeFilter === 'envios'
+                            ? ['envios', 'xd_drop_off', 'cross_docking', 'me2', 'custom']
+                            : (shippingTypeFilter === 'correios'
+                                ? ['correios', 'drop_off']
+                                : ['no_shipping'])))
+                );
+                qBase = (qBase as any).in('shipping_type', map);
+            }
+            if (dateRange?.from || dateRange?.to) {
+                const fromISO = dateRange?.from ? new Date(dateRange.from as Date).toISOString() : undefined;
+                const toISO = dateRange?.to ? new Date(dateRange.to as Date).toISOString() : (dateRange?.from ? new Date(dateRange.from as Date).toISOString() : undefined);
+                if (fromISO) qBase = (qBase as any).gte('payment_date_approved', fromISO);
+                if (toISO) qBase = (qBase as any).lte('payment_date_approved', toISO);
+            }
+            // Busca global: para evitar conflito com múltiplos OR encadeados, aplicar uma única coluna representativa
+            if ((searchTerm || '').trim() !== '') {
+                const term = `%${String(searchTerm).trim()}%`;
+                qBase = (qBase as any).ilike('customer_name', term);
+            }
 
-            // Helper para construir consulta base com filtros comuns
-            const buildBase = () => {
-                let qb: any = (supabase as any)
-                    .from('marketplace_orders_presented')
-                .select('id, shipment_status, shipment_substatus, first_item_sku, payment_status, has_unlinked_items', { count: 'exact' })
-                ;
-                if (marketplaceFilter === 'mercado-livre') qb = (qb as any).eq('marketplace', 'Mercado Livre');
-                if (fromIso) qb = (qb as any).or(`payment_date_approved.gte.${fromIso},created_at.gte.${fromIso}`);
-                if (toIso) qb = (qb as any).or(`payment_date_approved.lte.${toIso},created_at.lte.${toIso}`);
-                if (pattern) qb = (qb as any).or(`marketplace_order_id.ilike.${pattern},customer_name.ilike.${pattern},first_item_sku.ilike.${pattern},first_item_title.ilike.${pattern}`);
-                // Considerar somente pagos (equivalente ao isRowPaid)
-                qb = (qb as any).or('payment_status.eq.approved,payment_status.eq.paid,payment_status.eq.settled,payment_date_approved.not.is.null');
-                if (shippingTypeFilter !== 'all') {
-                    const map = shippingTypeFilter === 'full'
-                        ? ['full', 'fulfillment', 'fbm']
-                        : (shippingTypeFilter === 'flex'
-                            ? ['flex', 'self_service']
-                            : (shippingTypeFilter === 'envios'
-                                ? ['envios', 'xd_drop_off', 'cross_docking', 'me2', 'custom']
-                                : (shippingTypeFilter === 'correios'
-                                    ? ['correios', 'drop_off']
-                                    : ['no_shipping'])));
-                    qb = (qb as any).in('shipping_type', map);
-                }
-                return qb;
-            };
+            // Cancelados = shipment_status cancelled/canceled OR payment_status cancelled/refunded
+            let qCancel: any = qBase;
+            qCancel = (qCancel as any).or('shipment_status.eq.cancelled,shipment_status.eq.canceled,payment_status.eq.cancelled,payment_status.eq.refunded');
+            const { count: canceladosCount } = await qCancel;
 
-            // Todos (pagos) com filtros aplicados
-            const { count: totalPaid } = await buildBase();
-
-            const { count: countAVincular } = await (buildBase() as any)
-                .eq('has_unlinked_items', true)
-                .eq('shipment_substatus', 'ready_to_print')
-                .neq('shipping_type', 'full')
-                .neq('payment_status', 'canceled')
-                .neq('payment_status', 'cancelled')
-                .neq('payment_status', 'refunded')
-                .neq('shipment_status', 'canceled')
-                .neq('shipment_status', 'cancelled');
-
-            // Aguardando Coleta: pronto para envio
-            const { count: countAguardandoColeta } = await (buildBase() as any)
-                .eq('shipment_status', 'ready_to_ship')
-                .eq('shipment_substatus', 'printed')
-                .neq('shipping_type', 'full');
-
-            // Enviado: entregue
-            const { count: countEnviado } = await (buildBase() as any)
-                .eq('shipment_status', 'delivered');
-
-            // Cancelados/Devolvidos: aproximação via payment_status e shipment_status
-            const { count: countCancelados } = await (buildBase() as any)
-                .or('payment_status.eq.canceled,payment_status.eq.cancelled,shipment_status.eq.canceled,shipment_status.eq.cancelled,payment_status.eq.refunded');
-
-            setStatusCountsGlobal({
-                'todos': typeof totalPaid === 'number' ? totalPaid : 0,
-                'a-vincular': typeof countAVincular === 'number' ? countAVincular : 0,
-                'aguardando-coleta': typeof countAguardandoColeta === 'number' ? countAguardandoColeta : 0,
-                'enviado': typeof countEnviado === 'number' ? countEnviado : 0,
-                'cancelado': typeof countCancelados === 'number' ? countCancelados : 0,
-            });
-        } catch (e) {
-            console.warn('Falha ao carregar contagens globais:', e);
+            setStatusCountsGlobal({ cancelado: Number(canceladosCount || 0) });
+            setCountsReady(true);
+        } catch (_) {
+            setStatusCountsGlobal(null);
+            setCountsReady(false);
         }
-        setCountsReady(true);
     };
 
     // Atualizar contagens globais quando filtros mudarem, somente após primeira listagem
     useEffect(() => {
-        loadGlobalStatusCounts();
+        const t = setTimeout(loadGlobalStatusCounts, 250);
+        return () => clearTimeout(t);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
 
     useEffect(() => {
         const onError = (e: ErrorEvent) => {
-            console.error('[Pedidos] Erro não tratado ao abrir Drawer:', e.error || e.message, e.filename, e.lineno, e.colno);
+            const msg = (e as any)?.error || (e as any)?.message || '';
+            if (isAbortLikeError(msg)) return;
+            console.error('[Pedidos] Erro não tratado ao abrir Drawer:', msg, e.filename, e.lineno, e.colno);
         };
         const onUnhandledRejection = (e: PromiseRejectionEvent) => {
-            console.error('[Pedidos] Promessa rejeitada sem tratamento:', e.reason);
+            const reason = (e as any)?.reason;
+            if (isAbortLikeError(reason)) return;
+            console.error('[Pedidos] Promessa rejeitada sem tratamento:', reason);
         };
         window.addEventListener('error', onError);
         window.addEventListener('unhandledrejection', onUnhandledRejection);
@@ -716,6 +726,20 @@ function Pedidos() {
             const start = Math.max(0, (currentPage - 1) * pageSize);
             const end = Math.max(start, start + pageSize - 1);
 
+            // Resolver organização para escopo da consulta
+            let orgIdResolved: string | null = organizationId ?? null;
+            if (!orgIdResolved) {
+                try {
+                    const { data: rpcOrg } = await (supabase as any).rpc('get_user_organization_id', { p_user_id: user.id });
+                    orgIdResolved = Array.isArray(rpcOrg) ? (rpcOrg?.[0] as string | null) : (rpcOrg as string | null);
+                } catch (orgErr) {
+                    const m = String((orgErr as any)?.message || (orgErr as any)?.name || '').toLowerCase();
+                    if (!m.includes('abort') && !m.includes('aborted')) {
+                        console.warn('[Pedidos] Falha ao obter organization_id do usuário:', orgErr);
+                    }
+                }
+            }
+
             // Filtros de data e busca
             const fromMs = dateRange?.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
             const toMs = dateRange?.to
@@ -728,35 +752,50 @@ function Pedidos() {
 
             let q: any = (supabase as any)
                 .from("marketplace_orders_presented")
-                .select(`
-                    id,
-                    marketplace_order_id,
-                    customer_name,
-                    order_total,
-                    status,
-                    created_at,
-                    marketplace,
-                    shipping_type,
-                    payment_status,
-                    payment_date_created,
-                    payment_date_approved,
-                    items_total_quantity,
-                    items_total_amount,
-                    items_total_sale_fee,
-                    first_item_title,
-                    first_item_permalink,
-                    first_item_sku,
-                    has_unlinked_items,
-                    unlinked_items_count,
-                    shipment_status,
-                    shipment_substatus,
-                    shipping_method_name,
-                    shipment_sla_status,
-                    shipment_sla_service,
-                    shipment_sla_expected_date,
-                    shipment_sla_last_updated
-                `)
+                    .select(`
+                        id,
+                        pack_id,
+                        marketplace_order_id,
+                        customer_name,
+                        order_total,
+                        status,
+                        created_at,
+                        marketplace,
+                        shipping_type,
+                        payment_status,
+                        payment_date_created,
+                        payment_date_approved,
+                        items_total_quantity,
+                        items_total_amount,
+                        items_total_sale_fee,
+                        first_item_title,
+                        first_item_permalink,
+                        first_item_sku,
+                        has_unlinked_items,
+                        unlinked_items_count,
+                        shipment_status,
+                        shipment_substatus,
+                        shipping_method_name,
+                        shipment_sla_status,
+                        shipment_sla_service,
+                        shipment_sla_expected_date,
+                        shipment_sla_last_updated,
+                        label_cached,
+                        label_response_type,
+                        label_fetched_at,
+                        label_size_bytes,
+                        label_content_base64,
+                        label_content_type,
+                        label_pdf_base64,
+                        label_zpl2_base64,
+                        printed_label,
+                        printed_schedule
+                    `, { count: 'exact' })
                 ;
+
+            if (orgIdResolved) {
+                q = (q as any).eq('organizations_id', orgIdResolved);
+            }
 
             // Marketplace (por padrão 'Todos')
             if (marketplaceFilter === 'mercado-livre') {
@@ -803,8 +842,7 @@ function Pedidos() {
                      .order('created_at', { ascending });
             }
 
-            // Não paginar no servidor; limitar lote inicial amplo
-            q = q.limit(1000);
+            q = q.range(start, end);
 
             const { data, count, error } = await q;
 
@@ -818,8 +856,7 @@ function Pedidos() {
                 return false;
             };
             const paidRows: any[] = Array.isArray(data) ? data.filter(isRowPaid) : [];
-            // Usar paginação local; não considerar paginação de servidor
-            setTotalPedidosCount(null);
+            setTotalPedidosCount(typeof count === 'number' ? count : paidRows.length);
 
             // Renderização imediata: construir uma lista leve apenas com dados agregados da view
             const lightParsed = paidRows.map((o: any) => {
@@ -849,14 +886,21 @@ function Pedidos() {
 
                 const shipmentStatusLower = String(o?.shipment_status || '').toLowerCase();
                 const shipmentSubstatusLower = String(o?.shipment_substatus || '').toLowerCase();
+                const paymentStatusLower = String(o?.payment_status || '').toLowerCase();
                 let statusUI = o.status || 'Pendente';
                 const tipoEnvioNorm = normalizeShippingType(o?.shipping_type);
-                if (tipoEnvioNorm === 'full') {
+                if (paymentStatusLower === 'cancelled') {
+                    statusUI = 'Cancelado';
+                } else if (paymentStatusLower === 'refunded') {
+                    statusUI = 'Devolução';
+                } else if (shipmentStatusLower === 'cancelled' || shipmentStatusLower === 'canceled') {
+                    statusUI = 'Cancelado';
+                } else if (tipoEnvioNorm === 'full') {
                     statusUI = 'Enviado';
                 } else if (Boolean(o?.has_unlinked_items)) {
                     statusUI = 'A vincular';
-                } else if (shipmentStatusLower === 'pending') {
-                    statusUI = 'A vincular';
+                } else if (shipmentStatusLower === 'pending' && shipmentSubstatusLower === 'buffered') {
+                    statusUI = 'Impressao';
                 } else if (shipmentSubstatusLower === 'printed') {
                     statusUI = 'Aguardando Coleta';
                 } else if (shipmentSubstatusLower === 'ready_to_print') {
@@ -867,8 +911,20 @@ function Pedidos() {
 
                 const liquidoCalculado = (items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0) || orderTotal) + valorRecebidoFrete - taxaMarketplace;
 
+                const labelInfo = {
+                    cached: Boolean(o?.label_cached || o?.label_content_base64 || o?.label_pdf_base64 || o?.label_zpl2_base64),
+                    response_type: (o?.label_response_type || (o?.label_pdf_base64 ? 'pdf' : (o?.label_zpl2_base64 ? 'zpl2' : null))) as string | null,
+                    fetched_at: (o?.label_fetched_at || null) as string | null,
+                    size_bytes: (typeof o?.label_size_bytes === 'number' ? o.label_size_bytes : Number(o?.label_size_bytes)) || null,
+                    shipment_ids: [],
+                    content_base64: o?.label_content_base64 || o?.label_pdf_base64 || o?.label_zpl2_base64 || null,
+                    content_type: o?.label_content_type || (o?.label_pdf_base64 ? 'application/pdf' : (o?.label_zpl2_base64 ? 'text/plain' : null)),
+                    pdf_base64: o?.label_pdf_base64 || null,
+                    zpl2_base64: o?.label_zpl2_base64 || null,
+                } as const;
+
                 return {
-                    id: o.marketplace_order_id || o.id,
+                    id: o.id,
                     marketplace: o.marketplace,
                     produto: items[0]?.nome || "",
                     sku: items[0]?.sku || null,
@@ -888,12 +944,12 @@ function Pedidos() {
                     atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : null,
                     dataPagamento: o?.payment_date_approved || o?.payment_date_created || o?.created_at || null,
                     tipoEnvio: normalizeShippingType(o?.shipping_type),
-                    idPlataforma: o.marketplace_order_id || "",
+                    idPlataforma: (o as any)?.pack_id || o.pack_id || "",
                     shippingCity: o?.shipping_city_name || null,
                     shippingState: o?.shipping_state_name || null,
                     shippingUF: o?.shipping_state_uf || null,
                     quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
-                    imagem: "/placeholder.svg",
+                    imagem: (items[0]?.imagem || "/placeholder.svg"),
                     itens: items,
                     financeiro: {
                         valorPedido: items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0) || orderTotal,
@@ -916,9 +972,11 @@ function Pedidos() {
                     },
                     impressoEtiqueta: false,
                     impressoLista: false,
+                    label: labelInfo,
                 };
             });
 
+            const runId = ++loadRunIdRef.current;
             // Atualiza imediatamente com dados principais da view
             startTransition(() => setPedidos(lightParsed));
             // Se não há pedidos pagos, não há secundário a concluir
@@ -926,65 +984,77 @@ function Pedidos() {
                 setListReady(true);
             } else {
                 // Carregamento secundário: manter overlay até concluir
-                const orderIds = Array.from(new Set(paidRows.map((o: any) => o.marketplace_order_id).filter(Boolean)));
-                const orgPromise = orgIdRef.current ? Promise.resolve(orgIdRef.current) : (async () => { try { const { data: orgRes } = await supabase.rpc('get_user_organization_id'); const v = orgRes ? String(orgRes) : null; orgIdRef.current = v; return v; } catch (_){ return null; } })();
-                const organizationId = await orgPromise;
+                const pageRows = paidRows.slice(start, end + 1);
+                const orderIds = Array.from(new Set(pageRows.map((o: any) => o.marketplace_order_id).filter(Boolean)));
+                orgIdRef.current = organizationId ?? orgIdRef.current;
+                const orgPromise = Promise.resolve(orgIdRef.current ?? null);
+                const orgIdResolved = await orgPromise;
                 let marketplaceByOrderId: Record<string, any> = {};
                 let shipmentsByOrderId: Record<string, any[]> = {};
                 if (orderIds.length > 0) {
                     try {
-                        let mq1: any = (supabase as any)
-                            .from('marketplace_orders_raw')
-                            .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer, labels')
-                            .in('marketplace_order_id', orderIds);
-                        if (organizationId) mq1 = (mq1 as any).eq('organizations_id', organizationId);
-                        const { data: mqRows1, error: mqErr1 } = await mq1;
-                        let rows: any[] | null = null;
-                        if (!mqErr1 && Array.isArray(mqRows1) && mqRows1.length > 0) {
-                            rows = mqRows1 as any[];
-                        } else {
-                            const { data: mqRows2, error: mqErr2 } = await (supabase as any)
+                        const missingOrderIds = orderIds.filter(id => !ordersRawCacheRef.current[id]);
+                        if (missingOrderIds.length > 0) {
+                            let mq1: any = (supabase as any)
                                 .from('marketplace_orders_raw')
-                                .select('marketplace_order_id, payments, shipments, data, marketplace_name, status, status_detail, date_created, buyer, labels')
-                                .in('marketplace_order_id', orderIds);
-                            if (!mqErr2 && Array.isArray(mqRows2)) rows = mqRows2 as any[];
-                        }
-                        if (rows) {
-                            marketplaceByOrderId = rows.reduce((acc, row) => {
-                                const k = row?.marketplace_order_id;
-                                if (k) acc[k] = row;
-                                return acc;
-                            }, {} as Record<string, any>);
-                        }
-                        try {
-                            let sh1: any = (supabase as any)
-                                .from('marketplace_shipments')
-                                .select('marketplace_order_id, marketplace_shipment_id, status, substatus, logistic_type, mode, shipping_mode, service_id, carrier, tracking_number, tracking_url, tracking_history, receiver_address, sender_address, costs, items, promise, tags, dimensions, data, date_created, last_updated, date_ready_to_ship, date_first_printed, last_synced_at, sla_status, sla_service, sla_expected_date, sla_last_updated, delays')
-                                .eq('marketplace_name', 'Mercado Livre')
-                                .in('marketplace_order_id', orderIds);
-                            if (organizationId) sh1 = (sh1 as any).eq('organizations_id', organizationId);
-                            const { data: shRows, error: shErr } = await sh1;
-                            if (!shErr && Array.isArray(shRows)) {
-                                shipmentsByOrderId = (shRows as any[]).reduce((acc, row) => {
-                                    const k = row?.marketplace_order_id;
-                                    if (!k) return acc;
-                                    if (!acc[k]) acc[k] = [];
-                                    acc[k].push(row);
-                                    return acc;
-                                }, {} as Record<string, any[]>);
+                                .select('marketplace_order_id, payments, data, marketplace_name, status, status_detail, date_created, buyer')
+                                .in('marketplace_order_id', missingOrderIds);
+                            if (orgIdResolved) mq1 = (mq1 as any).eq('organizations_id', orgIdResolved);
+                            const { data: mqRows1, error: mqErr1 } = await mq1;
+                            let rows: any[] | null = null;
+                            if (!mqErr1 && Array.isArray(mqRows1) && mqRows1.length > 0) {
+                                rows = mqRows1 as any[];
+                            } else {
+                                const { data: mqRows2, error: mqErr2 } = await (supabase as any)
+                                    .from('marketplace_orders_raw')
+                                    .select('marketplace_order_id, payments, data, marketplace_name, status, status_detail, date_created, buyer')
+                                    .in('marketplace_order_id', missingOrderIds);
+                                if (!mqErr2 && Array.isArray(mqRows2)) rows = mqRows2 as any[];
                             }
+                            if (rows) {
+                                for (const row of rows) {
+                                    const k = row?.marketplace_order_id;
+                                    if (k) ordersRawCacheRef.current[k] = row;
+                                }
+                            }
+                        }
+                        marketplaceByOrderId = orderIds.reduce((acc, k) => { acc[k] = ordersRawCacheRef.current[k] || null; return acc; }, {} as Record<string, any>);
+                        try {
+                            const missingShipIds = orderIds.filter(id => !(shipmentsCacheRef.current[id] && shipmentsCacheRef.current[id].length > 0));
+                            if (missingShipIds.length > 0) {
+                                let sh1: any = (supabase as any)
+                                    .from('marketplace_shipments')
+                                    .select('marketplace_order_id, marketplace_shipment_id, status, substatus, logistic_type, mode, shipping_mode, service_id, carrier, tracking_number, tracking_url, tracking_history, receiver_address, sender_address, costs, items, promise, tags, dimensions, data, date_created, last_updated, date_ready_to_ship, date_first_printed, last_synced_at, sla_status, sla_service, sla_expected_date, sla_last_updated, delays')
+                                    .eq('marketplace_name', 'Mercado Livre')
+                                    .in('marketplace_order_id', missingShipIds);
+                                if (orgIdResolved) sh1 = (sh1 as any).eq('organizations_id', orgIdResolved);
+                                const { data: shRows, error: shErr } = await sh1;
+                                if (!shErr && Array.isArray(shRows)) {
+                                    for (const row of shRows as any[]) {
+                                        const k = row?.marketplace_order_id;
+                                        if (!k) continue;
+                                        if (!shipmentsCacheRef.current[k]) shipmentsCacheRef.current[k] = [];
+                                        shipmentsCacheRef.current[k].push(row);
+                                    }
+                                }
+                            }
+                            shipmentsByOrderId = orderIds.reduce((acc, k) => { acc[k] = shipmentsCacheRef.current[k] || []; return acc; }, {} as Record<string, any[]>);
                         } catch (shCatch) {
-                            console.warn('Falha ao buscar marketplace_shipments:', shCatch);
+                            if (!isAbortLikeError(shCatch)) {
+                                console.warn('Falha ao buscar marketplace_shipments:', shCatch);
+                            }
                         }
                     } catch (mqCatch) {
-                        console.warn('Falha ao buscar marketplace_orders_presented:', mqCatch);
+                        if (!isAbortLikeError(mqCatch)) {
+                            console.warn('Falha ao buscar marketplace_orders_presented:', mqCatch);
+                        }
                     }
                 }
 
-                let linkByItemIdGlobal: Record<string, { product_id: string, sku: string, name: string, variation_id: string }> = {};
+                let linkByItemIdGlobal: Record<string, { product_id: string, sku: string, name: string, variation_id: string, image_url?: string }> = {};
                 try {
                     const uniqueItemIdsForLinks = new Set<string>();
-                    for (const o of paidRows as any[]) {
+                    for (const o of pageRows as any[]) {
                         const mq = o.marketplace_order_id ? marketplaceByOrderId[o.marketplace_order_id] : null;
                         const orderDataRaw: any = mq?.data || {};
                         const rawOrderItems: any[] = Array.isArray(orderDataRaw?.order_items) ? orderDataRaw.order_items : [];
@@ -996,10 +1066,10 @@ function Pedidos() {
                     if (uniqueItemIdsForLinks.size > 0) {
                         let ql: any = (supabase as any)
                             .from('marketplace_item_product_links')
-                            .select('marketplace_item_id, variation_id, product:products (id, sku, name)')
+                            .select('marketplace_item_id, variation_id, product:products (id, sku, name, image_urls)')
                             .eq('marketplace_name', 'Mercado Livre')
                             .in('marketplace_item_id', Array.from(uniqueItemIdsForLinks));
-                        if (organizationId) ql = (ql as any).eq('organizations_id', organizationId);
+                        if (orgIdResolved) ql = (ql as any).eq('organizations_id', orgIdResolved);
                         const { data: linkRows, error: linkErr } = await ql;
                         if (!linkErr && Array.isArray(linkRows)) {
                             for (const r of linkRows) {
@@ -1011,16 +1081,19 @@ function Pedidos() {
                                         sku: String(prod.sku || ''),
                                         name: String(prod.name || ''),
                                         variation_id: String(r?.variation_id || ''),
+                                        image_url: String(Array.isArray(prod.image_urls) ? (prod.image_urls[0] || '') : ''),
                                     };
                                 }
                             }
                         }
                     }
                 } catch (linkCatch) {
-                    console.warn('Falha ao pré-buscar vínculos de anúncios:', linkCatch);
+                    if (!isAbortLikeError(linkCatch)) {
+                        console.warn('Falha ao pré-buscar vínculos de anúncios:', linkCatch);
+                    }
                 }
 
-                const parsedHeavy = paidRows.map((o: any) => {
+                const parsedHeavyPage = pageRows.map((o: any) => {
                 // Dados do marketplace bruto
                 const mq = o.marketplace_order_id ? marketplaceByOrderId[o.marketplace_order_id] : null;
                 const payments: any[] = Array.isArray(mq?.payments) ? mq.payments : [];
@@ -1292,22 +1365,28 @@ function Pedidos() {
 
                 // Indicadores e conteúdo de etiqueta (cache)
                 const rawLabels = (mq?.labels || null) as any;
-                const hasPdf = Boolean(rawLabels?.pdf_base64);
-                const hasZpl = Boolean(rawLabels?.zpl2_base64);
-                const topContent = rawLabels?.content_base64 || (hasPdf ? rawLabels?.pdf_base64 : (hasZpl ? rawLabels?.zpl2_base64 : null));
-                const topType = rawLabels?.content_type || (hasPdf ? 'application/pdf' : (hasZpl ? 'text/plain' : null));
+                const viewPdf = o?.label_pdf_base64 || null;
+                const viewZpl = o?.label_zpl2_base64 || null;
+                const viewContent = o?.label_content_base64 || null;
+                const viewType = o?.label_content_type || null;
+                const hasPdf = Boolean(viewPdf || rawLabels?.pdf_base64);
+                const hasZpl = Boolean(viewZpl || rawLabels?.zpl2_base64);
+                const topContent = viewContent || viewPdf || viewZpl || rawLabels?.content_base64 || rawLabels?.pdf_base64 || rawLabels?.zpl2_base64 || null;
+                const topType = viewType || (viewPdf ? 'application/pdf' : (viewZpl ? 'text/plain' : (rawLabels?.content_type || (rawLabels?.pdf_base64 ? 'application/pdf' : (rawLabels?.zpl2_base64 ? 'text/plain' : null)))));
                 const labelInfo = {
                     cached: Boolean(o?.label_cached || topContent),
-                    response_type: (o?.label_response_type || rawLabels?.response_type || (hasPdf ? 'pdf' : (hasZpl ? 'zpl2' : null))) as string | null,
+                    response_type: (o?.label_response_type || (viewPdf ? 'pdf' : (viewZpl ? 'zpl2' : null)) || rawLabels?.response_type || (rawLabels?.pdf_base64 ? 'pdf' : (rawLabels?.zpl2_base64 ? 'zpl2' : null))) as string | null,
                     fetched_at: (o?.label_fetched_at || rawLabels?.fetched_at || null) as string | null,
                     size_bytes: (typeof o?.label_size_bytes === 'number' ? o.label_size_bytes : Number(o?.label_size_bytes)) || (typeof rawLabels?.size_bytes === 'number' ? rawLabels.size_bytes : Number(rawLabels?.size_bytes)) || null,
                     shipment_ids: Array.isArray(rawLabels?.shipment_ids) ? rawLabels.shipment_ids.map((x: any) => String(x)) : [],
                     content_base64: topContent,
                     content_type: topType,
+                    pdf_base64: viewPdf || rawLabels?.pdf_base64 || null,
+                    zpl2_base64: viewZpl || rawLabels?.zpl2_base64 || null,
                 } as const;
 
                 return {
-                    id: o.marketplace_order_id || o.id,
+                    id: o.id,
                     marketplace: marketplaceName,
                     produto: items[0]?.nome || "",
                     sku: items[0]?.sku || null,
@@ -1332,7 +1411,7 @@ function Pedidos() {
                     atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : (Array.isArray(firstShipment?.delays) ? firstShipment?.delays : null),
                     dataPagamento,
                     tipoEnvio: tipoEnvioDerivado,
-                    idPlataforma: o.platform_id || o.marketplace_order_id || "",
+                    idPlataforma: o.platform_id || o.pack_id || "",
                     shippingCity: o?.shipping_city_name || null,
                     shippingState: o?.shipping_state_name || null,
                     shippingUF: o?.shipping_state_uf || null,
@@ -1364,33 +1443,41 @@ function Pedidos() {
                 };
             });
 
-                // Atualiza lista com dados secundários completos
-                startTransition(() => setPedidos(parsedHeavy));
+                if (runId !== loadRunIdRef.current) return;
+                const heavyById = parsedHeavyPage.reduce((acc: Record<string, any>, h: any) => {
+                    acc[String(h.id)] = h;
+                    return acc;
+                }, {});
+                const merged = lightParsed.map((lp: any) => heavyById[String(lp.id)] ? heavyById[String(lp.id)] : lp);
+                // Atualiza lista com dados secundários da página atual
+                startTransition(() => setPedidos(merged));
                 // Lista pronta após secundário
                 setListReady(true);
                 // Enriquecimento de imagens pode seguir em segundo plano
                 (async () => {
                     try {
-                        const withImages = await enrichPedidosWithMLImages(parsedHeavy, marketplaceByOrderId);
-                        startTransition(() => setPedidos(withImages));
+                        const pageMerged = merged.slice(start, end + 1);
+                        const withImagesPage = await enrichPedidosWithMLImages(pageMerged, marketplaceByOrderId);
+                        const imgById = withImagesPage.reduce((acc: Record<string, any>, p: any) => { acc[String(p.id)] = p; return acc; }, {});
+                        startTransition(() => setPedidos((prev: any[]) => prev.map(p => imgById[String(p.id)] ?? p)));
                     } catch (imgErr) {
-                        console.warn('Falha ao enriquecer imagens MLB:', imgErr);
+                        if (!isAbortLikeError(imgErr)) {
+                            console.warn('Falha ao enriquecer imagens MLB:', imgErr);
+                        }
                     }
                 })();
             }
         } catch (err) {
-            console.error("Erro ao buscar pedidos:", err);
-            setPedidos([]);
+            if (!isAbortLikeError(err)) {
+                console.error("Erro ao buscar pedidos:", err);
+                setPedidos([]);
+            }
         } finally {
             if (!background) setIsLoading(false);
         }
     };
 
-    // Carregar pedidos somente ao entrar no módulo
-    useEffect(() => {
-        loadPedidos();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    
 
     // Removida a sincronização automática; sincronizar apenas ao clicar no botão
 
@@ -1403,11 +1490,7 @@ function Pedidos() {
             const token: string | undefined = sessionRes?.session?.access_token;
             if (!token) throw new Error('Sessão expirada ou ausente. Faça login novamente.');
 
-            let organizationId: string | null = null;
-            try {
-                const { data: orgRes } = await supabase.rpc('get_user_organization_id');
-                if (orgRes) organizationId = String(orgRes);
-            } catch {}
+            const orgId = organizationId;
 
             const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-sync-orders`, {
                 method: 'POST',
@@ -1416,7 +1499,7 @@ function Pedidos() {
                     'apikey': SUPABASE_PUBLISHABLE_KEY,
                     'Authorization': `Bearer ${token}`,
                 },
-                body: JSON.stringify({ organizationId }),
+                body: JSON.stringify({ organizationId: orgId }),
             });
             const json = await resp.json().catch(() => ({}));
             if (!resp.ok) {
@@ -1464,11 +1547,7 @@ function Pedidos() {
             const token: string | undefined = sessionRes?.session?.access_token;
             if (!token) throw new Error('Sessão expirada ou ausente. Faça login novamente.');
 
-            let organizationId: string | null = null;
-            try {
-                const { data: orgRes } = await supabase.rpc('get_user_organization_id');
-                if (orgRes) organizationId = String(orgRes);
-            } catch {}
+            const orgId = organizationId;
 
             const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-sync-orders`, {
                 method: 'POST',
@@ -1477,7 +1556,7 @@ function Pedidos() {
                     'apikey': SUPABASE_PUBLISHABLE_KEY,
                     'Authorization': `Bearer ${token}`,
                 },
-                body: JSON.stringify({ organizationId, order_ids: selectedOrderIds }),
+                body: JSON.stringify({ organizationId: orgId, order_ids: selectedOrderIds }),
             });
             const json = await resp.json().catch(() => ({}));
             if (!resp.ok) {
@@ -1519,11 +1598,7 @@ function Pedidos() {
             if (!/^\d+$/.test(mlOrderId)) throw new Error('Pedido sem marketplace_order_id válido');
 
             // Organização do usuário
-            let organizationId: string | null = null;
-            try {
-                const { data: orgRes } = await supabase.rpc('get_user_organization_id');
-                if (orgRes) organizationId = String(orgRes);
-            } catch {}
+            const orgId = organizationId;
 
             const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-sync-orders`, {
                 method: 'POST',
@@ -1532,7 +1607,7 @@ function Pedidos() {
                     'apikey': SUPABASE_PUBLISHABLE_KEY,
                     'Authorization': `Bearer ${token}`,
                 },
-                body: JSON.stringify({ organizationId, order_ids: [mlOrderId] }),
+                body: JSON.stringify({ organizationId: orgId, order_ids: [mlOrderId] }),
             });
             const json = await resp.json().catch(() => ({}));
             if (!resp.ok) {
@@ -1548,6 +1623,37 @@ function Pedidos() {
     };
 
 
+    const computeBoardStatusLabel = (p: any): string => {
+        const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+        const isReadyToShip = String(p?.shipment_status || '').toLowerCase() === 'ready_to_ship' || (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.status || '').toLowerCase() === 'ready_to_ship'));
+        const hasPrintedSub = String(p?.shipment_substatus || '').toLowerCase() === 'printed' || (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
+        const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' || (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
+        const isBufferedPending = (String(p?.shipment_status || '').toLowerCase() === 'pending') && (String(p?.shipment_substatus || '').toLowerCase() === 'buffered');
+        const payments = Array.isArray(p?.financeiro?.pagamentos) ? p.financeiro.pagamentos : [];
+        const hasCancelledPayment = payments.some((pm: any) => String(pm?.status || '').toLowerCase().includes('cancel'));
+        const hasRefundedPayment = payments.some((pm: any) => String(pm?.status || '').toLowerCase().includes('refunded'));
+        const isCancelShip = ['cancelled','canceled'].includes(String(p?.shipment_status || '').toLowerCase()) || (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => { const st = String(s?.status || '').toLowerCase(); const sub = String(s?.substatus || '').toLowerCase(); return st === 'cancelled' || st === 'canceled' || sub.includes('cancel'); }));
+        const shipKey = String(p?.shipment_status || '').toLowerCase();
+        const subKey = String(p?.shipment_substatus || '').toLowerCase();
+        const sNorm = String(p?.status || '').toLowerCase().trim();
+        const isDevolucao = (
+            (shipKey === 'not_delivered' && subKey === 'returned_to_warehouse') ||
+            (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.status || '').toLowerCase() === 'not_delivered' && String(s?.substatus || '').toLowerCase() === 'returned_to_warehouse'))
+        );
+        const isCancelScenario = isCancelShip || hasCancelledPayment || hasRefundedPayment || sNorm.includes('cancelado') || sNorm.includes('devolvido') || sNorm.includes('devolução') || sNorm.includes('devolucao');
+        if (isCancelScenario) {
+            if (isDevolucao) return 'Devolução';
+            return 'Cancelado';
+        }
+        if (isNonFull && isReadyToShip && hasPrintedSub) return 'Aguardando Coleta';
+        if (isNonFull && !Boolean(p?.has_unlinked_items) && (hasReadyToPrintSub || isBufferedPending)) return 'Impressao';
+        if (isNonFull && Boolean(p?.has_unlinked_items) && !hasPrintedSub) return 'A vincular';
+        const shippedSet = new Set(['shipped','in_transit','handed_to_carrier','on_route','out_for_delivery','delivery_in_progress','collected']);
+        const deliveredSet = new Set(['delivered','receiver_received','picked_up','ready_to_pickup']);
+        if (deliveredSet.has(shipKey) || shippedSet.has(shipKey) || normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() === 'full') return 'Enviado';
+        if (String(p?.status || '').toLowerCase() === 'emissao nf' && !Boolean(p?.has_unlinked_items)) return 'Emissao NF';
+        return 'Pendente';
+    };
     // Definição das colunas da tabela (valores padrão)
     const [columns, setColumns] = useState([
         { id: "produto", name: "Produto", enabled: true, alwaysVisible: true, render: (pedido: any) => (
@@ -1558,6 +1664,11 @@ function Pedidos() {
                             src={((idx === 0 ? (pedido.imagem || it?.imagem) : it?.imagem) || '/placeholder.svg')}
                             alt={(idx === 0 ? (pedido.produto || it?.nome || 'Produto') : (it?.nome || 'Produto'))}
                             className="w-10 h-10 rounded-lg object-cover"
+                            loading="lazy"
+                            decoding="async"
+                            
+                            width="40"
+                            height="40"
                         />
                         <div className="min-w-0 flex-1">
                             <div className={`text-sm font-medium text-gray-900 ${pedido.quantidadeTotal >= 2 ? 'font-bold' : ''}`}>
@@ -1624,7 +1735,11 @@ function Pedidos() {
                 pedido?.status === 'Devolvido' ||
                 pedido?.status === 'Devolução'
             );
-            const showSLA = !deliveredStatuses.includes(shipmentStatus) && !isOrderCancelledOrReturned && pedido?.slaDespacho?.expected_date;
+            const allowedBoards = ['a-vincular','emissao-nf','impressao','aguardando-coleta'];
+            const allowedLabels = new Set(['A vincular','Emissao NF','Impressao','Aguardando Coleta']);
+            const computedLabel = computeBoardStatusLabel(pedido);
+            const isAllowedByBoard = allowedBoards.includes(activeStatus) || (activeStatus === 'todos' && allowedLabels.has(computedLabel));
+            const showSLA = isAllowedByBoard && !deliveredStatuses.includes(shipmentStatus) && !isOrderCancelledOrReturned && pedido?.slaDespacho?.expected_date;
             let countdown: JSX.Element | null = null;
             if (showSLA) {
                 const expected = new Date(pedido.slaDespacho.expected_date);
@@ -1656,36 +1771,21 @@ function Pedidos() {
         { id: "marketplace", name: "Marketplace", enabled: true, render: (pedido) => (<span className="text-gray-900">{pedido.marketplace}</span>)},
         { id: "idPlataforma", name: "ID da Plataforma", enabled: false, render: (pedido) => (pedido.idPlataforma)},
         { id: "status", name: "Status", enabled: true, alwaysVisible: true, render: (pedido) => {
-            const expected = pedido?.slaDespacho?.expected_date ? new Date(pedido.slaDespacho.expected_date) : null;
-            const expiredSLA = expected ? (new Date().getTime() >= new Date(expected).getTime()) : false;
-            const shipmentStatusKey = String(pedido?.shipment_status || '').toLowerCase();
-            const dispatchedStatuses = ['shipped','handed_to_carrier','collected','in_transit','on_route','out_for_delivery','delivery_in_progress'];
-            const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup'];
-            const isDispatched = dispatchedStatuses.includes(shipmentStatusKey);
-            const isDelivered = deliveredStatuses.includes(shipmentStatusKey);
-            const isOrderCancelledOrReturned = (
-                pedido?.status === 'Cancelado' ||
-                pedido?.status === 'Devolvido' ||
-                pedido?.status === 'Devolução'
-            );
-            const hasDelays = expiredSLA && !isDispatched && !isDelivered && !isOrderCancelledOrReturned;
-            const badgeClass = isOrderCancelledOrReturned
-                ? getStatusColor(pedido.status)
-                : (hasDelays
-                    ? 'bg-red-500 hover:bg-red-500 text-white'
-                    : (pedido?.shipment_status ? getShipmentStatusColor(pedido.shipment_status) : getStatusColor(pedido.status)));
-            const labelText = isOrderCancelledOrReturned
-                ? pedido.status
-                : (hasDelays
-                    ? 'ATRASADO'
-                    : (pedido?.shipment_status ? formatShipmentStatus(pedido.shipment_status) : pedido.status));
+            const boardLabel = (() => {
+                if (activeStatus === 'todos') return computeBoardStatusLabel(pedido);
+                if (activeStatus === 'impressao') return 'Impressao';
+                if (activeStatus === 'aguardando-coleta') return 'Aguardando Coleta';
+                if (activeStatus === 'enviado') return 'Enviado';
+                if (activeStatus === 'a-vincular') return 'A vincular';
+                if (activeStatus === 'emissao-nf') return 'Emissao NF';
+                if (activeStatus === 'cancelado') return computeBoardStatusLabel(pedido);
+                return String(pedido?.status || 'Pendente');
+            })();
+            const badgeClass = getStatusColor(boardLabel);
             return (
                 <div className="flex flex-col items-start space-y-2">
                     <Badge className={`uppercase ${badgeClass}`}>
-                        {labelText}
-                        {!hasDelays && pedido.subStatus && !pedido?.shipment_status && (
-                            <span className="ml-2 text-xs font-normal text-white/80">({pedido.subStatus})</span>
-                        )}
+                        {boardLabel}
                     </Badge>
                     {activeStatus === "impressao" && (
                         <div className="flex items-center space-x-2 mt-1">
@@ -1805,7 +1905,7 @@ function Pedidos() {
             'pending': 'pendente',
             'ready_to_print': 'pronto para imprimir',
             'printed': 'etiqueta impressa',
-            'ready_to_ship': 'pronto para envio',
+            'ready_to_ship': 'enviar',
             'handling': 'em preparação',
             'shipped': 'enviado',
             'in_transit': 'em trânsito',
@@ -1831,8 +1931,9 @@ function Pedidos() {
         switch (s) {
             case 'pending':
             case 'ready_to_print':
-            case 'ready_to_ship':
                 return 'bg-yellow-500 hover:bg-yellow-500 text-white';
+            case 'ready_to_ship':
+                return 'bg-purple-600 hover:bg-purple-600 text-white';
             case 'in_transit':
             case 'shipped':
                 return 'bg-blue-500 hover:bg-blue-500 text-white';
@@ -2003,12 +2104,12 @@ function Pedidos() {
         link.click();
     };
 
-    // Impressão: somente pedidos ME2 não-Full com substatus 'ready_to_print'
     const pedidosImpressao = pedidos.filter(p => {
         const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
-        const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
-            (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
-        return isNonFull && hasReadyToPrintSub && !Boolean(p?.has_unlinked_items);
+        const sub = String(p?.shipment_substatus || '').toLowerCase();
+        const hasReadyToPrintSub = sub === 'ready_to_print' || (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
+        const isBufferedPending = (String(p?.shipment_status || '').toLowerCase() === 'pending') && (sub === 'buffered');
+        return isNonFull && (hasReadyToPrintSub || isBufferedPending) && !Boolean(p?.has_unlinked_items);
     });
     const pedidosNaoImpressos = pedidosImpressao.filter(p => !p.impressoEtiqueta || !p.impressoLista);
     const pedidosImpressos = pedidosImpressao.filter(p => p.impressoEtiqueta && p.impressoLista);
@@ -2041,10 +2142,7 @@ function Pedidos() {
     let filteredPedidos = baseFiltered.filter(p => {
         if (activeStatus === "todos") return true;
         if (activeStatus === "impressao") {
-            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
-            const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
-                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
-            return isNonFull && hasReadyToPrintSub && !Boolean(p?.has_unlinked_items);
+            return computeBoardStatusLabel(p) === 'Impressao';
         }
         if (activeStatus === "aguardando-coleta") {
             const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
@@ -2052,19 +2150,33 @@ function Pedidos() {
                 (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.status || '').toLowerCase() === 'ready_to_ship'));
             const hasPrintedSub = String(p?.shipment_substatus || '').toLowerCase() === 'printed' ||
                 (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
-            return isNonFull && isReadyToShip && hasPrintedSub;
+            const hasCancelledPayment = Array.isArray(p?.financeiro?.pagamentos) && p.financeiro.pagamentos.some((pm: any) => String(pm?.status || '').toLowerCase().includes('cancel'));
+            const hasRefundedPayment = Array.isArray(p?.financeiro?.pagamentos) && p.financeiro.pagamentos.some((pm: any) => String(pm?.status || '').toLowerCase().includes('refunded'));
+            const isCancelado = (
+                String(p?.status || '').toLowerCase() === 'cancelado' ||
+                String(p?.shipment_status || '').toLowerCase() === 'cancelled' ||
+                String(p?.shipment_status || '').toLowerCase() === 'canceled' ||
+                hasCancelledPayment || hasRefundedPayment ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => {
+                    const st = String(s?.status || '').toLowerCase();
+                    const sub = String(s?.substatus || '').toLowerCase();
+                    return st === 'cancelled' || st === 'canceled' || sub.includes('cancel');
+                }))
+            );
+            return isNonFull && isReadyToShip && hasPrintedSub && !isCancelado;
         }
         if (activeStatus === "a-vincular") {
             const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
-            const isReadyToPrint = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
-                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
-            const isEmissaoNF = String(p?.status || '').toLowerCase() === 'emissao nf';
+            const isPrinted = String(p?.shipment_substatus || '').toLowerCase() === 'printed' ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed')) ||
+                Boolean(p?.printed_label);
             const isCancelado = p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido';
-            return isNonFull && Boolean(p?.has_unlinked_items) && (isReadyToPrint || isEmissaoNF) && !isCancelado;
+            const needsLink = Boolean(p?.has_unlinked_items);
+            return isNonFull && needsLink && !isPrinted && !isCancelado;
         }
         if (activeStatus === "cancelado") {
-            // Incluir devoluções na aba Cancelados
-            return p.status === 'Cancelado' || p.status === 'Devolvido' || p.status === 'Devolução';
+            const s = String(p?.status || '').toLowerCase().trim();
+            return s.includes('cancelado') || s.includes('devolvido') || s.includes('devolução') || s.includes('devolucao');
         }
         // Normalização padrão para outras abas
         const normalized = String(p.status || '').toLowerCase().replace(/ /g, '-');
@@ -2152,13 +2264,45 @@ function Pedidos() {
 
     useEffect(() => {
         if (!countsReady) return;
-        loadPedidos();
+        if (loadDebounceRef.current) {
+            clearTimeout(loadDebounceRef.current);
+            loadDebounceRef.current = null;
+        }
+        loadDebounceRef.current = window.setTimeout(() => {
+            loadPedidos();
+            loadDebounceRef.current = null;
+        }, 200);
+        return () => {
+            if (loadDebounceRef.current) {
+                clearTimeout(loadDebounceRef.current);
+                loadDebounceRef.current = null;
+            }
+        };
     }, [activeStatus]);
 
     useEffect(() => {
         if (!countsReady) return;
-        loadPedidos();
+        if (loadDebounceRef.current) {
+            clearTimeout(loadDebounceRef.current);
+            loadDebounceRef.current = null;
+        }
+        loadDebounceRef.current = window.setTimeout(() => {
+            loadPedidos();
+            loadDebounceRef.current = null;
+        }, 200);
+        return () => {
+            if (loadDebounceRef.current) {
+                clearTimeout(loadDebounceRef.current);
+                loadDebounceRef.current = null;
+            }
+        };
     }, [searchTerm, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
+
+    // Carregar imediatamente ao entrar no módulo após preparar contagens globais
+    useEffect(() => {
+        if (!countsReady) return;
+        loadPedidos();
+    }, [countsReady]);
 
     useLayoutEffect(() => {
         const container = listContainerRef.current;
@@ -2182,36 +2326,137 @@ function Pedidos() {
     }, [totalPedidosCount, filteredPedidos.length, pageSize, currentPage]);
 
     useEffect(() => {
-        if (activeStatus !== 'enviado') return;
-        const storageId = typeof window !== 'undefined' ? localStorage.getItem('defaultStorageId') : null;
-        if (!storageId) return;
-        const toProcess = filteredPedidos.filter((p: any) => p.status === 'Enviado' && !processedConsume[p.id]);
-        if (toProcess.length === 0) return;
-        Promise.all(toProcess.map(async (p: any) => {
-            const { error } = await (supabase as any).rpc('consume_reserved_stock_for_order', {
-                p_order_id: p.id,
-                p_storage_id: storageId,
-            });
-            setProcessedConsume(prev => ({ ...prev, [p.id]: true }));
-            if (error) console.warn('Falha ao consumir estoque para pedido', p.id, error.message);
-        })).catch(() => {});
+        (async () => {
+            try {
+                if (activeStatus !== 'enviado') return;
+                const toProcess = filteredPedidos.filter((p: any) => p.status === 'Enviado' && !processedConsume[p.id]);
+                if (toProcess.length === 0) return;
+                const { data: authUserData } = await supabase.auth.getUser();
+                const uid = authUserData?.user?.id;
+                const orgId: string | null = organizationId || null;
+                let storageId: string | null = null;
+                if (uid && orgId) {
+                    try {
+                        const { data: userOrgSettings } = await supabase
+                            .from('user_organization_settings')
+                            .select('default_storage_id')
+                            .eq('organization_id', orgId)
+                            .eq('user_id', uid)
+                            .maybeSingle();
+                        storageId = (userOrgSettings as any)?.default_storage_id ?? null;
+                    } catch { /* noop */ }
+                }
+                if (!storageId && typeof window !== 'undefined') {
+                    try { storageId = localStorage.getItem('defaultStorageId') || null; } catch { /* noop */ }
+                }
+                if (!storageId) {
+                    try {
+                        let q: any = supabase
+                            .from('storage')
+                            .select('id')
+                            .eq('active', true)
+                            .order('created_at', { ascending: true })
+                            .limit(1);
+                        if (orgId) q = (q as any).eq('organizations_id', orgId);
+                        const { data } = await q;
+                        if (data && data.length > 0) storageId = String(data[0].id);
+                    } catch {}
+                }
+                if (!storageId) return;
+                setProcessedConsume(prev => ({ ...prev, ...Object.fromEntries(toProcess.map((p: any) => [p.id, true])) }));
+            } catch (_) { /* noop */ }
+        })();
     }, [activeStatus, filteredPedidos, processedConsume]);
 
     useEffect(() => {
-        if (activeStatus !== 'cancelado') return;
-        const storageId = typeof window !== 'undefined' ? localStorage.getItem('defaultStorageId') : null;
-        if (!storageId) return;
-        const toProcess = filteredPedidos.filter((p: any) => p.status === 'Cancelado' && !processedRefund[p.id]);
-        if (toProcess.length === 0) return;
-        Promise.all(toProcess.map(async (p: any) => {
-            const { error } = await (supabase as any).rpc('refund_reserved_stock_for_order', {
-                p_order_id: p.id,
-                p_storage_id: storageId,
-            });
-            setProcessedRefund(prev => ({ ...prev, [p.id]: true }));
-            if (error) console.warn('Falha ao estornar reserva para pedido', p.id, error.message);
-        })).catch(() => {});
-    }, [activeStatus, filteredPedidos, processedRefund]);
+        (async () => {
+            try {
+                if (activeStatus !== 'a-vincular') return;
+                const toProcess = filteredPedidos.filter((p: any) => (!!p.has_unlinked_items) && !processedReserve[p.id]);
+                if (toProcess.length === 0) return;
+                const { data: authUserData } = await supabase.auth.getUser();
+                const uid = authUserData?.user?.id;
+                const orgId: string | null = organizationId || null;
+                let storageId: string | null = null;
+                if (uid && orgId) {
+                    try {
+                        const { data: userOrgSettings } = await supabase
+                            .from('user_organization_settings')
+                            .select('default_storage_id')
+                            .eq('organization_id', orgId)
+                            .eq('user_id', uid)
+                            .maybeSingle();
+                        storageId = (userOrgSettings as any)?.default_storage_id ?? null;
+                    } catch { /* noop */ }
+                }
+                if (!storageId && typeof window !== 'undefined') {
+                    try { storageId = localStorage.getItem('defaultStorageId') || null; } catch { /* noop */ }
+                }
+                if (!storageId) {
+                    try {
+                        let q: any = supabase
+                            .from('storage')
+                            .select('id')
+                            .eq('active', true)
+                            .order('created_at', { ascending: true })
+                            .limit(1);
+                        if (orgId) q = (q as any).eq('organizations_id', orgId);
+                        const { data } = await q;
+                        if (data && data.length > 0) storageId = String(data[0].id);
+                    } catch {}
+                }
+                if (!storageId) return;
+                setProcessedReserve(prev => ({ ...prev, ...Object.fromEntries(toProcess.map((p: any) => [p.id, true])) }));
+            } catch (_) { /* noop */ }
+        })();
+    }, [activeStatus, filteredPedidos, processedReserve]);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                if (activeStatus !== 'cancelado') return;
+                const toProcess = filteredPedidos.filter((p: any) => (
+                    p.status === 'Cancelado' || String(p?.shipment_status || '').toLowerCase().includes('cancel')
+                ) && !processedRefund[p.id]);
+                if (toProcess.length === 0) return;
+                const { data: authUserData } = await supabase.auth.getUser();
+                const uid = authUserData?.user?.id;
+                const orgId: string | null = organizationId || null;
+                let storageId: string | null = null;
+                if (uid && orgId) {
+                    try {
+                        const { data: userOrgSettings } = await supabase
+                            .from('user_organization_settings')
+                            .select('default_storage_id')
+                            .eq('organization_id', orgId)
+                            .eq('user_id', uid)
+                            .maybeSingle();
+                        storageId = (userOrgSettings as any)?.default_storage_id ?? null;
+                    } catch { /* noop */ }
+                }
+                if (!storageId && typeof window !== 'undefined') {
+                    try { storageId = localStorage.getItem('defaultStorageId') || null; } catch { /* noop */ }
+                }
+                if (!storageId) {
+                    try {
+                        let q: any = supabase
+                            .from('storage')
+                            .select('id')
+                            .eq('active', true)
+                            .order('created_at', { ascending: true })
+                            .limit(1);
+                        if (orgId) q = (q as any).eq('organizations_id', orgId);
+                        const { data } = await q;
+                        if (data && data.length > 0) storageId = String(data[0].id);
+                    } catch {}
+                }
+                if (!storageId) return;
+                setProcessedRefund(prev => ({ ...prev, ...Object.fromEntries(toProcess.map((p: any) => [p.id, true])) }));
+            } catch (_) { /* noop */ }
+        })();
+    }, [filteredPedidos, processedRefund]);
+
+    
     
     const handleSelectAll = (list: string[], setList: (list: string[]) => void) => {
         if (list.length === filteredPedidos.length) {
@@ -2269,30 +2514,64 @@ function Pedidos() {
         setIsVincularModalOpen(true);
     };
 
+    const matchStatus = (p: any, id: string): boolean => {
+        if (id === 'todos') return true;
+        if (id === 'impressao') {
+            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+            const subKey = String(p?.shipment_substatus || '').toLowerCase();
+            const hasReadyToPrintSub = subKey === 'ready_to_print' || (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
+            const isBufferedPending = (String(p?.shipment_status || '').toLowerCase() === 'pending') && (subKey === 'buffered');
+            return isNonFull && (hasReadyToPrintSub || isBufferedPending) && !Boolean(p?.has_unlinked_items);
+        }
+        if (id === 'aguardando-coleta') {
+            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+            const isReadyToShip = String(p?.shipment_status || '').toLowerCase() === 'ready_to_ship' || (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.status || '').toLowerCase() === 'ready_to_ship'));
+            const hasPrintedSub = String(p?.shipment_substatus || '').toLowerCase() === 'printed' || (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
+            const hasCancelledPayment = Array.isArray(p?.financeiro?.pagamentos) && p.financeiro.pagamentos.some((pm: any) => String(pm?.status || '').toLowerCase().includes('cancel'));
+            const hasRefundedPayment = Array.isArray(p?.financeiro?.pagamentos) && p.financeiro.pagamentos.some((pm: any) => String(pm?.status || '').toLowerCase().includes('refunded'));
+            const isCancelado = (
+                String(p?.status || '').toLowerCase() === 'cancelado' ||
+                String(p?.shipment_status || '').toLowerCase() === 'cancelled' ||
+                String(p?.shipment_status || '').toLowerCase() === 'canceled' ||
+                hasCancelledPayment || hasRefundedPayment ||
+                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => {
+                    const st = String(s?.status || '').toLowerCase();
+                    const sub = String(s?.substatus || '').toLowerCase();
+                    return st === 'cancelled' || st === 'canceled' || sub.includes('cancel');
+                }))
+            );
+            return isNonFull && isReadyToShip && hasPrintedSub && !isCancelado;
+        }
+        if (id === 'a-vincular') {
+            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
+            const isPrinted = String(p?.shipment_substatus || '').toLowerCase() === 'printed' || (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed')) || Boolean(p?.printed_label);
+            const s = String(p?.status || '').toLowerCase().trim();
+            const isCancelado = s.includes('cancelado') || s.includes('devolvido') || s.includes('devolução') || s.includes('devolucao');
+            const needsLink = Boolean(p?.has_unlinked_items);
+            return isNonFull && needsLink && !isPrinted && !isCancelado;
+        }
+        if (id === 'cancelado') {
+            const s = String(p?.status || '').toLowerCase().trim();
+            return s.includes('cancelado') || s.includes('devolvido') || s.includes('devolução') || s.includes('devolucao');
+        }
+        if (id === 'emissao-nf') {
+            return String(p?.status || '').toLowerCase() === 'emissao nf' && !Boolean(p?.has_unlinked_items);
+        }
+        if (id === 'enviado') {
+            return p.status === 'Enviado';
+        }
+        const normalized = String(p.status || '').toLowerCase().replace(/ /g, '-');
+        return normalized === id.toLowerCase();
+    };
+
     const statusBlocks = [
-        { id: "todos", title: "Todos os Pedidos", count: (listReady ? (statusCountsGlobal?.['todos'] ?? (totalPedidosCount ?? baseFiltered.length)) : 0), description: "Sincronizados com marketplaces" },
-        { id: "a-vincular", title: "A Vincular", count: (listReady ? (statusCountsGlobal?.['a-vincular'] ?? baseFiltered.filter(p => {
-            const isPrinted = String(p?.shipment_substatus || '').toLowerCase() === 'printed' ||
-                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
-            const isEmissaoNF = String(p?.status || '').toLowerCase() === 'emissao nf';
-            const isCancelado = p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido';
-            return Boolean(p?.has_unlinked_items) && !isPrinted && !isEmissaoNF && !isCancelado;
-        }).length) : 0), description: "Pedidos sem vínculo de SKU" },
-        { id: "emissao-nf", title: "Emissão de NFe", count: (listReady ? baseFiltered.filter(p => p.status === 'Emissao NF').length : 0), description: "Aguardando emissão" },
-        { id: "impressao", title: "Impressão", count: (listReady ? baseFiltered.filter(p => {
-            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
-            const hasReadyToPrintSub = String(p?.shipment_substatus || '').toLowerCase() === 'ready_to_print' ||
-                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'ready_to_print'));
-            return isNonFull && hasReadyToPrintSub && !Boolean(p?.has_unlinked_items);
-        }).length : 0), description: "NF e etiqueta" },
-        { id: "aguardando-coleta", title: "Aguardando Coleta", count: (listReady ? (statusCountsGlobal?.['aguardando-coleta'] ?? baseFiltered.filter(p => {
-            const isNonFull = normalizeShippingType(String(p.tipoEnvio || '')).toLowerCase() !== 'full';
-            const hasPrintedSub = String(p?.shipment_substatus || '').toLowerCase() === 'printed' ||
-                (Array.isArray(p?.financeiro?.envios) && p.financeiro.envios.some((s: any) => String(s?.substatus || '').toLowerCase() === 'printed'));
-            return isNonFull && hasPrintedSub;
-        }).length) : 0), description: "Prontos para envio" },
-        { id: "enviado", title: "Enviado", count: (listReady ? (statusCountsGlobal?.['enviado'] ?? baseFiltered.filter(p => p.status === 'Enviado').length) : 0), description: "Pedidos em trânsito" },
-        { id: "cancelado", title: "Cancelados", count: (listReady ? (statusCountsGlobal?.['cancelado'] ?? baseFiltered.filter(p => (p.status === 'Cancelado' || p.status === 'Devolução' || p.status === 'Devolvido')).length) : 0), description: "Pedidos cancelados/devolvidos" },
+        { id: 'todos', title: 'Todos os Pedidos', count: (listReady ? baseFiltered.filter(p => matchStatus(p, 'todos')).length : 0), description: 'Sincronizados com marketplaces' },
+        { id: 'a-vincular', title: 'A Vincular', count: (listReady ? baseFiltered.filter(p => matchStatus(p, 'a-vincular')).length : 0), description: 'Pedidos sem vínculo de SKU' },
+        { id: 'emissao-nf', title: 'Emissão de NFe', count: (listReady ? baseFiltered.filter(p => matchStatus(p, 'emissao-nf')).length : 0), description: 'Aguardando emissão' },
+        { id: 'impressao', title: 'Impressão', count: (listReady ? baseFiltered.filter(p => matchStatus(p, 'impressao')).length : 0), description: 'NF e etiqueta' },
+        { id: 'aguardando-coleta', title: 'Aguardando Coleta', count: (listReady ? baseFiltered.filter(p => matchStatus(p, 'aguardando-coleta')).length : 0), description: 'Prontos para envio' },
+        { id: 'enviado', title: 'Enviado', count: (listReady ? baseFiltered.filter(p => matchStatus(p, 'enviado')).length : 0), description: 'Pedidos em trânsito' },
+        { id: 'cancelado', title: 'Cancelados', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['cancelado'] === 'number') ? statusCountsGlobal['cancelado'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'cancelado')).length : 0)), description: 'Pedidos cancelados/devolvidos' },
     ];
 
     const handlePrintPickingList = () => {
@@ -2311,61 +2590,16 @@ function Pedidos() {
             const pedidosToPrint = pedidos.filter(p => selectedPedidosImpressao.includes(p.id));
             if (pedidosToPrint.length === 0) return;
 
-            // Coleta shipment_ids (preferindo marketplace_shipment_id) dos envios presentes
-            const shipmentIds = Array.from(new Set(pedidosToPrint.flatMap((p: any) => {
-                const envios = Array.isArray(p?.financeiro?.envios) ? p.financeiro.envios : [];
-                const idsFromEnvios = envios.map((s: any) => s?.marketplace_shipment_id || s?.id).filter(Boolean);
-                const fallbackId = p?.shipment_id ? [p.shipment_id] : [];
-                return [...idsFromEnvios, ...fallbackId];
-            }).map(String)));
+            const pdfs = pedidosToPrint.map(p => p?.label?.pdf_base64).filter(Boolean) as string[];
+            if (pdfs.length === 0) return;
 
-            if (shipmentIds.length === 0) {
-                console.warn('Nenhum shipment_id encontrado para impressão.');
-                return;
+            for (const base64 of pdfs) {
+                const binStr = atob(base64);
+                const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
+                const blob = new Blob([bytes], { type: 'application/pdf' });
+                const url = URL.createObjectURL(blob);
+                window.open(url, '_blank');
             }
-
-            // Seleção do tipo de resposta: ZPL2 para impressoras Zebra; caso contrário, PDF
-            const printerName = String(printSettings?.labelPrinter || '').toLowerCase();
-            const responseType = printerName.includes('zebra') ? 'zpl2' : 'pdf';
-
-            // Sessão atual para Authorization
-            const { data: sess } = await supabase.auth.getSession();
-            const authHeader = sess?.session?.access_token ? `Bearer ${sess.session.access_token}` : undefined;
-            const body = JSON.stringify({ organizationId, shipment_ids: shipmentIds, response_type: responseType });
-
-            const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-shipment-labels`, {
-                method: 'POST',
-                headers: {
-                    'content-type': 'application/json',
-                    'apikey': SUPABASE_PUBLISHABLE_KEY,
-                    ...(authHeader ? { 'Authorization': authHeader } : {}),
-                },
-                body,
-            });
-
-            if (!resp.ok) {
-                const txt = await resp.text();
-                console.error('Falha ao buscar etiquetas ML:', resp.status, txt);
-                return;
-            }
-
-            const data = await resp.json();
-            const base64 = data?.content_base64;
-            const contentType = data?.content_type || (responseType === 'pdf' ? 'application/pdf' : 'text/plain');
-            if (!base64) {
-                console.warn('Resposta sem conteúdo de etiqueta.');
-                return;
-            }
-            const binStr = atob(base64);
-            const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
-            const blob = new Blob([bytes], { type: contentType });
-            const url = URL.createObjectURL(blob);
-            window.open(url, '_blank');
-
-            // Atualiza estado local para refletir etiqueta impressa
-            setPedidos(prev => prev.map(p => selectedPedidosImpressao.includes(p.id) ? { ...p, impressoEtiqueta: true } : p));
-
-            // Limpa seleções após ação
             setSelectedPedidosImpressao([]);
             setSelectedPedidosEmissao([]);
             setSelectedPedidos([]);
@@ -2380,80 +2614,14 @@ function Pedidos() {
         try {
             if (!pedido) return;
 
-            // Coleta shipment_ids (preferindo marketplace_shipment_id) dos envios do pedido
-            const envios = Array.isArray(pedido?.financeiro?.envios) ? pedido.financeiro.envios : [];
-            const shipmentIds = Array.from(new Set([
-                ...envios.map((s: any) => s?.marketplace_shipment_id || s?.id).filter(Boolean),
-                ...(pedido?.shipment_id ? [pedido.shipment_id] : []),
-            ].map(String)));
+            const cachedPdf = pedido?.label?.pdf_base64;
+            if (!cachedPdf) return;
 
-            if (shipmentIds.length === 0) {
-                console.warn('Nenhum shipment_id encontrado para reimpressão.');
-                return;
-            }
-
-            // Seleção do tipo de resposta: ZPL2 para impressoras Zebra; caso contrário, PDF
-            const printerName = String(printSettings?.labelPrinter || '').toLowerCase();
-            const responseType = printerName.includes('zebra') ? 'zpl2' : 'pdf';
-
-            // Tentar usar etiqueta do cache local (marketplace_orders_raw.labels)
-            const normalize = (arr: any[]): string[] => Array.isArray(arr) ? arr.map((x) => String(x)).filter(Boolean) : [];
-            const sameSet = (a: string[], b: string[]) => {
-                if (a.length !== b.length) return false;
-                const sa = [...a].sort();
-                const sb = [...b].sort();
-                for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
-                return true;
-            };
-            const lbl = pedido?.label || {};
-            const lblIds = normalize(lbl?.shipment_ids || []);
-            if (lbl?.cached && lbl?.content_base64 && lbl?.response_type === responseType && sameSet(lblIds, shipmentIds)) {
-                const base64 = String(lbl.content_base64);
-                const contentType = String(lbl.content_type || (responseType === 'pdf' ? 'application/pdf' : 'text/plain'));
-                const binStr = atob(base64);
-                const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
-                const blob = new Blob([bytes], { type: contentType });
-                const url = URL.createObjectURL(blob);
-                window.open(url, '_blank');
-                setPedidos(prev => prev.map(p => p.id === pedido.id ? { ...p, impressoEtiqueta: true } : p));
-                return;
-            }
-
-            // Sessão atual para Authorization
-            const { data: sess } = await supabase.auth.getSession();
-            const authHeader = sess?.session?.access_token ? `Bearer ${sess.session.access_token}` : undefined;
-            const body = JSON.stringify({ organizationId, shipment_ids: shipmentIds, response_type: responseType });
-
-            const resp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-shipment-labels`, {
-                method: 'POST',
-                headers: {
-                    'content-type': 'application/json',
-                    'apikey': SUPABASE_PUBLISHABLE_KEY,
-                    ...(authHeader ? { 'Authorization': authHeader } : {}),
-                },
-                body,
-            });
-
-            if (!resp.ok) {
-                const txt = await resp.text();
-                console.error('Falha ao reimprimir etiqueta ML:', resp.status, txt);
-                return;
-            }
-
-            const data = await resp.json();
-            const base64 = data?.content_base64;
-            const contentType = data?.content_type || (responseType === 'pdf' ? 'application/pdf' : 'text/plain');
-            if (!base64) {
-                console.warn('Resposta sem conteúdo de etiqueta.');
-                return;
-            }
-            const binStr = atob(base64);
+            const binStr = atob(String(cachedPdf));
             const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
-            const blob = new Blob([bytes], { type: contentType });
+            const blob = new Blob([bytes], { type: 'application/pdf' });
             const url = URL.createObjectURL(blob);
             window.open(url, '_blank');
-
-            // Atualiza estado local para refletir etiqueta impressa
             setPedidos(prev => prev.map(p => p.id === pedido.id ? { ...p, impressoEtiqueta: true } : p));
         } catch (err) {
             console.error('Erro ao reimprimir etiqueta ML:', err);
@@ -2829,7 +2997,14 @@ function Pedidos() {
                                             size="icon"
                                             className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
                                             onClick={handlePrintLabels}
-                                            disabled={selectedPedidosImpressao.length === 0}
+                                            disabled={
+                                                selectedPedidosImpressao.length === 0 ||
+                                                !selectedPedidosImpressao.some(id => {
+                                                    const p = pedidos.find(pp => pp.id === id);
+                                                    const sub = String(p?.shipment_substatus || '').toLowerCase();
+                                                    return sub === 'ready_to_print' || Boolean(p?.label?.pdf_base64);
+                                                })
+                                            }
                                             aria-label={`Imprimir etiquetas (${selectedPedidosImpressao.length})`}
                                         >
                                             <FileBadge className="w-5 h-5" />
@@ -3112,6 +3287,21 @@ function Pedidos() {
                                                                         <ChevronDown className="h-4 w-4" />
                                                                     </Button>
                                                                 </div>
+                                                            ) : activeStatus === "impressao" ? (
+                                                                <div className="flex items-center justify-end gap-2">
+                                                                    <Button
+                                                                        variant="outline"
+                                                                        className="h-8 w-8 p-0"
+                                                                        onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
+                                                                        disabled={String(pedido?.shipment_substatus || '').toLowerCase() === 'buffered'}
+                                                                        aria-label="Imprimir etiqueta"
+                                                                    >
+                                                                        <Printer className="h-4 w-4" />
+                                                                    </Button>
+                                                                    <Button variant="outline" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
+                                                                        <ChevronDown className="h-4 w-4" />
+                                                                    </Button>
+                                                                </div>
                                                             ) : (
                                                                 <Button variant="outline" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
                                                                     <ChevronDown className="h-4 w-4" />
@@ -3374,7 +3564,7 @@ function Pedidos() {
                                                     <h4 className="font-semibold pt-2 border-t">Itens do Pedido ({scannedPedido.itens.length})</h4>
                                                     {scannedPedido.itens.map((item: any, itemIndex: number) => (
                                                         <div key={itemIndex} className="flex items-center space-x-3 bg-gray-100 p-2 rounded-lg">
-                                                            <img src={item.imagem} alt={item.nome} className="w-10 h-10 rounded object-cover" />
+                                                            <img src={item.imagem} alt={item.nome} className="w-10 h-10 rounded object-cover" loading="lazy" decoding="async" width="40" height="40" />
                                                             <div className="flex-1">
                                                                 <div className="font-medium text-sm">{item.nome}</div>
                                                                 <div className="text-xs text-gray-500">SKU: {item.sku}</div>
@@ -3398,7 +3588,7 @@ function Pedidos() {
                                         {scannedPedido?.itens.filter((item: any) => item.bipado).length > 0 ? (
                                             scannedPedido.itens.filter((item: any) => item.bipado).map((item: any, index: number) => (
                                                 <div key={index} className="flex items-center space-x-3 bg-gray-100 p-2 rounded-lg">
-                                                    <img src={item.imagem} alt={item.nome} className="w-10 h-10 rounded object-cover" />
+                                                    <img src={item.imagem} alt={item.nome} className="w-10 h-10 rounded object-cover" loading="lazy" decoding="async" width="40" height="40" />
                                                     <div className="flex-1">
                                                         <div className="font-medium text-sm">{item.nome}</div>
                                                         <div className="text-xs text-gray-500">SKU: {item.sku}</div>

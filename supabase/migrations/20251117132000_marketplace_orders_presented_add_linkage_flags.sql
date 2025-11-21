@@ -179,6 +179,17 @@ SELECT
   ) AS shipment_sla_last_updated,
   COALESCE(b.shipments->0->'delays', '[]'::jsonb) AS shipment_delays,
 
+  EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(COALESCE(b.shipments, '[]'::jsonb)) s
+    WHERE lower(COALESCE(s->>'substatus','')) = 'printed'
+      OR (s->>'date_first_printed') IS NOT NULL
+  ) AS printed_label,
+  (
+    SELECT MAX((s->>'date_first_printed')::timestamptz)
+    FROM jsonb_array_elements(COALESCE(b.shipments, '[]'::jsonb)) s
+  ) AS printed_schedule,
+
   COALESCE(
     COALESCE(ap.payment, '{}'::jsonb)->>'status',
     COALESCE(fp.payment, '{}'::jsonb)->>'status',
@@ -248,6 +259,10 @@ SELECT
   b.labels->>'response_type' AS label_response_type,
   (b.labels->>'fetched_at')::timestamptz AS label_fetched_at,
   (b.labels->>'size_bytes')::int AS label_size_bytes,
+  b.labels->>'content_base64' AS label_content_base64,
+  b.labels->>'content_type' AS label_content_type,
+  b.labels->>'pdf_base64' AS label_pdf_base64,
+  b.labels->>'zpl2_base64' AS label_zpl2_base64,
 
   COALESCE(lff.unlinked_items_count, 0) AS unlinked_items_count,
   (COALESCE(lff.unlinked_items_count, 0) > 0) AS has_unlinked_items,

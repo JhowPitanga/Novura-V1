@@ -1753,6 +1753,18 @@ export type Database = {
         }
         Returns: undefined
       }
+      reserve_stock_by_pack_id: {
+        Args: { p_pack_id: number; p_storage_id: string }
+        Returns: undefined
+      }
+      consume_reserved_stock_by_pack_id: {
+        Args: { p_pack_id: number; p_storage_id: string }
+        Returns: undefined
+      }
+      refund_reserved_stock_by_pack_id: {
+        Args: { p_pack_id: number; p_storage_id: string }
+        Returns: undefined
+      }
       set_master_org_claims: {
         Args: { event: Json }
         Returns: Json
