@@ -576,6 +576,7 @@ function Pedidos() {
     const [processedConsume, setProcessedConsume] = useState<Record<string, boolean>>({});
     const [processedRefund, setProcessedRefund] = useState<Record<string, boolean>>({});
     const [processedReserve, setProcessedReserve] = useState<Record<string, boolean>>({});
+    const [processedEnsure, setProcessedEnsure] = useState<Record<string, boolean>>({});
 
     // Estado para animar suavemente o painel de colunas ao abrir
     const [columnsPanelAnimatedOpen, setColumnsPanelAnimatedOpen] = useState(false);
@@ -2455,6 +2456,21 @@ function Pedidos() {
             } catch (_) { /* noop */ }
         })();
     }, [filteredPedidos, processedRefund]);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const eligibleTabs = ['impressao', 'aguardando-coleta', 'enviado', 'cancelado'];
+                if (!eligibleTabs.includes(activeStatus)) return;
+                const toProcess = filteredPedidos.filter((p: any) => !Boolean(p?.has_unlinked_items) && !processedEnsure[p.id]);
+                if (toProcess.length === 0) return;
+                for (const ord of toProcess) {
+                    try { await supabase.rpc('ensure_inventory_for_order', { p_order_id: ord.id }); } catch {}
+                }
+                setProcessedEnsure(prev => ({ ...prev, ...Object.fromEntries(toProcess.map((p: any) => [p.id, true])) }));
+            } catch (_) {}
+        })();
+    }, [activeStatus, filteredPedidos, processedEnsure]);
 
     
     
