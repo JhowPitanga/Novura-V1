@@ -1737,6 +1737,25 @@ export type Database = {
         Args: { p_org_id: string; p_user_id: string }
         Returns: boolean
       }
+<<<<<<< Updated upstream
+=======
+      ensure_inventory_for_order: {
+        Args: { p_order_id: string }
+        Returns: undefined
+      }
+      ensure_inventory_by_pack_id: {
+        Args: { p_pack_id: number }
+        Returns: undefined
+      }
+      can_disconnect_marketplace: {
+        Args: { p_organizations_id: string; p_marketplace_name: string }
+        Returns: boolean
+      }
+      disconnect_marketplace_cascade: {
+        Args: { p_organizations_id: string; p_marketplace_name: string }
+        Returns: undefined
+      }
+>>>>>>> Stashed changes
       link_order_stock: {
         Args: { p_order_id: string; p_storage_id_for_reservation: string }
         Returns: undefined

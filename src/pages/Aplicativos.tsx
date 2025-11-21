@@ -63,6 +63,8 @@ export default function Aplicativos() {
   const [apps, setApps] = useState<App[]>([]);
   const [loadingApps, setLoadingApps] = useState<boolean>(true);
   const [appsError, setAppsError] = useState<string | null>(null);
+  const [isCannotDisconnectOpen, setIsCannotDisconnectOpen] = useState(false);
+  const [cannotDisconnectMessage, setCannotDisconnectMessage] = useState('');
   const { toast } = useToast();
   const { user, organizationId } = useAuth();
   const navigate = useNavigate();
@@ -274,14 +276,17 @@ export default function Aplicativos() {
       const app = apps.find(a => a.id === appId);
       if (!app) return;
       const dbName = toDbMarketplaceName(app.name);
-
-      const { error } = await supabase
-        .from('marketplace_integrations')
-        .delete()
-        .eq('organizations_id', organizationId)
-        .eq('marketplace_name', dbName);
-
+      const { error } = await supabase.rpc('disconnect_marketplace_cascade', {
+        p_organizations_id: organizationId,
+        p_marketplace_name: dbName,
+      });
       if (error) {
+        const msg = String(error?.message || '').toLowerCase();
+        if (msg.includes('reserved_stock_present')) {
+          setCannotDisconnectMessage('Não é possível desconectar. Existem reservas de estoque ativas vinculadas a anúncios deste aplicativo.');
+          setIsCannotDisconnectOpen(true);
+          return;
+        }
         console.error('Erro ao desconectar app:', error);
         toast({ title: 'Falha ao desconectar', description: 'Não foi possível remover a conexão.', variant: 'destructive' });
         return;
@@ -593,6 +598,20 @@ export default function Aplicativos() {
             <Button onClick={() => setIsAddStoreOpen(false)}>
               Adicionar Loja
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isCannotDisconnectOpen} onOpenChange={setIsCannotDisconnectOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Não é possível desconectar</DialogTitle>
+            <DialogDescription>
+              {cannotDisconnectMessage || 'Existem reservas de estoque ativas vinculadas a anúncios deste aplicativo.'}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCannotDisconnectOpen(false)}>Fechar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
