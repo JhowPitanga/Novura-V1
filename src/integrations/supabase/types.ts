@@ -1737,6 +1737,14 @@ export type Database = {
         Args: { p_org_id: string; p_user_id: string }
         Returns: boolean
       }
+      ensure_inventory_for_order: {
+        Args: { p_order_id: string }
+        Returns: undefined
+      }
+      ensure_inventory_by_pack_id: {
+        Args: { p_pack_id: number }
+        Returns: undefined
+      }
       link_order_stock: {
         Args: { p_order_id: string; p_storage_id_for_reservation: string }
         Returns: undefined
