@@ -69,25 +69,25 @@ WITH base AS (
   SELECT
     b.id,
     COALESCE(SUM(
-      CASE WHEN (mipl.id IS NULL AND mir.stock_control_link_id IS NULL) THEN 1 ELSE 0 END
+      CASE WHEN (mipl.id IS NULL) THEN 1 ELSE 0 END
     ), 0) AS unlinked_items_count
   FROM base b
   LEFT JOIN LATERAL jsonb_array_elements(COALESCE(b.order_items, '[]'::jsonb)) oi ON true
   LEFT JOIN public.marketplace_items_raw mir
     ON mir.organizations_id = b.organizations_id
-   AND mir.marketplace_name = b.marketplace
-   AND mir.marketplace_item_id = COALESCE(oi->'item'->>'id', oi->>'id', '')
+    AND mir.marketplace_name = b.marketplace
+    AND mir.marketplace_item_id = COALESCE(oi->'item'->>'id', oi->>'id', '')
   LEFT JOIN public.marketplace_item_product_links mipl
     ON mipl.organizations_id = b.organizations_id
-   AND mipl.marketplace_name = b.marketplace
-   AND mipl.marketplace_item_id = COALESCE(oi->'item'->>'id', oi->>'id', '')
+    AND mipl.marketplace_name = b.marketplace
+    AND mipl.marketplace_item_id = COALESCE(oi->'item'->>'id', oi->>'id', '')
   GROUP BY b.id
 ), link_flags_fallback AS (
   SELECT
     b.id,
     COALESCE(lf.unlinked_items_count,
       CASE WHEN COALESCE(first_item_json->'item'->>'id', first_item_json->>'id', '') <> '' THEN
-        CASE WHEN (mipl.id IS NULL AND mir.stock_control_link_id IS NULL) THEN 1 ELSE 0 END
+        CASE WHEN (mipl.id IS NULL) THEN 1 ELSE 0 END
       ELSE 0 END
     ) AS unlinked_items_count
   FROM base b
@@ -95,12 +95,12 @@ WITH base AS (
   LEFT JOIN link_flags lf ON lf.id = b.id
   LEFT JOIN public.marketplace_items_raw mir
     ON mir.organizations_id = b.organizations_id
-   AND mir.marketplace_name = b.marketplace
-   AND mir.marketplace_item_id = COALESCE(first_item_json->'item'->>'id', first_item_json->>'id', '')
+    AND mir.marketplace_name = b.marketplace
+    AND mir.marketplace_item_id = COALESCE(first_item_json->'item'->>'id', first_item_json->>'id', '')
   LEFT JOIN public.marketplace_item_product_links mipl
     ON mipl.organizations_id = b.organizations_id
-   AND mipl.marketplace_name = b.marketplace
-   AND mipl.marketplace_item_id = COALESCE(first_item_json->'item'->>'id', first_item_json->>'id', '')
+    AND mipl.marketplace_name = b.marketplace
+    AND mipl.marketplace_item_id = COALESCE(first_item_json->'item'->>'id', first_item_json->>'id', '')
 )
 SELECT
   b.id,
@@ -180,6 +180,17 @@ SELECT
   ) AS shipment_sla_last_updated,
   COALESCE(b.shipments->0->'delays', '[]'::jsonb) AS shipment_delays,
 
+  EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(COALESCE(b.shipments, '[]'::jsonb)) s
+    WHERE lower(COALESCE(s->>'substatus','')) = 'printed'
+      OR (s->>'date_first_printed') IS NOT NULL
+  ) AS printed_label,
+  (
+    SELECT MAX((s->>'date_first_printed')::timestamptz)
+    FROM jsonb_array_elements(COALESCE(b.shipments, '[]'::jsonb)) s
+  ) AS printed_schedule,
+
   COALESCE(
     COALESCE(ap.payment, '{}'::jsonb)->>'status',
     COALESCE(fp.payment, '{}'::jsonb)->>'status',
@@ -249,6 +260,10 @@ SELECT
   b.labels->>'response_type' AS label_response_type,
   (b.labels->>'fetched_at')::timestamptz AS label_fetched_at,
   (b.labels->>'size_bytes')::int AS label_size_bytes,
+  b.labels->>'content_base64' AS label_content_base64,
+  b.labels->>'content_type' AS label_content_type,
+  b.labels->>'pdf_base64' AS label_pdf_base64,
+  b.labels->>'zpl2_base64' AS label_zpl2_base64,
 
   COALESCE(lff.unlinked_items_count, 0) AS unlinked_items_count,
   (COALESCE(lff.unlinked_items_count, 0) > 0) AS has_unlinked_items,

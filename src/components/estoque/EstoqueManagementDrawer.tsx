@@ -151,6 +151,45 @@ export function EstoqueManagementDrawer({
           description: `${operationType === "entrada" ? "Entrada" : "Saída"} de ${adjustmentQuantity} unidades para ${product.produto}`,
         });
 
+        try {
+          const { data: userRes } = await supabase.auth.getUser();
+          const userId = userRes?.user?.id || null;
+          let displayName: string | null = null;
+          if (userId) {
+            const { data: up } = await (supabase as any)
+              .from('user_profiles')
+              .select('display_name')
+              .eq('id', userId)
+              .limit(1)
+              .maybeSingle();
+            displayName = up?.display_name || null;
+            if (!displayName) displayName = userRes?.user?.email || null;
+          }
+          const moveType = operationType === 'entrada' ? 'ENTRADA' : 'SAIDA';
+          const qtyChange = operationType === 'entrada' ? Math.abs(adjustmentQuantity || 0) : -Math.abs(adjustmentQuantity || 0);
+          const { data: orgRes } = await (supabase as any).rpc('get_current_user_organization_id');
+          const orgId = orgRes ? String(orgRes) : null;
+          let prodCompanyId: string | null = null;
+          const { data: prod } = await (supabase as any)
+            .from('products')
+            .select('company_id')
+            .eq('id', product.id)
+            .limit(1)
+            .maybeSingle();
+          prodCompanyId = prod?.company_id || null;
+          await (supabase as any)
+            .from('inventory_transactions')
+            .insert({
+              organizations_id: orgId,
+              company_id: prodCompanyId,
+              product_id: product.id,
+              storage_id: targetStorageId,
+              movement_type: moveType,
+              quantity_change: qtyChange,
+              source_ref: `${displayName || 'Usuario'}[${moveType}]`,
+            });
+        } catch (_) {}
+
         // Reset form
         setAdjustmentQuantity(0);
         setOperationType("entrada");

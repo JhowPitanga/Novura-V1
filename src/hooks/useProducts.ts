@@ -140,7 +140,7 @@ export function useBindableProducts() {
     const [bindableProducts, setBindableProducts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const { user } = useAuth();
+    const { user, organizationId } = useAuth();
 
     useEffect(() => {
         const fetchBindableProducts = async () => {
@@ -151,7 +151,7 @@ export function useBindableProducts() {
             }
             try {
                 // Listar produtos acessíveis via RLS/permissões, com campos necessários para exibição
-                const { data, error } = await supabase
+                let query = supabase
                     .from('products')
                     .select(`
                       id,
@@ -166,6 +166,22 @@ export function useBindableProducts() {
                     `)
                     .in('type', ['UNICO', 'VARIACAO_ITEM', 'ITEM'])
                     .order('name', { ascending: true });
+
+                if (organizationId) {
+                    try {
+                        query = (query as any).eq('organizations_id', organizationId);
+                    } catch (_) {
+                        try {
+                            const { data: orgRes } = await supabase.rpc('get_current_user_organization_id');
+                            const orgId = Array.isArray(orgRes) ? orgRes?.[0] : orgRes;
+                            if (orgId) {
+                                query = (query as any).eq('organizations_id', orgId as any);
+                            }
+                        } catch { }
+                    }
+                }
+
+                const { data, error } = await query;
 
                 if (error) {
                     throw error;
