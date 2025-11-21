@@ -1737,8 +1737,11 @@ export type Database = {
         Args: { p_org_id: string; p_user_id: string }
         Returns: boolean
       }
+<<<<<<< HEAD
 <<<<<<< Updated upstream
 =======
+=======
+>>>>>>> 201aefe98ec65ef73ac0868a73d7d0d162ebf225
       ensure_inventory_for_order: {
         Args: { p_order_id: string }
         Returns: undefined
@@ -1747,6 +1750,7 @@ export type Database = {
         Args: { p_pack_id: number }
         Returns: undefined
       }
+<<<<<<< HEAD
       can_disconnect_marketplace: {
         Args: { p_organizations_id: string; p_marketplace_name: string }
         Returns: boolean
@@ -1756,6 +1760,8 @@ export type Database = {
         Returns: undefined
       }
 >>>>>>> Stashed changes
+=======
+>>>>>>> 201aefe98ec65ef73ac0868a73d7d0d162ebf225
       link_order_stock: {
         Args: { p_order_id: string; p_storage_id_for_reservation: string }
         Returns: undefined
@@ -1770,6 +1776,18 @@ export type Database = {
           p_quantity_to_reserve: number
           p_storage_id: string
         }
+        Returns: undefined
+      }
+      reserve_stock_by_pack_id: {
+        Args: { p_pack_id: number; p_storage_id: string }
+        Returns: undefined
+      }
+      consume_reserved_stock_by_pack_id: {
+        Args: { p_pack_id: number; p_storage_id: string }
+        Returns: undefined
+      }
+      refund_reserved_stock_by_pack_id: {
+        Args: { p_pack_id: number; p_storage_id: string }
         Returns: undefined
       }
       set_master_org_claims: {

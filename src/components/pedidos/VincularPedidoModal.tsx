@@ -7,6 +7,7 @@ import { Search, Check, X } from "lucide-react";
 import { useBindableProducts } from '@/hooks/useProducts';
 import { toast } from '@/components/ui/use-toast';
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 interface Product {
   id: string;
@@ -41,6 +42,7 @@ interface VincularPedidoModalProps {
 
 export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anunciosParaVincular }: VincularPedidoModalProps) {
   const { bindableProducts, loading, error } = useBindableProducts();
+  const { organizationId: orgIdFromAuth } = useAuth();
 
   // Estado principal de vinculações por anúncio
   const [vinculacoes, setVinculacoes] = useState<{ [anuncioId: string]: string }>({});
@@ -90,7 +92,7 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
     toast({
       title: 'Produto vinculado',
       description: 'O produto ERP foi selecionado para o anúncio do pedido.',
-      variant: 'success',
+      variant: 'default',
     });
   };
 
@@ -144,21 +146,14 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
     const persistErrors: string[] = [];
     try {
       // Obter organização atual
-      let organizationId: string | null = null;
-      try {
-        const { data: orgRes, error: orgErr } = await supabase.rpc('get_current_user_organization_id');
-        if (orgErr) throw orgErr;
-        organizationId = (orgRes ? String(orgRes) : null);
-      } catch (e) {
-        // manter organizationId null; trataremos erro ao montar payload
-      }
+      let organizationId: string | null = orgIdFromAuth ? String(orgIdFromAuth) : null;
 
       // Obter company_id do pedido via view presented (por id ou marketplace_order_id)
       let companyId: string | null = null;
       if (pedidoId) {
         try {
           // 1) Tenta por marketplace_order_id
-          let q = supabase
+          let q = (supabase as any)
             .from('marketplace_orders_presented')
             .select('id, company_id, marketplace_order_id')
             .eq('marketplace_order_id', pedidoId)
@@ -169,7 +164,7 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
           }
           // 2) Fallback: tenta por id
           if (!companyId) {
-            const { data: ord2, error: err2 } = await supabase
+            const { data: ord2, error: err2 } = await (supabase as any)
               .from('marketplace_orders_presented')
               .select('id, company_id')
               .eq('id', pedidoId)
@@ -203,7 +198,7 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
         if (missingContext) {
           persistErrors.push('Contexto de organização/empresa não resolvido para persistência de vínculo.');
         } else {
-          const { error: upsertErr } = await supabase
+          const { error: upsertErr } = await (supabase as any)
             .from('marketplace_item_product_links')
             .upsert(rowsToPersist, { onConflict: 'organizations_id,marketplace_name,marketplace_item_id,variation_id' });
           if (upsertErr) {
@@ -215,21 +210,46 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
       persistErrors.push(e?.message || 'Erro inesperado ao persistir vínculos.');
     }
 
-    // Descobrir storage padrão para reserva
-    let storageId: string | null = typeof window !== 'undefined' ? localStorage.getItem('defaultStorageId') : null;
+    let resolvedOrgIdForStorage: string | null = null;
+    if (!resolvedOrgIdForStorage) {
+      try {
+        const { data: orgResX } = await supabase.rpc('get_current_user_organization_id');
+        const orgIdX = Array.isArray(orgResX) ? orgResX?.[0] : orgResX;
+        if (orgIdX) resolvedOrgIdForStorage = String(orgIdX);
+      } catch {}
+    }
+
+    let storageId: string | null = null;
+    try {
+      const { data: authUserData } = await supabase.auth.getUser();
+      const uid = authUserData?.user?.id;
+      if (uid && resolvedOrgIdForStorage) {
+        const { data: userOrgSettings } = await supabase
+          .from('user_organization_settings')
+          .select('default_storage_id')
+          .eq('organization_id', resolvedOrgIdForStorage)
+          .eq('user_id', uid)
+          .maybeSingle();
+        storageId = (userOrgSettings as any)?.default_storage_id ?? null;
+      }
+    } catch {}
+
+    if (!storageId && typeof window !== 'undefined') {
+      try { storageId = localStorage.getItem('defaultStorageId') || null; } catch {}
+    }
+
     if (!storageId) {
       try {
-        const { data } = await supabase
+        let q: any = supabase
           .from('storage')
-          .select('id, name')
+          .select('id')
+          .eq('active', true)
           .order('created_at', { ascending: true })
           .limit(1);
-        if (data && data.length > 0) {
-          storageId = String(data[0].id);
-        }
-      } catch (e) {
-        // silencioso: tentaremos continuar sem storage
-      }
+        if (resolvedOrgIdForStorage) q = (q as any).eq('organizations_id', resolvedOrgIdForStorage);
+        const { data } = await q;
+        if (data && data.length > 0) storageId = String(data[0].id);
+      } catch {}
     }
 
     if (!storageId) {
@@ -242,19 +262,17 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
     }
 
     const reservationErrors: string[] = [];
-    let shouldReserve = false;
     try {
-      const { data: ord } = await supabase
+      const { data: ord } = await (supabase as any)
         .from('marketplace_orders_presented')
-        .select('id, shipment_status, shipment_substatus')
+        .select('id, marketplace_order_id, company_id, pack_id')
         .or(`id.eq.${pedidoId},marketplace_order_id.eq.${pedidoId}`)
         .maybeSingle();
-      const ss = String(ord?.shipment_status || '').toLowerCase();
-      const ssub = String(ord?.shipment_substatus || '').toLowerCase();
-      shouldReserve = (ss === 'ready_to_ship') || (ssub === 'ready_to_print') || (ssub === 'printed');
-    } catch (_) {}
-
-    if (shouldReserve) {
+      const resolvedOrderId = ord?.id || null;
+      const resolvedMkOrderId = ord?.marketplace_order_id || null;
+      const resolvedCompanyId = ord?.company_id || null;
+      const resolvedPackId = (ord as any)?.pack_id || null;
+      const resolvedOrgId = orgIdFromAuth ? String(orgIdFromAuth) : null;
       for (const item of linkedItems) {
         const { error } = await supabase.rpc('reserve_stock_for_order_item', {
           p_product_id: item.productId,
@@ -263,8 +281,23 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
         });
         if (error) {
           reservationErrors.push(error.message);
+        } else {
+          await (supabase as any)
+            .from('inventory_transactions')
+            .insert({
+              organizations_id: resolvedOrgId,
+              company_id: resolvedCompanyId,
+              product_id: item.productId,
+              storage_id: storageId,
+              pack_id: resolvedPackId ?? null,
+              movement_type: 'RESERVA',
+              quantity_change: -Math.abs(item.quantity || 0),
+              source_ref: `PEDIDO[${resolvedPackId ?? ''}]`,
+            });
         }
       }
+    } catch (e: any) {
+      reservationErrors.push(e?.message || 'Falha ao reservar estoque para o pedido.');
     }
 
     // Montar payload novo para salvar (inclui flags permanentes e dados de reserva)
@@ -291,7 +324,7 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
     toast({
       title: anyErrors ? 'Vinculação concluída com avisos' : 'Vinculação salva!',
       description: anyErrors ? (details || 'Ocorreram avisos na operação.') : 'Os anúncios foram vinculados e o estoque foi reservado corretamente.',
-      variant: anyErrors ? 'warning' : 'success',
+      variant: 'default',
     });
   };
 
