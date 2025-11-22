@@ -96,13 +96,12 @@ const EyeBall = ({ size = 48, pupilSize = 16, maxDistance = 10, eyeColor = "whit
 export default function Auth() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [firstName, setFirstName] = useState('');
-  const [lastName, setLastName] = useState('');
+  const [fullName, setFullName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { user, signIn } = useAuth();
+  const { user, signIn, signUp } = useAuth();
   const [error, setError] = useState<string>('');
   const [isLoginLoading, setIsLoginLoading] = useState(false);
   const loginLoadingTimeoutRef = useRef<number | null>(null);
@@ -255,24 +254,19 @@ export default function Auth() {
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke('create-user', {
-        body: {
-          email,
-          password,
-          metadata: {
-            first_name: firstName,
-            last_name: lastName,
-          },
-        },
+      const parts = fullName.trim().split(/\s+/);
+      const first = parts[0] || '';
+      const last = parts.slice(1).join(' ') || '';
+      const { error: signUpErr } = await signUp(email, password, {
+        first_name: first,
+        last_name: last,
+        full_name: fullName,
       });
-
-      if (error) {
-        console.error('Erro na função create-user:', error);
-      } else if ((data as any)?.error) {
-        console.error('Erro retornado pela função create-user:', (data as any).error);
+      if (signUpErr) {
+        setError(signUpErr.message || 'Falha no cadastro');
       }
     } catch (err) {
-      console.error('Falha ao invocar create-user:', err);
+      console.error('Falha no cadastro:', err);
     } finally {
       setIsLoading(false);
     }
@@ -417,27 +411,16 @@ export default function Auth() {
                 </div>
 
                 <Card>
-                  <CardContent className="pt-6">
-                    <form onSubmit={handleSignUp} className="space-y-4">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="first-name">Primeiro nome</Label>
-                          <Input
-                            id="first-name"
-                            placeholder="Seu nome"
-                            value={firstName}
-                            onChange={(e) => setFirstName(e.target.value)}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="last-name">Sobrenome</Label>
-                          <Input
-                            id="last-name"
-                            placeholder="Seu sobrenome"
-                            value={lastName}
-                            onChange={(e) => setLastName(e.target.value)}
-                          />
-                        </div>
+                <CardContent className="pt-6">
+                  <form onSubmit={handleSignUp} className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="full-name">Nome</Label>
+                        <Input
+                          id="full-name"
+                          placeholder="Seu nome"
+                          value={fullName}
+                          onChange={(e) => setFullName(e.target.value)}
+                        />
                       </div>
 
                       <div className="space-y-2">

@@ -9,6 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { supabase } from "@/integrations/supabase/client";
 import { Loader2 } from "lucide-react";
 
 export default function Cadastro() {
@@ -16,7 +18,6 @@ export default function Cadastro() {
   const [formData, setFormData] = useState({
     nome: "",
     email: "",
-    empresa: "",
     senha: "",
     confirmarSenha: ""
   });
@@ -24,6 +25,11 @@ export default function Cadastro() {
   const { signUp } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
+  const [otpOpen, setOtpOpen] = useState(false);
+  const [otp, setOtp] = useState<string[]>(["", "", "", "", "", ""]);
+  const [otpMessage, setOtpMessage] = useState("");
+  const [timeLeft, setTimeLeft] = useState(60);
+  const [canResend, setCanResend] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,16 +38,89 @@ export default function Cadastro() {
       return;
     }
     setIsLoading(true);
-    const { error } = await signUp(formData.email, formData.senha);
+    const { error } = await signUp(formData.email, formData.senha, { full_name: formData.nome });
     setIsLoading(false);
     if (!error) {
-      navigate("/auth");
+      setOtp(["", "", "", "", "", ""]);
+      setTimeLeft(60);
+      setCanResend(false);
+      setOtpMessage("");
+      setOtpOpen(true);
+      setTimeout(() => {
+        try { document.getElementById("otp-0")?.focus(); } catch {}
+      }, 50);
     }
   };
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
+
+  const handleOtpChange = (value: string, index: number) => {
+    if (/^\d?$/.test(value)) {
+      const updated = [...otp];
+      updated[index] = value;
+      setOtp(updated);
+      if (value && index < otp.length - 1) {
+        const nextInput = document.getElementById(`otp-${index + 1}`) as HTMLInputElement | null;
+        nextInput?.focus();
+      }
+    }
+  };
+
+  const handleOtpVerify = async () => {
+    const token = otp.join("");
+    if (!token || otp.some((d) => d === "")) {
+      setOtpMessage("Informe todo o código");
+      return;
+    }
+    try {
+      const { error } = await supabase.auth.verifyOtp({ email: formData.email, token, type: 'signup' as any });
+      if (error) {
+        setOtpMessage("Código inválido ou expirado");
+        return;
+      }
+      setOtpMessage("Verificação concluída. Você pode fazer login.");
+      setTimeout(() => navigate('/auth'), 600);
+    } catch {
+      setOtpMessage("Falha ao verificar o código");
+    }
+  };
+
+  const handleOtpResend = async () => {
+    try {
+      const { error } = await supabase.auth.resend({ type: 'signup', email: formData.email } as any);
+      if (error) {
+        setOtpMessage("Falha ao reenviar código");
+        return;
+      }
+      setOtp(["", "", "", "", "", ""]);
+      setTimeLeft(60);
+      setCanResend(false);
+      setOtpMessage("Código reenviado para o seu email");
+      setTimeout(() => {
+        try { document.getElementById("otp-0")?.focus(); } catch {}
+      }, 50);
+    } catch {
+      setOtpMessage("Falha ao reenviar código");
+    }
+  };
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, "0");
+    const s = (seconds % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  };
+
+  useState(() => {
+    const id = setInterval(() => {
+      setTimeLeft((t) => {
+        if (t <= 1) { setCanResend(true); return 0; }
+        return t - 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  });
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-100 flex items-center justify-center p-4">
@@ -104,21 +183,7 @@ export default function Cadastro() {
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="empresa">Nome da empresa</Label>
-                <div className="relative">
-                  <Building className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                  <Input
-                    id="empresa"
-                    type="text"
-                    placeholder="Nome da sua empresa"
-                    value={formData.empresa}
-                    onChange={(e) => handleInputChange("empresa", e.target.value)}
-                    className="pl-10"
-                    required
-                  />
-                </div>
-              </div>
+              
 
               <div className="space-y-2">
                 <Label htmlFor="senha">Senha</Label>
@@ -192,6 +257,42 @@ export default function Cadastro() {
           </CardContent>
         </Card>
       </div>
+      <Dialog open={otpOpen} onOpenChange={setOtpOpen}>
+        <DialogContent className="sm:max-w-sm rounded-xl p-6 z-[10000]">
+          <DialogHeader className="text-center mb-4">
+            <DialogTitle className="text-lg font-semibold">Verificação OTP</DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground mt-1">
+              Digite o código enviado para <strong>{formData.email}</strong>.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-center text-xs text-muted-foreground mb-4">Etapa 1 de 1: Verifique sua conta</p>
+          <div className="flex justify-center gap-3 mb-4">
+            {otp.map((digit, idx) => (
+              <Input
+                key={idx}
+                id={`otp-${idx}`}
+                value={digit}
+                onChange={(e) => handleOtpChange(e.target.value, idx)}
+                className="w-12 h-12 text-center text-lg font-medium rounded-md border border-muted-foreground focus:border-primary focus:ring-1 focus:ring-primary"
+                maxLength={1}
+              />
+            ))}
+          </div>
+          {!canResend && (
+            <p className="text-center text-xs text-muted-foreground mb-2">
+              Você pode reenviar em <strong>{formatTime(timeLeft)}</strong>
+            </p>
+          )}
+          <div className="flex flex-col gap-2">
+            <Button className="w-full" onClick={handleOtpVerify}>Verificar OTP</Button>
+            <Button variant="outline" className="w-full flex justify-between items-center" onClick={handleOtpResend} disabled={!canResend}>
+              {canResend ? "Enviar novamente" : "Reenviar OTP"}
+              {!canResend && (<span className="text-xs text-muted-foreground">{formatTime(timeLeft)}</span>)}
+            </Button>
+          </div>
+          {otpMessage && (<p className="mt-3 text-center text-sm text-muted-foreground">{otpMessage}</p>)}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

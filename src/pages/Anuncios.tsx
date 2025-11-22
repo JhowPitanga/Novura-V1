@@ -21,6 +21,7 @@ import { syncMercadoLivreItems } from "@/WebhooksAPI/marketplace/mercado-livre/i
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { useNavigate } from "react-router-dom";
 
 // Menu de navegação será montado dinamicamente com base nos Marketplaces conectados
 
@@ -43,6 +44,7 @@ export default function Anuncios() {
     const [activeTab, setActiveTab] = useState<string>("anuncios");
     const { organizationId } = useAuth();
     const { toast } = useToast();
+    const navigate = useNavigate();
     // Estado para métricas adicionais por item (quality_level e performance_data)
     const [metricsByItemId, setMetricsByItemId] = useState<Record<string, { quality_level?: string | null; performance_data?: any }>>({});
     const [listingTypeByItemId, setListingTypeByItemId] = useState<Record<string, string | null>>({});
@@ -52,6 +54,21 @@ export default function Anuncios() {
     const [expandedVariations, setExpandedVariations] = useState<Set<string>>(new Set());
     // Capacidades/flags de envio do seller (derivadas de shipping_preferences)
     const [shippingCaps, setShippingCaps] = useState<{ flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean } | null>(null);
+    const [hasIntegration, setHasIntegration] = useState<boolean>(false);
+
+    useEffect(() => {
+        const run = async () => {
+            if (!organizationId) { setHasIntegration(false); return; }
+            const { data, error } = await supabase
+                .from('marketplace_integrations')
+                .select('id')
+                .eq('organizations_id', organizationId)
+                .limit(1);
+            if (error) { setHasIntegration(false); return; }
+            setHasIntegration(Array.isArray(data) && data.length > 0);
+        };
+        run();
+    }, [organizationId]);
 
     // Helper para colorização do medidor por nível de qualidade
     const getQualityStrokeColor = (level?: string | null) => {
@@ -933,6 +950,7 @@ export default function Anuncios() {
 
                     <main className="flex-1 overflow-auto">
                         <div className="px-6 pt-3 pb-6">
+                            {hasIntegration ? (
                             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
                                 <div className="flex items-center justify-between mb-6">
                                     <div className="border-b border-gray-200 w-full">
@@ -1442,8 +1460,14 @@ export default function Anuncios() {
                             <div className="bg-white rounded-xl border border-gray-200 p-6 text-gray-600">
                                 Em breve: gestão de promoções.
                             </div>
-                        </TabsContent>
-                    </Tabs>
+                                </TabsContent>
+                            </Tabs>
+                            ) : (
+                                <div className="py-24 flex flex-col items-center justify-center">
+                                    <div className="text-lg font-semibold text-gray-700">CONECTE UM APLICATIVO</div>
+                                    <Button className="mt-4" onClick={() => navigate('/aplicativos')}>Ir para Aplicativos</Button>
+                                </div>
+                            )}
                         </div>
                     </main>
                 </div>

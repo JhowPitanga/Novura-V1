@@ -3,12 +3,16 @@ import { Button } from "@/components/ui/button";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Bell, Users, BookOpen, MessageSquare, Hash, Image as ImageIcon, Paperclip, ArrowRight } from "lucide-react";
+import { Bell, Users, BookOpen, MessageSquare, Hash, Image as ImageIcon, Paperclip, ArrowRight, Settings, LogOut } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ChatTab } from "@/components/equipe/ChatTab";
 import { useChatChannels } from "@/hooks/useChat";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/integrations/supabase/client";
 
 export function GlobalHeader() {
   const [notifOpen, setNotifOpen] = useState(false);
@@ -16,6 +20,16 @@ export function GlobalHeader() {
   const [notifTab, setNotifTab] = useState("novidades");
   const { channels = [], directChannels = [], teamChannels = [] } = useChatChannels();
   const [quickChannelId, setQuickChannelId] = useState<string | null>(null);
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const displayName = String((user as any)?.user_metadata?.full_name || (user as any)?.user_metadata?.name || (user as any)?.email?.split("@")[0] || "Usuário");
+  const email = String((user as any)?.email || "");
+  const avatarUrl = String((user as any)?.user_metadata?.avatar_url || (user as any)?.user_metadata?.picture || "");
+  const initial = displayName?.[0]?.toUpperCase() || "U";
+  const handleLogout = async () => {
+    try { await supabase.auth.signOut(); } catch {}
+    navigate("/auth");
+  };
 
   useEffect(() => {
     if (!quickChannelId) {
@@ -74,7 +88,7 @@ export function GlobalHeader() {
                 <BookOpen className="w-5 h-5" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent align="end" className="z-[10000]">
               <DropdownMenuItem asChild>
                 <Link to="/novura-academy">Abrir academy novura</Link>
               </DropdownMenuItem>
@@ -83,6 +97,40 @@ export function GlobalHeader() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* Perfil do Usuário */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" className="p-0 rounded-full">
+                <Avatar className="h-8 w-8 rounded-full">
+                  {avatarUrl ? (<AvatarImage src={avatarUrl} alt={displayName} />) : null}
+                  <AvatarFallback className="rounded-full">{initial}</AvatarFallback>
+                </Avatar>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 z-[10000]">
+              <div className="flex items-center gap-3">
+                <Avatar className="h-9 w-9 rounded-full">
+                  {avatarUrl ? (<AvatarImage src={avatarUrl} alt={displayName} />) : null}
+                  <AvatarFallback className="rounded-full">{initial}</AvatarFallback>
+                </Avatar>
+                <div className="flex-1">
+                  <div className="text-sm font-medium">{displayName}</div>
+                  <div className="text-xs text-gray-600">{email}</div>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2">
+                <Button variant="ghost" className="justify-start" onClick={() => navigate('/configuracoes')}>
+                  <Settings className="w-4 h-4 mr-2" />
+                  Configurações
+                </Button>
+                <Button variant="ghost" className="justify-start text-red-600 hover:text-red-700" onClick={handleLogout}>
+                  <LogOut className="w-4 h-4 mr-2 text-red-600" />
+                  Sair
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 

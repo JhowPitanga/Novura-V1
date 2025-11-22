@@ -7,7 +7,7 @@ interface AuthContextType {
     user: User | null;
     session: Session | null;
     loading: boolean;
-    signUp: (email: string, password: string) => Promise<{ error: any }>;
+    signUp: (email: string, password: string, meta?: Record<string, any>) => Promise<{ error: any, userId?: string }>;
     signIn: (email: string, password: string) => Promise<{ error: any }>;
     signOut: () => Promise<void>;
     organizationId: string | null;
@@ -164,10 +164,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return () => subscription.unsubscribe();
     }, []);
 
-    const signUp = async (email: string, password: string) => {
+    const signUp = async (email: string, password: string, meta?: Record<string, any>) => {
         try {
-            // Cadastro mínimo (sem chamar Edge Function). Funciona imediatamente quando "Confirmar email" está desativado.
-            const { data, error } = await supabase.auth.signUp({ email, password });
+            const { data, error } = await supabase.auth.signUp({ email, password, options: { data: meta || {} } });
 
             let message = 'Erro ao criar conta';
             if (error) {
@@ -181,27 +180,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     message = 'Erro interno no serviço de autenticação. Verifique as configurações de Authentication > Email no Supabase.';
                 }
 
-                toast({
-                    title: "Erro no cadastro",
-                    description: message,
-                    variant: "destructive",
-                });
+                // Fallback: tenta criar pelo Edge Function admin (se configurado)
+                try {
+                    const { data: fnData, error: fnErr } = await supabase.functions.invoke('create-user', {
+                        body: { email, password, metadata: meta || {} },
+                    });
+                    if (!fnErr && !(fnData as any)?.error) {
+                        toast({ title: "Conta criada com sucesso!", description: "Conta criada pelo administrador. Faça login para continuar." });
+                        const userId = (fnData as any)?.userId as string | undefined;
+                        if (userId) {
+                            try { await supabase.rpc('rpc_bootstrap_user_org', { p_user_id: userId }); } catch (_) {}
+                        }
+                        return { error: null, userId };
+                    }
+                } catch (_) {}
+
+                toast({ title: "Erro no cadastro", description: message, variant: "destructive" });
                 return { error };
             }
 
             toast({
                 title: "Conta criada com sucesso!",
-                description: "Cadastro concluído.",
+                description: "Verifique seu email para confirmar com o código.",
             });
 
             const createdUser = data?.user ?? (await supabase.auth.getUser()).data.user;
             if (createdUser) {
                 await ensureEditorRecord(createdUser);
                 await ensurePublicUserRecord(createdUser);
+                try {
+                    await supabase.rpc('rpc_bootstrap_user_org', { p_user_id: createdUser.id });
+                } catch (_) { }
                 await resolveOrganizationId(createdUser);
             }
 
-            return { error: null };
+            return { error: null, userId: createdUser?.id };
         } catch (err) {
             console.error('SignUp error:', err);
             return { error: err };
@@ -221,6 +234,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     message = 'Email ou senha incorretos.';
                 } else if (error.message.includes('Email not confirmed')) {
                     message = 'Por favor, confirme seu email antes de fazer login.';
+                } else if (error.message.includes('Refresh Token')) {
+                    try { await supabase.auth.signOut({ scope: 'local' }); } catch (_) {}
+                    message = 'Sessão inválida. Tente novamente.';
                 }
 
                 toast({

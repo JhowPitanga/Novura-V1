@@ -392,21 +392,7 @@ export function AppSidebar() {
             </SidebarGroup>
           </div>
 
-          {/* User Profile compacto com popover */}
-          <div className={`mt-auto p-2 border-t border-gray-100`}>
-            <NavUser
-              user={{
-                name: displayName,
-                email: user?.email || "",
-                avatar: (user?.user_metadata as any)?.avatar_url || "",
-              }}
-              onConfig={handleConfigClick}
-              onLogout={async () => {
-                await signOut();
-                navigate('/auth');
-              }}
-            />
-          </div>
+          
         </SidebarContent>
       </Sidebar>
     </>

@@ -197,7 +197,7 @@ export default function Aplicativos() {
 
   // Helper para mapear nome exibido para nome no banco
   const toDbMarketplaceName = (name: string) => {
-    if (name === 'Mercado Livre') return 'mercado_livre';
+    if (name === 'Mercado Livre') return 'Mercado Livre';
     return name;
   };
 
@@ -275,21 +275,34 @@ export default function Aplicativos() {
       }
       const app = apps.find(a => a.id === appId);
       if (!app) return;
-      const dbName = toDbMarketplaceName(app.name);
-      const { error } = await supabase.rpc('disconnect_marketplace_cascade', {
+      const normalizedName = toDbMarketplaceName(app.name);
+
+      const { error: rpcErr } = await supabase.rpc('disconnect_marketplace_cascade', {
         p_organizations_id: organizationId,
-        p_marketplace_name: dbName,
+        p_marketplace_name: normalizedName,
       });
-      if (error) {
-        const msg = String(error?.message || '').toLowerCase();
+      if (rpcErr) {
+        const msg = String(rpcErr?.message || '').toLowerCase();
         if (msg.includes('reserved_stock_present')) {
           setCannotDisconnectMessage('Não é possível desconectar. Existem reservas de estoque ativas vinculadas a anúncios deste aplicativo.');
           setIsCannotDisconnectOpen(true);
           return;
         }
-        console.error('Erro ao desconectar app:', error);
-        toast({ title: 'Falha ao desconectar', description: 'Não foi possível remover a conexão.', variant: 'destructive' });
-        return;
+        const { data: deletedRows, error } = await supabase
+          .from('marketplace_integrations')
+          .delete()
+          .eq('organizations_id', organizationId)
+          .or(`marketplace_name.eq.${normalizedName},marketplace_name.eq.${app.name}`)
+          .select('id');
+        if (error) {
+          console.error('Erro ao desconectar app (fallback):', error);
+          toast({ title: 'Falha ao desconectar', description: 'Não foi possível remover a conexão.', variant: 'destructive' });
+          return;
+        }
+        if (!deletedRows || deletedRows.length === 0) {
+          toast({ title: 'Falha ao desconectar', description: 'Não foi possível localizar a conexão para remoção.', variant: 'destructive' });
+          return;
+        }
       }
 
       setAppConnections(prev => {
@@ -298,6 +311,7 @@ export default function Aplicativos() {
         return next;
       });
       setApps(prev => prev.map(a => a.id === appId ? { ...a, isConnected: false } : a));
+      await loadConnections();
       toast({ title: 'Aplicativo desconectado', description: `${app.name} foi removido da sua organização.` });
     } catch (e) {
       console.error('Erro inesperado ao desconectar app:', e);
