@@ -19,15 +19,27 @@ export function b64ToUint8(b64: string): Uint8Array {
 }
 
 export async function importAesGcmKey(base64OrHexKey: string): Promise<CryptoKey> { 
-  let keyBytes: Uint8Array;
+  const cleaned = base64OrHexKey.trim().replace(/^0x/i, "").replace(/[\s-]/g, "");
+  let keyBytes: Uint8Array | null = null;
   try {
-    keyBytes = b64ToUint8(base64OrHexKey);
-  } catch (_) {
-    const isHex = /^[0-9a-fA-F]+$/.test(base64OrHexKey) && base64OrHexKey.length % 2 === 0;
-    if (!isHex) throw _;
-    const bytes = new Uint8Array(base64OrHexKey.length / 2);
-    for (let i = 0; i < base64OrHexKey.length; i += 2) {
-      bytes[i / 2] = parseInt(base64OrHexKey.slice(i, i + 2), 16);
+    const b64Bytes = b64ToUint8(cleaned);
+    if (b64Bytes.length === 16 || b64Bytes.length === 24 || b64Bytes.length === 32) {
+      keyBytes = b64Bytes;
+    } else {
+      keyBytes = null;
+    }
+  } catch (err) {
+    keyBytes = null;
+  }
+  if (!keyBytes) {
+    const isHex = /^[0-9a-fA-F]+$/.test(cleaned) && cleaned.length % 2 === 0;
+    if (!isHex) throw new Error("Invalid key format");
+    const bytes = new Uint8Array(cleaned.length / 2);
+    for (let i = 0; i < cleaned.length; i += 2) {
+      bytes[i / 2] = parseInt(cleaned.slice(i, i + 2), 16);
+    }
+    if (!(bytes.length === 16 || bytes.length === 24 || bytes.length === 32)) {
+      throw new Error("Invalid key length");
     }
     keyBytes = bytes;
   }
@@ -65,8 +77,9 @@ export interface TokenRefreshResult {
  * @param integrationId Integration ID to refresh
  * @returns TokenRefreshResult with success status and new token if refreshed
  */
+type SupabaseAdmin = ReturnType<typeof createClient>;
 export async function checkAndRefreshToken(
-  admin: any,
+  admin: SupabaseAdmin,
   aesKey: CryptoKey,
   integrationId: string
 ): Promise<TokenRefreshResult> {
