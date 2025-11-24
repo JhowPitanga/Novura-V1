@@ -18,8 +18,19 @@ export function b64ToUint8(b64: string): Uint8Array {
   return bytes; 
 }
 
-export async function importAesGcmKey(base64Key: string): Promise<CryptoKey> { 
-  const keyBytes = b64ToUint8(base64Key); 
+export async function importAesGcmKey(base64OrHexKey: string): Promise<CryptoKey> { 
+  let keyBytes: Uint8Array;
+  try {
+    keyBytes = b64ToUint8(base64OrHexKey);
+  } catch (_) {
+    const isHex = /^[0-9a-fA-F]+$/.test(base64OrHexKey) && base64OrHexKey.length % 2 === 0;
+    if (!isHex) throw _;
+    const bytes = new Uint8Array(base64OrHexKey.length / 2);
+    for (let i = 0; i < base64OrHexKey.length; i += 2) {
+      bytes[i / 2] = parseInt(base64OrHexKey.slice(i, i + 2), 16);
+    }
+    keyBytes = bytes;
+  }
   return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); 
 }
 

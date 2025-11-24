@@ -1,0 +1,2 @@
+[functions.mercado-livre-shipping-methods]
+verify_jwt = true

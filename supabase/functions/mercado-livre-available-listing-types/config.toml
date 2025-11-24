@@ -1,0 +1,2 @@
+[functions.mercado-livre-available-listing-types]
+verify_jwt = true

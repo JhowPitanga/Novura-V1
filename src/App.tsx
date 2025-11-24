@@ -17,6 +17,7 @@ const Desempenho = lazy(() => import("./pages/Desempenho"));
 const PesquisaMercado = lazy(() => import("./pages/PesquisaMercado"));
 const Produtos = lazy(() => import("./pages/Produtos"));
 const Anuncios = lazy(() => import("./pages/Anuncios"));
+const AnunciosCriarML = lazy(() => import("./pages/AnunciosCriarML"));
 const RecursosSeller = lazy(() => import("./pages/RecursosSeller"));
 const Aplicativos = lazy(() => import("./pages/Aplicativos"));
 const Estoque = lazy(() => import("./pages/Estoque"));
@@ -152,6 +153,18 @@ const App = () => (
                   <RestrictedRoute module="anuncios" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
                       <Anuncios />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/criar/ml"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["create","publish","view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <AnunciosCriarML />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>

@@ -1701,6 +1701,10 @@ export type Database = {
         Args: { p_organization_id: string; p_user_id: string }
         Returns: Json
       }
+      rpc_bootstrap_user_org: {
+        Args: { p_user_id: string }
+        Returns: { organization_id: string; created: boolean }[]
+      }
       get_user_printing_settings: {
         Args: { p_user_id?: string }
         Returns: {
@@ -1737,11 +1741,6 @@ export type Database = {
         Args: { p_org_id: string; p_user_id: string }
         Returns: boolean
       }
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-=======
-=======
->>>>>>> 201aefe98ec65ef73ac0868a73d7d0d162ebf225
       ensure_inventory_for_order: {
         Args: { p_order_id: string }
         Returns: undefined
@@ -1750,7 +1749,6 @@ export type Database = {
         Args: { p_pack_id: number }
         Returns: undefined
       }
-<<<<<<< HEAD
       can_disconnect_marketplace: {
         Args: { p_organizations_id: string; p_marketplace_name: string }
         Returns: boolean
@@ -1759,9 +1757,6 @@ export type Database = {
         Args: { p_organizations_id: string; p_marketplace_name: string }
         Returns: undefined
       }
->>>>>>> Stashed changes
-=======
->>>>>>> 201aefe98ec65ef73ac0868a73d7d0d162ebf225
       link_order_stock: {
         Args: { p_order_id: string; p_storage_id_for_reservation: string }
         Returns: undefined

@@ -12,6 +12,7 @@ import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, Dr
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip } from "recharts";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { supabase } from "@/integrations/supabase/client";
@@ -55,6 +56,8 @@ export default function Anuncios() {
     // Capacidades/flags de envio do seller (derivadas de shipping_preferences)
     const [shippingCaps, setShippingCaps] = useState<{ flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean } | null>(null);
     const [hasIntegration, setHasIntegration] = useState<boolean>(false);
+    const [createDialogOpen, setCreateDialogOpen] = useState<boolean>(false);
+    const [selectedMarketplaceForCreation, setSelectedMarketplaceForCreation] = useState<string>("");
 
     useEffect(() => {
         const run = async () => {
@@ -1020,13 +1023,63 @@ export default function Anuncios() {
                                                     <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleSyncSelected(); }}>Sincronizar selecionados</DropdownMenuItem>
                                                 </DropdownMenuContent>
                                             </DropdownMenu>
-                                            <Button className="bg-novura-primary hover:bg-novura-primary/90">
+                                            <Button className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => { setSelectedMarketplaceForCreation(""); setCreateDialogOpen(true); }}>
                                                 <Plus className="w-4 h-4 mr-2" />
-                                                Novo Anúncio
+                                                CRIAR ANÚNCIO
                                             </Button>
                                         </div>
                                     </div>
 
+                                    <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+                                        <DialogContent className="sm:max-w-lg">
+                                            <DialogHeader>
+                                                <DialogTitle>Selecionar Marketplace</DialogTitle>
+                                                <DialogDescription>Escolha onde publicar o anúncio. Listamos apenas aplicativos conectados.</DialogDescription>
+                                            </DialogHeader>
+                                            <div className="space-y-3">
+                                                {marketplaceNavItems.length === 0 ? (
+                                                    <div className="text-sm text-gray-600">Nenhum marketplace conectado. Conecte em Aplicativos para continuar.</div>
+                                                ) : (
+                                                    marketplaceNavItems.map((mk) => {
+                                                        const dn = mk.displayName || mk.title;
+                                                        const isSelected = selectedMarketplaceForCreation === dn;
+                                                        return (
+                                                            <button
+                                                                key={dn}
+                                                                className={`w-full flex items-center justify-between border rounded-lg px-4 py-3 transition ${isSelected ? 'border-novura-primary bg-purple-50' : 'border-gray-200 bg-white'}`}
+                                                                onClick={() => setSelectedMarketplaceForCreation(dn)}
+                                                            >
+                                                                <span className="text-sm font-medium text-gray-900">{dn}</span>
+                                                                {isSelected ? (
+                                                                    <Badge variant="outline" className="text-xs border-novura-primary text-novura-primary">Selecionado</Badge>
+                                                                ) : (
+                                                                    <Badge variant="outline" className="text-xs">Conectado</Badge>
+                                                                )}
+                                                            </button>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
+                                            <DialogFooter>
+                                                <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>Cancelar</Button>
+                                                <Button
+                                                    disabled={!selectedMarketplaceForCreation}
+                                                    onClick={() => {
+                                                        if (!selectedMarketplaceForCreation) return;
+                                                        if (selectedMarketplaceForCreation.toLowerCase() === 'mercado livre' || selectedMarketplaceForCreation.toLowerCase() === 'mercado_livre') {
+                                                            setCreateDialogOpen(false);
+                                                            navigate('/anuncios/criar/ml');
+                                                        } else {
+                                                            setCreateDialogOpen(false);
+                                                            toast({ title: 'Criação de anúncio', description: `${selectedMarketplaceForCreation} será suportado em breve.` });
+                                                        }
+                                                    }}
+                                                >
+                                                    Continuar
+                                                </Button>
+                                            </DialogFooter>
+                                        </DialogContent>
+                                    </Dialog>
                                     <div className="mt-4">
                                         <CleanNavigation
                                             items={[
