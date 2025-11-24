@@ -21,14 +21,10 @@ export default function AnunciosCriarML() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState(1);
-  const maxSteps = 8;
+  const maxSteps = 7;
   const [connectedApps, setConnectedApps] = useState<string[]>([]);
   const [marketplaceSelection, setMarketplaceSelection] = useState<string>("");
   const [siteId, setSiteId] = useState("MLB");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [searchByBarcode, setSearchByBarcode] = useState(false);
-  const [searching, setSearching] = useState(false);
-  const [searchResults, setSearchResults] = useState<any[]>([]);
   const [title, setTitle] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [currencyId, setCurrencyId] = useState("BRL");
@@ -47,15 +43,17 @@ export default function AnunciosCriarML() {
   const [listingPriceOptions, setListingPriceOptions] = useState<any[]>([]);
   const [loadingListing, setLoadingListing] = useState(false);
   const [shippingModesAvailable, setShippingModesAvailable] = useState<string[]>([]);
+  const [categorySuggestions, setCategorySuggestions] = useState<any[]>([]);
+  const [domainSuggestions, setDomainSuggestions] = useState<any[]>([]);
+  const [availableQuantity, setAvailableQuantity] = useState<number>(0);
   const steps = useMemo(() => ([
     { id: 1, title: "Marketplace", description: "Selecione onde publicar" },
-    { id: 2, title: "Catálogo/Preditor", description: "Identifique produto e categoria" },
-    { id: 3, title: "Categoria e Atributos", description: "Defina ficha técnica" },
-    { id: 4, title: "Variações", description: "Configure combinações" },
+    { id: 2, title: "Título e Categoria", description: "Informe título e escolha a categoria" },
+    { id: 3, title: "Descrição e Atributos", description: "Preencha descrição e ficha técnica" },
+    { id: 4, title: "Variações e Mídia", description: "Configure variações, fotos e estoque" },
     { id: 5, title: "Preço e Publicação", description: "Preço e tipo de anúncio" },
     { id: 6, title: "Envio", description: "Dimensões e logística" },
-    { id: 7, title: "Descrição", description: "Texto do anúncio" },
-    { id: 8, title: "Revisão", description: "Verifique e publique" },
+    { id: 7, title: "Revisão", description: "Verifique e publique" },
   ]), []);
 
   useEffect(() => {
@@ -148,10 +146,9 @@ export default function AnunciosCriarML() {
 
   const canProceed = () => {
     if (currentStep === 1) return !!marketplaceSelection;
-    if (currentStep === 2) return true;
-    if (currentStep === 3) return !!title && !!categoryId;
+    if (currentStep === 2) return !!title && !!categoryId && !!condition;
+    if (currentStep === 3) return description.length > 0;
     if (currentStep === 5) return !!listingTypeId && (!!price || variations.some((v) => !!v?.price));
-    if (currentStep === 7) return description.length > 0;
     return true;
   };
 
@@ -169,6 +166,7 @@ export default function AnunciosCriarML() {
       pictures: pictures.map((url) => ({ source: url })),
     };
     if (variations.length > 0) payload.variations = variations;
+    if (variations.length === 0 && availableQuantity) payload.available_quantity = Number(availableQuantity);
     if (price) payload.price = Number(price);
     if (listingTypeId) payload.listing_type_id = listingTypeId;
     if (shipping && Object.keys(shipping).length > 0) {
@@ -193,26 +191,20 @@ export default function AnunciosCriarML() {
     toast({ title: "Anúncio publicado", description: `ID: ${data?.item_id || ""}` });
     navigate("/anuncios");
   };
-
-  const runSearch = async () => {
+  const runPredict = async () => {
     if (!organizationId) return;
-    if (!searchTerm.trim()) return;
-    setSearching(true);
+    if (!title.trim()) return;
     try {
-      const { data, error } = await (supabase as any).functions.invoke("mercado-livre-products-search", {
-        body: { organizationId, siteId, query: searchTerm.trim(), mode: searchByBarcode ? "barcode" : "title" }
+      const { data, error } = await (supabase as any).functions.invoke("mercado-livre-categories-predict", {
+        body: { organizationId, siteId, title: title.trim() }
       });
-      if (error) {
-        toast({ title: "Falha na busca", description: error.message || String(error), variant: "destructive" });
-        return;
-      }
-      if (data && data.error) {
-        toast({ title: "Busca não concluída", description: String(data.error), variant: "destructive" });
-      }
-      const items = Array.isArray(data?.results) ? data.results : [];
-      setSearchResults(items);
-    } finally {
-      setSearching(false);
+      if (error) { toast({ title: "Falha no preditor", description: error.message || String(error), variant: "destructive" }); return; }
+      const preds = Array.isArray(data?.predictions) ? data.predictions : [];
+      setCategorySuggestions(preds);
+      const doms = Array.isArray(data?.domain_discovery) ? data.domain_discovery : [];
+      setDomainSuggestions(doms);
+    } catch (e: any) {
+      toast({ title: "Erro no preditor", description: e?.message || String(e), variant: "destructive" });
     }
   };
 
@@ -256,10 +248,6 @@ export default function AnunciosCriarML() {
                   {currentStep === 2 && (
                     <div className="space-y-4">
                       <div className="flex items-center justify-between">
-                        <label className="flex items-center space-x-2">
-                          <Checkbox checked={searchByBarcode} onCheckedChange={(v) => setSearchByBarcode(!!v)} />
-                          <span className="text-sm text-gray-700">Buscar por Código de Barras</span>
-                        </label>
                         <Select value={siteId} onValueChange={setSiteId}>
                           <SelectTrigger className="w-32"><SelectValue placeholder="Site" /></SelectTrigger>
                           <SelectContent>
@@ -267,59 +255,73 @@ export default function AnunciosCriarML() {
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="relative">
-                        <Input
-                          placeholder={searchByBarcode ? "Digite o código de barras" : "Digite o título/palavras‑chave"}
-                          value={searchTerm}
-                          onChange={(e) => setSearchTerm(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") runSearch(); }}
-                          className="pl-10"
-                        />
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="absolute right-1 top-1/2 -translate-y-1/2"
-                          onClick={runSearch}
-                          disabled={searching}
-                        >
-                          Buscar
-                        </Button>
+                      <Input
+                        placeholder="Digite o título do produto"
+                        value={title}
+                        onChange={(e) => setTitle(e.target.value)}
+                      />
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <Select value={condition} onValueChange={setCondition}>
+                          <SelectTrigger><SelectValue placeholder="Condição" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="new">Novo</SelectItem>
+                            <SelectItem value="used">Usado</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button variant="outline" onClick={runPredict}>Buscar categoria</Button>
                       </div>
                       <div className="space-y-2">
-                        {searchResults.length === 0 ? (
-                          <div className="text-sm text-gray-600">Sem resultados</div>
+                        {categorySuggestions.length === 0 ? (
+                          <div className="text-sm text-gray-600">Nenhuma sugestão de categoria</div>
                         ) : (
                           <div className="grid grid-cols-1 gap-2">
-                            {searchResults.map((r: any) => {
-                              const name = r?.name || r?.title || "Produto";
-                              const cat = r?.category_id || r?.category?.id || "";
+                            {categorySuggestions.map((sug: any, idx: number) => {
+                              const path: any[] = Array.isArray(sug?.path_from_root) ? sug.path_from_root : [];
+                              const leaf = path.length ? path[path.length - 1] : null;
+                              const leafId = leaf?.id || sug?.category_id || "";
+                              const leafName = leaf?.name || sug?.category_name || "Categoria";
+                              const fullPath = path.map((p: any) => p?.name).filter(Boolean).join(" › ");
                               return (
                                 <button
-                                  key={String(r?.id || name)}
+                                  key={String(leafId || idx)}
                                   className="border border-gray-200 rounded-lg px-4 py-3 text-left hover:border-novura-primary hover:bg-purple-50"
-                                  onClick={() => { setCategoryId(String(cat || "")); setTitle(String(name || "")); }}
+                                  onClick={() => setCategoryId(String(leafId || ""))}
                                 >
-                                  <div className="font-medium text-gray-900">{name}</div>
-                                  <div className="text-xs text-gray-600">Categoria: {cat || "—"}</div>
+                                  <div className="font-medium text-gray-900">{leafName}</div>
+                                  <div className="text-xs text-gray-600">{fullPath || leafName}</div>
                                 </button>
                               );
                             })}
                           </div>
                         )}
                       </div>
+                      {domainSuggestions.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="text-sm text-gray-700">Sugestões por domínio</div>
+                          <div className="grid grid-cols-1 gap-2">
+                            {domainSuggestions.map((d: any, i: number) => {
+                              const leafId = String(d?.category_id || "");
+                              const leafName = String(d?.category_name || "Categoria");
+                              const domain = String(d?.domain_name || d?.domain_id || "");
+                              return (
+                                <button
+                                  key={leafId || i}
+                                  className="border border-gray-200 rounded-lg px-4 py-3 text-left hover:border-novura-primary hover:bg-purple-50"
+                                  onClick={() => setCategoryId(leafId)}
+                                >
+                                  <div className="font-medium text-gray-900">{leafName}</div>
+                                  <div className="text-xs text-gray-600">{domain}</div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                   {currentStep === 3 && (
                     <div className="space-y-4">
-                      <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Título" />
-                      <Select value={condition} onValueChange={setCondition}>
-                        <SelectTrigger><SelectValue placeholder="Condição" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="new">Novo</SelectItem>
-                          <SelectItem value="used">Usado</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Input placeholder="URLs de imagens (separadas por vírgula)" onChange={(e) => setPictures(e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
+                      <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Descrição em texto plano" className="min-h-[160px]" />
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {attrsMeta.map((a: any) => {
                           const id = String(a?.id || "");
@@ -356,6 +358,8 @@ export default function AnunciosCriarML() {
                     <div className="space-y-4">
                       <div className="text-sm text-gray-700">Configure variações (opcional)</div>
                       <Button variant="outline" onClick={() => setVariations([...(variations || []), { attribute_combinations: [], price: null, available_quantity: 0 }] )}>Adicionar variação</Button>
+                      <Input placeholder="URLs de imagens (separadas por vírgula)" onChange={(e) => setPictures(e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />
+                      <Input placeholder="Estoque disponível (sem variação)" type="number" onChange={(e) => setAvailableQuantity(Number(e.target.value))} />
                     </div>
                   )}
                   {currentStep === 5 && (
@@ -426,11 +430,6 @@ export default function AnunciosCriarML() {
                     </div>
                   )}
                   {currentStep === 7 && (
-                    <div className="space-y-4">
-                      <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Descrição em texto plano" className="min-h-[160px]" />
-                    </div>
-                  )}
-                  {currentStep === 8 && (
                     <div className="space-y-4">
                       <div className="text-sm text-gray-700">Revise os dados e publique</div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

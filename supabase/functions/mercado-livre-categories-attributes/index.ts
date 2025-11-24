@@ -20,8 +20,8 @@ serve(async (req) => {
 
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
   const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ENC_KEY_B64) return jsonResponse({ error: "Missing service configuration" }, 500);
+  const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY") || undefined;
+  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
 
   try {
     const body = await req.json();
@@ -30,7 +30,10 @@ serve(async (req) => {
     if (!organizationId || !categoryId) return jsonResponse({ error: "organizationId and categoryId required" }, 400);
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-    const aesKey = await importAesGcmKey(ENC_KEY_B64);
+    let aesKey: CryptoKey | null = null;
+    if (ENC_KEY_B64) {
+      try { aesKey = await importAesGcmKey(ENC_KEY_B64); } catch { aesKey = null; }
+    }
     const { data: integ, error: integErr } = await admin
       .from("marketplace_integrations")
       .select("access_token")
@@ -42,7 +45,8 @@ serve(async (req) => {
     if (integErr || !integ) return jsonResponse({ error: integErr?.message || "Integration not found" }, 404);
 
     let accessToken: string;
-    try { accessToken = await aesGcmDecryptFromString(aesKey, integ.access_token); } catch { accessToken = integ.access_token; }
+    if (aesKey) { try { accessToken = await aesGcmDecryptFromString(aesKey, integ.access_token); } catch { accessToken = integ.access_token; } }
+    else { accessToken = integ.access_token; }
 
     const url = `https://api.mercadolibre.com/categories/${encodeURIComponent(categoryId)}/attributes`;
     const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
