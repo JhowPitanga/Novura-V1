@@ -220,7 +220,7 @@ serve(async (req) => {
           else miUpdated = true; // considerar operação bem-sucedida para contagem
         } catch {}
 
-        if (miUpdated || descriptionsTableExists) updatedCount += 1;
+        if (miUpdated) updatedCount += 1;
       } catch (e) {
         console.warn('[ml-desc]', rid, 'worker error', id, (e as any)?.message || e);
       }

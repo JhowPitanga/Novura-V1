@@ -1,186 +1,189 @@
 // deno-lint-ignore-file no-explicit-any
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-function jsonResponse(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
+const mlRefreshHandler = async (req: Request) => {
+  function jsonResponse(body: any, status = 200) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "content-type": "application/json",
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "POST, OPTIONS",
+        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-integration-id, x-organization-id, x-org-id",
+      },
+    });
+  }
 
-// AES-GCM helpers (match callback format enc:gcm:<iv>:<ct>)
-function strToUint8(str: string): Uint8Array { return new TextEncoder().encode(str); }
-function uint8ToB64(bytes: Uint8Array): string { const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join(""); return btoa(bin); }
-function b64ToUint8(b64: string): Uint8Array { const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
-async function importAesGcmKey(base64Key: string): Promise<CryptoKey> { const keyBytes = b64ToUint8(base64Key); return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); }
-async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, strToUint8(plaintext)); const ctBytes = new Uint8Array(ct); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`; }
-async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> { const parts = encStr.split(":"); if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); const iv = b64ToUint8(parts[2]); const ct = b64ToUint8(parts[3]); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); return new TextDecoder().decode(pt); }
-
-serve(async (req) => {
+  function strToUint8(str: string): Uint8Array { return new TextEncoder().encode(str); }
+  function uint8ToB64(bytes: Uint8Array): string { const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join(""); return btoa(bin); }
+  function b64ToUint8(b64: string): Uint8Array { const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
+  async function importAesGcmKey(src: string): Promise<CryptoKey> {
+    let keyMaterial: BufferSource;
+    try {
+      const b = b64ToUint8(src);
+      if (b.length === 16 || b.length === 24 || b.length === 32) {
+        const ab = new ArrayBuffer(b.byteLength);
+        new Uint8Array(ab).set(b);
+        keyMaterial = ab;
+      } else {
+        const bytes = strToUint8(src);
+        const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        keyMaterial = await crypto.subtle.digest("SHA-256", buf as ArrayBuffer);
+      }
+    } catch (_) {
+      const bytes = strToUint8(src);
+      const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      keyMaterial = await crypto.subtle.digest("SHA-256", buf as ArrayBuffer);
+    }
+    return crypto.subtle.importKey("raw", keyMaterial, { name: "AES-GCM" }, false, ["encrypt","decrypt"]);
+  }
+  async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const textBytes = strToUint8(plaintext);
+    const textBuf = textBytes.buffer.slice(textBytes.byteOffset, textBytes.byteOffset + textBytes.byteLength) as ArrayBuffer;
+    const ivBuf = iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer;
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv: ivBuf }, key, textBuf);
+    const ctBytes = new Uint8Array(ct);
+    return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`;
+  }
+  async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> {
+    const parts = encStr.split(":");
+    if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format");
+    const iv = b64ToUint8(parts[2]);
+    const ct = b64ToUint8(parts[3]);
+    // Force ArrayBuffer type by slicing the underlying buffer
+    const ivBuf = iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer;
+    const ctBuf = ct.buffer.slice(ct.byteOffset, ct.byteOffset + ct.byteLength) as ArrayBuffer;
+    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBuf }, key, ctBuf);
+    return new TextDecoder().decode(pt);
+  }
   if (req.method === "OPTIONS") {
     return new Response(null, {
       headers: {
         "access-control-allow-origin": "*",
         "access-control-allow-methods": "POST, OPTIONS",
-        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
+        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-integration-id, x-organization-id, x-org-id",
       },
     });
   }
 
-  if (req.method !== "POST") {
+  if (req.method !== "POST" && req.method !== "GET") {
     return jsonResponse({ error: "Method not allowed" }, 405);
   }
 
   try {
     const rid = (crypto as any)?.randomUUID ? crypto.randomUUID() : String(Date.now());
     console.log("[ml-refresh]", rid, "start");
-    // Tolerant body parser: read text once, try JSON and form
     let integrationId: string | undefined;
-    try {
-      const raw = await req.text();
-      if (raw && raw.trim().length > 0) {
+    let organizationId: string | undefined;
+    const h = req.headers;
+    integrationId = h.get("x-integration-id") || h.get("x-integrationid") || h.get("x-integration_id") || undefined;
+    organizationId = h.get("x-organization-id") || h.get("x-org-id") || h.get("x-organization_id") || undefined;
+    let rawText: string | null = null;
+    try { rawText = await req.text(); } catch (_) { rawText = null; }
+    if (!integrationId && rawText && rawText.trim().length > 0) {
+      try {
+        const parsed = JSON.parse(rawText);
+        integrationId = (parsed as any)?.integrationId || (parsed as any)?.id || (parsed as any)?.integration_id || integrationId;
+        organizationId = (parsed as any)?.organizationId || (parsed as any)?.organization_id || organizationId;
+      } catch (_) {
         try {
-          const parsed = JSON.parse(raw);
-          integrationId = (parsed as any)?.integrationId;
-        } catch (_) {
-          const params = new URLSearchParams(raw);
-          integrationId = params.get("integrationId") ?? undefined;
-        }
+          const params = new URLSearchParams(rawText);
+          integrationId = params.get("integrationId") || params.get("id") || params.get("integration_id") || integrationId;
+          organizationId = params.get("organizationId") || params.get("organization_id") || organizationId;
+        } catch (_) {}
       }
-    } catch (_) {
-      integrationId = undefined;
     }
-    if (!integrationId) {
-      // Try query string fallback
+    if (!integrationId || !organizationId) {
       try {
         const u = new URL(req.url);
-        integrationId = u.searchParams.get("integrationId") ?? undefined;
+        integrationId = integrationId || u.searchParams.get("integrationId") || u.searchParams.get("id") || u.searchParams.get("integration_id") || undefined;
+        organizationId = organizationId || u.searchParams.get("organizationId") || u.searchParams.get("organization_id") || undefined;
       } catch (_) {}
     }
-    if (!integrationId) return jsonResponse({ error: "Missing integrationId" }, 400);
-    console.log("[ml-refresh]", rid, "integrationId", integrationId);
-
+    if (!integrationId) {
+      const defInteg = Deno.env.get("MERCADO_LIVRE_DEFAULT_INTEGRATION_ID") || null;
+      if (defInteg) integrationId = defInteg;
+    }
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
     console.log("[ml-refresh]", rid, "env_present", { hasSupabaseUrl: !!SUPABASE_URL, hasServiceRoleKey: !!SERVICE_ROLE_KEY });
+    const rest = `${SUPABASE_URL}/rest/v1`;
+    const baseHeaders: Record<string,string> = { accept: "application/json", apikey: SERVICE_ROLE_KEY, authorization: `Bearer ${SERVICE_ROLE_KEY}` };
+    let integ: any = null;
+    if (!integrationId) {
+      organizationId = organizationId || Deno.env.get("MERCADO_LIVRE_DEFAULT_ORGANIZATION_ID") || undefined;
+      if (organizationId) {
+        const mktName = "Mercado Livre";
+        const byOrgResp = await fetch(`${rest}/marketplace_integrations?organizations_id=eq.${encodeURIComponent(organizationId)}&marketplace_name=eq.${encodeURIComponent(mktName)}&select=id,refresh_token,marketplace_name&limit=1`, { headers: { ...baseHeaders, Prefer: "single-object" } });
+        const byOrg = await byOrgResp.json();
+        if (byOrgResp.ok && byOrg?.id) { integ = byOrg; integrationId = String(byOrg.id); }
+      }
+    }
+    console.log("[ml-refresh]", rid, "integrationId", integrationId || null);
 
     const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
     if (!ENC_KEY_B64) return jsonResponse({ error: "Missing TOKENS_ENCRYPTION_KEY" }, 500);
     const aesKey = await importAesGcmKey(ENC_KEY_B64);
     console.log("[ml-refresh]", rid, "enc_key_present", !!ENC_KEY_B64);
-
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-
-    const { data: integ, error: getErr } = await admin
-      .from("marketplace_integrations")
-      .select("id, refresh_token, marketplace_name")
-      .eq("id", integrationId)
-      .single();
-
-    if (getErr || !integ) return jsonResponse({ error: getErr?.message || "Integration not found" }, 404);
-    if (!integ.refresh_token) return jsonResponse({ error: "Missing refresh_token" }, 400);
-    console.log("[ml-refresh]", rid, "integration_row", { id: integ.id, marketplace_name: integ.marketplace_name, hasRefreshToken: !!integ.refresh_token, refreshTokenLen: integ.refresh_token?.length });
-    const isEncGcm = integ.refresh_token?.startsWith("enc:gcm:") === true;
-    console.log("[ml-refresh]", rid, "refresh_token_format", isEncGcm ? "enc:gcm" : "plain_or_unknown");
-
-    // Decrypt stored refresh_token (fallback para texto plano legado quando não estiver no formato enc:gcm)
-    let refreshTokenPlain: string;
-    if (isEncGcm) {
-      try {
-        refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integ.refresh_token);
-        console.log("[ml-refresh]", rid, "refresh_token_decrypted_ok", true);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        // Se o token está marcado como enc:gcm, falha de descriptografia indica chave incorreta ou dados corrompidos
-        return jsonResponse({ error: `Failed to decrypt refresh_token: ${msg}` }, 500);
+    if (!integ && integrationId) {
+      const integResp = await fetch(`${rest}/marketplace_integrations?id=eq.${encodeURIComponent(integrationId)}&select=id,refresh_token,marketplace_name&limit=1`, { headers: { ...baseHeaders, Prefer: "single-object" } });
+      integ = await integResp.json();
+      if (!integResp.ok || !integ) return jsonResponse({ error: (integ && integ.message) || "Integration not found" }, 404);
+    }
+    const targets: any[] = integ ? [integ] : [];
+    if (targets.length === 0) {
+      const listResp = await fetch(`${rest}/marketplace_integrations?marketplace_name=eq.${encodeURIComponent("Mercado Livre")}&select=id,refresh_token,marketplace_name`, { headers: baseHeaders });
+      const list = await listResp.json();
+      if (listResp.ok && Array.isArray(list)) {
+        for (const row of list) { if (row?.id) targets.push(row); }
       }
-    } else {
-      // Suporte a token legado salvo sem criptografia
-      refreshTokenPlain = String(integ.refresh_token);
-      console.log("[ml-refresh]", rid, "refresh_token_legacy_plain", { length: refreshTokenPlain.length });
     }
-
-    // Fetch app credentials from public.apps by marketplace_name
-    const appName = integ.marketplace_name === "mercado_livre" ? "Mercado Livre" : integ.marketplace_name;
-    console.log("[ml-refresh]", rid, "fetch_app_credentials", { appName });
-    const { data: appRow, error: appErr } = await admin
-      .from("apps")
-      .select("client_id, client_secret")
-      .eq("name", appName)
-      .single();
-
-    if (appErr || !appRow) return jsonResponse({ error: appErr?.message || "App credentials not found" }, 404);
-    console.log("[ml-refresh]", rid, "app_row_present", !!appRow);
-
-    // Alinhar com meli-callback: usar fallback de ENV para ambos client_id e client_secret
-    const clientId = appRow.client_id || Deno.env.get("MERCADO_LIVRE_CLIENT_ID") || null;
-    const clientSecret = appRow.client_secret || Deno.env.get("MERCADO_LIVRE_CLIENT_SECRET") || null;
-    if (!clientId || !clientSecret) return jsonResponse({ error: "Missing client credentials (DB or env)" }, 400);
-    const clientIdSource = appRow.client_id ? "db" : (Deno.env.get("MERCADO_LIVRE_CLIENT_ID") ? "env" : "missing");
-    const clientSecretSource = appRow.client_secret ? "db" : (Deno.env.get("MERCADO_LIVRE_CLIENT_SECRET") ? "env" : "missing");
-    console.log("[ml-refresh]", rid, "credential_sources", { client_id: clientIdSource, client_secret: clientSecretSource });
-
-    const form = new URLSearchParams();
-    form.append("grant_type", "refresh_token");
-    form.append("client_id", clientId);
-    form.append("client_secret", clientSecret);
-    form.append("refresh_token", refreshTokenPlain);
-    console.log("[ml-refresh]", rid, "refresh_request", { grant_type: "refresh_token", client_id_source: clientIdSource });
-
-    let resp: Response;
-    try {
-      resp = await fetch("https://api.mercadolibre.com/oauth/token", {
-        method: "POST",
-        headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
-        body: form.toString(),
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.log("[ml-refresh]", rid, "refresh_fetch_error", msg);
-      return jsonResponse({ error: "Failed to call ML oauth/token", details: msg }, 502);
+    if (targets.length === 0) return jsonResponse({ error: "No Mercado Livre integrations found" }, 404);
+    const appResp = await fetch(`${rest}/apps?name=eq.${encodeURIComponent("Mercado Livre")}&select=client_id,client_secret&limit=1`, { headers: { ...baseHeaders, Prefer: "single-object" } });
+    const appRow = await appResp.json();
+    const clientId = (appResp.ok && appRow?.client_id) ? appRow.client_id : (Deno.env.get("MERCADO_LIVRE_CLIENT_ID") || null);
+    const clientSecret = (appResp.ok && appRow?.client_secret) ? appRow.client_secret : (Deno.env.get("MERCADO_LIVRE_CLIENT_SECRET") || null);
+    if (!clientId || !clientSecret) return jsonResponse({ error: "Missing client credentials (DB or env)", appName: "Mercado Livre" }, 400);
+    const results: any[] = [];
+    for (const t of targets) {
+      if (!t?.refresh_token) { results.push({ id: t?.id, ok: false, error: "Missing refresh_token" }); continue; }
+      const enc = String(t.refresh_token);
+      let plain = enc;
+      if (enc.startsWith("enc:gcm:")) {
+        try { plain = await aesGcmDecryptFromString(aesKey, enc); } catch (e) { results.push({ id: t.id, ok: false, error: `Failed to decrypt refresh_token: ${e instanceof Error ? e.message : String(e)}` }); continue; }
+      }
+      const form = new URLSearchParams();
+      form.append("grant_type", "refresh_token");
+      form.append("client_id", clientId);
+      form.append("client_secret", clientSecret);
+      form.append("refresh_token", plain);
+      let resp: Response;
+      try {
+        resp = await fetch("https://api.mercadolibre.com/oauth/token", { method: "POST", headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" }, body: form.toString() });
+      } catch (e) {
+        results.push({ id: t.id, ok: false, error: `Failed to call ML oauth/token: ${e instanceof Error ? e.message : String(e)}` });
+        continue;
+      }
+      const txt = await resp.text();
+      let js: any = null; try { js = JSON.parse(txt); } catch { js = { raw: txt }; }
+      if (!resp.ok) { results.push({ id: t.id, ok: false, status: resp.status, error: js?.error_description || js?.message || "Refresh failed", meli_error: js?.error }); continue; }
+      const { access_token, refresh_token, expires_in, user_id } = js;
+      const expiresIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
+      const accessEnc = await aesGcmEncryptToString(aesKey, access_token);
+      const refreshEnc = await aesGcmEncryptToString(aesKey, refresh_token);
+      const upd = await fetch(`${rest}/marketplace_integrations?id=eq.${encodeURIComponent(String(t.id))}`, { method: "PATCH", headers: { ...baseHeaders, "content-type": "application/json" }, body: JSON.stringify({ access_token: accessEnc, refresh_token: refreshEnc, expires_in: expiresIso, meli_user_id: user_id }) });
+      if (!upd.ok) { let err: any = null; try { err = await upd.json(); } catch {} results.push({ id: t.id, ok: false, error: (err && err.message) || "Update failed" }); continue; }
+      results.push({ id: t.id, ok: true, expires_in: expiresIso, user_id });
     }
-    console.log("[ml-refresh]", rid, "refresh_response_status", resp.status, "ok=", resp.ok);
-
-    const jsonText = await resp.text();
-    let json: any = {};
-    try { json = JSON.parse(jsonText); } catch (_) { json = { raw: jsonText }; }
-    if (!resp.ok) {
-      // Retornar detalhes do erro da API do ML para facilitar diagnóstico
-      console.log("[ml-refresh]", rid, "refresh_response_error", { error: json?.error, error_description: json?.error_description, message: json?.message });
-      return jsonResponse({ 
-        error: json?.error_description || json?.message || "Refresh failed",
-        meli_error: json?.error,
-        details: json
-      }, resp.status);
-    }
-    console.log("[ml-refresh]", rid, "refresh_response_success", { hasAccessToken: !!json?.access_token, hasRefreshToken: !!json?.refresh_token, expires_in: json?.expires_in, user_id: json?.user_id });
-
-    const { access_token, refresh_token, expires_in, user_id } = json;
-    const expiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
-
-    // Re-encrypt tokens before saving
-    const access_token_enc = await aesGcmEncryptToString(aesKey, access_token);
-    const refresh_token_enc = await aesGcmEncryptToString(aesKey, refresh_token);
-
-    const { error: updErr } = await admin
-      .from("marketplace_integrations")
-      .update({ access_token: access_token_enc, refresh_token: refresh_token_enc, expires_in: expiresAtIso, meli_user_id: user_id })
-      .eq("id", integrationId);
-
-    if (updErr) return jsonResponse({ error: updErr.message }, 500);
-    console.log("[ml-refresh]", rid, "db_update_success", { expires_in: expiresAtIso, user_id });
-
-    return jsonResponse({ ok: true, expires_in: expiresAtIso });
+    const okCount = results.filter((r) => r.ok).length;
+    const failCount = results.length - okCount;
+    return jsonResponse({ ok: okCount > 0, refreshed: okCount, failed: failCount, results }, okCount > 0 ? 200 : 400);
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";
     console.log("[ml-refresh]", "unhandled_exception", message);
     return jsonResponse({ error: message }, 500);
   }
-});
+};
+
+(Deno as any).serve(mlRefreshHandler);

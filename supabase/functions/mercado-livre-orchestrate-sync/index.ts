@@ -79,11 +79,19 @@ serve(async (req) => {
     const [descRes, qualityRes] = await Promise.all([
       admin.functions.invoke('mercado-livre-sync-descriptions', {
         body: { organizationId },
-        headers: { Authorization: req.headers.get('authorization') || '' }
+        headers: {
+          Authorization: req.headers.get('authorization') || '',
+          apikey: SERVICE_ROLE_KEY,
+          'x-internal-call': '1'
+        }
       }),
       admin.functions.invoke('mercado-livre-update-quality', {
         body: { organizationId },
-        headers: { Authorization: req.headers.get('authorization') || '' }
+        headers: {
+          Authorization: req.headers.get('authorization') || '',
+          apikey: SERVICE_ROLE_KEY,
+          'x-internal-call': '1'
+        }
       })
     ]);
 
@@ -91,11 +99,19 @@ serve(async (req) => {
     const [reviewsRes, metricsRes] = await Promise.all([
       admin.functions.invoke('mercado-livre-update-reviews', {
         body: { organizationId },
-        headers: { Authorization: req.headers.get('authorization') || '' }
+        headers: {
+          Authorization: req.headers.get('authorization') || '',
+          apikey: SERVICE_ROLE_KEY,
+          'x-internal-call': '1'
+        }
       }),
       admin.functions.invoke('mercado-livre-update-metrics', {
         body: { organizationId },
-        headers: { Authorization: req.headers.get('authorization') || '' }
+        headers: {
+          Authorization: req.headers.get('authorization') || '',
+          apikey: SERVICE_ROLE_KEY,
+          'x-internal-call': '1'
+        }
       })
     ]);
 
