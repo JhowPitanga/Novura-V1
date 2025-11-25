@@ -1,6 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
-import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+declare const Deno: any;
 
 function jsonResponse(body: any, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -18,9 +18,16 @@ function jsonResponse(body: any, status = 200) {
 function strToUint8(str: string): Uint8Array { return new TextEncoder().encode(str); }
 function uint8ToB64(bytes: Uint8Array): string { const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join(""); return btoa(bin); }
 function b64ToUint8(b64: string): Uint8Array { const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
-async function importAesGcmKey(base64Key: string): Promise<CryptoKey> { const keyBytes = b64ToUint8(base64Key); return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); }
-async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, strToUint8(plaintext)); const ctBytes = new Uint8Array(ct); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`; }
-async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> { const parts = encStr.split(":"); if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); const iv = b64ToUint8(parts[2]); const ct = b64ToUint8(parts[3]); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); return new TextDecoder().decode(pt); }
+async function importAesGcmKey(base64Key: string): Promise<CryptoKey> { const keyBytes = b64ToUint8(base64Key); return crypto.subtle.importKey("raw", keyBytes.buffer as ArrayBuffer, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); }
+async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, strToUint8(plaintext).buffer as ArrayBuffer); const ctBytes = new Uint8Array(ct); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`; }
+async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> {
+  const parts = encStr.split(":");
+  if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format");
+  const iv = b64ToUint8(parts[2]);
+  const ct = b64ToUint8(parts[3]);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.buffer as ArrayBuffer);
+  return new TextDecoder().decode(pt);
+}
 
 // Decode base64url (JWT payload) to bytes
 function b64UrlToUint8(b64url: string): Uint8Array { let b64 = b64url.replace(/-/g, "+").replace(/_/g, "/"); const pad = b64.length % 4; if (pad) b64 += "=".repeat(4 - pad); const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
@@ -28,7 +35,7 @@ function b64UrlToUint8(b64url: string): Uint8Array { let b64 = b64url.replace(/-
 // Extract user id (sub) from JWT without calling auth APIs
 function decodeJwtSub(jwt: string): string | null { try { const parts = jwt.split("."); if (parts.length < 2) return null; const payloadBytes = b64UrlToUint8(parts[1]); const payload = JSON.parse(new TextDecoder().decode(payloadBytes)); return (payload?.sub as string) || (payload?.user_id as string) || null; } catch { return null; } }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   console.log(`[meli-sync-items] ${req.method} request received at ${new Date().toISOString()}`);
   
   if (req.method === "OPTIONS") {
@@ -60,13 +67,16 @@ serve(async (req) => {
     });
     
     // Relax config requirement: allow missing ANON_KEY (skip membership check when absent)
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ENC_KEY_B64) {
+    if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
       console.log("[meli-sync-items] Missing service configuration");
       return jsonResponse({ error: "Missing service configuration" }, 500);
     }
 
-    const aesKey = await importAesGcmKey(ENC_KEY_B64);
-    console.log("[meli-sync-items] AES key imported successfully");
+    let aesKey: CryptoKey | null = null;
+    if (ENC_KEY_B64) {
+      aesKey = await importAesGcmKey(ENC_KEY_B64);
+      console.log("[meli-sync-items] AES key imported successfully");
+    }
     
     const authHeader = req.headers.get("Authorization");
     const apiKeyHeader = req.headers.get("apikey") || "";
@@ -78,6 +88,7 @@ serve(async (req) => {
     console.log("[meli-sync-items] Authorization present?", !!authHeader, "internal?", isInternalCall);
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    let userIdFromJwt: string | null = null;
     console.log("[meli-sync-items] Supabase admin client created");
 
     // Accept seller_id via query or POST body; accept organizationId via body
@@ -149,7 +160,7 @@ serve(async (req) => {
     // Validate membership using JWT subject and rpc_get_member_permissions (no refresh)
     if (!isInternalCall) {
       const tokenValue = authHeader!.replace(/^Bearer\s+/i, "").trim();
-      const userIdFromJwt = decodeJwtSub(tokenValue);
+      userIdFromJwt = decodeJwtSub(tokenValue);
       console.log(`[meli-sync-items] JWT decoded userId: ${userIdFromJwt}`);
       if (!userIdFromJwt) {
         console.log("[meli-sync-items] Invalid Authorization token - could not decode userId");
@@ -210,13 +221,21 @@ serve(async (req) => {
     // Decrypt access token
     console.log("[meli-sync-items] Decrypting access token...");
     
-    let accessToken: string;
-    try {
-      accessToken = await aesGcmDecryptFromString(aesKey, integration.access_token);
-      console.log("[meli-sync-items] Access token decrypted successfully");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return jsonResponse({ error: `Failed to decrypt access token: ${msg}` }, 500);
+    let accessToken: string = "";
+    const accessEnc = String(integration.access_token || "");
+    const isEncAccess = accessEnc.startsWith("enc:gcm:");
+    if (isEncAccess) {
+      if (!aesKey) return jsonResponse({ error: "Missing encryption key for access_token" }, 500);
+      try {
+        accessToken = await aesGcmDecryptFromString(aesKey, accessEnc);
+        console.log("[meli-sync-items] Access token decrypted successfully");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return jsonResponse({ error: `Failed to decrypt access token: ${msg}` }, 500);
+      }
+    } else {
+      accessToken = accessEnc;
+      console.log("[meli-sync-items] Using plain access token");
     }
 
     const sellerId = integration.meli_user_id;
@@ -248,8 +267,12 @@ serve(async (req) => {
         .eq("name", "Mercado Livre")
         .single();
 
-      if (appErr || !appRow) {
+      let clientId = appRow?.client_id || Deno.env.get("MERCADO_LIVRE_CLIENT_ID") || null;
+      let clientSecret = appRow?.client_secret || Deno.env.get("MERCADO_LIVRE_CLIENT_SECRET") || null;
+      if (appErr && !clientId && !clientSecret) {
         console.log("[meli-sync-items] App credentials not found:", appErr?.message);
+      }
+      if (!clientId || !clientSecret) {
         return jsonResponse({ error: "App credentials not found for token refresh" }, 404);
       }
       
@@ -259,22 +282,29 @@ serve(async (req) => {
       console.log("[meli-sync-items] Decrypting refresh token...");
       
       let refreshTokenPlain: string;
-      try {
-        refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token);
-        console.log("[meli-sync-items] Refresh token decrypted successfully");
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.log("[meli-sync-items] Failed to decrypt refresh token:", msg);
-        console.log("[meli-sync-items] Encrypted refresh token that failed:", integration.refresh_token);
-        return jsonResponse({ error: `Failed to decrypt refresh token: ${msg}` }, 500);
+      const refreshEnc = String(integration.refresh_token || "");
+      const isEncRefresh = refreshEnc.startsWith("enc:gcm:");
+      if (isEncRefresh) {
+        if (!aesKey) return jsonResponse({ error: "Missing encryption key for refresh_token" }, 500);
+        try {
+          refreshTokenPlain = await aesGcmDecryptFromString(aesKey, refreshEnc);
+          console.log("[meli-sync-items] Refresh token decrypted successfully");
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.log("[meli-sync-items] Failed to decrypt refresh token:", msg);
+          return jsonResponse({ error: `Failed to decrypt refresh token: ${msg}` }, 500);
+        }
+      } else {
+        refreshTokenPlain = refreshEnc;
+        console.log("[meli-sync-items] Using plain refresh token");
       }
 
       // Refresh the token
       console.log("[meli-sync-items] Attempting token refresh with Mercado Livre API...");
       const form = new URLSearchParams();
       form.append("grant_type", "refresh_token");
-      form.append("client_id", appRow.client_id);
-      form.append("client_secret", appRow.client_secret);
+      form.append("client_id", clientId);
+      form.append("client_secret", clientSecret);
       form.append("refresh_token", refreshTokenPlain);
 
       const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
@@ -390,9 +420,12 @@ serve(async (req) => {
 
       console.log(`[meli-sync-items] Fetching page ${page + 1}, offset: ${offset}`);
       console.log(`[meli-sync-items] Request URL: ${urlMl.toString()}`);
+      console.log(`[meli-sync-items] Fetched item IDs. URL: ${urlMl.toString()}`);
 
       const resp = await fetch(urlMl.toString(), { headers });
-      const json = await resp.json();
+      const text = await resp.text().catch(() => '');
+      let json: any = null;
+      try { json = text ? JSON.parse(text) : null; } catch {}
       
       console.log(`[meli-sync-items] Response status: ${resp.status}, ok: ${resp.ok}`);
       
@@ -488,7 +521,9 @@ serve(async (req) => {
                     const newHeaders: Record<string, string> = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
                     console.log("[meli-sync-items] Retrying request with new token...");
                     const retryResp = await fetch(urlMl.toString(), { headers: newHeaders });
-                    const retryJson = await retryResp.json();
+                    const retryText = await retryResp.text().catch(() => '');
+                    let retryJson: any = null;
+                    try { retryJson = retryText ? JSON.parse(retryText) : null; } catch {}
                     
                     console.log("[meli-sync-items] Retry response:", {
                       status: retryResp.status,
@@ -719,6 +754,7 @@ serve(async (req) => {
     console.log(`[meli-sync-items] Successfully synced ${upserts.length} items`);
     return jsonResponse({ ok: true, synced: upserts.length });
   } catch (e) {
+    console.error("[meli-sync-items] Unhandled error:", e);
     const msg = e instanceof Error ? e.message : "Unknown error";
     return jsonResponse({ error: msg }, 500);
   }
