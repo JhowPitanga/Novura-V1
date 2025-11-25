@@ -9,6 +9,7 @@ interface NavigationButtonsProps {
   productType: string;
   variationEtapa?: VariationStep;
   canProceedVariation?: () => boolean;
+  canProceedExternal?: () => boolean;
   // Adicionado: lógica externa para fluxo de empresa
   canProceedCompany?: () => boolean;
   loading?: boolean;
@@ -25,6 +26,7 @@ export function NavigationButtons({
   productType, 
   variationEtapa,
   canProceedVariation,
+  canProceedExternal,
   canProceedCompany,
   loading = false,
   onNext, 
@@ -50,6 +52,9 @@ export function NavigationButtons({
     // Para fluxo de empresa, permitir lógica externa de validação
     if (productType === "company" && typeof canProceedCompany === "function") {
       return canProceedCompany();
+    }
+    if (typeof canProceedExternal === "function") {
+      return canProceedExternal();
     }
     
     return true;
