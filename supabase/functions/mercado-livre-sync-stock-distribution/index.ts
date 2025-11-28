@@ -173,10 +173,9 @@ Deno.serve(async (req)=>{
         await admin.from('marketplace_integrations').update({
           shipping_preferences: pJson,
           preferences_fetched_at: nowIso,
-          flex_enabled: caps.flex_enabled,
-          envios_enabled: caps.envios_enabled,
-          correios_enabled: caps.correios_enabled,
-          full_enabled: caps.full_enabled,
+          self_service: caps.flex_enabled === true,
+          xd_drop_off: caps.envios_enabled === true,
+          drop_off: caps.correios_enabled === true,
         }).eq('id', integration.id);
       }
     } catch (_) {}

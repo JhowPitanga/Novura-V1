@@ -6,17 +6,21 @@ interface StepIndicatorProps {
   steps: ProductStep[];
   currentStep: number;
   clickable?: boolean;
+  maxVisitedStep?: number;
   onStepClick?: (stepId: number) => void;
 }
 
-export function StepIndicator({ steps, currentStep, clickable = false, onStepClick }: StepIndicatorProps) {
+export function StepIndicator({ steps, currentStep, clickable = false, maxVisitedStep, onStepClick }: StepIndicatorProps) {
   return (
     <div className="flex items-center justify-between mb-10">
       {steps.map((step, index) => (
         <div key={step.id} className="flex items-center">
           <div
-            className={`flex flex-col items-center ${clickable ? "cursor-pointer" : ""}`}
-            onClick={() => clickable && onStepClick ? onStepClick(step.id) : undefined}
+            className={`flex flex-col items-center ${clickable && ((maxVisitedStep ?? 0) >= step.id) ? "cursor-pointer" : "cursor-default"}`}
+            onClick={() => {
+              const canClick = clickable && ((maxVisitedStep ?? 0) >= step.id);
+              if (canClick && onStepClick) onStepClick(step.id);
+            }}
           >
             <div
               className={`w-12 h-12 rounded-full flex items-center justify-center border-2 ${
@@ -30,7 +34,8 @@ export function StepIndicator({ steps, currentStep, clickable = false, onStepCli
               ) : (
                 <span className="text-sm font-medium">{step.id}</span>
               )}
-            </div>
+            </div
+            >
             <div className="mt-3 text-center">
               <p className="text-sm font-medium text-gray-900">{step.title}</p>
               <p className="text-xs text-gray-500">{step.description}</p>

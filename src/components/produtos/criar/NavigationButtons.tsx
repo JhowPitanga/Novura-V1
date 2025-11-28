@@ -161,7 +161,7 @@ export function NavigationButtons({
           size="lg"
         >
           <Check className="w-5 h-5 mr-2" />
-          Fazer depois
+          {loading ? "Salvando..." : (saveLabel || "Fazer depois")}
         </Button>
       )}
     </div>
