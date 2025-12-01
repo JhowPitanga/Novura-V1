@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Plus, Search, Filter, ExternalLink, Edit, Pause, Play, TrendingUp, Eye, BarChart, ShoppingCart, Percent, Copy, MoreHorizontal, DollarSign, ChevronUp, ChevronDown, ChevronDown as ChevronDownIcon, Package, Zap } from "lucide-react";
+import { Plus, Search, Filter, ExternalLink, Edit, Pause, Play, TrendingUp, Eye, BarChart, ShoppingCart, Percent, Copy, MoreHorizontal, DollarSign, ChevronUp, ChevronDown, ChevronDown as ChevronDownIcon, Package, Zap, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
@@ -22,7 +22,7 @@ import { syncMercadoLivreItems } from "@/WebhooksAPI/marketplace/mercado-livre/i
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 
 // Menu de navegação será montado dinamicamente com base nos Marketplaces conectados
 
@@ -46,6 +46,7 @@ export default function Anuncios() {
     const { organizationId } = useAuth();
     const { toast } = useToast();
     const navigate = useNavigate();
+    const location = useLocation();
     // Estado para métricas adicionais por item (quality_level e performance_data)
     const [metricsByItemId, setMetricsByItemId] = useState<Record<string, { quality_level?: string | null; performance_data?: any }>>({});
     const [listingTypeByItemId, setListingTypeByItemId] = useState<Record<string, string | null>>({});
@@ -53,11 +54,12 @@ export default function Anuncios() {
     const [listingPricesByItemId, setListingPricesByItemId] = useState<Record<string, any>>({});
     const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
     const [expandedVariations, setExpandedVariations] = useState<Set<string>>(new Set());
+    const [drafts, setDrafts] = useState<any[]>([]);
+    const [deletePopoverOpenId, setDeletePopoverOpenId] = useState<string | null>(null);
     // Capacidades/flags de envio do seller (derivadas de shipping_preferences)
     const [shippingCaps, setShippingCaps] = useState<{ flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean } | null>(null);
     const [hasIntegration, setHasIntegration] = useState<boolean>(false);
-    const [createDialogOpen, setCreateDialogOpen] = useState<boolean>(false);
-    const [selectedMarketplaceForCreation, setSelectedMarketplaceForCreation] = useState<string>("");
+    
 
     useEffect(() => {
         const run = async () => {
@@ -72,6 +74,32 @@ export default function Anuncios() {
         };
         run();
     }, [organizationId]);
+
+    useEffect(() => {
+        const p = String(location.pathname || '');
+        const m = p.match(/^\/anuncios\/(ativos|inativos|rascunhos)/);
+        if (m && m[1]) setActiveStatus(m[1]);
+    }, [location.pathname]);
+
+    useEffect(() => {
+        const loadDrafts = async () => {
+            if (!organizationId) return;
+            if (activeStatus !== 'rascunhos') return;
+            try {
+                const { data, error } = await (supabase as any)
+                    .from('marketplace_drafts')
+                    .select('*')
+                    .eq('organizations_id', organizationId)
+                    .order('updated_at', { ascending: false })
+                    .limit(200);
+                if (!error) setDrafts(data || []);
+            } catch (e) {
+                console.error('Erro ao buscar rascunhos:', e);
+                setDrafts([]);
+            }
+        };
+        loadDrafts();
+    }, [organizationId, activeStatus]);
 
     // Helper para colorização do medidor por nível de qualidade
     const getQualityStrokeColor = (level?: string | null) => {
@@ -183,7 +211,7 @@ export default function Anuncios() {
             try {
                 const { data: integRows, error: integErr } = await (supabase as any)
                     .from('marketplace_integrations')
-                    .select('flex_enabled, envios_enabled, correios_enabled, full_enabled, preferences_fetched_at, marketplace_name')
+                    .select('drop_off, xd_drop_off, self_service, marketplace_name')
                     .eq('organizations_id', organizationId)
                     .eq('marketplace_name', 'Mercado Livre');
                 if (integErr) {
@@ -192,15 +220,12 @@ export default function Anuncios() {
                     const caps = { flex: false, envios: false, correios: false, full: false } as { flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean };
                     const rows = integRows || [];
                     rows.forEach((r: any) => {
-                        if (r?.flex_enabled === true) caps.flex = true;
-                        if (r?.envios_enabled === true) caps.envios = true;
-                        if (r?.correios_enabled === true) caps.correios = true;
-                        if (r?.full_enabled === true) caps.full = true;
+                        if (r?.self_service === true) caps.flex = true;
+                        if (r?.xd_drop_off === true) caps.envios = true;
+                        if (r?.drop_off === true) caps.correios = true;
                     });
-                    const hasFetched = rows.some((r: any) => !!r?.preferences_fetched_at);
                     const anyEnabled = !!(caps.flex || caps.envios || caps.correios || caps.full);
-                    // Só filtra quando já buscamos preferências e há ao menos um método habilitado
-                    setShippingCaps(hasFetched && anyEnabled ? caps : null);
+                    setShippingCaps(anyEnabled ? caps : null);
                 }
             } catch (capsCatchErr) {
                 console.error('Falha ao carregar shipping caps:', capsCatchErr);
@@ -787,7 +812,7 @@ export default function Anuncios() {
     const filteredAds = parsedAds
         .filter(ad => {
             if (activeStatus === "ativos") return ad.status?.toLowerCase() === "active";
-            if (activeStatus === "pausados") {
+            if (activeStatus === "inativos") {
                 const s = (ad.status || '').toLowerCase();
                 return s === "paused" || s === "inactive";
             }
@@ -944,12 +969,12 @@ export default function Anuncios() {
                 <div className="flex-1 flex flex-col">
                     <GlobalHeader />
 
-                    <CleanNavigation
-                        items={marketplaceNavItems}
-                        basePath="/anuncios"
-                        activePath={selectedMarketplacePath}
-                        onNavigate={(path) => setSelectedMarketplacePath(path)}
-                    />
+                            <CleanNavigation
+                                items={marketplaceNavItems}
+                                basePath="/anuncios"
+                                activePath={selectedMarketplacePath}
+                                onNavigate={(path) => { setSelectedMarketplacePath(path); navigate(path); }}
+                            />
 
                     <main className="flex-1 overflow-auto">
                         <div className="px-6 pt-3 pb-6">
@@ -1023,73 +1048,25 @@ export default function Anuncios() {
                                                     <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleSyncSelected(); }}>Sincronizar selecionados</DropdownMenuItem>
                                                 </DropdownMenuContent>
                                             </DropdownMenu>
-                                            <Button className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => { setSelectedMarketplaceForCreation(""); setCreateDialogOpen(true); }}>
+                                            <Button className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => navigate('/anuncios/criar/ml')}>
                                                 <Plus className="w-4 h-4 mr-2" />
-                                                CRIAR ANÚNCIO
+                                                Criar um anúncio
                                             </Button>
                                         </div>
                                     </div>
 
-                                    <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-                                        <DialogContent className="sm:max-w-lg">
-                                            <DialogHeader>
-                                                <DialogTitle>Selecionar Marketplace</DialogTitle>
-                                                <DialogDescription>Escolha onde publicar o anúncio. Listamos apenas aplicativos conectados.</DialogDescription>
-                                            </DialogHeader>
-                                            <div className="space-y-3">
-                                                {marketplaceNavItems.length === 0 ? (
-                                                    <div className="text-sm text-gray-600">Nenhum marketplace conectado. Conecte em Aplicativos para continuar.</div>
-                                                ) : (
-                                                    marketplaceNavItems.map((mk) => {
-                                                        const dn = mk.displayName || mk.title;
-                                                        const isSelected = selectedMarketplaceForCreation === dn;
-                                                        return (
-                                                            <button
-                                                                key={dn}
-                                                                className={`w-full flex items-center justify-between border rounded-lg px-4 py-3 transition ${isSelected ? 'border-novura-primary bg-purple-50' : 'border-gray-200 bg-white'}`}
-                                                                onClick={() => setSelectedMarketplaceForCreation(dn)}
-                                                            >
-                                                                <span className="text-sm font-medium text-gray-900">{dn}</span>
-                                                                {isSelected ? (
-                                                                    <Badge variant="outline" className="text-xs border-novura-primary text-novura-primary">Selecionado</Badge>
-                                                                ) : (
-                                                                    <Badge variant="outline" className="text-xs">Conectado</Badge>
-                                                                )}
-                                                            </button>
-                                                        );
-                                                    })
-                                                )}
-                                            </div>
-                                            <DialogFooter>
-                                                <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>Cancelar</Button>
-                                                <Button
-                                                    disabled={!selectedMarketplaceForCreation}
-                                                    onClick={() => {
-                                                        if (!selectedMarketplaceForCreation) return;
-                                                        if (selectedMarketplaceForCreation.toLowerCase() === 'mercado livre' || selectedMarketplaceForCreation.toLowerCase() === 'mercado_livre') {
-                                                            setCreateDialogOpen(false);
-                                                            navigate('/anuncios/criar/ml');
-                                                        } else {
-                                                            setCreateDialogOpen(false);
-                                                            toast({ title: 'Criação de anúncio', description: `${selectedMarketplaceForCreation} será suportado em breve.` });
-                                                        }
-                                                    }}
-                                                >
-                                                    Continuar
-                                                </Button>
-                                            </DialogFooter>
-                                        </DialogContent>
-                                    </Dialog>
+                                    
                                     <div className="mt-4">
                                         <CleanNavigation
                                             items={[
-                                                { title: 'Todos', path: '/todos' },
-                                                { title: 'Ativos', path: '/ativos' },
-                                                { title: 'Pausados', path: '/pausados' },
+                                                { title: 'Todos', path: '/anuncios/todos' },
+                                                { title: 'Ativos', path: '/anuncios/ativos' },
+                                                { title: 'Inativos', path: '/anuncios/inativos' },
+                                                { title: 'Rascunhos', path: '/anuncios/rascunhos' },
                                             ]}
                                             basePath=""
-                                            activePath={`/${activeStatus}`}
-                                            onNavigate={(path) => setActiveStatus(path.replace('/', ''))}
+                                            activePath={`/anuncios/${activeStatus}`}
+                                            onNavigate={(path) => { const seg = path.split('/').pop() || 'todos'; setActiveStatus(seg); navigate(path); }}
                                         />
                                     </div>
 
@@ -1106,7 +1083,55 @@ export default function Anuncios() {
                                     <Card className="mt-6 border border-gray-200 shadow-sm">
                                         <CardContent className="p-0">
                                             <div className="space-y-3">
-                                        {sortedAds.length > 0 ? (
+                                        {activeStatus === 'rascunhos' ? (
+                                            drafts.length > 0 ? (
+                                                drafts.map((d: any) => (
+                                                    <div key={String(d.id)} className="relative bg-white border border-gray-200 rounded-lg p-4">
+                                                        <div className="flex items-center justify-between">
+                                                            <div>
+                                                                <div className="text-sm text-gray-900 font-medium">{String(d.title || 'Sem título')}</div>
+                                                                <div className="text-xs text-gray-600">{String(d.site_id || '')} · {String(d.marketplace_name || '')}</div>
+                                                                <div className="text-xs text-gray-600">Atualizado: {new Date(String(d.updated_at)).toLocaleString()}</div>
+                                                            </div>
+                                                            <div className="flex items-center gap-2">
+                                                                <Button size="sm" className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => navigate(`/anuncios/criar/ml?draft_id=${String(d.id)}`)}>Continuar cadastro</Button>
+                                                                <Popover open={deletePopoverOpenId === String(d.id)} onOpenChange={(open) => setDeletePopoverOpenId(open ? String(d.id) : null)}>
+                                                                    <PopoverTrigger asChild>
+                                                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-red-600 hover:text-red-700" aria-label="Excluir rascunho">
+                                                                            <Trash2 className="h-4 w-4" />
+                                                                        </Button>
+                                                                    </PopoverTrigger>
+                                                                    <PopoverContent align="end" sideOffset={8} className="w-64 bg-white border p-3 rounded-xl">
+                                                                        <div className="text-sm text-gray-800 font-medium mb-2">Excluir rascunho?</div>
+                                                                        <div className="text-xs text-gray-600 mb-3">Esta ação remove definitivamente o rascunho do banco de dados.</div>
+                                                                        <div className="flex justify-end gap-2">
+                                                                            <Button variant="outline" size="sm" onClick={() => setDeletePopoverOpenId(null)}>Cancelar</Button>
+                                                                            <Button size="sm" className="bg-red-600 hover:bg-red-700" onClick={async () => {
+                                                                                try {
+                                                                                    await (supabase as any)
+                                                                                        .from('marketplace_drafts')
+                                                                                        .delete()
+                                                                                        .eq('id', d.id)
+                                                                                        .eq('organizations_id', organizationId);
+                                                                                    setDrafts((prev) => prev.filter((x: any) => String(x.id) !== String(d.id)));
+                                                                                    setDeletePopoverOpenId(null);
+                                                                                    toast({ title: 'Rascunho excluído', description: 'O rascunho foi removido com sucesso.' });
+                                                                                } catch (e: any) {
+                                                                                    toast({ title: 'Falha ao excluir rascunho', description: e?.message || String(e), variant: 'destructive' });
+                                                                                }
+                                                                            }}>Excluir</Button>
+                                                                        </div>
+                                                                    </PopoverContent>
+                                                                </Popover>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))
+                                            ) : (
+                                                <div className="p-6 text-sm text-gray-600">Nenhum rascunho encontrado.</div>
+                                            )
+                                        ) : (
+                                            sortedAds.length > 0 ? (
                                             sortedAds.map((ad) => {
                                                 const itemRow = items.find(item => String(item?.marketplace_item_id || item?.id) === String(ad.id));
                                                 const variations = formatVariationData(itemRow?.variations || [], itemRow);
@@ -1504,7 +1529,7 @@ export default function Anuncios() {
                                             <div className="p-10 text-center text-gray-500">
                                                 Nenhum anúncio encontrado.
                                             </div>
-                                        )}
+                                        ))}
                                     </div>
                                 </CardContent>
                             </Card>

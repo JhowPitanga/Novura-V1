@@ -14,7 +14,8 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "module": "esnext",
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": false,
+    "noEmit": true
   },
   "include": [
     "**/*.ts",

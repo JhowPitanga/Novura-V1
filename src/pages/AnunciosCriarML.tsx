@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -14,29 +15,131 @@ import { CleanNavigation } from "@/components/CleanNavigation";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ImageUpload } from "@/components/produtos/criar/ImageUpload";
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
+import { Search, Trash2, Plus, ChevronDown, X } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Badge } from "@/components/ui/badge";
+ 
+
+const StringSuggestInput = ({
+  id,
+  name,
+  current,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  name: string;
+  current: any;
+  suggestions: { id: string; name: string }[];
+  disabled?: boolean;
+  onChange: (next: { id: string; name: string; value_id?: string; value_name?: string | null }) => void;
+}) => {
+  const [val, setVal] = useState<string>(String(current?.value_name || ""));
+  return (
+    <Input
+      className="mt-2"
+      placeholder={name}
+      disabled={disabled}
+      value={val}
+      onChange={(e) => {
+        const v = e.target.value;
+        setVal(v);
+        onChange({ id, name, value_id: undefined, value_name: v });
+      }}
+    />
+  );
+};
+
+const MultiValuedBadgeInput = ({
+  id,
+  name,
+  current,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  name: string;
+  current: any;
+  suggestions: { id: string; name: string }[];
+  disabled?: boolean;
+  onChange: (next: { id: string; name: string; value_id?: string; value_name?: string | null }) => void;
+}) => {
+  const initial = String(current?.value_name || "").split(",").map((t) => t.trim()).filter((t) => t.length > 0);
+  const [tokens, setTokens] = useState<{ id?: string; name: string }[]>(initial.map((n) => ({ name: n })));
+  const [input, setInput] = useState("");
+  const commitTokens = (list: { id?: string; name: string }[]) => {
+    const joined = list.map((t) => t.name).join(", ");
+    onChange({ id, name, value_id: undefined, value_name: joined || null });
+  };
+  const addToken = (t: { id?: string; name: string }) => {
+    if (disabled) return;
+    const next = [ ...tokens, t ];
+    setTokens(next);
+    commitTokens(next);
+    setInput("");
+  };
+  const removeAt = (idx: number) => {
+    if (disabled) return;
+    const next = tokens.filter((_, i) => i !== idx);
+    setTokens(next);
+    commitTokens(next);
+  };
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap gap-2 mb-2">
+        {tokens.map((t, idx) => (
+          <Badge key={`${t.name}-${idx}`} variant="outline" className="flex items-center gap-1">
+            <span>{t.name}</span>
+            <button type="button" onClick={() => removeAt(idx)} disabled={disabled} className="ml-1 inline-flex items-center justify-center">
+              <X className="w-3 h-3" />
+            </button>
+          </Badge>
+        ))}
+      </div>
+      <Input
+        placeholder={name}
+        disabled={disabled}
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === ",") {
+            const v = String(input || "").replace(/,/g, "").trim();
+            if (v) addToken({ name: v });
+            e.preventDefault();
+          }
+        }}
+      />
+    </div>
+  );
+};
 
 export default function AnunciosCriarML() {
   const { organizationId } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [currentStep, setCurrentStep] = useState(1);
   const maxSteps = 8;
   const [connectedApps, setConnectedApps] = useState<string[]>([]);
   const [marketplaceSelection, setMarketplaceSelection] = useState<string>("");
+  const [fetchGate, setFetchGate] = useState<{ s1: boolean; s3: boolean; s6: boolean; s7: boolean }>({ s1: false, s3: false, s6: false, s7: false });
+  const [lastCategoryLoaded, setLastCategoryLoaded] = useState<string>("");
   const [siteId, setSiteId] = useState("MLB");
   const [title, setTitle] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [currencyId, setCurrencyId] = useState("BRL");
-  const [condition, setCondition] = useState("new");
   const [attributes, setAttributes] = useState<any[]>([]);
   const [pictures, setPictures] = useState<string[]>([]);
   const [variations, setVariations] = useState<any[]>([]);
   const [listingTypeId, setListingTypeId] = useState<string>("");
   const [price, setPrice] = useState<string>("");
+  const [debouncedPrice, setDebouncedPrice] = useState<string>("");
   const [shipping, setShipping] = useState<any>({});
   const [saleTerms, setSaleTerms] = useState<any[]>([]);
   const [saleTermsMeta, setSaleTermsMeta] = useState<any[]>([]);
@@ -50,6 +153,11 @@ export default function AnunciosCriarML() {
   const [listingPriceOptions, setListingPriceOptions] = useState<any[]>([]);
   const [loadingListing, setLoadingListing] = useState(false);
   const [shippingModesAvailable, setShippingModesAvailable] = useState<string[]>([]);
+  const [shippingLogisticsByMode, setShippingLogisticsByMode] = useState<Record<string, string[]>>({});
+  const [shippingLogisticsDefaults, setShippingLogisticsDefaults] = useState<Record<string, string>>({});
+  const [availableLogisticTypes, setAvailableLogisticTypes] = useState<string[]>([]);
+  const [selectedLogisticType, setSelectedLogisticType] = useState<string>("");
+  const [freeShippingMandatory, setFreeShippingMandatory] = useState<boolean>(false);
   const [categorySuggestions, setCategorySuggestions] = useState<any[]>([]);
   const [domainSuggestions, setDomainSuggestions] = useState<any[]>([]);
   const [availableQuantity, setAvailableQuantity] = useState<number>(0);
@@ -62,7 +170,91 @@ export default function AnunciosCriarML() {
   const [pathsByCategoryId, setPathsByCategoryId] = useState<Record<string, string>>({});
   const [pendingCategoryId, setPendingCategoryId] = useState<string>("");
   const [pendingCategoryName, setPendingCategoryName] = useState<string>("");
+  const [confirmExit, setConfirmExit] = useState(false);
+  const [maxVisitedStep, setMaxVisitedStep] = useState<number>(1);
+  const [currentDraftId, setCurrentDraftId] = useState<string | null>(searchParams.get('draft_id'));
+  const sessionCacheRef = useRef<{ attrsMetaByCategory: Record<string, any[]>; techInputByCategory: Record<string, any>; saleTermsMetaByCategory: Record<string, any[]>; listingTypesByCategory: Record<string, any[]>; listingPriceOptionsByKey: Record<string, any[]> }>({ attrsMetaByCategory: {}, techInputByCategory: {}, saleTermsMetaByCategory: {}, listingTypesByCategory: {}, listingPriceOptionsByKey: {} });
+  const [apiCache, setApiCache] = useState<any>({});
+  const [hasSearchedCategory, setHasSearchedCategory] = useState(false);
+  const [showAllTechAttrs, setShowAllTechAttrs] = useState(false);
   const [attrTab, setAttrTab] = useState<"required" | "tech">("required");
+  const [primaryVariationIndex, setPrimaryVariationIndex] = useState<number | null>(null);
+  const [preferFlex, setPreferFlex] = useState<boolean>(false);
+  const attrSig = useMemo(() => {
+    const base = (attributes || []).map((a: any) => ({ id: String(a?.id || ""), vid: (a as any)?.value_id ?? null, vn: (a as any)?.value_name ?? null }));
+    try { return JSON.stringify(base); } catch { return String(base.length); }
+  }, [attributes]);
+  const [debouncedAttrSig, setDebouncedAttrSig] = useState<string>(attrSig);
+
+  useEffect(() => {
+    const draftId = searchParams.get('draft_id');
+    if (!draftId || !organizationId) return;
+    const run = async () => {
+      try {
+        const { data, error } = await (supabase as any)
+          .from('marketplace_drafts')
+          .select('*')
+          .eq('id', draftId)
+          .eq('organizations_id', organizationId)
+          .limit(1)
+          .single();
+        if (error) return;
+        const d: any = data || {};
+        if (d.site_id) setSiteId(String(d.site_id));
+        if (d.title) setTitle(String(d.title));
+        if (d.category_id) { setCategoryId(String(d.category_id)); setLastCategoryLoaded(String(d.category_id)); }
+        if (Array.isArray(d.attributes)) setAttributes(d.attributes);
+        if (Array.isArray(d.variations)) setVariations(d.variations);
+        if (Array.isArray(d.pictures)) setPictures(d.pictures as any);
+        if (d.price != null) setPrice(String(d.price));
+        if (d.listing_type_id) setListingTypeId(String(d.listing_type_id));
+        if (d.shipping) setShipping(d.shipping);
+        if (Array.isArray(d.sale_terms)) setSaleTerms(d.sale_terms);
+        if (typeof d.description === 'string') setDescription(d.description);
+        if (typeof d.available_quantity === 'number') setAvailableQuantity(d.available_quantity);
+        if (d.api_cache && typeof d.api_cache === 'object') {
+          setApiCache(d.api_cache);
+          const cat = String(d.category_id || '');
+          if (Array.isArray(d.api_cache.attrsMeta)) {
+            setAttrsMeta(d.api_cache.attrsMeta);
+            if (cat) sessionCacheRef.current.attrsMetaByCategory[cat] = d.api_cache.attrsMeta;
+          }
+          if (d.api_cache.techSpecsInput) {
+            setTechSpecsInput(d.api_cache.techSpecsInput);
+            if (cat) sessionCacheRef.current.techInputByCategory[cat] = d.api_cache.techSpecsInput;
+          }
+          if (Array.isArray(d.api_cache.saleTermsMeta)) {
+            setSaleTermsMeta(d.api_cache.saleTermsMeta);
+            if (cat) sessionCacheRef.current.saleTermsMetaByCategory[cat] = d.api_cache.saleTermsMeta;
+          }
+          if (Array.isArray(d.api_cache.listingTypes)) {
+            setListingTypes(d.api_cache.listingTypes);
+            if (cat) sessionCacheRef.current.listingTypesByCategory[cat] = d.api_cache.listingTypes;
+          }
+          if (Array.isArray(d.api_cache.listingPriceOptions)) {
+            const key = `${String(d.site_id || siteId)}:${String(d.category_id || categoryId)}:${Number(d.price || 0)}`;
+            setListingPriceOptions(d.api_cache.listingPriceOptions);
+            sessionCacheRef.current.listingPriceOptionsByKey[key] = d.api_cache.listingPriceOptions;
+          }
+        }
+        if (typeof d.last_step === 'number' && d.last_step >= 1 && d.last_step <= maxSteps) {
+          setCurrentStep(d.last_step);
+          setMaxVisitedStep(d.last_step);
+        }
+      } catch {}
+    };
+    run();
+  }, [searchParams, organizationId]);
+
+  useEffect(() => {
+    const cat = String(categoryId || '');
+    if (!cat) return;
+    if (lastCategoryLoaded && lastCategoryLoaded !== cat) {
+      sessionCacheRef.current = { attrsMetaByCategory: {}, techInputByCategory: {}, saleTermsMetaByCategory: {}, listingTypesByCategory: {}, listingPriceOptionsByKey: {} };
+      setLastCategoryLoaded('');
+    }
+  }, [categoryId]);
+  
   const variationAttrs = useMemo(() => {
     const isPackagingId = (id: string) => /^PACKAGE_|^PACKAGING_|^SELLING_FORMAT_DIMENSIONS_/i.test(id);
     const isPackagingName = (name: string) => /\bembalagem\b|\bpackage\b|\bpackaging\b|\bpeso da embalagem\b|\blargura da embalagem\b|\baltura da embalagem\b|\bcomprimento da embalagem\b/i.test(name);
@@ -71,16 +263,38 @@ export default function AnunciosCriarML() {
       if (/^(VAT|IVA|IMPORT_TAX|HAZMAT|HAZMAT_TRANSPORTABILITY|CATALOG_TITLE|SYI_PYMES_ID|IS_NEW_OFFER|PRODUCT_SOURCE|COMPATIBILITIES|HAS_COMPATIBILITIES|IS_SUITABLE_FOR_SHIPPING|DESCRIPTIVE_TAGS|IS_FLAMMABLE)$/i.test(up)) return true;
       return /\btags?\s*vertical\b|\bimposto\s+de\s+importa[cç][aã]o\b|\borigem\s+do\s+dado\s+do\s+pacote\s+de\s+env[ií]o\b|\bimposto\s+sobre\s+o\s+valor\s+acrescentado\b|\bvat\b|\biva\b|\bqu[ií]mic|\bchemical\b|\balimentos?\b|\bbebidas?\b|\bmedicamentos?\b|\bbatter(y|ia)s?\b|\binforma[cç][aã]o\s+adicional\s+requerida\b|\badequad[oa]\s+para\s+o\s+env[ií]o\b|\badecuad[oa]\s+para\s+el?\s+env[ií]o\b|\bapto\s+para\s+el?\s+env[ií]o\b|\bsuitable\s+for\s+shipping\b|\bhazmat\b|\btransportabilit(y|ade)\b|\bsyi\s+pymes\s+id\b|\bt[íi]tulo\s+de\s+cat[aá]logo\b|\bcatalog\s+title\b|\bnova\s+oferta\b|\bnew\s+offer\b|\bcompatibilidades?\b|\bcompatibilit(y|ies)\b|\bfonte\s+do\s+produto\b|\bproduct\s+source\b|\bimpacto\s+positivo\b|\bpositive\s+impact\b|\bcon\s+impacto\s+positivo\b/i.test(name);
     };
+    const isHiddenExtra = (name: string) => /\bcor\s+filtr[aá]vel\b|\bfilter\s*color\b|\bcolor\s*filterable\b|\bmodelo\s+detalhado\b|\bdetailed\s+model\b|\bmotivo\b.*\bgtin\b|\bgtin\b.*\bvazio\b|\bmotivo\b.*\bc[oó]digo\b.*\bbarras\b/i.test(name);
     const filtered = (attrsMeta || []).filter((a: any) => {
       const tags = (a?.tags || {}) as any;
-      const allowVar = Array.isArray(tags) ? tags.includes("allow_variations") || tags.includes("variation_attribute") : !!(tags?.allow_variations) || !!(tags?.variation_attribute);
+      const isAllowVar = Array.isArray(tags) ? tags.includes("allow_variations") : !!(tags?.allow_variations);
       const id = String(a?.id || "").toUpperCase();
       const name = String(a?.name || "");
-      if (id === "MAIN_COLOR" || id === "GTIN" || id === "SELLER_SKU") return false;
-      return !!allowVar && !isPackagingId(id) && !isPackagingName(name) && id !== "MPN" && !isHiddenAdmin(id, name);
+      if (id === "GTIN" || id === "SELLER_SKU") return false;
+      return !!isAllowVar && !isPackagingId(id) && !isPackagingName(name) && id !== "MPN" && !isHiddenAdmin(id, name) && !isHiddenExtra(name);
     });
     return filtered;
   }, [attrsMeta]);
+
+  const allowVariationAttrs = useMemo(() => {
+    const isPackagingId = (id: string) => /^PACKAGE_|^PACKAGING_|^SELLING_FORMAT_DIMENSIONS_/i.test(id);
+    const isPackagingName = (name: string) => /\bembalagem\b|\bpackage\b|\bpackaging\b|\bpeso da embalagem\b|\blargura da embalagem\b|\baltura da embalagem\b|\bcomprimento da embalagem\b/i.test(name);
+    const isHiddenAdmin = (id: string, name: string) => {
+      const up = id.toUpperCase();
+      if (/^(VAT|IVA|IMPORT_TAX|HAZMAT|HAZMAT_TRANSPORTABILITY|CATALOG_TITLE|SYI_PYMES_ID|IS_NEW_OFFER|PRODUCT_SOURCE|COMPATIBILITIES|HAS_COMPATIBILITIES|IS_SUITABLE_FOR_SHIPPING|DESCRIPTIVE_TAGS|IS_FLAMMABLE)$/i.test(up)) return true;
+      return /\btags?\s*vertical\b|\bimposto\s+de\s+importa[cç][aã]o\b|\borigem\s+do\s+dado\s+do\s+pacote\s+de\s+env[ií]o\b|\bimposto\s+sobre\s+o\s+valor\s+acrescentado\b|\bvat\b|\biva\b|\bqu[ií]mic|\bchemical\b|\balimentos?\b|\bbebidas?\b|\bmedicamentos?\b|\bbatter(y|ia)s?\b|\binforma[cç][aã]o\s+adicional\s+requerida\b|\badequad[oa]\s+para\s+o\s+env[ií]o\b|\badecuad[oa]\s+para\s+el?\s+env[ií]o\b|\bapto\s+para\s+el?\s+env[ií]o\b|\bsuitable\s+for\s+shipping\b|\bhazmat\b|\btransportabilit(y|ade)\b|\bsyi\s+pymes\s+id\b|\bt[íi]tulo\s+de\s+cat[aá]logo\b|\bcatalog\s+title\b|\bnova\s+oferta\b|\bnew\s+offer\b|\bcompatibilidades?\b|\bcompatibilit(y|ies)\b|\bfonte\s+do\s+produto\b|\bproduct\s+source\b|\bimpacto\s+positivo\b|\bpositive\s+impact\b|\bcon\s+impacto\s+positivo\b/i.test(name);
+    };
+    const isHiddenExtra = (name: string) => /\bcor\s+filtr[aá]vel\b|\bfilter\s*color\b|\bcolor\s*filterable\b|\bmodelo\s+detalhado\b|\bdetailed\s+model\b|\bmotivo\b.*\bgtin\b|\bgtin\b.*\bvazio\b|\bmotivo\b.*\bc[oó]digo\b.*\bbarras\b/i.test(name);
+    const filtered = (attrsMeta || []).filter((a: any) => {
+      const tags = (a?.tags || {}) as any;
+      const isVarAttr = Array.isArray(tags) ? tags.includes("variation_attribute") : !!(tags?.variation_attribute);
+      const id = String(a?.id || "").toUpperCase();
+      const name = String(a?.name || "");
+      if (!isVarAttr) return false;
+      if (variationAttrs.find((v: any) => String(v?.id || "").toUpperCase() === id)) return false;
+      return !isPackagingId(id) && !isPackagingName(name) && id !== "MPN" && !isHiddenAdmin(id, name) && !isHiddenExtra(name);
+    });
+    return filtered;
+  }, [attrsMeta, variationAttrs]);
   const variationRequiredIds = useMemo(() => {
     const list = (attrsMeta || []).filter((a: any) => {
       const tags = (a?.tags || {}) as any;
@@ -106,13 +320,39 @@ export default function AnunciosCriarML() {
     const isHiddenAdmin = (id: string, name?: string) => {
       const up = String(id || "").toUpperCase();
       if (/^(VAT|IVA|IMPORT_TAX|HAZMAT|HAZMAT_TRANSPORTABILITY|CATALOG_TITLE|SYI_PYMES_ID|IS_NEW_OFFER|PRODUCT_SOURCE|COMPATIBILITIES|HAS_COMPATIBILITIES|IS_SUITABLE_FOR_SHIPPING|DESCRIPTIVE_TAGS|IS_FLAMMABLE)$/i.test(up)) return true;
-      return /\btags?\s*vertical\b|\bimposto\s+de\s+importa[cç][aã]o\b|\borigem\s+do\s+dado\s+do\s+pacote\s+de\s+env[ií]o\b|\bimposto\s+sobre\s+o\s+valor\s+acrescentado\b|\bvat\b|\biva\b|\bqu[ií]mic|\bchemical\b|\balimentos?\b|\bbebidas?\b|\bmedicamentos?\b|\bbatter(y|ia)s?\b|\binforma[cç][aã]o\s+adicional\s+requerida\b|\badequad[oa]\s+para\s+o\s+env[ií]o\b|\badecuad[oa]\s+para\s+el?\s+env[ií]o\b|\bapto\s+para\s+el?\s+env[ií]o\b|\bsuitable\s+for\s+shipping\b|\bhazmat\b|\btransportabilit(y|ade)\b|\bsyi\s+pymes\s+id\b|\bt[íi]tulo\s+de\s+cat[aá]logo\b|\bcatalog\s+title\b|\bnova\s+oferta\b|\bnew\s+offer\b|\bcompatibilidades?\b|\bcompatibilit(y|ies)\b|\bfonte\s+do\s+produto\b|\bproduct\s+source\b|\bimpacto\s+positivo\b|\bpositive\s+impact\b|\bcon\s+impacto\s+positivo\b/i.test(String(name || ""));
+      return /\btags?\s*vertical\b|\bimposto\s+de\s+importa[cç][aã]o\b|\borigem\s+do\s+dado\s+do\s+pacote\s+de\s+env[ií]o\b|\bimposto\s+sobre\s+o\s+valor\s+acrescentado\b|\bvat\b|\biva\b|\bqu[ií]mic|\bchemical\b|\balimentos?\b|\bbebidas?\b|\bmedicamentos?\b|\bbatter(y|ia)s?\b|\binforma[cç][aã]o\s+adicional\s+requerida\b|\badequad[oa]\s+para\s+o\s+env[ií]o\b|\badecuad[oa]\s+para\s+el?\s+env[ií]o\b|\bapto\s+para\s+el?\s+env[ií]o\b|\bsuitable\s+for\s+shipping\b|\bhazmat\b|\btransportabilit(y|ade)\b|\bsyi\s+pymes\s+id\b|\bt[íi]tulo\s+de\s+cat[aá]logo\b|\bcatalog\s+title\b|\bnova\s+oferta\b|\bnew\s+offer\b|\bcompatibilidades?\b|\bcompatibilit(y|ies)\b|\bfonte\s+do\s+produto\b|\bproduct\s+source\b|\bimpacto\s+positivo\b|\bpositive\s+impact\b|\bcon\s+impacto\s+positivo\b|\bcaracter[íi]sticas?\s+das?\s+baterias?\b|\bcaracter[íi]sticas?\s+do\s+produto\b/i.test(String(name || ""));
     };
+    const isNotModifiable = (tags: any) => {
+      if (!tags) return false;
+      const arr = Array.isArray(tags) ? tags : Object.keys(tags).filter((k) => !!(tags as any)[k]);
+      const low = new Set<string>(arr.map((t: any) => String(t).toLowerCase()));
+      if (low.has("read_only") || low.has("readonly")) return true;
+      if (low.has("fixed")) return true;
+      if (low.has("inferred") || low.has("vip_hidden") || low.has("hidden")) return true;
+      return false;
+    };
+    const allowedTechIds = (() => {
+      const s = new Set<string>();
+      try {
+        const a1 = Array.isArray((techSpecsInput as any)?.attributes) ? (techSpecsInput as any).attributes : [];
+        a1.forEach((x: any) => { const id = String((x as any)?.id || x || ""); if (id) s.add(id); });
+        const groups = Array.isArray((techSpecsInput as any)?.groups) ? (techSpecsInput as any).groups : [];
+        groups.forEach((g: any) => {
+          const fields = Array.isArray(g?.fields) ? g.fields : [];
+          fields.forEach((f: any) => { const id = String((f as any)?.id || f || ""); if (id) s.add(id); });
+        });
+      } catch {}
+      return s;
+    })();
+    const isHiddenExtra = (name?: string) => /\bcor\s+filtr[aá]vel\b|\bfilter\s*color\b|\bcolor\s*filterable\b|\bmodelo\s+detalhado\b|\bdetailed\s+model\b|\bmotivo\b.*\bgtin\b|\bgtin\b.*\bvazio\b|\bmotivo\b.*\bc[oó]digo\b.*\bbarras\b|\bvisibilidade\s+limitada\b|\bplataformas?\s+exclu[ií]das\b/i.test(String(name || ""));
     const base = (attrsMeta || []).filter((a: any) => {
       const idUp = String(a?.id || "").toUpperCase();
       const nameStr = String(a?.name || "");
       if (idUp === "GTIN" || idUp === "SELLER_SKU") return false;
-      return !isPackaging(String(a?.id || ""), nameStr) && !isHiddenAdmin(String(a?.id || ""), nameStr);
+      const tags = (a?.tags || {}) as any;
+      const notMod = isNotModifiable(tags);
+      const allowedByInput = allowedTechIds.size > 0 ? allowedTechIds.has(String(a?.id || "")) : true;
+      return !isPackaging(String(a?.id || ""), nameStr) && !isHiddenAdmin(String(a?.id || ""), nameStr) && !isHiddenExtra(nameStr) && !notMod && allowedByInput;
     });
     const reqSet = new Set<string>();
     base.forEach((a: any) => {
@@ -122,11 +362,24 @@ export default function AnunciosCriarML() {
       if (isReq && id !== "MPN") reqSet.add(String(a?.id || ""));
     });
     ["BRAND", "MODEL"].forEach((id) => reqSet.add(id));
+    const baseIds = new Set<string>(base.map((a: any) => String(a?.id || "")));
+    const hasItemCondition = (attrsMeta || []).some((a: any) => String(a?.id || "").toUpperCase() === "ITEM_CONDITION");
+    if (baseIds.has("ITEM_CONDITION") || hasItemCondition) reqSet.add("ITEM_CONDITION");
     (conditionalRequiredIds || []).forEach((id) => reqSet.add(String(id)));
-    const required = base.filter((a: any) => reqSet.has(String(a?.id || "")) && !variationAttrs.find((v: any) => String(v?.id || "") === String(a?.id || "")));
-    const tech = base.filter((a: any) => !reqSet.has(String(a?.id || "")) && !variationAttrs.find((v: any) => String(v?.id || "") === String(a?.id || "")));
+    const required = base.filter((a: any) => {
+      const id = String(a?.id || "");
+      const isVar = !!variationAttrs.find((v: any) => String(v?.id || "") === id);
+      const isAllowVar = !!allowVariationAttrs.find((v: any) => String(v?.id || "") === id);
+      return reqSet.has(id) && !isVar && !isAllowVar;
+    });
+    const tech = base.filter((a: any) => {
+      const id = String(a?.id || "");
+      const isVar = !!variationAttrs.find((v: any) => String(v?.id || "") === id);
+      const isAllowVar = !!allowVariationAttrs.find((v: any) => String(v?.id || "") === id);
+      return !reqSet.has(id) && !isVar && !isAllowVar;
+    });
     return { required, tech } as { required: any[]; tech: any[] };
-  }, [attrsMeta, variationAttrs, conditionalRequiredIds]);
+  }, [attrsMeta, variationAttrs, allowVariationAttrs, conditionalRequiredIds, techSpecsInput]);
   const steps = useMemo(() => ([
     { id: 1, title: "Marketplace", description: "Selecione onde publicar" },
     { id: 2, title: "Título e Categoria", description: "Informe título e escolha a categoria" },
@@ -162,24 +415,53 @@ export default function AnunciosCriarML() {
   };
 
   useEffect(() => {
+    if (currentStep < 7) return;
+    if (String((shipping as any)?.mode || '').toLowerCase() !== 'me2') return;
+    try {
+      const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || '')) || {};
+      let mandatory = false;
+      const scan = (obj: any) => {
+        if (!obj || typeof obj !== 'object') return;
+        for (const [k, v] of Object.entries(obj)) {
+          const key = String(k).toLowerCase();
+          if (key.includes('free') && key.includes('ship')) {
+            if (typeof v === 'boolean' && v === true) mandatory = true;
+            if (typeof v === 'string') {
+              const s = v.toLowerCase();
+              if (s.includes('mandatory') || s.includes('obrig') || s === 'true' || s === 'enabled' || s === 'active') mandatory = true;
+            }
+          }
+          if (v && typeof v === 'object') scan(v as any);
+        }
+      };
+      scan(opt);
+      if (mandatory && !(shipping as any)?.free_shipping) setShipping({ ...(shipping || {}), free_shipping: true });
+    } catch {}
+  }, [listingPriceOptions, listingTypeId, shipping, currentStep]);
+  useEffect(() => {
     const loadApps = async () => {
       if (!organizationId) return;
+      if (currentStep !== 1) return;
       const { data, error } = await (supabase as any)
         .from("marketplace_integrations")
         .select("marketplace_name")
         .eq("organizations_id", organizationId);
       if (error) return;
-      const names = (data || []).map((r: any) => String(r?.marketplace_name || ""));
-      const clean = Array.from(new Set(names.map((n) => n === "mercado_livre" ? "Mercado Livre" : n).filter(Boolean)));
+      const names: string[] = (data || []).map((r: any) => String(r?.marketplace_name || ""));
+      const mapped: string[] = names.map((n) => (n === "mercado_livre" ? "Mercado Livre" : n));
+      const clean: string[] = Array.from(new Set<string>(mapped)).filter((n): n is string => !!n);
       setConnectedApps(clean);
       if (!marketplaceSelection && clean.includes("Mercado Livre")) setMarketplaceSelection("Mercado Livre");
     };
     loadApps();
-  }, [organizationId]);
+  }, [organizationId, currentStep]);
 
   useEffect(() => {
     const fetchAttrs = async () => {
       if (!organizationId || !categoryId) return;
+      if (currentStep !== 3) return;
+      if (!fetchGate.s3) return;
+      if (Array.isArray(attrsMeta) && attrsMeta.length > 0 && lastCategoryLoaded === String(categoryId || "")) return;
       setLoadingAttrs(true);
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-categories-attributes", {
@@ -191,11 +473,14 @@ export default function AnunciosCriarML() {
       }
     };
     fetchAttrs();
-  }, [organizationId, categoryId]);
+  }, [organizationId, categoryId, currentStep, fetchGate.s3, lastCategoryLoaded]);
 
   useEffect(() => {
     const fetchTechInput = async () => {
       if (!organizationId || !categoryId) return;
+      if (currentStep !== 5) return;
+      if (!fetchGate.s3) return;
+      if (techSpecsInput && lastCategoryLoaded === String(categoryId || "")) return;
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-technical-specs-input", {
           body: { organizationId, categoryId }
@@ -204,11 +489,13 @@ export default function AnunciosCriarML() {
       } catch {}
     };
     fetchTechInput();
-  }, [organizationId, categoryId]);
+  }, [organizationId, categoryId, currentStep, fetchGate.s3, lastCategoryLoaded]);
 
   useEffect(() => {
     const fetchSaleTermsMeta = async () => {
       if (!organizationId || !categoryId) return;
+      if (currentStep !== 6) return;
+      if (!fetchGate.s6) return;
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-categories-sale-terms", {
           body: { organizationId, categoryId }
@@ -217,11 +504,13 @@ export default function AnunciosCriarML() {
       } catch {}
     };
     fetchSaleTermsMeta();
-  }, [organizationId, categoryId]);
+  }, [organizationId, categoryId, currentStep, fetchGate.s6]);
 
   useEffect(() => {
     const evalConditional = async () => {
       if (!organizationId || !categoryId) return;
+      if (currentStep !== 3) return;
+      if (!fetchGate.s3) return;
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-attributes-conditional", {
           body: { organizationId, categoryId, attributes }
@@ -232,11 +521,13 @@ export default function AnunciosCriarML() {
       }
     };
     evalConditional();
-  }, [organizationId, categoryId, attributes]);
+  }, [organizationId, categoryId, debouncedAttrSig, currentStep, fetchGate.s3]);
 
   useEffect(() => {
     const fetchListingTypes = async () => {
       if (!organizationId || !categoryId || !siteId) return;
+      if (currentStep < 6) return;
+      if (!fetchGate.s6) return;
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-available-listing-types", {
           body: { organizationId, categoryId }
@@ -261,20 +552,23 @@ export default function AnunciosCriarML() {
       } catch {}
     };
     fetchListingTypes();
-  }, [organizationId, categoryId, siteId]);
+  }, [organizationId, categoryId, siteId, currentStep, fetchGate.s6]);
 
   useEffect(() => {
+    if (currentStep < 6) return;
     if (!listingTypeId && Array.isArray(listingTypes) && listingTypes.length > 0) {
       const first = listingTypes[0];
       const id = String(first?.id || first);
       if (id) setListingTypeId(id);
     }
-  }, [listingTypes]);
+  }, [listingTypes, currentStep]);
 
   useEffect(() => {
     const fetchListingPrices = async () => {
-      const p = Number(price);
+      const p = Number(debouncedPrice);
       if (!organizationId || !categoryId || !siteId || !p) return;
+      if (currentStep !== 6) return;
+      if (!fetchGate.s6) return;
       setLoadingListing(true);
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-listing-prices", {
@@ -286,7 +580,17 @@ export default function AnunciosCriarML() {
       }
     };
     fetchListingPrices();
-  }, [organizationId, siteId, categoryId, price]);
+  }, [organizationId, siteId, categoryId, debouncedPrice, currentStep, fetchGate.s6]);
+
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedPrice(price), 500);
+    return () => clearTimeout(h);
+  }, [price]);
+
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedAttrSig(attrSig), 600);
+    return () => clearTimeout(h);
+  }, [attrSig]);
 
   useEffect(() => {
     const fetchShippingModes = async () => {
@@ -298,39 +602,106 @@ export default function AnunciosCriarML() {
         });
         if (error) return;
         const methods = Array.isArray(data?.methods) ? data.methods : [];
-        const modesSet = new Set<string>();
-        methods.forEach((m: any) => {
-          const arr = Array.isArray(m?.shipping_modes) ? m.shipping_modes : [];
-          arr.forEach((x: any) => modesSet.add(String(x)));
-        });
-        let modes = Array.from(modesSet);
+        const prefs = data?.preferences && typeof data.preferences === "object" ? data.preferences : null;
+        let modes: string[] = [];
+        const modesRaw: any = prefs ? (prefs as any).modes : null;
+        let modesArr: any[] | null = null;
+        if (Array.isArray(modesRaw)) modesArr = modesRaw as any[];
+        else if (typeof modesRaw === "string") { try { modesArr = JSON.parse(modesRaw); } catch { modesArr = null; } }
+        if (Array.isArray(modesArr)) {
+          modes = modesArr.map((m) => String(m));
+        } else {
+          const set = new Set<string>();
+          methods.forEach((m: any) => {
+            const arr = Array.isArray(m?.shipping_modes) ? m.shipping_modes : [];
+            arr.forEach((x: any) => set.add(String(x)));
+          });
+          modes = Array.from(set);
+        }
+        const logisticsMap: Record<string, string[]> = {};
+        const defaultsMap: Record<string, string> = {};
+        const logisticsRaw: any = prefs ? (prefs as any).logistics : null;
+        let logisticsArr: any[] | null = null;
+        if (Array.isArray(logisticsRaw)) logisticsArr = logisticsRaw as any[];
+        else if (typeof logisticsRaw === "string") { try { logisticsArr = JSON.parse(logisticsRaw); } catch { logisticsArr = null; } }
+        if (Array.isArray(logisticsArr)) {
+          logisticsArr.forEach((entry: any) => {
+            const mode = String(entry?.mode || "");
+            const types = Array.isArray(entry?.types) ? entry.types.map((t: any) => String(t?.type || t)) : [];
+            logisticsMap[mode] = types;
+            const def = Array.isArray(entry?.types) ? entry.types.find((t: any) => t?.default === true) : null;
+            if (def && def.type) defaultsMap[mode] = String(def.type);
+          });
+        }
+        // Determinar modo preferido a partir de mandatorySettings antes de calcular os tipos
+        const mandatoryRaw: any = prefs ? (prefs as any).mandatorySettings : null;
+        let mandatoryObj: any = null;
+        if (mandatoryRaw && typeof mandatoryRaw === "object") mandatoryObj = mandatoryRaw;
+        else if (typeof mandatoryRaw === "string") { try { mandatoryObj = JSON.parse(mandatoryRaw); } catch { mandatoryObj = null; } }
+        const preferredMode = mandatoryObj?.mode ? String(mandatoryObj.mode) : (modes.includes("me2") ? "me2" : (modes.includes("me1") ? "me1" : (modes[0] || "")));
+        let freeMandatory = false;
+        const scanMandatory = (obj: any) => {
+          if (!obj || typeof obj !== "object") return;
+          for (const [k, v] of Object.entries(obj)) {
+            const key = String(k).toLowerCase();
+            if (key.includes("free") && key.includes("ship")) {
+              if (typeof v === "boolean" && v === true) freeMandatory = true;
+              if (typeof v === "string") {
+                const s = v.toLowerCase();
+                if (s.includes("mandatory") || s.includes("obrig") || s === "true" || s === "enabled" || s === "active") freeMandatory = true;
+              }
+            }
+            if (v && typeof v === "object") scanMandatory(v as any);
+          }
+        };
+        scanMandatory(mandatoryObj);
+        const isMandatoryMe2 = freeMandatory && preferredMode === "me2";
+        setFreeShippingMandatory(isMandatoryMe2);
+
+        setShippingModesAvailable(modes);
+        setShippingLogisticsByMode(logisticsMap);
+        setShippingLogisticsDefaults(defaultsMap);
+
+        const modeForTypes = preferredMode || "me2";
+        const knownTypes = ["drop_off", "xd_drop_off", "self_service"];
+        const typesForMode = (logisticsMap[modeForTypes] || []).filter((t: string) => t !== "fulfillment");
         try {
-          const { data: prefRow } = await (supabase as any)
+          const { data: capsRow } = await (supabase as any)
             .from("marketplace_integrations")
-            .select("flex_enabled, envios_enabled, correios_enabled, full_enabled")
+            .select("drop_off, xd_drop_off, self_service")
             .eq("organizations_id", organizationId)
             .eq("marketplace_name", "Mercado Livre")
             .order("expires_in", { ascending: false })
             .limit(1)
             .single();
-          if (prefRow) {
-            const filtered = new Set(modes);
-            if (prefRow.full_enabled === false) {
-              filtered.delete("fulfillment");
-            }
-            if (prefRow.correios_enabled === false) {
-              filtered.delete("me1");
-            }
-            if (prefRow.envios_enabled === false) {
-              filtered.delete("me2");
-            }
-            modes = Array.from(filtered);
+          const allowedSet = new Set<string>();
+          if (capsRow?.drop_off) allowedSet.add("drop_off");
+          if (capsRow?.xd_drop_off) allowedSet.add("xd_drop_off");
+          if (capsRow?.self_service) allowedSet.add("self_service");
+          const baseFallback = allowedSet.size > 0 ? knownTypes.filter((t) => allowedSet.has(t)) : knownTypes;
+          const toShow = (typesForMode.length > 0 ? typesForMode : baseFallback);
+          setAvailableLogisticTypes(toShow);
+          const defType = String((defaultsMap as any)[modeForTypes] || "");
+          const pickType = toShow.includes(defType) ? defType : (toShow[0] || "");
+          if (pickType && !selectedLogisticType) {
+            setSelectedLogisticType(pickType);
+            if (pickType === "self_service") setPreferFlex(true);
           }
         } catch {}
-        setShippingModesAvailable(modes);
         if (!shipping?.mode || !modes.includes(String((shipping as any)?.mode || ""))) {
-          const preferred = modes.includes("me2") ? "me2" : (modes.includes("me1") ? "me1" : (modes[0] || ""));
-          if (preferred) setShipping({ ...(shipping || {}), mode: preferred });
+          let next = { ...(shipping || {}), mode: preferredMode } as any;
+          try {
+            const fcRaw: any = prefs ? (prefs as any).freeConfigurations : null;
+            let fcArr: any[] | null = null;
+            if (Array.isArray(fcRaw)) fcArr = fcRaw as any[];
+            else if (typeof fcRaw === "string") { try { fcArr = JSON.parse(fcRaw); } catch { fcArr = null; } }
+            if (preferredMode === "me2" && Array.isArray(fcArr)) {
+              const def = fcArr.find((r: any) => r?.rule?.default === true);
+              if (def && def.rule && def.rule.free_shipping_flag === true) next.free_shipping = true;
+            }
+          } catch {}
+          if (isMandatoryMe2) next.free_shipping = true;
+          if (preferredMode) setShipping(next);
         }
       } catch {}
     };
@@ -449,22 +820,33 @@ export default function AnunciosCriarML() {
         } catch {}
       }
     };
-    if (domainSuggestions.length > 0) run();
-  }, [domainSuggestions]);
+    if (domainSuggestions.length > 0 && currentStep === 2) run();
+  }, [domainSuggestions, currentStep]);
 
   const canProceed = () => {
     if (currentStep === 1) return !!marketplaceSelection;
-    if (currentStep === 2) return !!title && !!categoryId && !!condition;
+    if (currentStep === 2) return !!title && !!categoryId;
     if (currentStep === 3) {
       const reqIds = new Set<string>(filteredAttrs.required.map((a: any) => String(a.id)));
       const filled = new Set<string>((attributes || []).map((a: any) => String(a.id)).filter(Boolean));
       const missing = Array.from(reqIds).filter((id) => !filled.has(id));
       return description.length > 0 && missing.length === 0;
     }
+    if (currentStep === 7) {
+      const isMe2 = String((shipping as any)?.mode || "").toLowerCase() === "me2";
+      if (!isMe2) return true;
+      const dims = (shipping as any)?.dimensions || {};
+      const h = Number(dims?.height || 0);
+      const l = Number(dims?.length || 0);
+      const w = Number(dims?.width || 0);
+      const g = Number((shipping as any)?.weight || 0);
+      return h > 0 && l > 0 && w > 0 && g > 0;
+    }
     if (currentStep === 6) {
       const ok = !!listingTypeId && !!price;
-      const isGoldPro = String(listingTypeId || '').toLowerCase() === 'gold_pro';
-      if (isGoldPro) {
+      const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
+      const requiresPic = !!(opt as any)?.requires_picture || String(listingTypeId || '').toLowerCase() === 'gold_pro';
+      if (requiresPic) {
         const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
         return ok && hasAtLeastOneImage;
       }
@@ -473,7 +855,148 @@ export default function AnunciosCriarML() {
     return true;
   };
 
-  const nextStep = () => { if (currentStep < maxSteps && canProceed()) setCurrentStep(currentStep + 1); };
+  const nextStep = async () => {
+    if (currentStep >= maxSteps) return;
+    if (canProceed()) {
+      try {
+        if (currentStep === 1) {
+          if (!fetchGate.s1) {
+            try {
+              const { data, error } = await (supabase as any)
+                .from("marketplace_integrations")
+                .select("marketplace_name, site_id, drop_off, xd_drop_off, self_service, shipping_preferences, preferences_fetched_at")
+                .eq("organizations_id", organizationId);
+              if (!error) {
+                const names: string[] = (data || []).map((r: any) => String(r?.marketplace_name || "")).map((n) => (n === "mercado_livre" ? "Mercado Livre" : n));
+                const clean = Array.from(new Set(names)).filter(Boolean);
+                setConnectedApps(clean);
+                if (!marketplaceSelection && clean.includes("Mercado Livre")) setMarketplaceSelection("Mercado Livre");
+              }
+            } catch {}
+            setFetchGate((g) => ({ ...g, s1: true }));
+          }
+        }
+        if (currentStep === 2) {
+          if (lastCategoryLoaded !== String(categoryId || "")) {
+            try {
+              const cat = String(categoryId || "");
+              const cachedAttrs = sessionCacheRef.current.attrsMetaByCategory[cat];
+              const cachedTech = sessionCacheRef.current.techInputByCategory[cat];
+              if (Array.isArray(cachedAttrs)) {
+                setAttrsMeta(cachedAttrs);
+              } else {
+                const [attrsRes, techRes] = await Promise.all([
+                  (supabase as any).functions.invoke("mercado-livre-categories-attributes", { body: { organizationId, categoryId } }),
+                  (supabase as any).functions.invoke("mercado-livre-technical-specs-input", { body: { organizationId, categoryId } }),
+                ]);
+                if (!attrsRes.error) {
+                  const arr = Array.isArray(attrsRes.data?.attributes) ? attrsRes.data.attributes : [];
+                  setAttrsMeta(arr);
+                  sessionCacheRef.current.attrsMetaByCategory[cat] = arr;
+                }
+                if (!techRes.error) {
+                  const inpt = techRes.data || null;
+                  setTechSpecsInput(inpt);
+                  sessionCacheRef.current.techInputByCategory[cat] = inpt;
+                }
+              }
+              setLastCategoryLoaded(String(categoryId || ""));
+            } catch {}
+          }
+          setFetchGate((g) => ({ ...g, s3: true }));
+        }
+        if (currentStep === 5) {
+          try {
+            const cat = String(categoryId || "");
+            const cachedTerms = sessionCacheRef.current.saleTermsMetaByCategory[cat];
+            const cachedTypes = sessionCacheRef.current.listingTypesByCategory[cat];
+            let arr = Array.isArray(cachedTypes) ? cachedTypes : [];
+            if (!Array.isArray(cachedTerms) || !Array.isArray(cachedTypes)) {
+              const [termsRes, typesRes] = await Promise.all([
+                (supabase as any).functions.invoke("mercado-livre-categories-sale-terms", { body: { organizationId, categoryId } }),
+                (supabase as any).functions.invoke("mercado-livre-available-listing-types", { body: { organizationId, categoryId } }),
+              ]);
+              if (!termsRes.error) {
+                const terms = Array.isArray((termsRes.data as any)?.terms) ? (termsRes.data as any).terms : [];
+                setSaleTermsMeta(terms);
+                sessionCacheRef.current.saleTermsMetaByCategory[cat] = terms;
+              }
+              arr = Array.isArray(typesRes.data?.types) ? typesRes.data.types : [];
+            }
+            if (String(siteId).toUpperCase() === "MLB") {
+              const pick = new Set(["gold_special", "gold_pro"]);
+              arr = (arr || []).filter((t: any) => pick.has(String(t?.id || t))).map((t: any) => {
+                const id = String(t?.id || t);
+                const name = id === "gold_special" ? "Clássico" : (id === "gold_pro" ? "Premium" : String(t?.name || t?.listing_type_name || id));
+                return { id, name };
+              });
+            }
+            setListingTypes(arr);
+            sessionCacheRef.current.listingTypesByCategory[cat] = arr;
+            setFetchGate((g) => ({ ...g, s6: true }));
+          } catch {}
+        }
+        if (currentStep === 6) {
+          const p = Number(price);
+          if (p > 0) {
+            try {
+              const key = `${String(siteId)}:${String(categoryId)}:${p}`;
+              const cached = sessionCacheRef.current.listingPriceOptionsByKey[key];
+              if (Array.isArray(cached)) {
+                setListingPriceOptions(cached);
+              } else {
+                const { data, error } = await (supabase as any).functions.invoke("mercado-livre-listing-prices", {
+                  body: { organizationId, siteId, price: p, categoryId }
+                });
+                if (!error) {
+                  const arr = Array.isArray(data?.prices) ? data.prices : [];
+                  setListingPriceOptions(arr);
+                  sessionCacheRef.current.listingPriceOptionsByKey[key] = arr;
+                }
+              }
+            } catch {}
+          }
+        }
+        if (currentStep === 6) setFetchGate((g) => ({ ...g, s7: true }));
+      } finally {
+        const next = currentStep + 1;
+        setCurrentStep(next);
+        setMaxVisitedStep((prev) => Math.max(prev, next));
+      }
+      return;
+    }
+    if (currentStep === 6) {
+      const okBasic = !!listingTypeId && !!price;
+      if (!okBasic) {
+        toast({ title: "Complete esta etapa", description: "Selecione o tipo de publicação e informe o preço.", variant: "destructive" });
+        return;
+      }
+      const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
+      const requiresPic = !!(opt as any)?.requires_picture || String(listingTypeId || '').toLowerCase() === 'gold_pro';
+      if (requiresPic) {
+        const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
+        if (!hasAtLeastOneImage) {
+          toast({ title: "Foto obrigatória no Premium", description: "Adicione pelo menos uma foto nas variações ou nas fotos gerais.", variant: "destructive" });
+          return;
+        }
+      }
+    } else if (currentStep === 7) {
+      const isMe2 = String((shipping as any)?.mode || '').toLowerCase() === 'me2';
+      if (isMe2) {
+        toast({ title: "Dimensões e peso obrigatórios", description: "Informe altura, largura, comprimento e peso do pacote.", variant: "destructive" });
+        return;
+      }
+    } else if (currentStep === 3) {
+      toast({ title: "Preencha os obrigatórios", description: "Preencha os atributos obrigatórios e a descrição.", variant: "destructive" });
+      return;
+    } else if (currentStep === 2) {
+      toast({ title: "Título e categoria", description: "Informe o título e selecione a categoria.", variant: "destructive" });
+      return;
+    } else if (currentStep === 1) {
+      toast({ title: "Marketplace necessário", description: "Selecione um marketplace conectado.", variant: "destructive" });
+      return;
+    }
+  };
   const backStep = () => { if (currentStep > 1) setCurrentStep(currentStep - 1); };
 
   const handlePublish = async () => {
@@ -522,10 +1045,12 @@ export default function AnunciosCriarML() {
       const qty = Number(v?.available_quantity) || 0;
       const obj: any = { attribute_combinations: combos, available_quantity: qty };
       if (priceNum) obj.price = priceNum;
-      const sku = String(v?.seller_custom_field || '').trim();
-      if (sku) obj.seller_custom_field = sku;
-      const gtinVal = String(v?.gtin || '').trim();
-      if (gtinVal) obj.attributes = [{ id: 'GTIN', value_name: gtinVal }];
+      const varAttrs = Array.isArray(v?.attributes) ? (v.attributes as any[]).filter((a: any) => {
+        const hasVal = !!a?.id && (!!a?.value_id || !!a?.value_name || !!a?.value_struct);
+        const isMainColor = String(a?.id || '').toUpperCase() === 'MAIN_COLOR';
+        return hasVal && !isMainColor;
+      }) : [];
+      if (varAttrs.length > 0) obj.attributes = varAttrs;
       return obj;
     }) : [];
     if (hasVariations) {
@@ -546,19 +1071,26 @@ export default function AnunciosCriarML() {
         }
       }
     }
-    const condId = condition === "new" ? "2230284" : (condition === "used" ? "2230581" : "");
-    const condName = String(siteId).toUpperCase() === "MLB" ? (condition === "new" ? "Novo" : (condition === "used" ? "Usado" : condition)) : condition;
+    const condAttr = (attributes || []).find((x: any) => String(x?.id || "").toUpperCase() === "ITEM_CONDITION");
+    let normalizedCondition: string | undefined = undefined;
+    if (condAttr) {
+      const vid = String((condAttr as any)?.value_id || "").toLowerCase();
+      const vname = String((condAttr as any)?.value_name || "").toLowerCase();
+      if (vid === "2230284" || vname.includes("novo") || vname.includes("new")) normalizedCondition = "new";
+      else if (vid === "2230581" || vname.includes("usado") || vname.includes("used")) normalizedCondition = "used";
+      else normalizedCondition = "not_specified";
+    }
     const payload: any = {
       site_id: siteId,
       title,
       category_id: categoryId,
       currency_id: currencyId,
       attributes: [
-        { id: "ITEM_CONDITION", ...(condId ? { value_id: condId } : {}), ...(condName ? { value_name: condName } : {}) },
         ...((attributes || []).filter((x: any) => String(x?.id || "").toUpperCase() !== "ITEM_CONDITION"))
       ],
       pictures: pictureUrls.slice(0, 6).map((url) => ({ source: url })),
     };
+    if (normalizedCondition) payload.condition = normalizedCondition;
     if (sanitizedVariations.length > 0) payload.variations = sanitizedVariations;
     if (variations.length === 0 && availableQuantity) payload.available_quantity = Number(availableQuantity);
     if (!hasVariations && priceNum) payload.price = priceNum;
@@ -599,11 +1131,20 @@ export default function AnunciosCriarML() {
       if (typeof (shipping as any)?.local_pick_up !== "undefined") ship.local_pick_up = !!(shipping as any).local_pick_up;
       if (typeof (shipping as any)?.free_shipping !== "undefined") ship.free_shipping = !!(shipping as any).free_shipping;
       if (dimsStr) ship.dimensions = dimsStr;
+      if (ship.mode && Array.isArray(shippingModesAvailable) && shippingModesAvailable.length > 0) {
+        const mm = String(ship.mode || "").toLowerCase();
+        const avail = shippingModesAvailable.map((m) => String(m).toLowerCase());
+        if (!avail.includes(mm)) {
+          if (avail.includes("me2")) ship.mode = "me2";
+          else ship.mode = shippingModesAvailable[0];
+        }
+      }
       payload.shipping = ship;
     }
     if (saleTerms.length > 0) payload.sale_terms = saleTerms;
+    const sellerShippingPreferences = { prefer_flex: !!preferFlex };
     const { data, error } = await (supabase as any).functions.invoke("mercado-livre-publish-item", {
-      body: { organizationId, payload, description: { plain_text: description }, upload_variation_files: uploadVariationFiles }
+      body: { organizationId, payload, description: { plain_text: description }, upload_variation_files: uploadVariationFiles, seller_shipping_preferences: sellerShippingPreferences }
     });
     if (error || (data && (data as any)?.error)) {
       const msg = error?.message || ((data as any)?.meli?.message || (data as any)?.error || "Falha ao publicar");
@@ -619,6 +1160,7 @@ export default function AnunciosCriarML() {
     if (!organizationId) return;
     if (!title.trim()) return;
     try {
+      setHasSearchedCategory(true);
       const { data, error } = await (supabase as any).functions.invoke("mercado-livre-categories-predict", {
         body: { organizationId, siteId, title: title.trim() }
       });
@@ -642,11 +1184,49 @@ export default function AnunciosCriarML() {
             <div className="p-6 max-w-6xl mx-auto">
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h1 className="text-2xl font-bold text-gray-900">Criar Anúncio</h1>
+                  <h1 className="text-2xl font-bold text-gray-900">Criar um anúncio</h1>
                   <p className="text-gray-600">Modo Mercado Livre</p>
                 </div>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" className="border-2 rounded-2xl" onClick={async () => {
+                    try {
+                      const draft: any = {
+                        organizations_id: organizationId,
+                        marketplace_name: "Mercado Livre",
+                        site_id: siteId,
+                        title,
+                        category_id: categoryId,
+                        condition: (attributes || []).find((x: any) => String(x?.id || "").toUpperCase() === "ITEM_CONDITION") ? undefined : undefined,
+                        attributes,
+                        variations,
+                        pictures,
+                        price: Number(price || 0),
+                        listing_type_id: listingTypeId,
+                        shipping,
+                        sale_terms: saleTerms,
+                        description,
+                        available_quantity: availableQuantity,
+                        last_step: currentStep,
+                        status: "draft",
+                        api_cache: {
+                          attrsMeta: (lastCategoryLoaded === String(categoryId || '')) ? attrsMeta : undefined,
+                          techSpecsInput,
+                          saleTermsMeta,
+                          listingTypes,
+                          listingPriceOptions: sessionCacheRef.current.listingPriceOptionsByKey[`${String(siteId)}:${String(categoryId)}:${Number(price || 0)}`] || listingPriceOptions,
+                        }
+                      };
+                      await (supabase as any).from("marketplace_drafts").insert(draft);
+                      toast({ title: "Rascunho salvo", description: "Você pode retomar depois em Anúncios > Rascunhos." });
+                      navigate('/anuncios/rascunhos');
+                    } catch (e: any) {
+                      toast({ title: "Falha ao salvar rascunho", description: e?.message || String(e), variant: "destructive" });
+                    }
+                  }}>Salvar rascunho</Button>
+                  <Button variant="ghost" className="text-gray-700" onClick={() => setConfirmExit(true)}>✕</Button>
+                </div>
               </div>
-              <StepIndicator steps={steps as any} currentStep={currentStep} />
+              <StepIndicator steps={steps as any} currentStep={currentStep} clickable maxVisitedStep={maxVisitedStep} onStepClick={(id) => { if (id <= maxVisitedStep) setCurrentStep(id); }} />
               <Card className="mt-6 border border-gray-200 shadow-sm">
                 <CardContent className="p-6 space-y-6">
                   {currentStep === 1 && (
@@ -671,31 +1251,29 @@ export default function AnunciosCriarML() {
                   )}
                   {currentStep === 2 && (
                     <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <Select value={siteId} onValueChange={setSiteId}>
-                          <SelectTrigger className="w-32"><SelectValue placeholder="Site" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="MLB">MLB</SelectItem>
-                          </SelectContent>
-                        </Select>
+                      <div>
+                        <RequiredLabel text="Título do produto" required />
+                        <div className="relative mt-2">
+                          <Input
+                            id="ml-title"
+                            placeholder="Digite o título do produto"
+                            value={title}
+                            onChange={(e) => setTitle(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') runPredict(); }}
+                            className="pr-40"
+                          />
+                          <button
+                            type="button"
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-novura-primary text-sm flex items-center gap-1"
+                            onClick={runPredict}
+                          >
+                            <Search className="w-4 h-4" /> Buscar categoria
+                          </button>
+                        </div>
                       </div>
-                      <Input
-                        placeholder="Digite o título do produto"
-                        value={title}
-                        onChange={(e) => setTitle(e.target.value)}
-                      />
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <Select value={condition} onValueChange={setCondition}>
-                          <SelectTrigger><SelectValue placeholder="Condição" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="new">Novo</SelectItem>
-                            <SelectItem value="used">Usado</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Button variant="outline" onClick={runPredict}>Buscar categoria</Button>
-                      </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4" />
                       <div className="space-y-2">
-                        {categorySuggestions.length === 0 ? (
+                        {hasSearchedCategory && categorySuggestions.length === 0 && domainSuggestions.length === 0 ? (
                           <div className="text-sm text-gray-600">Nenhuma sugestão de categoria</div>
                         ) : (
                           <div className="grid grid-cols-1 gap-2">
@@ -723,7 +1301,7 @@ export default function AnunciosCriarML() {
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <div className="text-sm text-gray-700">Sugestões por domínio</div>
-                            <Button variant="outline" onClick={() => setDumpOpen(true)}>NÃO ACHEI A CATEGORIA</Button>
+                            <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => setDumpOpen(true)}>Não é essa categoria</Button>
                           </div>
                           <div className="grid grid-cols-1 gap-2">
                             {domainSuggestions.map((d: any, i: number) => {
@@ -877,32 +1455,99 @@ export default function AnunciosCriarML() {
                           </div>
                         </DialogContent>
                       </Dialog>
+                      <Dialog open={confirmExit} onOpenChange={setConfirmExit}>
+                        <DialogContent className="max-w-md">
+                          <DialogHeader>
+                            <DialogTitle>Fechar sem salvar?</DialogTitle>
+                          </DialogHeader>
+                          <div className="space-y-3">
+                            <div className="text-sm text-gray-700">Você perderá todos os dados se fechar agora. Deseja salvar um rascunho?</div>
+                            <div className="flex justify-end gap-2">
+                      <Button variant="outline" onClick={() => { setConfirmExit(false); navigate('/anuncios'); }}>Fechar sem salvar</Button>
+                      <Button variant="outline" className="border rounded-2xl bg-white text-novura-primary hover:text-novura-primary" onClick={async () => {
+                        try {
+                          const draft: any = {
+                            organizations_id: organizationId,
+                            marketplace_name: "Mercado Livre",
+                            site_id: siteId,
+                            title,
+                            category_id: categoryId,
+                            attributes,
+                            variations,
+                            pictures,
+                            price: Number(price || 0),
+                            listing_type_id: listingTypeId,
+                            shipping,
+                            sale_terms: saleTerms,
+                            description,
+                            available_quantity: availableQuantity,
+                            last_step: currentStep,
+                            status: "draft",
+                            api_cache: {
+                              attrsMeta: (lastCategoryLoaded === String(categoryId || '')) ? attrsMeta : undefined,
+                              techSpecsInput,
+                              saleTermsMeta,
+                              listingTypes,
+                              listingPriceOptions: sessionCacheRef.current.listingPriceOptionsByKey[`${String(siteId)}:${String(categoryId)}:${Number(price || 0)}`] || listingPriceOptions,
+                            }
+                          };
+                          if (currentDraftId) {
+                            await (supabase as any)
+                              .from('marketplace_drafts')
+                              .update(draft)
+                              .eq('id', currentDraftId)
+                              .eq('organizations_id', organizationId);
+                          } else {
+                            const { data, error } = await (supabase as any)
+                              .from('marketplace_drafts')
+                              .insert(draft)
+                              .select('id')
+                              .single();
+                            if (!error && data?.id) setCurrentDraftId(String(data.id));
+                          }
+                          setConfirmExit(false);
+                          navigate('/anuncios/rascunhos');
+                        } catch (e: any) {
+                          toast({ title: 'Falha ao salvar rascunho', description: e?.message || String(e), variant: 'destructive' });
+                        }
+                      }}>Salvar rascunho</Button>
+                            </div>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
                     </div>
                   )}
                   {currentStep === 3 && (
                     <div className="space-y-4">
-                      <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Descrição em texto plano" className="min-h-[160px]" />
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {filteredAttrs.required.map((a: any) => {
                           const id = String(a?.id || "");
                           const name = String(a?.name || id || "Atributo");
                           const hasValues = Array.isArray(a?.values) && a.values.length > 0;
                           const current = (attributes || []).find((x: any) => String(x?.id) === id);
+                          const tags = (a?.tags || {}) as any;
+                          const isRequired = Array.isArray(tags) ? tags.includes("required") : !!(tags?.required);
+                          const isNA = String((current as any)?.value_id || "") === "-1" && ((current as any)?.value_name ?? null) === null;
+                          const canNA = !isRequired && String(id).toUpperCase() !== "SELLER_SKU";
+                          const isString = String(a?.value_type || "").toLowerCase() === "string";
+                          const isMulti = Array.isArray(tags) ? (tags.includes("multivalued") || tags.includes("repeated")) : (!!(tags?.multivalued) || !!(tags?.repeated));
                           if (String(a?.value_type || "").toLowerCase() === "number_unit") {
                             const allowed = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
                             const defUnit = String((a as any)?.default_unit || "");
                             const currNum = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "");
                             const currUnit = typeof (current as any)?.value_struct?.unit === "string" ? String((current as any).value_struct.unit) : (String((current as any)?.value_name || "").split(" ")[1] || defUnit);
                             return (
-                              <div key={id} className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <Input value={String(currNum || "")} placeholder={name} onChange={(e) => {
+                              <div key={id}>
+                                <RequiredLabel text={name} required={isRequired} />
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+                                  <Input value={String(currNum || "")} placeholder={name} onChange={(e) => {
                                   const num = Number(e.target.value) || 0;
                                   const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
                                   const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
                                   const vname = unit ? `${num} ${unit}` : String(num);
                                   setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
                                 }} />
-                                <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
+                                  <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
                                   const unit = String(val || defUnit || "");
                                   const numStr = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "0");
                                   const num = Number(numStr) || 0;
@@ -910,206 +1555,747 @@ export default function AnunciosCriarML() {
                                   const vname = unit ? `${num} ${unit}` : String(num);
                                   setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
                                 }}>
-                                  <SelectTrigger><SelectValue placeholder="Unidade" /></SelectTrigger>
+                                    <SelectTrigger><SelectValue placeholder="Unidade" /></SelectTrigger>
+                                    <SelectContent>
+                                      {(allowed || []).map((u: any, idx: number) => {
+                                        const uid = String((u as any)?.id || u || idx);
+                                        const uname = String((u as any)?.name || (u as any)?.id || u || uid);
+                                        return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
+                                      })}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+                            );
+                          }
+                          if (isString) {
+                            const suggestions = (Array.isArray(a?.values) ? a.values : []).map((v: any) => ({ id: String(v?.id || ""), name: String(v?.name || v?.value || v?.id || "") }));
+                            return (
+                              <div key={id}>
+                                <RequiredLabel text={name} required={isRequired} />
+                                {isMulti ? (
+                                  <MultiValuedBadgeInput
+                                    id={id}
+                                    name={name}
+                                    current={current}
+                                    suggestions={suggestions}
+                                    disabled={isNA}
+                                    onChange={(obj) => {
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      setAttributes([ ...next, obj ]);
+                                    }}
+                                  />
+                                ) : (
+                                  <StringSuggestInput
+                                    id={id}
+                                    name={name}
+                                    current={current}
+                                    suggestions={suggestions}
+                                    disabled={isNA}
+                                    onChange={(obj) => {
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      setAttributes([ ...next, obj ]);
+                                    }}
+                                  />
+                                )}
+                                {canNA && (
+                                  <div className="mt-1 flex items-center gap-2">
+                                    <Checkbox
+                                      className="h-[16px] w-[16px]"
+                                      checked={isNA}
+                                      onCheckedChange={(checked) => {
+                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                        const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                        setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                      }}
+                                    />
+                                    <span className="text-xs text-gray-600">Não se aplica</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                          if (hasValues) {
+                            return (
+                              <div key={id}>
+                                <RequiredLabel text={name} required={isRequired} />
+                                <Select value={String(current?.value_id || "")} onValueChange={(val) => {
+                                const vname = a.values.find((v: any) => String(v?.id || "") === String(val))?.name || "";
+                                const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                setAttributes([ ...next, { id, name, value_id: val, value_name: vname } ]);
+                              }}>
+                                  <SelectTrigger className="mt-2"><SelectValue placeholder={name} /></SelectTrigger>
                                   <SelectContent>
-                                    {(allowed || []).map((u: any, idx: number) => {
-                                      const uid = String((u as any)?.id || u || idx);
-                                      const uname = String((u as any)?.name || (u as any)?.id || u || uid);
-                                      return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
-                                    })}
+                                    {a.values.map((v: any) => (
+                                      <SelectItem key={String(v?.id || v?.name || Math.random())} value={String(v?.id || "")}>{String(v?.name || v?.value || v?.id || "")}</SelectItem>
+                                    ))}
                                   </SelectContent>
                                 </Select>
                               </div>
                             );
                           }
-                          if (id === "BRAND") {
-                            return (
-                              <Input key={id} placeholder={name} value={String(current?.value_name || "")} onChange={(e) => {
-                                const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                setAttributes([ ...next, { id, name, value_name: e.target.value } ]);
-                              }} />
-                            );
-                          }
-                          if (hasValues) {
-                            return (
-                              <Select key={id} value={String(current?.value_id || "")} onValueChange={(val) => {
-                                const vname = a.values.find((v: any) => String(v?.id || "") === String(val))?.name || "";
-                                const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                setAttributes([ ...next, { id, name, value_id: val, value_name: vname } ]);
-                              }}>
-                                <SelectTrigger><SelectValue placeholder={name} /></SelectTrigger>
-                                <SelectContent>
-                                  {a.values.map((v: any) => (
-                                    <SelectItem key={String(v?.id || v?.name || Math.random())} value={String(v?.id || "")}>{String(v?.name || v?.value || v?.id || "")}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            );
-                          }
                           return (
-                            <Input key={id} placeholder={name} value={String(current?.value_name || "")} onChange={(e) => {
-                              const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                              setAttributes([ ...next, { id, name, value_name: e.target.value } ]);
-                            }} />
+                            <div key={id}>
+                              <RequiredLabel text={name} required={isRequired} />
+                              <StringSuggestInput
+                                id={id}
+                                name={name}
+                                current={current}
+                                suggestions={[]}
+                                disabled={isNA}
+                                onChange={(obj) => {
+                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                  setAttributes([ ...next, obj ]);
+                                }}
+                              />
+                              {canNA && (
+                                <div className="mt-1 flex items-center gap-2">
+                                  <Checkbox
+                                    className="h-[16px] w-[16px]"
+                                    checked={isNA}
+                                    onCheckedChange={(checked) => {
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                      setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                    }}
+                                  />
+                                  <span className="text-xs text-gray-600">Não se aplica</span>
+                                </div>
+                              )}
+                            </div>
                           );
                         })}
-                        <Select value={condition} onValueChange={setCondition}>
-                          <SelectTrigger><SelectValue placeholder="Condição do item" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="new">Novo</SelectItem>
-                            <SelectItem value="used">Usado</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        
                       </div>
+                      <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Descrição em texto plano" className="min-h-[160px]" />
                     </div>
                   )}
                   {currentStep === 4 && (
                     <div className="space-y-4">
-                      <div className="text-sm text-gray-700">Configure variações (opcional)</div>
-                      <Button variant="outline" onClick={() => setVariations([...(variations || []), { attribute_combinations: [], available_quantity: 0, pictureFiles: [] }] )}>Adicionar variação</Button>
-                      {(variations || []).map((v: any, idx: number) => (
-                        <div key={idx} className="border rounded-lg p-4 bg-white space-y-3">
-                          <div className="text-sm text-gray-700">Variação {idx + 1}</div>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {variationAttrs.map((a: any) => {
-                              const id = String(a?.id || "");
-                              const name = String(a?.name || id || "Atributo");
-                              const hasValues = Array.isArray(a?.values) && a.values.length > 0;
-                              const currentCombo = (v?.attribute_combinations || []).find((c: any) => String(c?.id) === id);
-                              if (hasValues) {
-                                return (
-                                  <Select key={id} value={String(currentCombo?.value_id || "")} onValueChange={(val) => {
-                                    const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
-                                    const combos = (v?.attribute_combinations || []).filter((c: any) => String(c?.id) !== id);
-                                    const nextVar = { ...v, attribute_combinations: [ ...combos, { id, name, value_id: val, value_name: vname } ] };
+                      <div className="flex items-center gap-3">
+                        <div className="text-sm text-gray-700">Configure variações (opcional)</div>
+                        <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => {
+                          const next = [...(variations || []), { attribute_combinations: [], available_quantity: 0, pictureFiles: [] }];
+                          setVariations(next);
+                          if (primaryVariationIndex === null && next.length === 1) setPrimaryVariationIndex(0);
+                        }}>
+                          <Plus className="w-4 h-4 mr-1" /> Adicionar variação
+                        </Button>
+                      </div>
+                      <Accordion type="multiple" className="mt-3">
+                        {(variations || []).map((v: any, idx: number) => (
+                          <AccordionItem key={idx} value={`var-${idx}`} className="border rounded-lg bg-white">
+                            <AccordionTrigger className="px-4 text-novura-primary">
+                              <div className="flex items-center justify-between w-full">
+                                <div className="flex items-center gap-2">
+                                  {(() => {
+                                    const combos = Array.isArray(v?.attribute_combinations) ? v.attribute_combinations : [];
+                                    const colorCombo = combos.find((c: any) => {
+                                      const cid = String(c?.id || "").toUpperCase();
+                                      const cname = String(c?.name || "");
+                                      return cid === "COLOR" || cid === "MAIN_COLOR" || /\bcor\b/i.test(cname);
+                                    });
+                                    const valName = String(colorCombo?.value_name || "");
+                                    if (valName) return <span>{valName}</span>;
+                                    return <span>Variação {idx + 1}</span>;
+                                  })()}
+                                  {primaryVariationIndex === idx && (
+                                    <span className="inline-flex items-center rounded-md bg-novura-primary text-white px-2 py-0.5 text-xs">Variação principal</span>
+                                  )}
+                                </div>
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  className="cursor-pointer text-novura-primary hover:text-red-600 transition-colors mr-4"
+                                  title="Remover variação"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
                                     const buf = [...variations];
-                                    buf[idx] = nextVar;
+                                    buf.splice(idx, 1);
                                     setVariations(buf);
-                                  }}>
-                                    <SelectTrigger><SelectValue placeholder={name} /></SelectTrigger>
-                                    <SelectContent>
-                                      {a.values.map((vv: any) => (
-                                        <SelectItem key={String(vv?.id || vv?.name || Math.random())} value={String(vv?.id || "")}>{String(vv?.name || vv?.value || vv?.id || "")}</SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                );
-                              }
-                              return (
-                                <Input key={id} placeholder={name} value={String(currentCombo?.value_name || "")} onChange={(e) => {
-                                  const combos = (v?.attribute_combinations || []).filter((c: any) => String(c?.id) !== id);
-                                  const nextVar = { ...v, attribute_combinations: [ ...combos, { id, name, value_name: e.target.value } ] };
-                                  const buf = [...variations];
-                                  buf[idx] = nextVar;
-                                  setVariations(buf);
-                                }} />
-                              );
-                            })}
-                            <Input value={String(v?.available_quantity ?? "")} placeholder="Quantidade" onChange={(e) => {
-                              const buf = [...variations];
-                              buf[idx] = { ...v, available_quantity: Number(e.target.value) };
-                              setVariations(buf);
-                            }} />
-                            <Input value={String(v?.seller_custom_field ?? "")} placeholder="SKU da variação" onChange={(e) => {
-                              const buf = [...variations];
-                              buf[idx] = { ...v, seller_custom_field: e.target.value };
-                              setVariations(buf);
-                            }} />
-                            <Input value={String(v?.gtin ?? "")} placeholder="Código de barras (EAN/GTIN)" onChange={(e) => {
-                              const buf = [...variations];
-                              buf[idx] = { ...v, gtin: e.target.value };
-                              setVariations(buf);
-                            }} />
-                            
-                            <div className="md:col-span-2">
-                              <ImageUpload
-                                selectedImages={Array.isArray(v?.pictureFiles) ? v.pictureFiles : []}
-                                onImagesChange={(files) => {
-                                  const buf = [...variations];
-                                  buf[idx] = { ...v, pictureFiles: files };
-                                  setVariations(buf);
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <div className="flex justify-end">
-                            <Button variant="outline" onClick={() => {
-                              const buf = [...variations];
-                              buf.splice(idx, 1);
-                              setVariations(buf);
-                            }}>Remover variação</Button>
-                          </div>
-                        </div>
-                      ))}
-                      
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      const buf = [...variations];
+                                      buf.splice(idx, 1);
+                                      setVariations(buf);
+                                    }
+                                  }}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </span>
+                              </div>
+                            </AccordionTrigger>
+                            <AccordionContent className="px-4">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {variationAttrs.map((a: any) => {
+                                  const id = String(a?.id || "");
+                                  const name = String(a?.name || id || "Atributo");
+                                  const hasValues = Array.isArray(a?.values) && a.values.length > 0;
+                                  const currentCombo = (v?.attribute_combinations || []).find((c: any) => String(c?.id) === id);
+                                  if (hasValues && String(a?.value_type || "").toLowerCase() !== "string") {
+                                    return (
+                                      <Select key={id} value={String(currentCombo?.value_id || "")} onValueChange={(val) => {
+                                        const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
+                                        const combos = (v?.attribute_combinations || []).filter((c: any) => String(c?.id) !== id);
+                                        const nextVar = { ...v, attribute_combinations: [ ...combos, { id, name, value_id: val, value_name: vname } ] };
+                                        const buf = [...variations];
+                                        buf[idx] = nextVar;
+                                        setVariations(buf);
+                                      }}>
+                                        <SelectTrigger><SelectValue placeholder={name} /></SelectTrigger>
+                                        <SelectContent>
+                                          {a.values.map((vv: any) => (
+                                            <SelectItem key={String(vv?.id || vv?.name || Math.random())} value={String(vv?.id || "")}>{String(vv?.name || vv?.value || vv?.id || "")}</SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                    );
+                                  }
+                                  return (
+                                    <div key={id}>
+                                      <Label>{name}</Label>
+                                      <StringSuggestInput
+                                        id={id}
+                                        name={name}
+                                        current={currentCombo}
+                                        suggestions={(Array.isArray(a?.values) ? a.values : []).map((vv: any) => ({ id: String(vv?.id || ""), name: String(vv?.name || vv?.value || vv?.id || "") }))}
+                                        disabled={false}
+                                        onChange={(obj) => {
+                                          const combos = (v?.attribute_combinations || []).filter((c: any) => String(c?.id) !== id);
+                                          const nextVar = { ...v, attribute_combinations: [ ...combos, obj ] };
+                                          const buf = [...variations];
+                                          buf[idx] = nextVar;
+                                          setVariations(buf);
+                                        }}
+                                      />
+                                    </div>
+                                  );
+                                })}
+                                {allowVariationAttrs.map((a: any) => {
+                                  const id = String(a?.id || "");
+                                  const name = String(a?.name || id || "Atributo");
+                                  const hasValues = Array.isArray(a?.values) && a.values.length > 0;
+                                  const currentAttr = (v?.attributes || []).find((x: any) => String(x?.id) === id);
+                                  const tags = (a?.tags || {}) as any;
+                                  const isRequired = Array.isArray(tags) ? tags.includes("required") : !!(tags?.required);
+                                  const isNA = String((currentAttr as any)?.value_id || "") === "-1" && ((currentAttr as any)?.value_name ?? null) === null;
+                                  const canNA = !isRequired && String(id).toUpperCase() !== "SELLER_SKU";
+                                  if (String(id).toUpperCase() === "MAIN_COLOR") {
+                                    return (
+                                      <div key={id} className="flex items-center gap-2 md:col-span-2">
+                                        <Checkbox
+                                          checked={primaryVariationIndex === idx}
+                                          onCheckedChange={(checked) => {
+                                            setPrimaryVariationIndex(checked ? idx : null);
+                                          }}
+                                        />
+                                        <span className="text-sm">Definir como principal</span>
+                                      </div>
+                                    );
+                                  }
+                                  if (String(id).toUpperCase() === "GTIN") {
+                                    const isNAAttr = String((currentAttr as any)?.value_id || "") === "-1";
+                                    return (
+                                      <div key={id}>
+                                        <Label>{name}</Label>
+                                        {hasValues ? (
+                                          <Select value={String((currentAttr as any)?.value_id || "")} onValueChange={(val) => {
+                                            if (isNAAttr) return;
+                                            const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
+                                            const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                            const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_id: val, value_name: vname } ] };
+                                            const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                          }}>
+                                            <SelectTrigger className={`mt-2 ${isNAAttr ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder={name} /></SelectTrigger>
+                                            <SelectContent>
+                                              {a.values.map((vv: any) => (
+                                                <SelectItem key={String(vv?.id || vv?.name || Math.random())} value={String(vv?.id || "")}>{String(vv?.name || vv?.value || vv?.id || "")}</SelectItem>
+                                              ))}
+                                            </SelectContent>
+                                          </Select>
+                                        ) : (
+                                          <Input className="mt-2" placeholder={name} disabled={isNAAttr} value={String((currentAttr as any)?.value_name || "")} onChange={(e) => {
+                                            if (isNAAttr) return;
+                                            const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                            const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_name: e.target.value } ] };
+                                            const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                          }} />
+                                        )}
+                                        <div className="mt-1 flex items-center gap-2">
+                                          <Checkbox
+                                            className="h-[16px] w-[16px]"
+                                            checked={isNAAttr}
+                                            onCheckedChange={(checked) => {
+                                              const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                              const nextAttr = checked ? { id, name, value_id: "-1", value_name: isRequired ? String((currentAttr as any)?.value_name || "") : null } : undefined;
+                                              const nextVar = { ...v, attributes: nextAttr ? [ ...attrs, nextAttr ] : attrs };
+                                              const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                            }}
+                                          />
+                                          <span className="text-xs text-gray-600">Não possui código de barras</span>
+                                        </div>
+                                        {(isRequired && isNAAttr) && (
+                                          <Input
+                                            className="mt-1"
+                                            placeholder="Motivo de GTIN vazio"
+                                            value={String((currentAttr as any)?.value_name || "")}
+                                            onChange={(e) => {
+                                              const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                              const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_id: "-1", value_name: e.target.value } ] };
+                                              const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                            }}
+                                          />
+                                        )}
+                                      </div>
+                                    );
+                                  }
+                                  if (String(a?.value_type || "").toLowerCase() === "number_unit") {
+                                    const allowed = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
+                                    const defUnit = String((a as any)?.default_unit || "");
+                                    const currNum = typeof (currentAttr as any)?.value_struct?.number === "number" ? String((currentAttr as any).value_struct.number) : (String((currentAttr as any)?.value_name || "").split(" ")[0] || "");
+                                    const currUnit = typeof (currentAttr as any)?.value_struct?.unit === "string" ? String((currentAttr as any).value_struct.unit) : (String((currentAttr as any)?.value_name || "").split(" ")[1] || defUnit);
+                                    return (
+                                      <div key={id}>
+                                        <Label>{name}</Label>
+                                        <div className="relative mt-2">
+                                          <Input value={String(currNum || "")} placeholder={name} className="pr-24" disabled={isNA} onChange={(e) => {
+                                            const num = Number(e.target.value) || 0;
+                                            const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
+                                            const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                            const vname = unit ? `${num} ${unit}` : String(num);
+                                            const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_name: vname, value_struct: { number: num, unit } } ] };
+                                            const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                          }} />
+                                          <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
+                                            const unit = String(val || defUnit || "");
+                                            const numStr = typeof (currentAttr as any)?.value_struct?.number === "number" ? String((currentAttr as any).value_struct.number) : (String((currentAttr as any)?.value_name || "").split(" ")[0] || "0");
+                                            const num = Number(numStr) || 0;
+                                            const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                            const vname = unit ? `${num} ${unit}` : String(num);
+                                            const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_name: vname, value_struct: { number: num, unit } } ] };
+                                            const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                          }}>
+                                            <SelectTrigger className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-20 border-none bg-transparent shadow-none text-novura-primary hover:text-novura-primary/80 focus-visible:ring-0 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder="Un" /></SelectTrigger>
+                                            <SelectContent>
+                                              {(allowed || []).map((u: any, i2: number) => {
+                                                const uid = String((u as any)?.id || u || i2);
+                                                const uname = String((u as any)?.name || (u as any)?.id || u || uid);
+                                                return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
+                                              })}
+                                            </SelectContent>
+                                          </Select>
+                                        </div>
+                                        {canNA && (
+                                          <div className="mt-1 flex items-center gap-2">
+                                            <Checkbox
+                                              className="h-[16px] w-[16px]"
+                                              checked={isNA}
+                                              onCheckedChange={(checked) => {
+                                                const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                                const nextAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                                const nextVar = { ...v, attributes: nextAttr ? [ ...attrs, nextAttr ] : attrs };
+                                                const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                              }}
+                                            />
+                                            <span className="text-xs text-gray-600">Não se aplica</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  }
+                                  if (hasValues) {
+                                    return (
+                                      <div key={id}>
+                                        <Label>{name}</Label>
+                                        <Select value={String((currentAttr as any)?.value_id || "")} onValueChange={(val) => {
+                                          if (isNA) return;
+                                          const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
+                                          const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                          const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_id: val, value_name: vname } ] };
+                                          const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                        }}>
+                                          <SelectTrigger className={`mt-2 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder={name} /></SelectTrigger>
+                                          <SelectContent>
+                                            {a.values.map((vv: any) => (
+                                              <SelectItem key={String(vv?.id || vv?.name || Math.random())} value={String(vv?.id || "")}>{String(vv?.name || vv?.value || vv?.id || "")}</SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                        {canNA && (
+                                          <div className="mt-1 flex items-center gap-2">
+                                            <Checkbox
+                                              className="h-[16px] w-[16px]"
+                                              checked={isNA}
+                                              onCheckedChange={(checked) => {
+                                                const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                                const nextAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                                const nextVar = { ...v, attributes: nextAttr ? [ ...attrs, nextAttr ] : attrs };
+                                                const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                              }}
+                                            />
+                                            <span className="text-xs text-gray-600">Não se aplica</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  }
+                                  return (
+                                      <div key={id}>
+                                        <Label>{name}</Label>
+                                        <Input className="mt-2" placeholder={name} disabled={isNA} value={String((currentAttr as any)?.value_name || "")} onChange={(e) => {
+                                          const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                          const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_name: e.target.value } ] };
+                                          const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                        }} />
+                                        {canNA && (
+                                          <div className="mt-1 flex items-center gap-2">
+                                            <Checkbox
+                                              className="h-[16px] w-[16px]"
+                                              checked={isNA}
+                                              onCheckedChange={(checked) => {
+                                                const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                                const nextAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                                const nextVar = { ...v, attributes: nextAttr ? [ ...attrs, nextAttr ] : attrs };
+                                                const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                              }}
+                                            />
+                                            <span className="text-xs text-gray-600">Não se aplica</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                })}
+                                <div>
+                                  <Label>Estoque</Label>
+                                  <Input value={String(v?.available_quantity ?? "")} placeholder="Estoque" onChange={(e) => {
+                                    const buf = [...variations];
+                                    buf[idx] = { ...v, available_quantity: Number(e.target.value) };
+                                    setVariations(buf);
+                                  }} />
+                                </div>
+                                <div className="md:col-span-2">
+                                  <ImageUpload
+                                    selectedImages={Array.isArray(v?.pictureFiles) ? v.pictureFiles : []}
+                                    onImagesChange={(files) => {
+                                      const buf = [...variations];
+                                      buf[idx] = { ...v, pictureFiles: files };
+                                      setVariations(buf);
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </AccordionContent>
+                          </AccordionItem>
+                        ))}
+                      </Accordion>
                     </div>
                   )}
                   {currentStep === 5 && (
                     <div className="space-y-4">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {filteredAttrs.tech.map((a: any) => {
+                        {(() => {
+                          const base = (showAllTechAttrs ? filteredAttrs.tech : filteredAttrs.tech.slice(0, 6));
+                          const others = base.filter((a: any) => {
+                            const hasValues = Array.isArray(a?.values) && a.values.length > 0;
+                            const isBoolean = String(a?.value_type || "").toLowerCase() === "boolean" || (hasValues && a.values.some((v: any) => /^(yes|no|sim|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || ""))));
+                            return !isBoolean;
+                          });
+                          return others.map((a: any) => {
                           const id = String(a?.id || "");
                           const name = String(a?.name || id || "Atributo");
                           const hasValues = Array.isArray(a?.values) && a.values.length > 0;
                           const current = (attributes || []).find((x: any) => String(x?.id) === id);
+                          const tags = (a?.tags || {}) as any;
+                          const isRequired = Array.isArray(tags) ? tags.includes("required") : !!(tags?.required);
+                          const isNA = String((current as any)?.value_id || "") === "-1" && ((current as any)?.value_name ?? null) === null;
+                          const canNA = !isRequired;
+                          const isString = String(a?.value_type || "").toLowerCase() === "string";
+                          const isMulti = Array.isArray(tags) ? (tags.includes("multivalued") || tags.includes("repeated")) : (!!(tags?.multivalued) || !!(tags?.repeated));
+                          const isBoolean = String(a?.value_type || "").toLowerCase() === "boolean" || (hasValues && a.values.some((v: any) => /^(yes|no|sim|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || ""))));
+                          if (isBoolean) {
+                            const yesVal = hasValues ? ((a.values || []).find((v: any) => /^(yes|sim)$/i.test(String((v as any)?.id || (v as any)?.name || "")))) : null;
+                            const noVal = hasValues ? ((a.values || []).find((v: any) => /^(no|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || "")))) : null;
+                            const currentValue = (() => {
+                              const vid = String((current as any)?.value_id || "").toLowerCase();
+                              const vname = String((current as any)?.value_name || "").toLowerCase();
+                              if (vid) return /^(yes|sim)$/i.test(vid) ? "yes" : (/^(no|não|nao)$/i.test(vid) ? "no" : "");
+                              if (vname) return /^(yes|sim)$/i.test(vname) ? "yes" : (/^(no|não|nao)$/i.test(vname) ? "no" : "");
+                              return "";
+                            })();
+                            return (
+                              <div key={id}>
+                                <RequiredLabel text={name} required={isRequired} />
+                                <div className="mt-2">
+                                  <ToggleGroup type="single" value={currentValue} onValueChange={(val) => {
+                                    if (!val) return;
+                                    const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                    if (val === "yes") {
+                                      if (yesVal) setAttributes([ ...next, { id, name, value_id: String((yesVal as any)?.id || "yes"), value_name: String((yesVal as any)?.name || "Sim") } ]);
+                                      else setAttributes([ ...next, { id, name, value_name: "Sim" } ]);
+                                    } else if (val === "no") {
+                                      if (noVal) setAttributes([ ...next, { id, name, value_id: String((noVal as any)?.id || "no"), value_name: String((noVal as any)?.name || "Não") } ]);
+                                      else setAttributes([ ...next, { id, name, value_name: "Não" } ]);
+                                    }
+                                  }}>
+                                    <ToggleGroupItem value="yes" className="rounded-l-md border border-gray-300 data-[state=on]:bg-novura-primary data-[state=on]:text-white">Sim</ToggleGroupItem>
+                                    <ToggleGroupItem value="no" className="rounded-r-md border border-gray-300 data-[state=on]:bg-novura-primary data-[state=on]:text-white">Não</ToggleGroupItem>
+                                  </ToggleGroup>
+                                </div>
+                              </div>
+                            );
+                          }
                           if (String(a?.value_type || "").toLowerCase() === "number_unit") {
                             const allowed = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
                             const defUnit = String((a as any)?.default_unit || "");
                             const currNum = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "");
                             const currUnit = typeof (current as any)?.value_struct?.unit === "string" ? String((current as any).value_struct.unit) : (String((current as any)?.value_name || "").split(" ")[1] || defUnit);
                             return (
-                              <div key={id} className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <Input value={String(currNum || "")} placeholder={name} onChange={(e) => {
-                                  const num = Number(e.target.value) || 0;
-                                  const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
-                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                  const vname = unit ? `${num} ${unit}` : String(num);
-                                  setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
-                                }} />
-                                <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
-                                  const unit = String(val || defUnit || "");
-                                  const numStr = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "0");
-                                  const num = Number(numStr) || 0;
-                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                  const vname = unit ? `${num} ${unit}` : String(num);
-                                  setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
-                                }}>
-                                  <SelectTrigger><SelectValue placeholder="Unidade" /></SelectTrigger>
-                                  <SelectContent>
-                                    {(allowed || []).map((u: any, idx: number) => {
-                                      const uid = String((u as any)?.id || u || idx);
-                                      const uname = String((u as any)?.name || (u as any)?.id || u || uid);
-                                      return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
-                                    })}
-                                  </SelectContent>
-                                </Select>
+                              <div key={id}>
+                                <RequiredLabel text={name} required={isRequired} />
+                                <div className="relative mt-2">
+                                  <Input value={String(currNum || "")} placeholder={name} className="pr-24" disabled={isNA} onChange={(e) => {
+                                    const num = Number(e.target.value) || 0;
+                                    const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
+                                    const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                    const vname = unit ? `${num} ${unit}` : String(num);
+                                    setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
+                                  }} />
+                                  <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
+                                    const unit = String(val || defUnit || "");
+                                    const numStr = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "0");
+                                    const num = Number(numStr) || 0;
+                                    const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                    const vname = unit ? `${num} ${unit}` : String(num);
+                                    setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
+                                  }}>
+                                    <SelectTrigger className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-20 border-none bg-transparent shadow-none text-novura-primary hover:text-novura-primary/80 focus-visible:ring-0 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder="Un" /></SelectTrigger>
+                                    <SelectContent>
+                                      {(allowed || []).map((u: any, idx: number) => {
+                                        const uid = String((u as any)?.id || u || idx);
+                                        const uname = String((u as any)?.name || (u as any)?.id || u || uid);
+                                        return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
+                                      })}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                {canNA && (
+                                  <div className="mt-1 flex items-center gap-2">
+                                    <Checkbox
+                                      className="h-[16px] w-[16px]"
+                                      checked={isNA}
+                                      onCheckedChange={(checked) => {
+                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                        const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                        setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                      }}
+                                    />
+                                    <span className="text-xs text-gray-600">Não se aplica</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                          if (isString) {
+                            const suggestions = (Array.isArray(a?.values) ? a.values : []).map((v: any) => ({ id: String(v?.id || ""), name: String(v?.name || v?.value || v?.id || "") }));
+                            return (
+                              <div key={id}>
+                                <RequiredLabel text={name} required={isRequired} />
+                                {isMulti ? (
+                                  <MultiValuedBadgeInput
+                                    id={id}
+                                    name={name}
+                                    current={current}
+                                    suggestions={suggestions}
+                                    disabled={isNA}
+                                    onChange={(obj) => {
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      setAttributes([ ...next, obj ]);
+                                    }}
+                                  />
+                                ) : (
+                                  <StringSuggestInput
+                                    id={id}
+                                    name={name}
+                                    current={current}
+                                    suggestions={suggestions}
+                                    disabled={isNA}
+                                    onChange={(obj) => {
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      setAttributes([ ...next, obj ]);
+                                    }}
+                                  />
+                                )}
+                                {canNA && (
+                                  <div className="mt-1 flex items-center gap-2">
+                                    <Checkbox
+                                      className="h-[16px] w-[16px]"
+                                      checked={isNA}
+                                      onCheckedChange={(checked) => {
+                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                        const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                        setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                      }}
+                                    />
+                                    <span className="text-xs text-gray-600">Não se aplica</span>
+                                  </div>
+                                )}
                               </div>
                             );
                           }
                           if (hasValues) {
                             return (
-                              <Select key={id} value={String(current?.value_id || "")} onValueChange={(val) => {
-                                const vname = a.values.find((v: any) => String(v?.id || "") === String(val))?.name || "";
-                                const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                setAttributes([ ...next, { id, name, value_id: val, value_name: vname } ]);
-                              }}>
-                                <SelectTrigger><SelectValue placeholder={name} /></SelectTrigger>
-                                <SelectContent>
-                                  {a.values.map((v: any) => (
-                                    <SelectItem key={String(v?.id || v?.name || Math.random())} value={String(v?.id || "")}>{String(v?.name || v?.value || v?.id || "")}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                              <div key={id}>
+                                <RequiredLabel text={name} required={isRequired} />
+                                <Select value={String(current?.value_id || "")} onValueChange={(val) => {
+                                  if (isNA) return;
+                                  const vname = a.values.find((v: any) => String(v?.id || "") === String(val))?.name || "";
+                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                  setAttributes([ ...next, { id, name, value_id: val, value_name: vname } ]);
+                                }}>
+                                  <SelectTrigger className={`mt-2 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder={name} /></SelectTrigger>
+                                  <SelectContent>
+                                    {a.values.map((v: any) => (
+                                      <SelectItem key={String(v?.id || v?.name || Math.random())} value={String(v?.id || "")}>{String(v?.name || v?.value || v?.id || "")}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                {canNA && (
+                                  <div className="mt-1 flex items-center gap-2">
+                                    <Checkbox
+                                      className="h-[16px] w-[16px]"
+                                      checked={isNA}
+                                      onCheckedChange={(checked) => {
+                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                        const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                        setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                      }}
+                                    />
+                                    <span className="text-xs text-gray-600">Não se aplica</span>
+                                  </div>
+                                )}
+                              </div>
                             );
                           }
                           return (
-                            <Input key={id} placeholder={name} value={String(current?.value_name || "")} onChange={(e) => {
-                              const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                              setAttributes([ ...next, { id, name, value_name: e.target.value } ]);
-                            }} />
+                            <div key={id}>
+                              <RequiredLabel text={name} required={isRequired} />
+                              <StringSuggestInput
+                                id={id}
+                                name={name}
+                                current={current}
+                                suggestions={[]}
+                                disabled={isNA}
+                                onChange={(obj) => {
+                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                  setAttributes([ ...next, obj ]);
+                                }}
+                              />
+                              {canNA && (
+                                <div className="mt-1 flex items-center gap-2">
+                                  <Checkbox
+                                    className="h-[16px] w-[16px]"
+                                    checked={isNA}
+                                    onCheckedChange={(checked) => {
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                      setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                    }}
+                                  />
+                                  <span className="text-xs text-gray-600">Não se aplica</span>
+                                </div>
+                              )}
+                            </div>
                           );
-                        })}
+                          });
+                        })()}
                       </div>
+                      {(() => {
+                        const booleans = (showAllTechAttrs ? filteredAttrs.tech : filteredAttrs.tech.slice(0, 6)).filter((a: any) => {
+                          const hasValues = Array.isArray(a?.values) && a.values.length > 0;
+                          return String(a?.value_type || "").toLowerCase() === "boolean" || (hasValues && a.values.some((v: any) => /^(yes|no|sim|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || ""))));
+                        });
+                        if (!booleans.length) return null;
+                        return (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {booleans.map((a: any) => {
+                              const id = String(a?.id || "");
+                              const name = String(a?.name || id || "Atributo");
+                              const hasValues = Array.isArray(a?.values) && a.values.length > 0;
+                              const current = (attributes || []).find((x: any) => String(x?.id) === id);
+                              const yesVal = hasValues ? ((a.values || []).find((v: any) => /^(yes|sim)$/i.test(String((v as any)?.id || (v as any)?.name || "")))) : null;
+                              const noVal = hasValues ? ((a.values || []).find((v: any) => /^(no|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || "")))) : null;
+                              const currentValue = (() => {
+                                const vid = String((current as any)?.value_id || "").toLowerCase();
+                                const vname = String((current as any)?.value_name || "").toLowerCase();
+                                if (vid) return /^(yes|sim)$/i.test(vid) ? "yes" : (/^(no|não|nao)$/i.test(vid) ? "no" : "");
+                                if (vname) return /^(yes|sim)$/i.test(vname) ? "yes" : (/^(no|não|nao)$/i.test(vname) ? "no" : "");
+                                return "";
+                              })();
+                              const tagsBool = (a?.tags || {}) as any;
+                              const isRequiredBool = Array.isArray(tagsBool) ? tagsBool.includes("required") : !!(tagsBool?.required);
+                              return (
+                                <div key={id}>
+                                  <RequiredLabel text={name} required={isRequiredBool} />
+                                  <div className="mt-2">
+                                    <ToggleGroup type="single" value={currentValue} onValueChange={(val) => {
+                                      if (!val) return;
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      if (val === "yes") {
+                                        if (yesVal) setAttributes([ ...next, { id, name, value_id: String((yesVal as any)?.id || "yes"), value_name: String((yesVal as any)?.name || "Sim") } ]);
+                                        else setAttributes([ ...next, { id, name, value_name: "Sim" } ]);
+                                      } else if (val === "no") {
+                                        if (noVal) setAttributes([ ...next, { id, name, value_id: String((noVal as any)?.id || "no"), value_name: String((noVal as any)?.name || "Não") } ]);
+                                        else setAttributes([ ...next, { id, name, value_name: "Não" } ]);
+                                      }
+                                    }} className="gap-0">
+                                      <ToggleGroupItem value="yes" className="rounded-l-md px-3 py-1 text-sm border border-gray-300 data-[state=on]:bg-novura-primary data-[state=on]:text-white">Sim</ToggleGroupItem>
+                                      <ToggleGroupItem value="no" className="rounded-r-md px-3 py-1 text-sm border border-gray-300 data-[state=on]:bg-novura-primary data-[state=on]:text-white">Não</ToggleGroupItem>
+                                    </ToggleGroup>
+                                  </div>
+                                  {(() => {
+                                    const isNA2 = String((current as any)?.value_id || "") === "-1" && ((current as any)?.value_name ?? null) === null;
+                                    const canNA2 = !isRequiredBool;
+                                    if (!canNA2) return null;
+                                    return (
+                                      <div className="mt-1 flex items-center gap-2">
+                                        <Checkbox
+                                          className="h-[16px] w-[16px]"
+                                          checked={isNA2}
+                                          onCheckedChange={(checked) => {
+                                            const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                            const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                            setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                          }}
+                                        />
+                                        <span className="text-xs text-gray-600">Não se aplica</span>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              );
+                        })}
+                        
+                      </div>
+                        );
+                      })()}
+                      {(!showAllTechAttrs && filteredAttrs.tech.length > 6) && (
+                        <div className="flex justify-center">
+                          <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => setShowAllTechAttrs(true)}>
+                            <ChevronDown className="w-4 h-4 mr-1" /> Preencher mais campos
+                          </Button>
+                        </div>
+                      )}
+                      {(showAllTechAttrs && filteredAttrs.tech.length > 6) && (
+                        <div className="flex justify-center">
+                          <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => setShowAllTechAttrs(false)}>
+                            Mostrar menos
+                          </Button>
+                        </div>
+                      )}
                       
                       {techSpecsOutput && (
                         <div className="border rounded-lg p-4 bg-white">
@@ -1137,18 +2323,77 @@ export default function AnunciosCriarML() {
                   )}
                   {currentStep === 6 && (
                     <div className="space-y-4">
+                      <div className="grid grid-cols-1 gap-4">
+                        <div>
+                          <RequiredLabel text="Preço" required />
+                          <div className="relative mt-2">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">R$</span>
+                            <Input id="ml-price" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Preço" className="pl-10" />
+                          </div>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="text-sm text-gray-700">Tipo de publicação</div>
+                      </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <Input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Preço" />
-                        <Select value={listingTypeId} onValueChange={setListingTypeId}>
-                          <SelectTrigger><SelectValue placeholder="Tipo de publicação" /></SelectTrigger>
-                          <SelectContent>
-                            {(Array.isArray(listingTypes) ? listingTypes : []).map((t: any) => {
-                              const id = String(t?.id || t);
-                              const name = String(t?.name || t?.listing_type_name || id);
-                              return <SelectItem key={id} value={id}>{name}</SelectItem>;
-                            })}
-                          </SelectContent>
-                        </Select>
+                        {(([...((Array.isArray(listingTypes) ? listingTypes : []))] as any[]).sort((a: any, b: any) => {
+                          const aid = String(a?.id || a);
+                          const bid = String(b?.id || b);
+                          const arank = aid === "gold_special" ? 0 : 1;
+                          const brank = bid === "gold_special" ? 0 : 1;
+                          return arank - brank;
+                        })).map((t: any) => {
+                          const id = String(t?.id || t);
+                          const name = String(t?.name || t?.listing_type_name || id);
+                          const opt = (listingPriceOptions || []).find((p: any) => String(p?.listing_type_id || "") === id);
+                          const priceNum = (() => { const s = String(price || "").replace(/\./g, "").replace(/,/, "."); const n = Number(s); return isNaN(n) ? 0 : n; })();
+                          const currency = String(opt?.currency_id || currencyId || "BRL");
+                          const fmt = new Intl.NumberFormat("pt-BR", { style: "currency", currency });
+                          const pct = typeof opt?.sale_fee_details?.percentage_fee === "number" ? opt.sale_fee_details.percentage_fee : (typeof opt?.sale_fee_details?.meli_percentage_fee === "number" ? opt.sale_fee_details.meli_percentage_fee : undefined);
+                          const commissionAmt = typeof pct === "number" && priceNum > 0 ? (priceNum * pct) / 100 : (typeof opt?.sale_fee_amount === "number" ? opt.sale_fee_amount : (typeof opt?.sale_fee_details?.gross_amount === "number" ? opt.sale_fee_details.gross_amount : 0));
+                          const exposure = String(opt?.listing_exposure || "").toLowerCase();
+                          const exposureLabel = exposure === "highest" ? "Exposição máxima" : (exposure === "high" ? "Exposição alta" : (exposure === "mid" ? "Exposição média" : (exposure === "low" ? "Exposição baixa" : "Exposição")));
+                          const requiresPic = !!opt?.requires_picture;
+                          const selected = String(listingTypeId || "") === id;
+                          return (
+                            <div key={id} className={`border-2 rounded-3xl p-5 bg-white cursor-pointer transition-all ${selected ? "border-novura-primary" : "border-gray-300 hover:border-novura-primary hover:bg-novura-light"} shadow-md`} onClick={() => setListingTypeId(id)}>
+                              <div className="flex items-center justify-between">
+                                <div className="text-2xl font-bold text-novura-primary">{name}</div>
+                                {selected ? <span className="text-xs px-2 py-0.5 rounded-full bg-novura-primary text-white">Selecionado</span> : null}
+                              </div>
+                              <div className="mt-2 text-sm text-gray-700">
+                                <ul className="space-y-1">
+                                  {(id === "gold_special" ? [
+                                    "Indicado para Compra à Vista",
+                                    "Estoque com Alta Rotatividade",
+                                    "Maximização da Margem Bruta",
+                                    "Produtos Baratos",
+                                  ] : [
+                                    "Produtos Alto Ticket",
+                                    "Oferecer 12x Sem Juros",
+                                    "Itens Sazonais/Tendências",
+                                    "Maior Taxa de Conversão",
+                                  ]).map((tip: string, i: number) => (
+                                    <li key={i} className="flex items-start">
+                                      <span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span>
+                                      <span>{tip}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                              <div className="mt-4">
+                                <div className="text-sm font-semibold text-novura-primary">Tarifa de venda</div>
+                                <div className="mt-1 text-sm text-gray-900">Comissão cobrada {typeof pct === "number" && pct > 0 ? `${pct.toFixed(2)}%` : "-"}</div>
+                                <div className="text-sm text-gray-900">Valor a ser pago {fmt.format(Number(commissionAmt || 0))}</div>
+                              </div>
+                              {!selected && (
+                                <div className="mt-4">
+                                  <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => setListingTypeId(id)}>Selecionar {name}</Button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                       {(() => {
                         const wType = (saleTermsMeta || []).find((x: any) => String(x?.id || "").toUpperCase() === "WARRANTY_TYPE");
@@ -1159,132 +2404,246 @@ export default function AnunciosCriarML() {
                         const currentTimeUnit = typeof (currentTime as any)?.value_struct?.unit === "string" ? String((currentTime as any).value_struct.unit) : (String((currentTime as any)?.value_name || "").split(" ")[1] || String((wTime as any)?.default_unit || ""));
                         if (!wType && !wTime) return null;
                         return (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {wType ? (
-                              <Select value={String(currentType?.value_id || "")} onValueChange={(val) => {
-                                const vname = ((wType?.values || []) as any[]).find((v: any) => String(v?.id || "") === String(val))?.name || String(val || "");
-                                const next = (saleTerms || []).filter((s: any) => String(s?.id || "") !== "WARRANTY_TYPE");
-                                setSaleTerms([ ...next, { id: "WARRANTY_TYPE", value_id: val, value_name: vname } ]);
-                              }}>
-                                <SelectTrigger><SelectValue placeholder="Tipo de garantia" /></SelectTrigger>
-                                <SelectContent>
-                                  {(Array.isArray(wType?.values) ? wType.values : []).map((v: any) => (
-                                    <SelectItem key={String(v?.id || v?.name || Math.random())} value={String(v?.id || "")}>{String(v?.name || v?.value || v?.id || "")}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            ) : null}
-                            {wTime ? (
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <Input value={String(currentTimeNumber || "")} placeholder="Tempo de garantia" onChange={(e) => {
-                                  const num = e.target.value;
-                                  const unit = currentTimeUnit || String((wTime as any)?.default_unit || "");
-                                  const next = (saleTerms || []).filter((s: any) => String(s?.id || "") !== "WARRANTY_TIME");
-                                  const n = Number(num) || 0;
-                                  const name = unit ? `${n} ${unit}` : String(n);
-                                  setSaleTerms([ ...next, { id: "WARRANTY_TIME", value_name: name, value_struct: { number: n, unit } } ]);
-                                }} />
-                                <Select value={String(currentTimeUnit || (wTime as any)?.default_unit || "")} onValueChange={(val) => {
-                                  const unit = String(val || (wTime as any)?.default_unit || "");
-                                  const prev = (saleTerms || []).find((s: any) => String(s?.id || "") === "WARRANTY_TIME");
-                                  const numStr = typeof (prev as any)?.value_struct?.number === "number" ? String((prev as any).value_struct.number) : (String((prev as any)?.value_name || "").split(" ")[0] || "");
-                                  const n = Number(numStr) || 0;
-                                  const name = unit ? `${n} ${unit}` : String(n);
-                                  const next = (saleTerms || []).filter((s: any) => String(s?.id || "") !== "WARRANTY_TIME");
-                                  setSaleTerms([ ...next, { id: "WARRANTY_TIME", value_name: name, value_struct: { number: n, unit } } ]);
-                                }}>
-                                  <SelectTrigger><SelectValue placeholder="Unidade" /></SelectTrigger>
-                                  <SelectContent>
-                                    {(Array.isArray(wTime?.allowed_units) ? wTime.allowed_units : []).map((u: any) => (
-                                      <SelectItem key={String(u?.id || u?.name || Math.random())} value={String(u?.id || "")}>{String(u?.name || u?.id || "")}</SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                            ) : null}
+                          <div className="space-y-2">
+                            <div className="text-sm text-gray-700">Tipo de garantia</div>
+                            <div className="space-y-2">
+                              {(Array.isArray(wType?.values) ? wType.values : []).map((v: any) => {
+                                const vid = String(v?.id || "");
+                                const vname = String(v?.name || v?.value || v?.id || vid);
+                                const checked = String(currentType?.value_id || "") === vid;
+                                return (
+                                  <div key={vid} className="p-3 border border-gray-200 rounded-lg">
+                                    <label className="flex items-center gap-2">
+                                      <Checkbox checked={checked} onCheckedChange={(isC) => {
+                                        const nextBase = (saleTerms || []).filter((s: any) => String(s?.id || "") !== "WARRANTY_TYPE" && String(s?.id || "") !== "WARRANTY_TIME");
+                                        if (isC) {
+                                          const obj = { id: "WARRANTY_TYPE", value_id: vid, value_name: vname } as any;
+                                          setSaleTerms([ ...nextBase, obj ]);
+                                        } else {
+                                          setSaleTerms(nextBase);
+                                        }
+                                      }} />
+                                      <span className="text-sm">{vname}</span>
+                                    </label>
+                                    {checked && wTime ? (
+                                      <div className="mt-3">
+                                        <div className="flex border border-gray-300 rounded-md overflow-hidden bg-white w-[340px]">
+                                          <Input className="flex-1 border-0 rounded-none focus-visible:ring-0" value={String(currentTimeNumber || "")} placeholder="Tempo" onChange={(e) => {
+                                            const num = e.target.value;
+                                            const unit = currentTimeUnit || String((wTime as any)?.default_unit || "");
+                                            const n = Number(num) || 0;
+                                            const name = unit ? `${n} ${unit}` : String(n);
+                                            const base = (saleTerms || []).filter((s: any) => String(s?.id || "") !== "WARRANTY_TIME");
+                                            setSaleTerms([ ...base, { id: "WARRANTY_TIME", value_name: name, value_struct: { number: n, unit } } ]);
+                                          }} />
+                                          <Select value={String(currentTimeUnit || (wTime as any)?.default_unit || "")} onValueChange={(val) => {
+                                            const unit = String(val || (wTime as any)?.default_unit || "");
+                                            const prev = (saleTerms || []).find((s: any) => String(s?.id || "") === "WARRANTY_TIME");
+                                            const numStr = typeof (prev as any)?.value_struct?.number === "number" ? String((prev as any).value_struct.number) : (String((prev as any)?.value_name || "").split(" ")[0] || "");
+                                            const n = Number(numStr) || 0;
+                                            const name = unit ? `${n} ${unit}` : String(n);
+                                            const base = (saleTerms || []).filter((s: any) => String(s?.id || "") !== "WARRANTY_TIME");
+                                            setSaleTerms([ ...base, { id: "WARRANTY_TIME", value_name: name, value_struct: { number: n, unit } } ]);
+                                          }}>
+                                            <SelectTrigger className="border-0 rounded-none text-novura-primary px-2 w-[120px]"><SelectValue placeholder="Unidade" /></SelectTrigger>
+                                            <SelectContent>
+                                              {(Array.isArray(wTime?.allowed_units) ? wTime.allowed_units : []).map((u: any) => (
+                                                <SelectItem key={String(u?.id || u?.name || Math.random())} value={String(u?.id || "")}>{String(u?.name || u?.id || "")}</SelectItem>
+                                              ))}
+                                            </SelectContent>
+                                          </Select>
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
                         );
                       })()}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {(() => {
-                          const sel = (listingPriceOptions || []).find((p: any) => String(p?.listing_type_id || "") === String(listingTypeId || ""));
-                          if (!sel) return null;
-                          const currency = String(sel?.currency_id || currencyId || "BRL");
-                          const fmt = new Intl.NumberFormat("pt-BR", { style: "currency", currency });
-                          const commission = typeof sel?.sale_fee_amount === "number" ? sel.sale_fee_amount : (typeof sel?.selling_fee_amount === "number" ? sel.selling_fee_amount : (typeof sel?.sale_fee_details?.gross_amount === "number" ? sel.sale_fee_details.gross_amount : 0));
-                          const listingFee = typeof sel?.listing_fee_amount === "number" ? sel.listing_fee_amount : (typeof sel?.listing_fee_details?.gross_amount === "number" ? sel.listing_fee_details.gross_amount : 0);
-                          const total = Number(commission || 0) + Number(listingFee || 0);
-                          return (
-                            <div className="border rounded-lg p-4 bg-white">
-                              <div className="text-sm text-gray-700">Custos estimados</div>
-                              <div className="mt-2 text-sm text-gray-900">Comissão: {fmt.format(commission || 0)}</div>
-                              <div className="mt-1 text-sm text-gray-900">Taxa de publicação: {fmt.format(listingFee || 0)}</div>
-                              <div className="mt-2 font-semibold">Total: {fmt.format(total || 0)}</div>
-                            </div>
-                          );
-                        })()}
-                      </div>
                     </div>
                   )}
                   {currentStep === 7 && (
                     <div className="space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <Select value={String((shipping as any)?.mode || "")} onValueChange={(val) => setShipping({ ...(shipping || {}), mode: val })}>
-                          <SelectTrigger><SelectValue placeholder="Modo de envio" /></SelectTrigger>
-                          <SelectContent>
-                            {(shippingModesAvailable || []).map((m) => (
-                              <SelectItem key={m} value={m}>{m.toUpperCase()}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Select value={String((shipping as any)?.package_type || "")} onValueChange={(val) => setShipping({ ...(shipping || {}), package_type: val })}>
-                          <SelectTrigger><SelectValue placeholder="Tipo da embalagem do vendor" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="box">Caixa</SelectItem>
-                            <SelectItem value="envelope">Envelope</SelectItem>
-                            <SelectItem value="tube">Tubo</SelectItem>
-                          </SelectContent>
-                        </Select>
+                      <div className="space-y-2">
+                        <div className="text-sm text-gray-700">Tipos de logística disponíveis</div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {(availableLogisticTypes || []).map((t) => {
+              const label = (
+                t === "drop_off" ? "Correios" :
+                t === "xd_drop_off" ? "Mercado Envios" :
+                t === "self_service" ? "Flex" :
+                String(t || "").toUpperCase()
+              );
+              const selected = String(selectedLogisticType || "") === String(t || "");
+              return (
+                <div
+                  key={String(t || "")}
+                  className={`border-2 rounded-3xl p-5 bg-white cursor-pointer transition-all ${selected ? "border-novura-primary" : "border-gray-300 hover:border-novura-primary hover:bg-novura-light"} shadow-md`}
+                  onClick={() => { setSelectedLogisticType(String(t || "")); if (String(t || "") === "self_service") setPreferFlex(true); }}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="text-2xl font-bold text-novura-primary">{label}</div>
+                    {selected ? <span className="text-xs px-2 py-0.5 rounded-full bg-novura-primary text-white">Selecionado</span> : null}
+                  </div>
+                  <ul className="mt-3 space-y-1">
+                    {(t === "drop_off" ? ["Postagem em agências dos Correios", "Etiqueta gerada pelo Mercado Livre",]
+                      : t === "xd_drop_off" ? ["Postagem em agências do ML", "Rastreio integrado ao Mercado Envios", "Cobertura ampla nas principais regiões"]
+                      : ["Entrega rápida (mesmo dia)", "Disponibilidade sujeita às regras Flex", "Ideal para curtas distâncias"]
+                    ).map((tip, i) => (
+                      <li key={i} className="flex items-start text-sm text-gray-700">
+                        <span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span>
+                        {tip}
+                      </li>
+                    ))}
+                  </ul>
+                  {String(t || "") === "self_service" && (
+                    <div className="mt-3 flex items-center space-x-2">
+                      <Checkbox checked={preferFlex} onCheckedChange={(v) => setPreferFlex(!!v)} />
+                      <span className="text-sm">Usar Flex</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-sm text-gray-700">Preferências</div>
                         <div className="flex items-center space-x-3">
-                          <label className="flex items-center space-x-2">
-                            <Checkbox checked={!!(shipping as any)?.free_shipping} onCheckedChange={(v) => setShipping({ ...(shipping || {}), free_shipping: !!v })} />
-                            <span className="text-sm">Frete grátis</span>
-                          </label>
+                          {String((shipping as any)?.mode || "").toLowerCase() === "me2" && (
+                            <label className="flex items-center space-x-2">
+                              <Checkbox checked={!!(shipping as any)?.free_shipping} disabled={freeShippingMandatory} onCheckedChange={(v) => { if (freeShippingMandatory) return; setShipping({ ...(shipping || {}), free_shipping: !!v }); }} />
+                              <span className="text-sm">Frete grátis</span>
+                              {freeShippingMandatory ? <span className="inline-flex items-center rounded-full bg-novura-primary text-white px-2 py-0.5 text-[10px]">Obrigatório</span> : null}
+                            </label>
+                          )}
                           <label className="flex items-center space-x-2">
                             <Checkbox checked={!!(shipping as any)?.local_pick_up} onCheckedChange={(v) => setShipping({ ...(shipping || {}), local_pick_up: !!v })} />
                             <span className="text-sm">Retirada local</span>
                           </label>
+                          {availableLogisticTypes.includes("self_service") && (
+                            <label className="flex items-center space-x-2">
+                              <Checkbox checked={preferFlex} onCheckedChange={(v) => setPreferFlex(!!v)} />
+                              <span className="text-sm">Preferir Flex (self_service)</span>
+                            </label>
+                          )}
                         </div>
                       </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <Input type="number" step="1" min="1" placeholder="Peso da embalagem do vendor (g)" onChange={(e) => setShipping({ ...(shipping || {}), weight: Number(e.target.value) })} />
-                        <Input type="number" step="1" min="1" placeholder="Altura da embalagem do vendor (cm)" onChange={(e) => {
-                          const dims = (shipping as any)?.dimensions || {};
-                          setShipping({ ...(shipping || {}), dimensions: { ...dims, height: Number(e.target.value) || 0 } })
-                        }} />
-                        <Input type="number" step="1" min="1" placeholder="Largura da embalagem do vendor (cm)" onChange={(e) => {
-                          const dims = (shipping as any)?.dimensions || {};
-                          setShipping({ ...(shipping || {}), dimensions: { ...dims, width: Number(e.target.value) || 0 } })
-                        }} />
-                        <Input type="number" step="1" min="1" placeholder="Comprimento da embalagem do vendor (cm)" onChange={(e) => {
-                          const dims = (shipping as any)?.dimensions || {};
-                          setShipping({ ...(shipping || {}), dimensions: { ...dims, length: Number(e.target.value) || 0 } })
-                        }} />
-                        
+
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <div className="text-sm text-gray-700">Dimensões e peso</div>
+                          {String((shipping as any)?.mode || "").toLowerCase() === "me2" ? (
+                            <span className="inline-flex items-center rounded-full bg-novura-primary text-white px-2 py-0.5 text-[10px]">Obrigatório</span>
+                          ) : null}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <Input type="number" step="1" min="1" placeholder="Peso (g)" onChange={(e) => setShipping({ ...(shipping || {}), weight: Number(e.target.value) })} />
+                          <Input type="number" step="1" min="1" placeholder="Altura (cm)" onChange={(e) => {
+                            const dims = (shipping as any)?.dimensions || {};
+                            setShipping({ ...(shipping || {}), dimensions: { ...dims, height: Number(e.target.value) || 0 } })
+                          }} />
+                          <Input type="number" step="1" min="1" placeholder="Largura (cm)" onChange={(e) => {
+                            const dims = (shipping as any)?.dimensions || {};
+                            setShipping({ ...(shipping || {}), dimensions: { ...dims, width: Number(e.target.value) || 0 } })
+                          }} />
+                          <Input type="number" step="1" min="1" placeholder="Comprimento (cm)" onChange={(e) => {
+                            const dims = (shipping as any)?.dimensions || {};
+                            setShipping({ ...(shipping || {}), dimensions: { ...dims, length: Number(e.target.value) || 0 } })
+                          }} />
+                        </div>
                       </div>
                     </div>
                   )}
                   {currentStep === 8 && (
-                    <div className="space-y-4">
+                    <div className="space-y-6">
                       <div className="text-sm text-gray-700">Revise os dados e publique</div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <Input value={title} readOnly />
-                        <Input value={categoryId} readOnly />
-                        <Input value={listingTypeId} readOnly />
-                        <Input value={price} readOnly />
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold text-novura-primary">{pathsByCategoryId[String(categoryId || '')] || String(categoryId || '')}</div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <Label>Título do anúncio</Label>
+                            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Edite o título do anúncio" />
+                          </div>
+                          <div>
+                            <Label>Tipo de publicação</Label>
+                            <Input value={(listingTypes || []).find((t: any) => String(t?.id || t) === String(listingTypeId))?.name || String(listingTypeId)} readOnly />
+                          </div>
+                          <div className="md:col-span-2">
+                            <Label>Tipo de envio</Label>
+                            {(() => {
+                              const t = String(selectedLogisticType || '');
+                              const label = t === 'drop_off' ? 'Correios' : t === 'xd_drop_off' ? 'Mercado Envios' : t === 'self_service' ? 'Flex' : (t ? t.toUpperCase() : 'Não definido');
+                              const tips = (t === 'drop_off' ? [ 'Postagem em agências dos Correios', 'Etiqueta gerada pelo Mercado Livre' ]
+                                : t === 'xd_drop_off' ? [ 'Postagem em agências do ML', 'Rastreio integrado ao Mercado Envios', 'Cobertura ampla nas principais regiões' ]
+                                : [ 'Entrega rápida (mesmo dia)', 'Disponibilidade sujeita às regras Flex', 'Ideal para curtas distâncias' ]);
+                              return (
+                                <div className={`mt-2 border-2 rounded-3xl p-5 bg-white shadow-md ${t ? 'border-novura-primary' : 'border-gray-300'}`}>
+                                  <div className="flex items-center justify-between">
+                                    <div className="text-2xl font-bold text-novura-primary">{label}</div>
+                                    {t ? <span className="text-xs px-2 py-0.5 rounded-full bg-novura-primary text-white">Selecionado</span> : null}
+                                  </div>
+                                  <ul className="mt-3 space-y-1">
+                                    {tips.map((tip, i) => (
+                                      <li key={i} className="flex items-start text-sm text-gray-700">
+                                        <span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span>
+                                        {tip}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex justify-end">
+                      <div>
+                        <Accordion type="single" collapsible className="w-full">
+                          <AccordionItem value="variacoes">
+                            <AccordionTrigger>Variações</AccordionTrigger>
+                            <AccordionContent>
+                              <div className="space-y-2">
+                                {(variations || []).length === 0 ? (
+                                  <div className="text-sm text-gray-600">Sem variações</div>
+                                ) : (
+                                  (variations || []).map((v: any, idx: number) => (
+                                    <div key={idx} className="flex items-center justify-between border rounded-lg p-3">
+                                      <div>
+                                        <div className="font-medium text-gray-900">{v.name || `Variação ${idx + 1}`}</div>
+                                        <div className="text-xs text-gray-500">SKU: {v.sku || '-'}</div>
+                                      </div>
+                                      <div className="flex -space-x-2">
+                                        {(Array.isArray(v?.pictureFiles) ? v.pictureFiles : []).slice(0, 4).map((f: any, i: number) => (
+                                          <img key={i} src={typeof f === 'string' ? f : (f?.preview || f?.url || '/placeholder.svg')} className="w-8 h-8 rounded object-cover border" />
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </AccordionContent>
+                          </AccordionItem>
+                          <AccordionItem value="fotos">
+                            <AccordionTrigger>Fotos</AccordionTrigger>
+                            <AccordionContent>
+                              <div className="flex flex-wrap gap-2">
+                                {(pictures || []).length === 0 ? (
+                                  <div className="text-sm text-gray-600">Sem fotos</div>
+                                ) : (
+                                  (pictures || []).map((src: string, i: number) => (
+                                    <img key={i} src={src} className="w-16 h-16 rounded object-cover border" />
+                                  ))
+                                )}
+                              </div>
+                            </AccordionContent>
+                          </AccordionItem>
+                        </Accordion>
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <Button variant="outline" className="border-2 rounded-2xl" onClick={backStep}>Voltar</Button>
                         <Button className="bg-novura-primary hover:bg-novura-primary/90" onClick={handlePublish}>PUBLICAR</Button>
                       </div>
                     </div>
@@ -1292,6 +2651,7 @@ export default function AnunciosCriarML() {
                 </CardContent>
               </Card>
               <div className="mt-4">
+              {currentStep !== 8 && (
               <NavigationButtons
                 currentStep={currentStep}
                 maxSteps={maxSteps}
@@ -1302,9 +2662,11 @@ export default function AnunciosCriarML() {
                 onNext={currentStep === maxSteps ? handlePublish : nextStep}
                 onBack={backStep}
                 kitEtapa={"" as any}
-                onSave={nextStep}
+                onSave={currentStep === maxSteps ? () => navigate('/anuncios') : nextStep}
                 canProceedExternal={canProceed}
+                saveLabel={currentStep === 7 ? "Avançar" : (currentStep === 8 ? "Fazer depois" : undefined)}
               />
+              )}
               </div>
             </div>
           </main>
@@ -1313,3 +2675,13 @@ export default function AnunciosCriarML() {
     </SidebarProvider>
   );
 }
+const RequiredLabel = ({ text, required }: { text: string; required?: boolean }) => {
+  return (
+    <div className="flex items-center gap-2">
+      <Label>{text}</Label>
+      {required ? (
+        <span className="inline-flex items-center rounded-full bg-novura-primary text-white px-2 py-0.5 text-[10px]">Obrigatório</span>
+      ) : null}
+    </div>
+  );
+};
