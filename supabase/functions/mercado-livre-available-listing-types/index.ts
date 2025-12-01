@@ -52,7 +52,8 @@ serve(async (req) => {
     const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
     const json = await resp.json();
     if (!resp.ok) return jsonResponse({ error: "listing types failed", meli: json }, 200);
-    return jsonResponse({ ok: true, types: json || [] }, 200);
+    const types = Array.isArray(json?.available) ? json.available : (Array.isArray(json) ? json : []);
+    return jsonResponse({ ok: true, types }, 200);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return jsonResponse({ error: msg }, 500);
