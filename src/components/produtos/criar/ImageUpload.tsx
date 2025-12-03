@@ -4,8 +4,8 @@ import { Plus, X } from "lucide-react";
 import { Label } from "@/components/ui/label";
 
 interface ImageUploadProps {
-  selectedImages: File[];
-  onImagesChange: (images: File[]) => void;
+  selectedImages: Array<File | string | { preview?: string; url?: string; file?: File } | Blob>;
+  onImagesChange: (images: Array<File | string | { preview?: string; url?: string; file?: File } | Blob>) => void;
 }
 
 export function ImageUpload({ selectedImages, onImagesChange }: ImageUploadProps) {
@@ -29,24 +29,38 @@ export function ImageUpload({ selectedImages, onImagesChange }: ImageUploadProps
       <Label>Imagens do Produto (até 8 fotos)</Label>
       <div className="grid grid-cols-8 gap-4 mt-4">
         {/* Imagens selecionadas */}
-        {selectedImages.map((file, index) => (
-          <div key={index} className="relative">
-            <div className="aspect-square border-2 border-gray-300 rounded-lg overflow-hidden bg-gray-50">
-              <img
-                src={URL.createObjectURL(file)}
-                alt={`Imagem ${index + 1}`}
-                className="w-full h-full object-cover"
-              />
+        {selectedImages.map((item, index) => {
+          let src: string = "/placeholder.svg";
+          const f: any = item as any;
+          try {
+            if (f instanceof File) src = URL.createObjectURL(f);
+            else if (f instanceof Blob) src = URL.createObjectURL(f);
+            else if (typeof f === "string") src = f;
+            else if (f && typeof f === "object") {
+              if (f.file instanceof File) src = URL.createObjectURL(f.file as File);
+              else if (typeof f.preview === "string") src = f.preview as string;
+              else if (typeof f.url === "string") src = f.url as string;
+            }
+          } catch {}
+          return (
+            <div key={index} className="relative">
+              <div className="aspect-square border-2 border-gray-300 rounded-lg overflow-hidden bg-gray-50">
+                <img
+                  src={src}
+                  alt={`Imagem ${index + 1}`}
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => removeImage(index)}
+                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors text-xs"
+              >
+                <X className="w-3 h-3" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => removeImage(index)}
-              className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors text-xs"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        ))}
+          );
+        })}
         
         {/* Quadros para adicionar novas imagens */}
         {Array.from({ length: 8 - selectedImages.length }).map((_, index) => (

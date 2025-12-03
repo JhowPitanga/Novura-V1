@@ -154,16 +154,16 @@ async function enrichPedidosWithMLImages(parsedPedidos: any[], marketplaceByOrde
         return pedidosClonados;
     }
 
-    // Buscar dados dos itens no backend (tabela marketplace_items) — evita chamadas à API pública do ML
-    let itemRows: any[] = [];
-    try {
-        const { data: rows, error } = await (supabase as any)
-            .from('marketplace_items')
+        // Buscar dados dos itens no backend (tabela unificada) — evita chamadas à API pública do ML
+        let itemRows: any[] = [];
+        try {
+            const { data: rows, error } = await (supabase as any)
+            .from('marketplace_items_unified')
             .select('marketplace_item_id, pictures, variations, data, marketplace_name')
             .eq('marketplace_name', 'Mercado Livre')
             .in('marketplace_item_id', Array.from(uniqueItemIds));
-        if (error) throw error;
-        itemRows = rows || [];
+            if (error) throw error;
+            itemRows = rows || [];
     } catch (err) {
         console.warn('Falha ao buscar marketplace_items para imagens:', err);
         // fallback: mantém placeholders

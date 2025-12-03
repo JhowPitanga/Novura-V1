@@ -197,9 +197,9 @@ export async function getListingsRanking(
   const listingIds = Object.keys(byListing);
   if (listingIds.length === 0) return [];
 
-  // Fetch titles from marketplace_items
+  // Buscar títulos a partir da tabela unificada
   let miq: any = supabase
-    .from('marketplace_items')
+    .from('marketplace_items_unified')
     .select('marketplace_item_id, title, marketplace_name')
     .in('marketplace_item_id', listingIds);
   if (organizationId) miq = miq.eq('organizations_id', organizationId);

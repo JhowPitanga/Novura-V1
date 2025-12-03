@@ -46,7 +46,7 @@ const managementModules: ModuleItem[] = [
   { title: "Desempenho", url: "/desempenho", icon: TrendingUp, module: "desempenho" },
   { title: "Pesquisa de Mercado", url: "/pesquisa-mercado", icon: BarChart2, module: "pesquisa_mercado" },
   { title: "Produtos", url: "/produtos", icon: Package, module: "produtos" },
-  { title: "Central de Anúncios", url: "/anuncios", icon: Megaphone, module: "anuncios" },
+  { title: "Anúncios", url: "/anuncios", icon: Megaphone, module: "anuncios" },
   { title: "SAC", url: "/sac", icon: MessageSquare, module: "sac" },
   { title: "Pedidos", url: "/pedidos", icon: ShoppingCart, module: "pedidos" },
   { title: "Equipe", url: "/equipe", icon: Users, module: "equipe" },

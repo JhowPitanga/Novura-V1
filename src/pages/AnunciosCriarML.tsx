@@ -24,6 +24,7 @@ import { Search, Trash2, Plus, ChevronDown, X } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Badge } from "@/components/ui/badge";
+import LoadingOverlay from "@/components/LoadingOverlay";
  
 
 const StringSuggestInput = ({
@@ -157,6 +158,7 @@ export default function AnunciosCriarML() {
   const [shippingLogisticsDefaults, setShippingLogisticsDefaults] = useState<Record<string, string>>({});
   const [availableLogisticTypes, setAvailableLogisticTypes] = useState<string[]>([]);
   const [selectedLogisticType, setSelectedLogisticType] = useState<string>("");
+  const [freeShipMandatoryCfg, setFreeShipMandatoryCfg] = useState<boolean>(false);
   const [freeShippingMandatory, setFreeShippingMandatory] = useState<boolean>(false);
   const [categorySuggestions, setCategorySuggestions] = useState<any[]>([]);
   const [domainSuggestions, setDomainSuggestions] = useState<any[]>([]);
@@ -172,6 +174,12 @@ export default function AnunciosCriarML() {
   const [pendingCategoryName, setPendingCategoryName] = useState<string>("");
   const [confirmExit, setConfirmExit] = useState(false);
   const [maxVisitedStep, setMaxVisitedStep] = useState<number>(1);
+  const [publishing, setPublishing] = useState(false);
+  const [errorSteps, setErrorSteps] = useState<number[]>([]);
+  const getStepTitle = (id: number) => {
+    const it = (steps as any).find((s: any) => Number(s?.id) === Number(id));
+    return String(it?.title || id);
+  };
   const [currentDraftId, setCurrentDraftId] = useState<string | null>(searchParams.get('draft_id'));
   const sessionCacheRef = useRef<{ attrsMetaByCategory: Record<string, any[]>; techInputByCategory: Record<string, any>; saleTermsMetaByCategory: Record<string, any[]>; listingTypesByCategory: Record<string, any[]>; listingPriceOptionsByKey: Record<string, any[]> }>({ attrsMetaByCategory: {}, techInputByCategory: {}, saleTermsMetaByCategory: {}, listingTypesByCategory: {}, listingPriceOptionsByKey: {} });
   const [apiCache, setApiCache] = useState<any>({});
@@ -185,6 +193,68 @@ export default function AnunciosCriarML() {
     try { return JSON.stringify(base); } catch { return String(base.length); }
   }, [attributes]);
   const [debouncedAttrSig, setDebouncedAttrSig] = useState<string>(attrSig);
+  const [conditionalTrigger, setConditionalTrigger] = useState<number>(0);
+  const lastSavedSigRef = useRef<string>("");
+  const saveDraftTimerRef = useRef<any>(null);
+  const hasUnsavedData = useMemo(() => {
+    const s = shipping || {};
+    return !!(title || categoryId || description || price || listingTypeId || availableQuantity || (attributes || []).length || (variations || []).length || (pictures || []).length || (saleTerms || []).length || Object.keys(s).length);
+  }, [title, categoryId, description, price, listingTypeId, availableQuantity, attributes, variations, pictures, saleTerms, shipping]);
+
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedData && !publishing) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [hasUnsavedData, publishing]);
+
+  useEffect(() => {
+    const clickHandler = (e: MouseEvent) => {
+      if (!hasUnsavedData || publishing) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const anchor = target.closest('a[href]') as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const href = anchor.getAttribute('href') || anchor.href || '';
+      if (!href) return;
+      const url = href.startsWith('http') ? new URL(href) : new URL(href, window.location.origin);
+      const isInternal = url.origin === window.location.origin;
+      if (isInternal) {
+        e.preventDefault();
+        setConfirmExit(true);
+      }
+    };
+    document.addEventListener('click', clickHandler, true);
+    return () => document.removeEventListener('click', clickHandler, true);
+  }, [hasUnsavedData, publishing]);
+
+  const allowNavRef = useRef<boolean>(false);
+  useEffect(() => {
+    const origPush = history.pushState;
+    const origReplace = history.replaceState;
+    (history as any).pushState = function (...args: any[]) {
+      if (hasUnsavedData && !allowNavRef.current && !publishing) {
+        setConfirmExit(true);
+        return;
+      }
+      return origPush.apply(this, args as any);
+    } as any;
+    (history as any).replaceState = function (...args: any[]) {
+      if (hasUnsavedData && !allowNavRef.current && !publishing) {
+        setConfirmExit(true);
+        return;
+      }
+      return origReplace.apply(this, args as any);
+    } as any;
+    return () => {
+      (history as any).pushState = origPush as any;
+      (history as any).replaceState = origReplace as any;
+    };
+  }, [hasUnsavedData, publishing]);
 
   useEffect(() => {
     const draftId = searchParams.get('draft_id');
@@ -351,8 +421,8 @@ export default function AnunciosCriarML() {
       if (idUp === "GTIN" || idUp === "SELLER_SKU") return false;
       const tags = (a?.tags || {}) as any;
       const notMod = isNotModifiable(tags);
-      const allowedByInput = allowedTechIds.size > 0 ? allowedTechIds.has(String(a?.id || "")) : true;
-      return !isPackaging(String(a?.id || ""), nameStr) && !isHiddenAdmin(String(a?.id || ""), nameStr) && !isHiddenExtra(nameStr) && !notMod && allowedByInput;
+      const allowedByInput = allowedTechIds.size > 0 ? (allowedTechIds.has(String(a?.id || "")) || idUp === "ITEM_CONDITION") : true;
+      return !isPackaging(String(a?.id || ""), nameStr) && !isHiddenAdmin(String(a?.id || ""), nameStr) && !isHiddenExtra(nameStr) && (!notMod || idUp === "ITEM_CONDITION") && allowedByInput;
     });
     const reqSet = new Set<string>();
     base.forEach((a: any) => {
@@ -366,7 +436,7 @@ export default function AnunciosCriarML() {
     const hasItemCondition = (attrsMeta || []).some((a: any) => String(a?.id || "").toUpperCase() === "ITEM_CONDITION");
     if (baseIds.has("ITEM_CONDITION") || hasItemCondition) reqSet.add("ITEM_CONDITION");
     (conditionalRequiredIds || []).forEach((id) => reqSet.add(String(id)));
-    const required = base.filter((a: any) => {
+    let required = base.filter((a: any) => {
       const id = String(a?.id || "");
       const isVar = !!variationAttrs.find((v: any) => String(v?.id || "") === id);
       const isAllowVar = !!allowVariationAttrs.find((v: any) => String(v?.id || "") === id);
@@ -381,15 +451,15 @@ export default function AnunciosCriarML() {
     return { required, tech } as { required: any[]; tech: any[] };
   }, [attrsMeta, variationAttrs, allowVariationAttrs, conditionalRequiredIds, techSpecsInput]);
   const steps = useMemo(() => ([
-    { id: 1, title: "Marketplace", description: "Selecione onde publicar" },
-    { id: 2, title: "Título e Categoria", description: "Informe título e escolha a categoria" },
-    { id: 3, title: "Descrição e Atributos", description: "Preencha os dados obrigatórios" },
-    { id: 4, title: "Variações e Mídia", description: "Configure variações, fotos e estoque" },
-    { id: 5, title: "Ficha Técnica", description: "Atributos técnicos complementares" },
-    { id: 6, title: "Preço e Publicação", description: "Preço e tipo de anúncio" },
-    { id: 7, title: "Envio", description: "Dimensões e logística" },
-    { id: 8, title: "Revisão", description: "Verifique e publique" },
-  ]), []);
+    { id: 1, title: "Marketplace", description: "Escolha o marketplace" },
+    { id: 2, title: "Categoria", description: "Defina Categoria" },
+    { id: 3, title: "Atributos", description: "Dados obrigatórios" },
+    { id: 4, title: "Variações", description: "Variações e Mídia" },
+    { id: 5, title: "Ficha Técnica", description: "Ficha técnica" },
+    { id: 6, title: "Preço e Publicação", description: "Preço e publicação" },
+    { id: 7, title: "Envio", description: "Envio e dimensões" },
+    { id: 8, title: "Revisão", description: "Revisão e publicação" },
+  ].sort((a, b) => a.id - b.id)), []);
 
   const compressImage = async (file: File, quality = 0.8, maxDim = 1280): Promise<File> => {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -412,6 +482,20 @@ export default function AnunciosCriarML() {
     ctx.drawImage(img, 0, 0, width, height);
     const blob: Blob = await new Promise((resolve) => canvas.toBlob((b) => resolve(b as Blob), 'image/jpeg', quality));
     return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+  };
+
+  const uploadImageToStorage = async (file: File): Promise<string | null> => {
+    let toUpload = file;
+    if (/^image\//.test(toUpload.type)) {
+      try { toUpload = await compressImage(toUpload, 0.8, 1280); } catch {}
+    }
+    const safeName = (toUpload.name || 'upload').replace(/[^a-zA-Z0-9._-]/g, '-');
+    const folder = `${organizationId ? `org_${organizationId}` : 'org_anon'}/${currentDraftId ? `draft_${currentDraftId}` : 'temp'}/${crypto.randomUUID()}`;
+    const path = `${folder}/${safeName}`;
+    const { error: upErr } = await supabase.storage.from('ad-images').upload(path, toUpload, { upsert: true, contentType: toUpload.type });
+    if (upErr) return null;
+    const { data } = supabase.storage.from('ad-images').getPublicUrl(path);
+    return data?.publicUrl || null;
   };
 
   useEffect(() => {
@@ -496,6 +580,9 @@ export default function AnunciosCriarML() {
       if (!organizationId || !categoryId) return;
       if (currentStep !== 6) return;
       if (!fetchGate.s6) return;
+      const cat = String(categoryId || "");
+      const cached = sessionCacheRef.current.saleTermsMetaByCategory[cat];
+      if (Array.isArray(cached)) { setSaleTermsMeta(cached); return; }
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-categories-sale-terms", {
           body: { organizationId, categoryId }
@@ -509,8 +596,8 @@ export default function AnunciosCriarML() {
   useEffect(() => {
     const evalConditional = async () => {
       if (!organizationId || !categoryId) return;
-      if (currentStep !== 3) return;
       if (!fetchGate.s3) return;
+      if (!conditionalTrigger) return;
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-attributes-conditional", {
           body: { organizationId, categoryId, attributes }
@@ -521,35 +608,39 @@ export default function AnunciosCriarML() {
       }
     };
     evalConditional();
-  }, [organizationId, categoryId, debouncedAttrSig, currentStep, fetchGate.s3]);
+  }, [organizationId, categoryId, conditionalTrigger, fetchGate.s3]);
 
   useEffect(() => {
     const fetchListingTypes = async () => {
       if (!organizationId || !categoryId || !siteId) return;
-      if (currentStep < 6) return;
+      if (currentStep !== 6) return;
       if (!fetchGate.s6) return;
-      try {
-        const { data, error } = await (supabase as any).functions.invoke("mercado-livre-available-listing-types", {
-          body: { organizationId, categoryId }
-        });
-        let arr = Array.isArray(data?.types) ? data.types : [];
-        if (!error && arr.length === 0) {
-          try {
-            const res = await fetch(`https://api.mercadolibre.com/sites/${siteId}/listing_types`);
-            const json = await res.json();
-            if (Array.isArray(json)) arr = json;
-          } catch {}
-        }
-        if (String(siteId).toUpperCase() === "MLB") {
-          const pick = new Set(["gold_special", "gold_pro"]);
-          arr = (arr || []).filter((t: any) => pick.has(String(t?.id || t))).map((t: any) => {
-            const id = String(t?.id || t);
-            const name = id === "gold_special" ? "Clássico" : (id === "gold_pro" ? "Premium" : String(t?.name || t?.listing_type_name || id));
-            return { id, name };
+      const cat = String(categoryId || "");
+      let arr = Array.isArray(sessionCacheRef.current.listingTypesByCategory[cat]) ? sessionCacheRef.current.listingTypesByCategory[cat] : [];
+      if (!Array.isArray(arr) || arr.length === 0) {
+        try {
+          const { data, error } = await (supabase as any).functions.invoke("mercado-livre-available-listing-types", {
+            body: { organizationId, categoryId }
           });
-        }
-        setListingTypes(arr);
-      } catch {}
+          arr = Array.isArray(data?.types) ? data.types : [];
+          if (!error && arr.length === 0) {
+            try {
+              const res = await fetch(`https://api.mercadolibre.com/sites/${siteId}/listing_types`);
+              const json = await res.json();
+              if (Array.isArray(json)) arr = json;
+            } catch {}
+          }
+        } catch {}
+      }
+      if (String(siteId).toUpperCase() === "MLB") {
+        const pick = new Set(["gold_special", "gold_pro"]);
+        arr = (arr || []).filter((t: any) => pick.has(String(t?.id || t))).map((t: any) => {
+          const id = String(t?.id || t);
+          const name = id === "gold_special" ? "Clássico" : (id === "gold_pro" ? "Premium" : String(t?.name || t?.listing_type_name || id));
+          return { id, name };
+        });
+      }
+      setListingTypes(arr);
     };
     fetchListingTypes();
   }, [organizationId, categoryId, siteId, currentStep, fetchGate.s6]);
@@ -655,8 +746,11 @@ export default function AnunciosCriarML() {
           }
         };
         scanMandatory(mandatoryObj);
-        const isMandatoryMe2 = freeMandatory && preferredMode === "me2";
-        setFreeShippingMandatory(isMandatoryMe2);
+        const priceVal = (() => { const s = String(price || "").replace(/\./g, "").replace(/,/g, "."); const n = Number(s); return isNaN(n) ? 0 : n; })();
+        const isPriceMandatoryMLB = String(siteId).toUpperCase() === "MLB" && priceVal >= 79 && preferredMode === "me2";
+        const cfgMandatory = freeMandatory && preferredMode === "me2";
+        setFreeShipMandatoryCfg(cfgMandatory);
+        setFreeShippingMandatory(cfgMandatory || isPriceMandatoryMLB);
 
         setShippingModesAvailable(modes);
         setShippingLogisticsByMode(logisticsMap);
@@ -678,15 +772,14 @@ export default function AnunciosCriarML() {
           if (capsRow?.drop_off) allowedSet.add("drop_off");
           if (capsRow?.xd_drop_off) allowedSet.add("xd_drop_off");
           if (capsRow?.self_service) allowedSet.add("self_service");
-          const baseFallback = allowedSet.size > 0 ? knownTypes.filter((t) => allowedSet.has(t)) : knownTypes;
-          const toShow = (typesForMode.length > 0 ? typesForMode : baseFallback);
+          const baseFiltered = typesForMode.length > 0 ? typesForMode : knownTypes;
+          const toShow = baseFiltered.filter((t) => allowedSet.has(String(t)));
           setAvailableLogisticTypes(toShow);
           const defType = String((defaultsMap as any)[modeForTypes] || "");
-          const pickType = toShow.includes(defType) ? defType : (toShow[0] || "");
-          if (pickType && !selectedLogisticType) {
-            setSelectedLogisticType(pickType);
-            if (pickType === "self_service") setPreferFlex(true);
-          }
+          const nonFlex = toShow.filter((t) => String(t || "") !== "self_service");
+          const primaryPick = nonFlex.includes(defType) ? defType : (nonFlex[0] || "");
+          const hasFlex = toShow.includes("self_service");
+          if (!selectedLogisticType && primaryPick) setSelectedLogisticType(primaryPick);
         } catch {}
         if (!shipping?.mode || !modes.includes(String((shipping as any)?.mode || ""))) {
           let next = { ...(shipping || {}), mode: preferredMode } as any;
@@ -700,13 +793,33 @@ export default function AnunciosCriarML() {
               if (def && def.rule && def.rule.free_shipping_flag === true) next.free_shipping = true;
             }
           } catch {}
-          if (isMandatoryMe2) next.free_shipping = true;
+          const modeNow = preferredMode;
+          const priceValNow = (() => { const s = String(price || "").replace(/\./g, "").replace(/,/g, "."); const n = Number(s); return isNaN(n) ? 0 : n; })();
+          const priceRule = String(siteId).toUpperCase() === "MLB" && priceValNow >= 79 && modeNow === "me2";
+          const cfgRule = freeShipMandatoryCfg && modeNow === "me2";
+          if (cfgRule || priceRule) next.free_shipping = true;
           if (preferredMode) setShipping(next);
         }
       } catch {}
     };
     fetchShippingModes();
   }, [organizationId, siteId, currentStep]);
+
+  useEffect(() => {
+    if (!freeShippingMandatory) return;
+    if (!(shipping as any)?.free_shipping) setShipping({ ...(shipping || {}), free_shipping: true });
+  }, [freeShippingMandatory]);
+
+  useEffect(() => {
+    const mode = String((shipping as any)?.mode || '').toLowerCase();
+    const priceVal = (() => { const s = String(price || "").replace(/\./g, "").replace(/,/g, "."); const n = Number(s); return isNaN(n) ? 0 : n; })();
+    const isPriceMandatoryMLB = String(siteId).toUpperCase() === 'MLB' && priceVal >= 79 && mode === 'me2';
+    const mandatoryNow = !!(freeShipMandatoryCfg || isPriceMandatoryMLB);
+    setFreeShippingMandatory(mandatoryNow);
+    if (!mandatoryNow && (shipping as any)?.free_shipping) {
+      setShipping({ ...(shipping || {}), free_shipping: false });
+    }
+  }, [price, siteId, shipping, freeShipMandatoryCfg]);
 
   useEffect(() => {
     const loadRoots = async () => {
@@ -832,6 +945,9 @@ export default function AnunciosCriarML() {
       const missing = Array.from(reqIds).filter((id) => !filled.has(id));
       return description.length > 0 && missing.length === 0;
     }
+    if (currentStep === 4) {
+      return (Array.isArray(variations) ? variations.length : 0) > 0;
+    }
     if (currentStep === 7) {
       const isMe2 = String((shipping as any)?.mode || "").toLowerCase() === "me2";
       if (!isMe2) return true;
@@ -845,7 +961,7 @@ export default function AnunciosCriarML() {
     if (currentStep === 6) {
       const ok = !!listingTypeId && !!price;
       const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
-      const requiresPic = !!(opt as any)?.requires_picture || String(listingTypeId || '').toLowerCase() === 'gold_pro';
+      const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro','gold_special'].includes(String(listingTypeId || '').toLowerCase());
       if (requiresPic) {
         const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
         return ok && hasAtLeastOneImage;
@@ -904,6 +1020,9 @@ export default function AnunciosCriarML() {
             } catch {}
           }
           setFetchGate((g) => ({ ...g, s3: true }));
+        }
+        if (currentStep === 3) {
+          setConditionalTrigger((n) => n + 1);
         }
         if (currentStep === 5) {
           try {
@@ -972,7 +1091,7 @@ export default function AnunciosCriarML() {
         return;
       }
       const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
-      const requiresPic = !!(opt as any)?.requires_picture || String(listingTypeId || '').toLowerCase() === 'gold_pro';
+      const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro','gold_special'].includes(String(listingTypeId || '').toLowerCase());
       if (requiresPic) {
         const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
         if (!hasAtLeastOneImage) {
@@ -986,6 +1105,9 @@ export default function AnunciosCriarML() {
         toast({ title: "Dimensões e peso obrigatórios", description: "Informe altura, largura, comprimento e peso do pacote.", variant: "destructive" });
         return;
       }
+    } else if (currentStep === 4) {
+      toast({ title: "Variação obrigatória", description: "Adicione ao menos uma variação.", variant: "destructive" });
+      return;
     } else if (currentStep === 3) {
       toast({ title: "Preencha os obrigatórios", description: "Preencha os atributos obrigatórios e a descrição.", variant: "destructive" });
       return;
@@ -999,8 +1121,136 @@ export default function AnunciosCriarML() {
   };
   const backStep = () => { if (currentStep > 1) setCurrentStep(currentStep - 1); };
 
+  const saveDraftAndExit = async () => {
+    try {
+      const fileToBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => {
+          const s = String(r.result || "");
+          const b64 = s.includes(",") ? s.split(",")[1] : s;
+          resolve(b64);
+        };
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+      const ensureFile = async (f: any): Promise<File | null> => {
+        if (f instanceof File) return f;
+        if (f instanceof Blob) return new File([f], "upload.jpg", { type: (f as any).type || "application/octet-stream" });
+        if (f && typeof f === "object") {
+          if ((f as any).file instanceof File) return (f as any).file as File;
+          const src = typeof (f as any).preview === "string" ? (f as any).preview : (typeof (f as any).url === "string" ? (f as any).url : null);
+          if (src) {
+            try {
+              const res = await fetch(src);
+              const blob = await res.blob();
+              const name = (src.split("/").pop() || "upload").split("?")[0];
+              return new File([blob], name, { type: blob.type || "application/octet-stream" });
+            } catch {}
+          }
+        }
+        if (typeof f === "string") {
+          try {
+            const res = await fetch(f);
+            const blob = await res.blob();
+            const name = (f.split("/").pop() || "upload").split("?")[0];
+            return new File([blob], name, { type: blob.type || "application/octet-stream" });
+          } catch {}
+        }
+        return null;
+      };
+      const serializeImages = async (items: any[]): Promise<string[]> => {
+        const out: string[] = [];
+        for (const it of items) {
+          const f = await ensureFile(it);
+          if (f) {
+            const url = await uploadImageToStorage(f);
+            if (url) out.push(url);
+            else {
+              const b64 = await fileToBase64(f);
+              out.push(`data:${f.type};base64,${b64}`);
+            }
+          } else if (typeof it === "string") {
+            out.push(it);
+          } else if (it && typeof it === "object") {
+            const src = (typeof (it as any).preview === "string" ? (it as any).preview : (typeof (it as any).url === "string" ? (it as any).url : null)) as string | null;
+            if (src) out.push(src);
+          }
+          if (out.length >= 8) break;
+        }
+        return out;
+      };
+      const normalizedVariations = await Promise.all((variations || []).map(async (v: any) => {
+        const files = Array.isArray((v as any)?.pictureFiles) ? (v as any).pictureFiles : [];
+        const imgs = await serializeImages(files);
+        return { ...v, pictureFiles: imgs };
+      }));
+      const draft: any = {
+        organizations_id: organizationId,
+        marketplace_name: "Mercado Livre",
+        site_id: siteId,
+        title,
+        category_id: categoryId,
+        attributes,
+        variations: normalizedVariations,
+        pictures,
+        price: Number(price || 0),
+        listing_type_id: listingTypeId,
+        shipping,
+        sale_terms: saleTerms,
+        description,
+        available_quantity: availableQuantity,
+        last_step: currentStep,
+        status: "draft",
+        api_cache: {
+          attrsMeta: (lastCategoryLoaded === String(categoryId || '')) ? attrsMeta : undefined,
+          techSpecsInput,
+          saleTermsMeta,
+          listingTypes,
+          listingPriceOptions: sessionCacheRef.current.listingPriceOptionsByKey[`${String(siteId)}:${String(categoryId)}:${Number(price || 0)}`] || listingPriceOptions,
+        }
+      };
+      const sig = JSON.stringify(draft);
+      if (lastSavedSigRef.current && lastSavedSigRef.current === sig) {
+        setConfirmExit(false);
+        allowNavRef.current = true;
+        navigate('/anuncios/rascunhos');
+        setTimeout(() => { allowNavRef.current = false; }, 300);
+        return;
+      }
+      if (saveDraftTimerRef.current) clearTimeout(saveDraftTimerRef.current);
+      saveDraftTimerRef.current = setTimeout(async () => {
+        try {
+          if (currentDraftId) {
+            await (supabase as any)
+              .from('marketplace_drafts')
+              .update(draft)
+              .eq('id', currentDraftId)
+              .eq('organizations_id', organizationId);
+          } else {
+            const { data, error } = await (supabase as any)
+              .from('marketplace_drafts')
+              .insert(draft)
+              .select('id')
+              .single();
+            if (!error && data?.id) setCurrentDraftId(String(data.id));
+          }
+          lastSavedSigRef.current = sig;
+          setConfirmExit(false);
+          allowNavRef.current = true;
+          navigate('/anuncios/rascunhos');
+          setTimeout(() => { allowNavRef.current = false; }, 300);
+        } catch (err: any) {
+          toast({ title: 'Falha ao salvar rascunho', description: err?.message || String(err), variant: 'destructive' });
+        }
+      }, 300);
+    } catch (e: any) {
+      toast({ title: 'Falha ao salvar rascunho', description: e?.message || String(e), variant: 'destructive' });
+    }
+  };
+
   const handlePublish = async () => {
     if (!organizationId) { toast({ title: "Sessão necessária", description: "Entre na sua conta.", variant: "destructive" }); return; }
+    setErrorSteps([]);
     const fileToBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => {
@@ -1011,6 +1261,31 @@ export default function AnunciosCriarML() {
       r.onerror = reject;
       r.readAsDataURL(file);
     });
+    const ensureFile = async (f: any): Promise<File | null> => {
+      if (f instanceof File) return f;
+      if (f instanceof Blob) return new File([f], "upload.jpg", { type: f.type || "application/octet-stream" });
+      if (f && typeof f === "object") {
+        if (f.file instanceof File) return f.file as File;
+        const src = typeof f.preview === "string" ? f.preview : (typeof f.url === "string" ? f.url : null);
+        if (src) {
+          try {
+            const res = await fetch(src);
+            const blob = await res.blob();
+            const name = (src.split("/").pop() || "upload").split("?")[0];
+            return new File([blob], name, { type: blob.type || "application/octet-stream" });
+          } catch {}
+        }
+      }
+      if (typeof f === "string") {
+        try {
+          const res = await fetch(f);
+          const blob = await res.blob();
+          const name = (f.split("/").pop() || "upload").split("?")[0];
+          return new File([blob], name, { type: blob.type || "application/octet-stream" });
+        } catch {}
+      }
+      return null;
+    };
     const uploadVariationFiles: any[] = [];
     if ((variations || []).length > 0) {
       for (let i = 0; i < variations.length; i++) {
@@ -1018,16 +1293,33 @@ export default function AnunciosCriarML() {
         const files = Array.isArray(v?.pictureFiles) ? v.pictureFiles : [];
         const arr: any[] = [];
         for (const f of files) {
-          let toUpload = f;
-          if (/^image\//.test(f.type)) { try { toUpload = await compressImage(f, 0.85, 1280); } catch {} }
-          const b64 = await fileToBase64(toUpload);
-          arr.push({ filename: toUpload.name, type: toUpload.type, data_b64: b64 });
+          let fileObj = await ensureFile(f);
+          if (!fileObj) continue;
+          if (/^image\//.test(fileObj.type)) { try { fileObj = await compressImage(fileObj, 0.85, 1280); } catch {} }
+          const b64 = await fileToBase64(fileObj);
+          arr.push({ filename: fileObj.name || "upload", type: fileObj.type || "application/octet-stream", data_b64: b64 });
           if (arr.length >= 10) break;
         }
         uploadVariationFiles.push(arr);
       }
     }
-    const pictureUrls = variations.length > 0 ? [] : pictures;
+    let pictureUrls = variations.length > 0 ? [] : pictures;
+    const opt2 = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
+    const requiresPic2 = !!(opt2 as any)?.requires_picture || String(listingTypeId || '').toLowerCase() === 'gold_pro' || String(listingTypeId || '').toLowerCase() === 'gold_special';
+    if (variations.length > 0 && requiresPic2 && pictureUrls.length === 0) {
+      for (let i = 0; i < variations.length; i++) {
+        const v = variations[i];
+        const files = Array.isArray(v?.pictureFiles) ? v.pictureFiles : [];
+        if (files.length > 0) {
+          const first = await ensureFile(files[0]);
+          if (first) {
+            const url = await uploadImageToStorage(first);
+            if (url) pictureUrls = [url];
+          }
+          break;
+        }
+      }
+    }
     const priceNum = (() => {
       const raw = String(price || "").trim();
       if (!raw) return 0;
@@ -1055,8 +1347,8 @@ export default function AnunciosCriarML() {
     }) : [];
     if (hasVariations) {
       const invalid = (variations || []).find((v: any) => !Array.isArray(v?.attribute_combinations) || v.attribute_combinations.length === 0 || typeof v?.available_quantity !== "number" || v.available_quantity <= 0 || !(Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0));
-      if (invalid) { toast({ title: "Dados de variação inválidos", description: "Cada variação precisa de atributos, quantidade e ao menos uma foto.", variant: "destructive" }); return; }
-      if (!priceNum) { toast({ title: "Preço obrigatório", description: "Informe o preço para variações.", variant: "destructive" }); return; }
+      if (invalid) { setErrorSteps(Array.from(new Set([ ...errorSteps, 4 ]))); setCurrentStep(4); toast({ title: "Dados de variação inválidos", description: "Cada variação precisa de atributos, quantidade e ao menos uma foto.", variant: "destructive" }); return; }
+      if (!priceNum) { setErrorSteps(Array.from(new Set([ ...errorSteps, 6 ]))); setCurrentStep(6); toast({ title: "Preço obrigatório", description: "Informe o preço para variações.", variant: "destructive" }); return; }
       if (Array.isArray(variationRequiredIds) && variationRequiredIds.length > 0) {
         const missingAny = sanitizedVariations.find((vv: any) => {
           const idsSet = new Set((vv?.attribute_combinations || []).map((c: any) => String(c?.id || "").toUpperCase()));
@@ -1066,6 +1358,8 @@ export default function AnunciosCriarML() {
           const namesMap = new Map<string, string>();
           variationAttrs.forEach((a: any) => { namesMap.set(String(a?.id || "").toUpperCase(), String(a?.name || String(a?.id || ""))); });
           const reqNames = variationRequiredIds.map((id) => namesMap.get(String(id).toUpperCase()) || String(id)).join(", ");
+          setErrorSteps(Array.from(new Set([ ...errorSteps, 4 ])));
+          setCurrentStep(4);
           toast({ title: "Atributos de variação obrigatórios", description: `Informe: ${reqNames}`, variant: "destructive" });
           return;
         }
@@ -1074,23 +1368,30 @@ export default function AnunciosCriarML() {
     const condAttr = (attributes || []).find((x: any) => String(x?.id || "").toUpperCase() === "ITEM_CONDITION");
     let normalizedCondition: string | undefined = undefined;
     if (condAttr) {
-      const vid = String((condAttr as any)?.value_id || "").toLowerCase();
+      const vid = String((condAttr as any)?.value_id || "");
       const vname = String((condAttr as any)?.value_name || "").toLowerCase();
-      if (vid === "2230284" || vname.includes("novo") || vname.includes("new")) normalizedCondition = "new";
-      else if (vid === "2230581" || vname.includes("usado") || vname.includes("used")) normalizedCondition = "used";
-      else normalizedCondition = "not_specified";
+      if (vid === "2230284" || /\bnovo\b|\bnew\b/.test(vname)) normalizedCondition = "new";
+      else if (vid === "2230581" || /\busado\b|\bused\b/.test(vname)) normalizedCondition = "used";
+      else if (vid === "2230580" || /\bn[aã]o\s*especificado\b|\bnot\s*specified\b|\bnot_specified\b/.test(vname)) normalizedCondition = "not_specified";
+      else if (/\brecondicionad[oa]\b|\breacondicionad[oa]\b|\brefurbished\b|\bremanufactured\b|\bre\s*manufactured\b/.test(vname)) normalizedCondition = "refurbished";
     }
     const payload: any = {
       site_id: siteId,
       title,
       category_id: categoryId,
       currency_id: currencyId,
-      attributes: [
-        ...((attributes || []).filter((x: any) => String(x?.id || "").toUpperCase() !== "ITEM_CONDITION"))
-      ],
+      attributes: [],
       pictures: pictureUrls.slice(0, 6).map((url) => ({ source: url })),
     };
-    if (normalizedCondition) payload.condition = normalizedCondition;
+    const supportedConditions = new Set(["new","used","not_specified","refurbished"]);
+    if (normalizedCondition && supportedConditions.has(normalizedCondition)) {
+      payload.condition = normalizedCondition;
+      payload.attributes = [
+        ...((attributes || []).filter((x: any) => String(x?.id || "").toUpperCase() !== "ITEM_CONDITION"))
+      ];
+    } else {
+      payload.attributes = [ ...(attributes || []) ];
+    }
     if (sanitizedVariations.length > 0) payload.variations = sanitizedVariations;
     if (variations.length === 0 && availableQuantity) payload.available_quantity = Number(availableQuantity);
     if (!hasVariations && priceNum) payload.price = priceNum;
@@ -1117,6 +1418,8 @@ export default function AnunciosCriarML() {
       const isMe2 = String((shipping as any)?.mode || "").toLowerCase() === "me2";
       if (isMe2) {
         if (!(ih > 0 && il > 0 && iw > 0 && ig > 0)) {
+          setErrorSteps(Array.from(new Set([ ...errorSteps, 7 ])));
+          setCurrentStep(7);
           toast({ title: "Dimensões do pacote obrigatórias", description: "Informe altura, comprimento, largura e peso do pacote em inteiros (cm/g).", variant: "destructive" });
           return;
         }
@@ -1142,19 +1445,57 @@ export default function AnunciosCriarML() {
       payload.shipping = ship;
     }
     if (saleTerms.length > 0) payload.sale_terms = saleTerms;
-    const sellerShippingPreferences = { prefer_flex: !!preferFlex };
-    const { data, error } = await (supabase as any).functions.invoke("mercado-livre-publish-item", {
-      body: { organizationId, payload, description: { plain_text: description }, upload_variation_files: uploadVariationFiles, seller_shipping_preferences: sellerShippingPreferences }
-    });
-    if (error || (data && (data as any)?.error)) {
-      const msg = error?.message || ((data as any)?.meli?.message || (data as any)?.error || "Falha ao publicar");
-      const cause = Array.isArray((data as any)?.meli?.cause) ? ((data as any)?.meli?.cause as any[]).map((c: any) => c?.message || c?.code || "").filter(Boolean).join("; ") : "";
-      const desc = cause ? `${msg}: ${cause}` : msg;
-      toast({ title: "Falha ao publicar", description: desc, variant: "destructive" });
-      return;
+    const sellerShippingPreferences = preferFlex ? { prefer_flex: true } : undefined;
+    setPublishing(true);
+    try {
+      const { data, error } = await (supabase as any).functions.invoke("mercado-livre-publish-item", {
+        body: { organizationId, payload, description: { plain_text: description }, upload_variation_files: uploadVariationFiles, seller_shipping_preferences: sellerShippingPreferences }
+      });
+      if (error || (data && (data as any)?.error)) {
+        const rawMsg = error?.message || ((data as any)?.meli?.message || (data as any)?.error || "Erro");
+        const rawCauses: string[] = Array.isArray((data as any)?.meli?.cause)
+          ? ((data as any)?.meli?.cause as any[]).map((c: any) => String(c?.message || c?.code || "")).filter(Boolean)
+          : [];
+        const merged = [rawMsg, ...rawCauses].join(" \n ").toLowerCase();
+        const find = (kw: string | RegExp) => {
+          if (typeof kw === 'string') return merged.includes(kw.toLowerCase());
+          return kw.test(merged);
+        };
+        let stepId = 8;
+        let field = "Revisão";
+        if (find(/categor(y|ia)/i)) { stepId = 2; field = "Categoria"; }
+        else if (find(/title|título/i)) { stepId = 2; field = "Título"; }
+        else if (find(/description|descri[cç][aã]o/i)) { stepId = 3; field = "Descrição"; }
+        else if (find(/item[_-]?condition|condi[cç][aã]o/i)) { stepId = 3; field = "Condição"; }
+        else if (find(/attribute|atributo/i) && !find(/variation|varia[cç][aã]o/i)) { stepId = 3; field = "Atributos"; }
+        else if (find(/ficha|technical|t[eé]cnica/i)) { stepId = 5; field = "Ficha técnica"; }
+        else if (find(/variation|varia[cç][aã]o|attribute[_-]?combinations/i)) { stepId = 4; field = "Variações"; }
+        else if (find(/picture|pictures|image|foto|thumbnail/i) || find(/pictures\s+are\s+mandatory|fotos\s+obrigat[oó]rias/i)) { stepId = 4; field = "Imagens"; }
+        else if (find(/price|pre[cç]o|listing[_-]?type/i)) { stepId = 6; field = "Preço/Publicação"; }
+        else if (find(/shipping|envio|dimensions|dimens[oõ]es|weight|peso|me2|mercado\s*envios/i)) { stepId = 7; field = "Envio e dimensões"; }
+        else if (find(/available[_-]?quantity|estoque/i)) { stepId = 4; field = "Estoque da variação"; }
+        setErrorSteps(Array.from(new Set([ ...errorSteps, stepId ])));
+        setCurrentStep(stepId);
+        toast({ title: "Corrija o campo", description: `${field} no passo ${getStepTitle(stepId)}`, variant: "destructive" });
+        return;
+      }
+      toast({ title: "Anúncio cadastrado com sucesso" });
+      if (currentDraftId) {
+        try {
+          await (supabase as any)
+            .from('marketplace_drafts')
+            .delete()
+            .eq('id', currentDraftId)
+            .eq('organizations_id', organizationId);
+        } catch {}
+      }
+      setConfirmExit(false);
+      allowNavRef.current = true;
+      navigate("/anuncios/ativos");
+      setTimeout(() => { allowNavRef.current = false; }, 300);
+    } finally {
+      setPublishing(false);
     }
-    toast({ title: "Anúncio publicado", description: `ID: ${data?.item_id || ""}` });
-    navigate("/anuncios");
   };
   const runPredict = async () => {
     if (!organizationId) return;
@@ -1181,52 +1522,50 @@ export default function AnunciosCriarML() {
         <div className="flex-1 flex flex-col">
           <GlobalHeader />
           <main className="flex-1 overflow-auto">
-            <div className="p-6 max-w-6xl mx-auto">
+            <div className="relative p-6 max-w-6xl mx-auto">
+              {publishing && (
+                <LoadingOverlay messages={[
+                  "Estamos publicando seu anúncio",
+                  "Só um minutinho, estamos validando seu anúncio e checando erros",
+                  "Em breve seu anúncio estará disponível"
+                ]} />
+              )}
+              <Dialog open={confirmExit} onOpenChange={setConfirmExit}>
+                <DialogContent className="w-full max-w-lg md:max-w-xl">
+                  <DialogHeader>
+                    <DialogTitle>Fechar sem salvar?</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-3">
+                    <div className="text-sm text-gray-700">Você perderá todos os dados se fechar agora. Deseja salvar um rascunho?</div>
+                    <div className="flex justify-end gap-2">
+                      <Button variant="outline" onClick={() => { allowNavRef.current = true; setConfirmExit(false); navigate('/anuncios'); setTimeout(() => { allowNavRef.current = false; }, 300); }}>Fechar sem salvar</Button>
+                      <Button
+                        variant={maxVisitedStep >= 4 ? "default" : "outline"}
+                        className={maxVisitedStep >= 4 ? "rounded-2xl bg-novura-primary hover:bg-novura-primary/90" : "border rounded-2xl"}
+                        disabled={maxVisitedStep < 4}
+                        onClick={saveDraftAndExit}
+                      >Salvar rascunho</Button>
+                      <Button className="bg-novura-primary hover:bg-novura-primary/90 text-white" onClick={() => { setConfirmExit(false); }}>Terminar o anúncio</Button>
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h1 className="text-2xl font-bold text-gray-900">Criar um anúncio</h1>
                   <p className="text-gray-600">Modo Mercado Livre</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" className="border-2 rounded-2xl" onClick={async () => {
-                    try {
-                      const draft: any = {
-                        organizations_id: organizationId,
-                        marketplace_name: "Mercado Livre",
-                        site_id: siteId,
-                        title,
-                        category_id: categoryId,
-                        condition: (attributes || []).find((x: any) => String(x?.id || "").toUpperCase() === "ITEM_CONDITION") ? undefined : undefined,
-                        attributes,
-                        variations,
-                        pictures,
-                        price: Number(price || 0),
-                        listing_type_id: listingTypeId,
-                        shipping,
-                        sale_terms: saleTerms,
-                        description,
-                        available_quantity: availableQuantity,
-                        last_step: currentStep,
-                        status: "draft",
-                        api_cache: {
-                          attrsMeta: (lastCategoryLoaded === String(categoryId || '')) ? attrsMeta : undefined,
-                          techSpecsInput,
-                          saleTermsMeta,
-                          listingTypes,
-                          listingPriceOptions: sessionCacheRef.current.listingPriceOptionsByKey[`${String(siteId)}:${String(categoryId)}:${Number(price || 0)}`] || listingPriceOptions,
-                        }
-                      };
-                      await (supabase as any).from("marketplace_drafts").insert(draft);
-                      toast({ title: "Rascunho salvo", description: "Você pode retomar depois em Anúncios > Rascunhos." });
-                      navigate('/anuncios/rascunhos');
-                    } catch (e: any) {
-                      toast({ title: "Falha ao salvar rascunho", description: e?.message || String(e), variant: "destructive" });
-                    }
-                  }}>Salvar rascunho</Button>
+                  <Button
+                    variant={maxVisitedStep >= 4 ? "default" : "outline"}
+                    className={maxVisitedStep >= 4 ? "rounded-2xl bg-novura-primary hover:bg-novura-primary/90" : "border-2 rounded-2xl"}
+                    disabled={maxVisitedStep < 4}
+                    onClick={saveDraftAndExit}
+                  >Salvar rascunho</Button>
                   <Button variant="ghost" className="text-gray-700" onClick={() => setConfirmExit(true)}>✕</Button>
                 </div>
               </div>
-              <StepIndicator steps={steps as any} currentStep={currentStep} clickable maxVisitedStep={maxVisitedStep} onStepClick={(id) => { if (id <= maxVisitedStep) setCurrentStep(id); }} />
+              <StepIndicator steps={steps as any} currentStep={currentStep} clickable maxVisitedStep={maxVisitedStep} onStepClick={(id) => { if (id <= maxVisitedStep) setCurrentStep(id); }} errorSteps={errorSteps} />
               <Card className="mt-6 border border-gray-200 shadow-sm">
                 <CardContent className="p-6 space-y-6">
                   {currentStep === 1 && (
@@ -1455,66 +1794,7 @@ export default function AnunciosCriarML() {
                           </div>
                         </DialogContent>
                       </Dialog>
-                      <Dialog open={confirmExit} onOpenChange={setConfirmExit}>
-                        <DialogContent className="max-w-md">
-                          <DialogHeader>
-                            <DialogTitle>Fechar sem salvar?</DialogTitle>
-                          </DialogHeader>
-                          <div className="space-y-3">
-                            <div className="text-sm text-gray-700">Você perderá todos os dados se fechar agora. Deseja salvar um rascunho?</div>
-                            <div className="flex justify-end gap-2">
-                      <Button variant="outline" onClick={() => { setConfirmExit(false); navigate('/anuncios'); }}>Fechar sem salvar</Button>
-                      <Button variant="outline" className="border rounded-2xl bg-white text-novura-primary hover:text-novura-primary" onClick={async () => {
-                        try {
-                          const draft: any = {
-                            organizations_id: organizationId,
-                            marketplace_name: "Mercado Livre",
-                            site_id: siteId,
-                            title,
-                            category_id: categoryId,
-                            attributes,
-                            variations,
-                            pictures,
-                            price: Number(price || 0),
-                            listing_type_id: listingTypeId,
-                            shipping,
-                            sale_terms: saleTerms,
-                            description,
-                            available_quantity: availableQuantity,
-                            last_step: currentStep,
-                            status: "draft",
-                            api_cache: {
-                              attrsMeta: (lastCategoryLoaded === String(categoryId || '')) ? attrsMeta : undefined,
-                              techSpecsInput,
-                              saleTermsMeta,
-                              listingTypes,
-                              listingPriceOptions: sessionCacheRef.current.listingPriceOptionsByKey[`${String(siteId)}:${String(categoryId)}:${Number(price || 0)}`] || listingPriceOptions,
-                            }
-                          };
-                          if (currentDraftId) {
-                            await (supabase as any)
-                              .from('marketplace_drafts')
-                              .update(draft)
-                              .eq('id', currentDraftId)
-                              .eq('organizations_id', organizationId);
-                          } else {
-                            const { data, error } = await (supabase as any)
-                              .from('marketplace_drafts')
-                              .insert(draft)
-                              .select('id')
-                              .single();
-                            if (!error && data?.id) setCurrentDraftId(String(data.id));
-                          }
-                          setConfirmExit(false);
-                          navigate('/anuncios/rascunhos');
-                        } catch (e: any) {
-                          toast({ title: 'Falha ao salvar rascunho', description: e?.message || String(e), variant: 'destructive' });
-                        }
-                      }}>Salvar rascunho</Button>
-                            </div>
-                          </div>
-                        </DialogContent>
-                      </Dialog>
+                      {/* Dialog de saída movido para nível superior */}
                     </div>
                   )}
                   {currentStep === 3 && (
@@ -1673,7 +1953,7 @@ export default function AnunciosCriarML() {
                   {currentStep === 4 && (
                     <div className="space-y-4">
                       <div className="flex items-center gap-3">
-                        <div className="text-sm text-gray-700">Configure variações (opcional)</div>
+                        <div className="text-sm text-gray-700">Configure ao menos uma variação</div>
                         <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => {
                           const next = [...(variations || []), { attribute_combinations: [], available_quantity: 0, pictureFiles: [] }];
                           setVariations(next);
@@ -2470,40 +2750,39 @@ export default function AnunciosCriarML() {
                         <div className="text-sm text-gray-700">Tipos de logística disponíveis</div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {(availableLogisticTypes || []).map((t) => {
+              if (String(t || "") === "self_service") return null;
+              const singlePrincipal = (availableLogisticTypes || []).filter((x) => x !== "self_service").length <= 1;
+              const clickable = !singlePrincipal;
               const label = (
                 t === "drop_off" ? "Correios" :
                 t === "xd_drop_off" ? "Mercado Envios" :
-                t === "self_service" ? "Flex" :
                 String(t || "").toUpperCase()
               );
               const selected = String(selectedLogisticType || "") === String(t || "");
               return (
                 <div
                   key={String(t || "")}
-                  className={`border-2 rounded-3xl p-5 bg-white cursor-pointer transition-all ${selected ? "border-novura-primary" : "border-gray-300 hover:border-novura-primary hover:bg-novura-light"} shadow-md`}
-                  onClick={() => { setSelectedLogisticType(String(t || "")); if (String(t || "") === "self_service") setPreferFlex(true); }}
+                  className={`border-2 rounded-3xl p-5 bg-white ${clickable ? "cursor-pointer transition-all" : "cursor-default"} ${selected ? "border-novura-primary" : (clickable ? "border-gray-300 hover:border-novura-primary hover:bg-novura-light" : "border-gray-300")} shadow-md`}
+                  onClick={clickable ? () => { setSelectedLogisticType(String(t || "")); } : undefined}
                 >
                   <div className="flex items-center justify-between">
                     <div className="text-2xl font-bold text-novura-primary">{label}</div>
-                    {selected ? <span className="text-xs px-2 py-0.5 rounded-full bg-novura-primary text-white">Selecionado</span> : null}
+                    {selected && !clickable ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-novura-primary text-white">Selecionado automaticamente</span>
+                    ) : null}
                   </div>
                   <ul className="mt-3 space-y-1">
-                    {(t === "drop_off" ? ["Postagem em agências dos Correios", "Etiqueta gerada pelo Mercado Livre",]
-                      : t === "xd_drop_off" ? ["Postagem em agências do ML", "Rastreio integrado ao Mercado Envios", "Cobertura ampla nas principais regiões"]
-                      : ["Entrega rápida (mesmo dia)", "Disponibilidade sujeita às regras Flex", "Ideal para curtas distâncias"]
-                    ).map((tip, i) => (
+                    {[
+                      "O custo de entrega é igual ao definido pelo Envios no Mercado Livre.",
+                      "Se você oferece frete grátis, o custo do frete é por sua conta.",
+                      "Se você não oferecer frete grátis, vai receber até R$15,90 por envio."
+                    ].map((tip, i) => (
                       <li key={i} className="flex items-start text-sm text-gray-700">
                         <span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span>
                         {tip}
                       </li>
                     ))}
                   </ul>
-                  {String(t || "") === "self_service" && (
-                    <div className="mt-3 flex items-center space-x-2">
-                      <Checkbox checked={preferFlex} onCheckedChange={(v) => setPreferFlex(!!v)} />
-                      <span className="text-sm">Usar Flex</span>
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -2524,13 +2803,8 @@ export default function AnunciosCriarML() {
                             <Checkbox checked={!!(shipping as any)?.local_pick_up} onCheckedChange={(v) => setShipping({ ...(shipping || {}), local_pick_up: !!v })} />
                             <span className="text-sm">Retirada local</span>
                           </label>
-                          {availableLogisticTypes.includes("self_service") && (
-                            <label className="flex items-center space-x-2">
-                              <Checkbox checked={preferFlex} onCheckedChange={(v) => setPreferFlex(!!v)} />
-                              <span className="text-sm">Preferir Flex (self_service)</span>
-                            </label>
-                          )}
                         </div>
+                        
                       </div>
 
                       <div className="space-y-2">
@@ -2577,9 +2851,11 @@ export default function AnunciosCriarML() {
                             {(() => {
                               const t = String(selectedLogisticType || '');
                               const label = t === 'drop_off' ? 'Correios' : t === 'xd_drop_off' ? 'Mercado Envios' : t === 'self_service' ? 'Flex' : (t ? t.toUpperCase() : 'Não definido');
-                              const tips = (t === 'drop_off' ? [ 'Postagem em agências dos Correios', 'Etiqueta gerada pelo Mercado Livre' ]
-                                : t === 'xd_drop_off' ? [ 'Postagem em agências do ML', 'Rastreio integrado ao Mercado Envios', 'Cobertura ampla nas principais regiões' ]
-                                : [ 'Entrega rápida (mesmo dia)', 'Disponibilidade sujeita às regras Flex', 'Ideal para curtas distâncias' ]);
+                              const tips = [
+                                'O custo de entrega é igual ao definido pelo Envios no Mercado Livre.',
+                                'Se você oferece frete grátis, o custo do frete é por sua conta.',
+                                'Se você não oferecer frete grátis, vai receber até R$15,90 por envio.'
+                              ];
                               return (
                                 <div className={`mt-2 border-2 rounded-3xl p-5 bg-white shadow-md ${t ? 'border-novura-primary' : 'border-gray-300'}`}>
                                   <div className="flex items-center justify-between">
@@ -2644,7 +2920,7 @@ export default function AnunciosCriarML() {
                       </div>
                       <div className="flex justify-end gap-2">
                         <Button variant="outline" className="border-2 rounded-2xl" onClick={backStep}>Voltar</Button>
-                        <Button className="bg-novura-primary hover:bg-novura-primary/90" onClick={handlePublish}>PUBLICAR</Button>
+                        <Button className="bg-novura-primary hover:bg-novura-primary/90" onClick={handlePublish}>Publicar anúncio</Button>
                       </div>
                     </div>
                   )}

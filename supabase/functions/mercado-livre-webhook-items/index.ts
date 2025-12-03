@@ -307,6 +307,29 @@ serve(async (req) => {
       attributes_count: Array.isArray(upsertData.attributes) ? upsertData.attributes.length : null,
     });
 
+    const invHeaders = {
+      'x-meli-signature': req.headers.get('x-meli-signature') || '',
+      'x-request-id': correlationId,
+      'x-correlation-id': correlationId,
+      'x-origin': 'webhook',
+      'apikey': SERVICE_ROLE_KEY!,
+      'authorization': `Bearer ${SERVICE_ROLE_KEY!}`,
+      'x-internal-call': '1',
+    } as const;
+    const payload = { organizationId: integration.organizations_id, itemIds: [itemId] } as const;
+    console.log('mercado-livre-webhook-items post_upsert_trigger_start', { correlationId, itemId });
+    const tasks = [
+      admin.functions.invoke('mercado-livre-sync-descriptions', { body: payload, headers: invHeaders }),
+      admin.functions.invoke('mercado-livre-update-quality', { body: payload, headers: invHeaders }),
+      admin.functions.invoke('mercado-livre-update-reviews', { body: payload, headers: invHeaders }),
+      admin.functions.invoke('mercado-livre-update-metrics', { body: payload, headers: invHeaders }),
+      admin.functions.invoke('mercado-livre-sync-stock-distribution', { body: payload, headers: invHeaders }),
+      admin.functions.invoke('mercado-livre-sync-prices', { body: payload, headers: invHeaders }),
+    ];
+    const results = await Promise.allSettled(tasks);
+    const statuses = results.map((r) => r.status);
+    console.log('mercado-livre-webhook-items post_upsert_trigger_done', { correlationId, itemId, statuses });
+
     return jsonResponse({ 
       ok: true, 
       item_id: itemId,

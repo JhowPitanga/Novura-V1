@@ -1,0 +1,2 @@
+[functions.mercado-livre-update-quality]
+verify_jwt = false

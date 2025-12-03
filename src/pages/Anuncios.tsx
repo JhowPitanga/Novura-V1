@@ -56,6 +56,9 @@ export default function Anuncios() {
     const [expandedVariations, setExpandedVariations] = useState<Set<string>>(new Set());
     const [drafts, setDrafts] = useState<any[]>([]);
     const [deletePopoverOpenId, setDeletePopoverOpenId] = useState<string | null>(null);
+    const [confirmDeleteItemId, setConfirmDeleteItemId] = useState<string | null>(null);
+    const [selectedDraftIds, setSelectedDraftIds] = useState<Set<string>>(new Set());
+    const [bulkDeleteDraftsOpen, setBulkDeleteDraftsOpen] = useState<boolean>(false);
     // Capacidades/flags de envio do seller (derivadas de shipping_preferences)
     const [shippingCaps, setShippingCaps] = useState<{ flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean } | null>(null);
     const [hasIntegration, setHasIntegration] = useState<boolean>(false);
@@ -118,9 +121,8 @@ export default function Anuncios() {
         if (!organizationId) return;
         setLoading(true);
         try {
-            // Usar a view que inclui métricas para obter dados completos
             const { data, error } = await (supabase as any)
-                .from('marketplace_items_with_metrics')
+                .from('marketplace_items_unified')
                 .select('*')
                 .eq('organizations_id', organizationId)
                 .order('updated_at', { ascending: false })
@@ -128,84 +130,30 @@ export default function Anuncios() {
             if (error) throw error;
             const rows = data || [];
             setItems(rows);
-            console.log('Itens carregados com métricas:', rows.length);
+            console.log('Itens carregados (unified):', rows.length);
 
-            // Buscar métricas (quality_level e performance_data) diretamente
-            try {
-                const { data: metricsRows, error: metricsError } = await (supabase as any)
-                    .from('marketplace_metrics')
-                    .select('marketplace_item_id, quality_level, performance_data')
-                    .eq('organizations_id', organizationId)
-                    .limit(1000);
-                if (metricsError) {
-                    console.error('Erro ao buscar métricas:', metricsError);
-                } else {
-                    const map: Record<string, any> = {};
-                    (metricsRows || []).forEach((m: any) => {
-                        const k = m?.marketplace_item_id || m?.item_id || m?.id;
-                        if (!k) return;
-                        map[k] = { quality_level: m?.quality_level ?? null, performance_data: m?.performance_data ?? null };
-                    });
-                    setMetricsByItemId(map);
+            const lmap: Record<string, string | null> = {};
+            const pmap: Record<string, any> = {};
+            const smap: Record<string, string[]> = {};
+            const mmap: Record<string, { quality_level?: string | null; performance_data?: any }> = {};
+            (rows || []).forEach((r: any) => {
+                const id = String(r?.marketplace_item_id || r?.id || '');
+                if (!id) return;
+                const lt = r?.listing_type_id ? String(r.listing_type_id) : null;
+                lmap[id] = lt || null;
+                if (r?.listing_prices) pmap[id] = r.listing_prices;
+                const shippingTags = Array.isArray(r?.shipping_tags)
+                    ? r.shipping_tags.map((t: any) => String(t || '').toLowerCase())
+                    : [];
+                if (shippingTags.length) {
+                    smap[id] = shippingTags;
                 }
-            } catch (metricsCatchErr) {
-                console.error('Falha ao carregar métricas:', metricsCatchErr);
-            }
-
-            // Buscar tipos de publicação (listing_type_id) e custos (listing_prices) no contexto de preço
-            try {
-                const { data: pricesRows, error: pricesErr } = await (supabase as any)
-                    .from('marketplace_item_prices')
-                    .select('marketplace_item_id, sale_price_context, listing_prices')
-                    .eq('organizations_id', organizationId)
-                    .eq('marketplace_name', 'Mercado Livre')
-                    .limit(1000);
-                if (pricesErr) {
-                    console.error('Erro ao buscar marketplace_item_prices:', pricesErr);
-                } else {
-                    const lmap: Record<string, string | null> = {};
-                    const pmap: Record<string, any> = {};
-                    (pricesRows || []).forEach((p: any) => {
-                        const k = p?.marketplace_item_id || p?.id;
-                        if (!k) return;
-                        const ctx = p?.sale_price_context || {};
-                        const lt = ctx?.listing_type_id || ctx?.listingTypeId || null;
-                        lmap[k] = lt ? String(lt) : null;
-                        pmap[k] = p?.listing_prices ?? null;
-                    });
-                    setListingTypeByItemId(lmap);
-                    setListingPricesByItemId(pmap);
-                }
-            } catch (pricesCatchErr) {
-                console.error('Falha ao carregar tipos de publicação:', pricesCatchErr);
-            }
-
-            // Buscar distribuição de estoque e tipos de envio
-            try {
-                const { data: distRows, error: distErr } = await (supabase as any)
-                    .from('marketplace_stock_distribution')
-                    .select('marketplace_item_id, shipping_type')
-                    .eq('organizations_id', organizationId)
-                    .eq('marketplace_name', 'Mercado Livre')
-                    .limit(5000);
-                if (distErr) {
-                    console.error('Erro ao buscar marketplace_stock_distribution:', distErr);
-                } else {
-                    const smap: Record<string, Set<string>> = {};
-                    (distRows || []).forEach((d: any) => {
-                        const id = d?.marketplace_item_id;
-                        const t = String(d?.shipping_type || '').toLowerCase();
-                        if (!id || !t) return;
-                        if (!smap[id]) smap[id] = new Set<string>();
-                        smap[id].add(t);
-                    });
-                    const out: Record<string, string[]> = {};
-                    Object.keys(smap).forEach(k => { out[k] = Array.from(smap[k]); });
-                    setShippingTypesByItemId(out);
-                }
-            } catch (distCatchErr) {
-                console.error('Falha ao carregar distribuição de estoque:', distCatchErr);
-            }
+                mmap[id] = { quality_level: r?.quality_level ?? null, performance_data: r?.performance_data ?? null };
+            });
+            setListingTypeByItemId(lmap);
+            setListingPricesByItemId(pmap);
+            setShippingTypesByItemId(smap);
+            setMetricsByItemId(mmap);
 
             // Buscar flags de shipping_preferences da integração Mercado Livre e consolidar
             try {
@@ -217,7 +165,7 @@ export default function Anuncios() {
                 if (integErr) {
                     console.error('Erro ao buscar marketplace_integrations:', integErr);
                 } else {
-                    const caps = { flex: false, envios: false, correios: false, full: false } as { flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean };
+                    const caps = {} as { flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean };
                     const rows = integRows || [];
                     rows.forEach((r: any) => {
                         if (r?.self_service === true) caps.flex = true;
@@ -244,109 +192,47 @@ export default function Anuncios() {
                 const rows = data || [];
                 setItems(rows);
                 console.log('Fallback: Itens carregados da tabela original:', rows.length);
-
-                // Buscar métricas também no fallback
-                try {
-                    const { data: metricsRows, error: metricsError } = await (supabase as any)
-                        .from('marketplace_metrics')
-                        .select('marketplace_item_id, quality_level, performance_data')
-                        .eq('organizations_id', organizationId)
-                        .limit(1000);
-                    if (metricsError) {
-                        console.error('Erro ao buscar métricas (fallback):', metricsError);
-                    } else {
-                        const map: Record<string, any> = {};
-                        (metricsRows || []).forEach((m: any) => {
-                            const k = m?.marketplace_item_id || m?.item_id || m?.id;
-                            if (!k) return;
-                            map[k] = { quality_level: m?.quality_level ?? null, performance_data: m?.performance_data ?? null };
-                        });
-                        setMetricsByItemId(map);
+                const lmap: Record<string, string | null> = {};
+                const pmap: Record<string, any> = {};
+                const smap: Record<string, string[]> = {};
+                const mmap: Record<string, { quality_level?: string | null; performance_data?: any }> = {};
+                (rows || []).forEach((r: any) => {
+                    const id = String(r?.marketplace_item_id || r?.id || '');
+                    if (!id) return;
+                    const lt = r?.listing_type_id ? String(r.listing_type_id) : (r?.data?.listing_type_id ? String(r.data.listing_type_id) : null);
+                    lmap[id] = lt || null;
+                    if (r?.listing_prices) pmap[id] = r.listing_prices;
+                    const shippingTypes = Array.isArray(r?.stock_distribution?.shipping_types)
+                        ? r.stock_distribution.shipping_types
+                        : (Array.isArray(r?.shipping_types) ? r.shipping_types : []);
+                    if (shippingTypes && shippingTypes.length) {
+                        smap[id] = shippingTypes.map((t: any) => String(t || '').toLowerCase());
                     }
-                } catch (metricsCatchErr) {
-                    console.error('Falha ao carregar métricas (fallback):', metricsCatchErr);
-                }
+                    mmap[id] = { quality_level: r?.quality_level ?? null, performance_data: r?.performance_data ?? null };
+                });
+                setListingTypeByItemId(lmap);
+                setListingPricesByItemId(pmap);
+                setShippingTypesByItemId(smap);
+                setMetricsByItemId(mmap);
 
-                // Buscar tipos de publicação e custos também no fallback
-                try {
-                    const { data: pricesRows, error: pricesErr } = await (supabase as any)
-                        .from('marketplace_item_prices')
-                        .select('marketplace_item_id, sale_price_context, listing_prices')
-                        .eq('organizations_id', organizationId)
-                        .eq('marketplace_name', 'Mercado Livre')
-                        .limit(1000);
-                    if (pricesErr) {
-                        console.error('Erro ao buscar marketplace_item_prices (fallback):', pricesErr);
-                    } else {
-                        const lmap: Record<string, string | null> = {};
-                        const pmap: Record<string, any> = {};
-                        (pricesRows || []).forEach((p: any) => {
-                            const k = p?.marketplace_item_id || p?.id;
-                            if (!k) return;
-                            const ctx = p?.sale_price_context || {};
-                            const lt = ctx?.listing_type_id || ctx?.listingTypeId || null;
-                            lmap[k] = lt ? String(lt) : null;
-                            pmap[k] = p?.listing_prices ?? null;
-                        });
-                        setListingTypeByItemId(lmap);
-                        setListingPricesByItemId(pmap);
-                    }
-                } catch (pricesCatchErr) {
-                    console.error('Falha ao carregar tipos de publicação (fallback):', pricesCatchErr);
-                }
-
-                // Buscar distribuição de estoque e tipos de envio (fallback)
-                try {
-                    const { data: distRows, error: distErr } = await (supabase as any)
-                        .from('marketplace_stock_distribution')
-                        .select('marketplace_item_id, shipping_type')
-                        .eq('organizations_id', organizationId)
-                        .eq('marketplace_name', 'Mercado Livre')
-                        .limit(5000);
-                    if (distErr) {
-                        console.error('Erro ao buscar marketplace_stock_distribution (fallback):', distErr);
-                    } else {
-                        const smap: Record<string, Set<string>> = {};
-                        (distRows || []).forEach((d: any) => {
-                            const id = d?.marketplace_item_id;
-                            const t = String(d?.shipping_type || '').toLowerCase();
-                            if (!id || !t) return;
-                            if (!smap[id]) smap[id] = new Set<string>();
-                            smap[id].add(t);
-                        });
-                        const out: Record<string, string[]> = {};
-                        Object.keys(smap).forEach(k => { out[k] = Array.from(smap[k]); });
-                        setShippingTypesByItemId(out);
-                    }
-                } catch (distCatchErr) {
-                    console.error('Falha ao carregar distribuição de estoque (fallback):', distCatchErr);
-                }
-
-                // Buscar flags de shipping_preferences também no fallback
                 try {
                     const { data: integRows, error: integErr } = await (supabase as any)
                         .from('marketplace_integrations')
-                        .select('flex_enabled, envios_enabled, correios_enabled, full_enabled, preferences_fetched_at, marketplace_name')
+                        .select('drop_off, xd_drop_off, self_service, marketplace_name')
                         .eq('organizations_id', organizationId)
                         .eq('marketplace_name', 'Mercado Livre');
-                    if (integErr) {
-                        console.error('Erro ao buscar marketplace_integrations (fallback):', integErr);
-                    } else {
-                        const caps = { flex: false, envios: false, correios: false, full: false } as { flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean };
-                        const rows = integRows || [];
-                        rows.forEach((r: any) => {
-                            if (r?.flex_enabled === true) caps.flex = true;
-                            if (r?.envios_enabled === true) caps.envios = true;
-                            if (r?.correios_enabled === true) caps.correios = true;
-                            if (r?.full_enabled === true) caps.full = true;
+                    if (!integErr) {
+                        const caps = {} as { flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean };
+                        const rows2 = integRows || [];
+                        rows2.forEach((r: any) => {
+                            if (r?.self_service === true) caps.flex = true;
+                            if (r?.xd_drop_off === true) caps.envios = true;
+                            if (r?.drop_off === true) caps.correios = true;
                         });
-                        const hasFetched = rows.some((r: any) => !!r?.preferences_fetched_at);
                         const anyEnabled = !!(caps.flex || caps.envios || caps.correios || caps.full);
-                        setShippingCaps(hasFetched && anyEnabled ? caps : null);
+                        setShippingCaps(anyEnabled ? caps : null);
                     }
-                } catch (capsCatchErr) {
-                    console.error('Falha ao carregar shipping caps (fallback):', capsCatchErr);
-                }
+                } catch {}
             } catch (fallbackError: any) {
                 console.error("Erro no fallback:", fallbackError);
                 toast({ title: "Falha ao carregar anúncios", description: fallbackError?.message || "", variant: "destructive" });
@@ -356,16 +242,7 @@ export default function Anuncios() {
         }
     };
 
-    const toDisplayMarketplaceName = (name: string): string => {
-        if (!name) return name;
-        const n = name.toLowerCase();
-        if (n === 'mercado_livre' || n === 'mercadolivre' || n === 'mercado livre') return 'Mercado Livre';
-        if (n === 'amazon') return 'Amazon';
-        if (n === 'shopee') return 'Shopee';
-        if (n === 'magalu' || n === 'magazineluiza' || n === 'magazine luiza' || n === 'magazine_luiza') return 'Magazine Luiza';
-        // Capitaliza como fallback
-        return name.charAt(0).toUpperCase() + name.slice(1);
-    };
+    
 
     const toSlug = (displayName: string): string => {
         return '/' + displayName.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
@@ -434,7 +311,7 @@ export default function Anuncios() {
                 .eq('organizations_id', organizationId);
             if (error) throw error;
             const rows = (data || []) as Array<{ marketplace_name: string | null }>;
-            const names = rows.map((r) => toDisplayMarketplaceName(String(r?.marketplace_name || ''))).filter(Boolean) as string[];
+            const names = rows.map((r) => String(r?.marketplace_name || '')).filter(Boolean) as string[];
             const uniqueNames: string[] = Array.from(new Set<string>(names));
             const nav: { title: string; path: string; description?: string; displayName?: string }[] = uniqueNames.map((dn: string) => ({ title: dn, path: toSlug(dn), description: `Anúncios no ${dn}`, displayName: dn }));
             setMarketplaceNavItems(nav);
@@ -683,36 +560,38 @@ export default function Anuncios() {
         const originalPrice = Number(row?.original_price) || null;
         const hasPromo = !!originalPrice && originalPrice > priceNum;
         const promoPrice = hasPromo ? priceNum : null;
-        // Envio: união entre marketplace_stock_distribution e marketplace_items.stock_distribution
         let shippingTags: string[] = [];
         const idVal = row?.marketplace_item_id || row?.id;
-        const distTags = (idVal && Array.isArray(shippingTypesByItemId[idVal]))
-            ? (shippingTypesByItemId[idVal] || []).map((s) => String(s || '').toLowerCase())
-            : [];
-        const sd = row?.stock_distribution;
-        const summaryTags = Array.isArray(sd?.shipping_types)
-            ? sd.shipping_types.map((s: any) => String(s || '').toLowerCase())
-            : [];
-        shippingTags = Array.from(new Set([ ...distTags, ...summaryTags ]));
-        // Ajuste baseado em shipping.data do item (logistic_type e tags self_service)
+        const tagsBase: string[] = [];
+        if ((row as any)?.cap_full) tagsBase.push('full');
+        if ((row as any)?.cap_flex) tagsBase.push('flex');
+        if ((row as any)?.cap_envios) tagsBase.push('envios');
+        if ((row as any)?.cap_correios) tagsBase.push('correios');
+        shippingTags = Array.from(new Set(tagsBase));
         const shippingInfo = (row as any)?.data?.shipping || (row as any)?.shipping;
-        const logisticType = String(
-            (shippingInfo?.logistic_type ?? shippingInfo?.mode ?? '')
-        ).toLowerCase();
-        const baselineByLogistic: string[] = [];
-        if (logisticType) {
-            if (logisticType === 'fulfillment' || logisticType === 'fbm') baselineByLogistic.push('full');
-            else if (logisticType === 'self_service') baselineByLogistic.push('flex');
-            else if (logisticType === 'xd_drop_off' || logisticType === 'cross_docking' || logisticType === 'me2') baselineByLogistic.push('envios');
-            else if (logisticType === 'drop_off') baselineByLogistic.push('correios');
+        const logisticType = String([
+            shippingInfo?.logistic_type,
+            shippingInfo?.mode,
+            (row as any)?.logistic_type,
+            (row as any)?.shipping_logistic_type,
+            (row as any)?.data?.shipping?.logistic_type,
+            (row as any)?.data?.shipping?.logistic?.type,
+            (row as any)?.shipping?.logistic?.type,
+        ].find((v: any) => v && String(v).trim().length > 0) || '').toLowerCase();
+        {
+            const rawTagsSource = Array.isArray(shippingInfo?.tags)
+                ? shippingInfo.tags
+                : (Array.isArray((row as any)?.data?.shipping?.tags)
+                    ? (row as any)?.data?.shipping?.tags
+                    : (Array.isArray((row as any)?.shipping?.tags)
+                        ? (row as any)?.shipping?.tags
+                        : []));
+            const rawTags: string[] = (rawTagsSource as any[]).map((t: any) => String(t || '').toLowerCase());
+            const set = new Set<string>([...shippingTags]);
+            if (rawTags.includes('self_service_in')) set.add('flex');
+            if (rawTags.includes('self_service_out') && logisticType !== 'self_service') set.delete('flex');
+            shippingTags = Array.from(set);
         }
-        const rawTags: string[] = Array.isArray(shippingInfo?.tags)
-            ? (shippingInfo.tags as any[]).map((t: any) => String(t || '').toLowerCase())
-            : [];
-        const set = new Set<string>([...shippingTags, ...baselineByLogistic]);
-        if (rawTags.includes('self_service_in')) set.add('flex');
-        if (rawTags.includes('self_service_out') && logisticType !== 'self_service') set.delete('flex');
-        shippingTags = Array.from(set);
         // Normalizar tags de logística para o novo módulo (full/flex/envios/correios/no_shipping)
         const normalizeTag = (tag: string) => {
             const t = String(tag || '').toLowerCase();
@@ -724,13 +603,15 @@ export default function Anuncios() {
             return t;
         };
         shippingTags = Array.from(new Set(shippingTags.map(normalizeTag)));
+        shippingTags = shippingTags.filter((t) => !['mandatory_free_shipping','self_service_available','self_service_out'].includes(String(t)));
         // Filtrar pelos capabilities do seller quando disponíveis
         if (shippingCaps) {
+            const has = (v?: boolean) => (v === undefined || v === true);
             const allow = (t: string) => {
-                if (t === 'full') return !!shippingCaps.full;
-                if (t === 'flex') return !!shippingCaps.flex;
-                if (t === 'envios') return !!shippingCaps.envios;
-                if (t === 'correios') return !!shippingCaps.correios;
+                if (t === 'full') return has(shippingCaps.full);
+                if (t === 'flex') return has(shippingCaps.flex);
+                if (t === 'envios') return has(shippingCaps.envios);
+                if (t === 'correios') return has(shippingCaps.correios);
                 // Sem filtro para 'no_shipping'
                 return true;
             };
@@ -738,8 +619,19 @@ export default function Anuncios() {
         }
         const listingTypeIdForItem = listingTypeByItemId[idVal] || null;
         const publicationTypeLabel = toPublicationLabel(listingTypeIdForItem);
-        const publicationCosts = extractCostsFromListingPrices(listingPricesByItemId[idVal]);
-        const publicationFeeDetails = extractSaleFeeDetails(listingPricesByItemId[idVal]);
+        const publicationCosts = (() => {
+            const currency = String((row as any)?.publication_currency || 'BRL');
+            const commission = Number((row as any)?.total_fare || 0);
+            const shippingCost = Number((row as any)?.publication_shipping_cost || 0);
+            const total = commission + shippingCost;
+            return { currency, commission, shippingCost, tax: 0, total };
+        })();
+        const publicationFeeDetails = {
+            currency: String((row as any)?.publication_currency || 'BRL'),
+            percentage: (row as any)?.percentage_fee ?? null,
+            fixedFee: (row as any)?.fixed_fee ?? null,
+            grossAmount: (row as any)?.gross_amount ?? null
+        };
         // Mesclar performance_data e quality_level das métricas com colunas persistidas
         const metricsForItem = metricsByItemId[idVal] || {};
         const pd = metricsForItem?.performance_data;
@@ -784,13 +676,13 @@ export default function Anuncios() {
             id: idVal,
             title: row?.title || "Sem título",
             sku: derivedSku,
-            marketplace: toDisplayMarketplaceName(row?.marketplace_name || "Mercado Livre"),
+            marketplace: String(row?.marketplace_name || "Mercado Livre"),
             price: priceNum,
             originalPrice: hasPromo ? originalPrice : null,
             promoPrice,
             status: row?.status || "",
-            visits: Number(row?.visits) || 0,
-            questions: Number(row?.questions) || 0,
+            visits: Number(row?.visits_total ?? row?.visits ?? 0),
+            questions: Number(row?.questions_total ?? row?.questions ?? 0),
             sales: typeof row?.sold_quantity === 'number' ? row?.sold_quantity : (Number(row?.sold_quantity) || 0),
             stock: typeof row?.available_quantity === 'number' ? row?.available_quantity : (Number(row?.available_quantity) || 0),
             marketplaceId: row?.marketplace_item_id || "",
@@ -804,6 +696,7 @@ export default function Anuncios() {
             publicationType: publicationTypeLabel,
             publicationCosts,
             publicationFeeDetails,
+            permalink: row?.permalink || null,
         };
     });
 
@@ -838,6 +731,92 @@ export default function Anuncios() {
     });
 
     const isAllSelected = sortedAds.length > 0 && sortedAds.every(a => selectedItems.has(a.id));
+
+    const toggleDraftSelection = (draftId: string) => {
+        setSelectedDraftIds(prev => {
+            const s = new Set(prev);
+            if (s.has(draftId)) s.delete(draftId); else s.add(draftId);
+            return s;
+        });
+    };
+    const isAllDraftsSelected = drafts.length > 0 && drafts.every(d => selectedDraftIds.has(String(d.id)));
+    const toggleSelectAllDrafts = () => {
+        setSelectedDraftIds(prev => {
+            const s = new Set(prev);
+            const all = drafts.length > 0 && drafts.every(d => s.has(String(d.id)));
+            if (all) drafts.forEach(d => s.delete(String(d.id))); else drafts.forEach(d => s.add(String(d.id)));
+            return s;
+        });
+    };
+    const handleDeleteSelectedDrafts = async () => {
+        try {
+            const ids = Array.from(selectedDraftIds);
+            if (ids.length === 0) return;
+            await (supabase as any)
+                .from('marketplace_drafts')
+                .delete()
+                .eq('organizations_id', organizationId)
+                .in('id', ids);
+            setDrafts(prev => prev.filter(d => !ids.includes(String(d.id))));
+            setSelectedDraftIds(new Set());
+            toast({ title: 'Rascunhos excluídos', description: 'Os rascunhos selecionados foram removidos.' });
+        } catch (e: any) {
+            toast({ title: 'Falha ao excluir rascunhos', description: e?.message || String(e), variant: 'destructive' });
+        }
+    };
+
+    const renderDrafts = () => {
+        if (drafts.length === 0) {
+            return <div className="p-6 text-sm text-gray-600">Nenhum rascunho encontrado.</div>;
+        }
+        return (
+            <div>
+                {drafts.map((d: any) => (
+                    <div key={String(d.id)} className="relative bg-white border border-gray-200 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <Checkbox size="md" indicatorStyle="square" checked={selectedDraftIds.has(String(d.id))} onCheckedChange={() => toggleDraftSelection(String(d.id))} />
+                                <div className="text-sm text-gray-900 font-medium">{String(d.title || 'Sem título')}</div>
+                                <div className="text-xs text-gray-600">{String(d.site_id || '')} · {String(d.marketplace_name || '')}</div>
+                                <div className="text-xs text-gray-600">Atualizado: {new Date(String(d.updated_at)).toLocaleString()}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Button size="sm" className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => navigate(`/anuncios/criar/ml?draft_id=${String(d.id)}`)}>Continuar cadastro</Button>
+                                <Popover open={deletePopoverOpenId === String(d.id)} onOpenChange={(open) => setDeletePopoverOpenId(open ? String(d.id) : null)}>
+                                    <PopoverTrigger asChild>
+                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-red-600 hover:text-red-700" aria-label="Excluir rascunho">
+                                            <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                    </PopoverTrigger>
+                                    <PopoverContent align="end" sideOffset={8} className="w-64 bg-white border p-3 rounded-xl">
+                                        <div className="text-sm text-gray-800 font-medium mb-2">Excluir rascunho?</div>
+                                        <div className="text-xs text-gray-600 mb-3">Esta ação remove definitivamente o rascunho do banco de dados.</div>
+                                        <div className="flex justify-end gap-2">
+                                            <Button variant="outline" size="sm" onClick={() => setDeletePopoverOpenId(null)}>Cancelar</Button>
+                                            <Button size="sm" className="bg-red-600 hover:bg-red-700" onClick={async () => {
+                                                try {
+                                                    await (supabase as any)
+                                                        .from('marketplace_drafts')
+                                                        .delete()
+                                                        .eq('id', d.id)
+                                                        .eq('organizations_id', organizationId);
+                                                    setDrafts((prev) => prev.filter((x: any) => String(x.id) !== String(d.id)));
+                                                    setDeletePopoverOpenId(null);
+                                                    toast({ title: 'Rascunho excluído', description: 'O rascunho foi removido com sucesso.' });
+                                                } catch (e: any) {
+                                                    toast({ title: 'Falha ao excluir rascunho', description: e?.message || String(e), variant: 'destructive' });
+                                                }
+                                            }}>Excluir</Button>
+                                        </div>
+                                    </PopoverContent>
+                                </Popover>
+                            </div>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        );
+    };
 
     const toggleSelectAll = () => {
         setSelectedItems(prev => {
@@ -961,6 +940,112 @@ export default function Anuncios() {
         });
     };
 
+    const duplicateAd = async (ad: any) => {
+        try {
+            if (!organizationId) { toast({ title: "Sessão necessária", description: "Entre na sua conta.", variant: "destructive" }); return; }
+            const itemRow = items.find((item) => String(item?.marketplace_item_id || item?.id) === String(ad.id));
+            if (!itemRow) { toast({ title: "Item não encontrado", description: "Não foi possível localizar o anúncio.", variant: "destructive" }); return; }
+            const idVal = String(itemRow?.marketplace_item_id || itemRow?.id);
+            const lt = listingTypeByItemId[idVal] || null;
+            const picsArr = Array.isArray(itemRow?.pictures) ? itemRow.pictures : [];
+            const pictureUrls: string[] = picsArr
+                .map((p: any) => (typeof p === 'string' ? p : (p?.url || p?.secure_url || '')))
+                .filter((u: string) => !!u);
+            const attrs = Array.isArray(itemRow?.attributes) ? itemRow.attributes : [];
+            const rawVars = Array.isArray(itemRow?.variations) ? itemRow.variations : [];
+            const mappedVars = rawVars.map((v: any) => {
+                const combos = Array.isArray(v?.attribute_combinations) ? v.attribute_combinations : [];
+                const varAttrs = Array.isArray(v?.attributes) ? v.attributes : [];
+                const qty = typeof v?.available_quantity === 'number' ? v.available_quantity : 0;
+                const obj: any = { attribute_combinations: combos, available_quantity: qty };
+                if (typeof v?.price === 'number') obj.price = v.price;
+                if (varAttrs.length > 0) obj.attributes = varAttrs;
+                const skuVal = v?.seller_sku ?? v?.sku ?? null;
+                if (skuVal) obj.sku = skuVal;
+                const picIds = Array.isArray(v?.picture_ids) ? v.picture_ids : (v?.picture_id ? [v.picture_id] : []);
+                if (picIds.length > 0) {
+                    const urls = picIds.map((pid: any) => {
+                        const m = picsArr.find((p: any) => {
+                            if (typeof p === 'string') return false;
+                            return String(p?.id || p?.picture_id) === String(pid);
+                        });
+                        if (typeof m === 'string') return m;
+                        return m?.url || m?.secure_url || '';
+                    }).filter((u: string) => !!u);
+                    if (urls.length > 0) obj.pictures = urls;
+                }
+                return obj;
+            });
+            const shippingRaw = (itemRow as any)?.data?.shipping || (itemRow as any)?.shipping || {};
+            const dimsText = String((shippingRaw as any)?.dimensions || '');
+            let dimsObj: any = undefined;
+            let weightNum: number | undefined = undefined;
+            if (dimsText) {
+                const m = dimsText.match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/i);
+                if (m) {
+                    const l = Number(m[1]);
+                    const h = Number(m[2]);
+                    const w = Number(m[3]);
+                    const g = Number(m[4]);
+                    dimsObj = { length: isNaN(l) ? 0 : Math.round(l), height: isNaN(h) ? 0 : Math.round(h), width: isNaN(w) ? 0 : Math.round(w) };
+                    weightNum = isNaN(g) ? undefined : Math.round(g);
+                }
+            }
+            const ship: any = {};
+            const modeRaw = (shippingRaw as any)?.mode ?? (shippingRaw as any)?.logistic_type ?? null;
+            if (modeRaw) ship.mode = String(modeRaw);
+            if (typeof (shippingRaw as any)?.local_pick_up !== 'undefined') ship.local_pick_up = !!(shippingRaw as any).local_pick_up;
+            if (typeof (shippingRaw as any)?.free_shipping !== 'undefined') ship.free_shipping = !!(shippingRaw as any).free_shipping;
+            if (dimsObj) ship.dimensions = dimsObj;
+            if (typeof weightNum === 'number') ship.weight = weightNum;
+            let descriptionText: string | undefined = undefined;
+            try {
+                const { data: descRow } = await (supabase as any)
+                    .from('marketplace_item_descriptions')
+                    .select('plain_text')
+                    .eq('organizations_id', organizationId)
+                    .eq('marketplace_name', 'Mercado Livre')
+                    .eq('marketplace_item_id', idVal)
+                    .limit(1)
+                    .single();
+                if (descRow && typeof (descRow as any)?.plain_text === 'string') descriptionText = String((descRow as any).plain_text);
+            } catch {}
+            const saleTerms = Array.isArray((itemRow as any)?.data?.sale_terms) ? (itemRow as any).data.sale_terms : (Array.isArray((itemRow as any)?.sale_terms) ? (itemRow as any).sale_terms : []);
+            const priceNum = typeof itemRow?.price === 'number' ? itemRow.price : (Number(itemRow?.price) || 0);
+            const availQty = typeof itemRow?.available_quantity === 'number' ? itemRow.available_quantity : (Number(itemRow?.available_quantity) || 0);
+            const draft: any = {
+                organizations_id: organizationId,
+                marketplace_name: 'Mercado Livre',
+                site_id: String(((itemRow as any)?.data?.site_id) || 'MLB'),
+                title: itemRow?.title || null,
+                category_id: itemRow?.category_id || null,
+                condition: itemRow?.condition || undefined,
+                attributes: attrs,
+                variations: mappedVars,
+                pictures: pictureUrls,
+                price: priceNum,
+                listing_type_id: lt || null,
+                shipping: ship,
+                sale_terms: saleTerms,
+                description: descriptionText,
+                available_quantity: availQty,
+                last_step: 1,
+                status: 'draft',
+                api_cache: {}
+            };
+            const { data, error } = await (supabase as any)
+                .from('marketplace_drafts')
+                .insert(draft)
+                .select('id')
+                .single();
+            if (error) { toast({ title: 'Falha ao duplicar', description: error?.message || '', variant: 'destructive' }); return; }
+            const newId = String((data as any)?.id || '');
+            if (newId) { toast({ title: 'Rascunho criado', description: 'Você pode editar o rascunho agora.' }); navigate(`/anuncios/criar/ml?draft_id=${newId}&step=6`); }
+        } catch (e: any) {
+            toast({ title: 'Erro ao duplicar', description: e?.message || String(e), variant: 'destructive' });
+        }
+    };
+
     // Adiciona botão de Sincronizar junto aos controles
     return (
         <SidebarProvider>
@@ -1000,6 +1085,51 @@ export default function Anuncios() {
                                 </div>
 
                                 <TabsContent value="anuncios" className="mt-0">
+                                    {confirmDeleteItemId ? (
+                                        <Dialog open={!!confirmDeleteItemId} onOpenChange={(open) => { if (!open) setConfirmDeleteItemId(null); }}>
+                                            <DialogContent className="max-w-md">
+                                                <DialogHeader>
+                                                    <DialogTitle>Excluir anúncio?</DialogTitle>
+                                                    <DialogDescription>Remove somente do banco de dados. Não impacta no Mercado Livre.</DialogDescription>
+                                                </DialogHeader>
+                                                <div className="flex justify-end gap-2">
+                                                    <Button variant="outline" size="sm" onClick={() => setConfirmDeleteItemId(null)}>Cancelar</Button>
+                                                    <Button size="sm" className="bg-red-600 hover:bg-red-700" onClick={async () => {
+                                                        try {
+                                                            const ad = sortedAds.find(a => a.id === confirmDeleteItemId);
+                                                            if (!ad) { setConfirmDeleteItemId(null); return; }
+                                                            await (supabase as any)
+                                                                .from('marketplace_items')
+                                                                .delete()
+                                                                .eq('organizations_id', organizationId)
+                                                                .eq('marketplace_item_id', ad.marketplaceId);
+                                                            setItems(prev => prev.filter((r: any) => String(r?.marketplace_item_id || r?.id) !== String(ad.marketplaceId)));
+                                                            setConfirmDeleteItemId(null);
+                                                            toast({ title: 'Anúncio excluído', description: 'Removido do banco de dados.' });
+                                                        } catch (e: any) {
+                                                            toast({ title: 'Falha ao excluir anúncio', description: e?.message || String(e), variant: 'destructive' });
+                                                        }
+                                                    }}>Excluir</Button>
+                                                </div>
+                                            </DialogContent>
+                                        </Dialog>
+                                    ) : null}
+                                    {bulkDeleteDraftsOpen && activeStatus === 'rascunhos' ? (
+                                        <Dialog open={bulkDeleteDraftsOpen} onOpenChange={(open) => setBulkDeleteDraftsOpen(open)}>
+                                            <DialogContent className="max-w-md">
+                                                <DialogHeader>
+                                                    <DialogTitle>Excluir rascunhos selecionados?</DialogTitle>
+                                                    <DialogDescription>
+                                                        {selectedDraftIds.size} selecionado(s). Esta ação remove definitivamente do banco de dados.
+                                                    </DialogDescription>
+                                                </DialogHeader>
+                                                <div className="flex justify-end gap-2">
+                                                    <Button variant="outline" size="sm" onClick={() => setBulkDeleteDraftsOpen(false)}>Cancelar</Button>
+                                                    <Button size="sm" className="bg-red-600 hover:bg-red-700" onClick={async () => { await handleDeleteSelectedDrafts(); setBulkDeleteDraftsOpen(false); }}>Excluir</Button>
+                                                </div>
+                                            </DialogContent>
+                                        </Dialog>
+                                    ) : null}
                                     <div className="flex items-center justify-between mb-6">
                                         <div className="flex items-center space-x-4">
                                             <div className="relative flex-1">
@@ -1070,66 +1200,38 @@ export default function Anuncios() {
                                         />
                                     </div>
 
-                                    <div className="mt-2 flex items-center justify-between">
-                                        <label className="flex items-center space-x-2">
-                                            <Checkbox size="md" indicatorStyle="square" checked={isAllSelected} onCheckedChange={toggleSelectAll} />
-                                            <span className="text-sm text-gray-700">Selecionar todos</span>
-                                        </label>
-                                        {selectedItems.size > 0 && (
-                                            <span className="text-sm text-novura-primary">{selectedItems.size} selecionados</span>
+                                    <div className="mt-2 px-2 flex items-center justify-between">
+                                        {activeStatus === 'rascunhos' ? (
+                                            <>
+                                                <label className="flex items-center space-x-2">
+                                                    <Checkbox size="md" indicatorStyle="square" checked={isAllDraftsSelected} onCheckedChange={toggleSelectAllDrafts} />
+                                                    <span className="text-sm text-gray-700">Selecionar todos</span>
+                                                </label>
+                                                <div className="flex items-center gap-3">
+                                                    {selectedDraftIds.size > 0 && (
+                                                        <span className="text-sm text-novura-primary">{selectedDraftIds.size} selecionados</span>
+                                                    )}
+                                                    <Button size="sm" variant="ghost" className="text-red-600 hover:text-red-700 hover:bg-transparent p-0 h-auto" disabled={selectedDraftIds.size === 0} onClick={() => setBulkDeleteDraftsOpen(true)}>Excluir selecionados</Button>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <label className="flex items-center space-x-2">
+                                                    <Checkbox size="md" indicatorStyle="square" checked={isAllSelected} onCheckedChange={toggleSelectAll} />
+                                                    <span className="text-sm text-gray-700">Selecionar todos</span>
+                                                </label>
+                                                {selectedItems.size > 0 && (
+                                                    <span className="text-sm text-novura-primary">{selectedItems.size} selecionados</span>
+                                                )}
+                                            </>
                                         )}
                                     </div>
 
-                                    <Card className="mt-6 border border-gray-200 shadow-sm">
+                                    <Card className="mt-2 border border-gray-200 shadow-sm">
                                         <CardContent className="p-0">
-                                            <div className="space-y-3">
+                                            <div className="space-y-2">
                                         {activeStatus === 'rascunhos' ? (
-                                            drafts.length > 0 ? (
-                                                drafts.map((d: any) => (
-                                                    <div key={String(d.id)} className="relative bg-white border border-gray-200 rounded-lg p-4">
-                                                        <div className="flex items-center justify-between">
-                                                            <div>
-                                                                <div className="text-sm text-gray-900 font-medium">{String(d.title || 'Sem título')}</div>
-                                                                <div className="text-xs text-gray-600">{String(d.site_id || '')} · {String(d.marketplace_name || '')}</div>
-                                                                <div className="text-xs text-gray-600">Atualizado: {new Date(String(d.updated_at)).toLocaleString()}</div>
-                                                            </div>
-                                                            <div className="flex items-center gap-2">
-                                                                <Button size="sm" className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => navigate(`/anuncios/criar/ml?draft_id=${String(d.id)}`)}>Continuar cadastro</Button>
-                                                                <Popover open={deletePopoverOpenId === String(d.id)} onOpenChange={(open) => setDeletePopoverOpenId(open ? String(d.id) : null)}>
-                                                                    <PopoverTrigger asChild>
-                                                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-red-600 hover:text-red-700" aria-label="Excluir rascunho">
-                                                                            <Trash2 className="h-4 w-4" />
-                                                                        </Button>
-                                                                    </PopoverTrigger>
-                                                                    <PopoverContent align="end" sideOffset={8} className="w-64 bg-white border p-3 rounded-xl">
-                                                                        <div className="text-sm text-gray-800 font-medium mb-2">Excluir rascunho?</div>
-                                                                        <div className="text-xs text-gray-600 mb-3">Esta ação remove definitivamente o rascunho do banco de dados.</div>
-                                                                        <div className="flex justify-end gap-2">
-                                                                            <Button variant="outline" size="sm" onClick={() => setDeletePopoverOpenId(null)}>Cancelar</Button>
-                                                                            <Button size="sm" className="bg-red-600 hover:bg-red-700" onClick={async () => {
-                                                                                try {
-                                                                                    await (supabase as any)
-                                                                                        .from('marketplace_drafts')
-                                                                                        .delete()
-                                                                                        .eq('id', d.id)
-                                                                                        .eq('organizations_id', organizationId);
-                                                                                    setDrafts((prev) => prev.filter((x: any) => String(x.id) !== String(d.id)));
-                                                                                    setDeletePopoverOpenId(null);
-                                                                                    toast({ title: 'Rascunho excluído', description: 'O rascunho foi removido com sucesso.' });
-                                                                                } catch (e: any) {
-                                                                                    toast({ title: 'Falha ao excluir rascunho', description: e?.message || String(e), variant: 'destructive' });
-                                                                                }
-                                                                            }}>Excluir</Button>
-                                                                        </div>
-                                                                    </PopoverContent>
-                                                                </Popover>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                ))
-                                            ) : (
-                                                <div className="p-6 text-sm text-gray-600">Nenhum rascunho encontrado.</div>
-                                            )
+                                            renderDrafts()
                                         ) : (
                                             sortedAds.length > 0 ? (
                                             sortedAds.map((ad) => {
@@ -1140,10 +1242,10 @@ export default function Anuncios() {
                                                 
                                                 return (
                                                 <div key={ad.id} className="relative bg-white border border-gray-200 rounded-lg">
-                                                    <div className="grid grid-cols-12 gap-y-4 gap-x-2 items-center p-5">
+                                                    <div className="grid grid-cols-12 gap-y-3 gap-x-2 items-center p-3">
                                                         
                                                     {/* Coluna de seleção e variações (checkbox acima da seta) */}
-                                                    <div className="col-span-1 flex flex-col items-start space-y-2 -ml-1">
+                                                    <div className="col-span-1 flex flex-col items-start space-y-2 -ml-2">
                                                         <Checkbox
                                                             size="md"
                                                             indicatorStyle="square"
@@ -1164,16 +1266,20 @@ export default function Anuncios() {
                                                     </div>
                                                         
                                                         {/* Coluna do Anúncio */}
-                                                        <div className="flex items-start space-x-4 col-span-3 -ml-2">
+                                                        <div className="flex items-start space-x-3 col-span-3 -ml-20">
                                                             <img
                                                                 src={ad.image}
                                                                 alt={ad.title}
-                                                                className="w-24 h-24 rounded-lg object-cover bg-gray-100"
+                                                                className="w-16 h-16 rounded-lg object-cover bg-gray-100"
                                                             />
                                                             <div className="flex flex-col h-full justify-between min-w-0">
                                                                 <div className="max-w-full">
                                                                     <div className="flex items-center">
-                                                                        <div className="font-semibold text-base text-gray-900 break-words whitespace-normal">{ad.title}</div>
+                                                                        {ad.permalink ? (
+                                                                            <a href={ad.permalink} target="_blank" rel="noopener noreferrer" className="font-semibold text-base text-gray-900 break-words whitespace-normal hover:text-novura-primary">{ad.title}</a>
+                                                                        ) : (
+                                                                            <div className="font-semibold text-base text-gray-900 break-words whitespace-normal">{ad.title}</div>
+                                                                        )}
                                                                     </div>
                                                                 </div>
                                                                 <div className="mt-2 text-sm text-gray-500">
@@ -1405,17 +1511,17 @@ export default function Anuncios() {
                                                                 </div>
 
                                                                 {/* Menu de Ações */}
-                                                                <div>
-                                                                    <DropdownMenu>
-                                                                        <DropdownMenuTrigger asChild>
-                                                                            <Button variant="ghost" size="icon" className="text-novura-primary hover:text-novura-primary">
-                                                                                <MoreHorizontal className="w-5 h-5" />
-                                                                            </Button>
-                                                                        </DropdownMenuTrigger>
-                                                                        <DropdownMenuContent>
-                                                                            <DropdownMenuItem>
-                                                                                <ExternalLink className="w-4 h-4 mr-2" /> Ver no Marketplace
-                                                                            </DropdownMenuItem>
+                                                        <div>
+                                                            <DropdownMenu>
+                                                                <DropdownMenuTrigger asChild>
+                                                                    <Button variant="ghost" size="icon" className="text-novura-primary hover:text-novura-primary">
+                                                                        <MoreHorizontal className="w-5 h-5" />
+                                                                    </Button>
+                                                                </DropdownMenuTrigger>
+                                                                <DropdownMenuContent>
+                                                                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); if (ad.permalink) { window.open(ad.permalink, '_blank'); } }}>
+                                                                        <ExternalLink className="w-4 h-4 mr-2" /> Ver no Marketplace
+                                                                    </DropdownMenuItem>
                                                                             <Drawer>
                                                                                 <DrawerTrigger asChild>
                                                                                     <DropdownMenuItem onSelect={e => e.preventDefault()}>
@@ -1463,18 +1569,21 @@ export default function Anuncios() {
                                                                                     </div>
                                                                                 </DrawerContent>
                                                                             </Drawer>
-                                                                            <DropdownMenuItem>
-                                                                                <Copy className="w-4 h-4 mr-2" /> Duplicar
-                                                                            </DropdownMenuItem>
-                                                                            <DropdownMenuSeparator />
-                                                                            <DropdownMenuItem>
-                                                                                <Edit className="w-4 h-4 mr-2" /> Editar
-                                                                            </DropdownMenuItem>
-                                                                        </DropdownMenuContent>
-                                                                    </DropdownMenu>
-                                                                </div>
-                                                            </div>
+                                                                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); duplicateAd(ad); }}>
+                                                                        <Copy className="w-4 h-4 mr-2" /> Duplicar
+                                                                    </DropdownMenuItem>
+                                                                    <DropdownMenuSeparator />
+                                                                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); navigate(`/anuncios/edicao/${ad.marketplaceId}`); }}>
+                                                                        <Edit className="w-4 h-4 mr-2" /> Editar
+                                                                    </DropdownMenuItem>
+                                                                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setConfirmDeleteItemId(ad.id); }}>
+                                                                        <Trash2 className="w-4 h-4 mr-2 text-red-600" /> Excluir
+                                                                    </DropdownMenuItem>
+                                                                </DropdownMenuContent>
+                                                            </DropdownMenu>
                                                         </div>
+                                                    </div>
+                                                </div>
                                                     </div>
                                                     
                                                     {/* Variações (conteúdo expande abaixo do card; botão de toggle fica sob o checkbox) */}

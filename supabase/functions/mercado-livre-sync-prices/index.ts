@@ -108,15 +108,32 @@ serve(async (req) => {
     if (itemIds.length > 0) {
       targetItems = itemIds.map((id) => ({ marketplace_item_id: id }));
     } else {
-      const { data: rows } = await admin
-        .from("marketplace_items")
-        .select("marketplace_item_id, last_prices_update")
+      const { data: itemsRows } = await admin
+        .from("marketplace_items_unified")
+        .select("marketplace_item_id")
         .eq("organizations_id", organizationId)
         .eq("marketplace_name", "Mercado Livre")
-        .or(`last_prices_update.is.null,last_prices_update.lt.${cutoffIso}`)
         .order("updated_at", { ascending: false })
-        .limit(200);
-      targetItems = (rows || []).map((r: any) => ({ marketplace_item_id: String(r.marketplace_item_id) }));
+        .limit(400);
+      let idsAll = (itemsRows || []).map((r: any) => String(r.marketplace_item_id)).filter(Boolean);
+      let idsFiltered = idsAll;
+      try {
+        const { data: pricesRows } = await admin
+          .from("marketplace_item_prices")
+          .select("marketplace_item_id, updated_at")
+          .eq("organizations_id", organizationId)
+          .eq("marketplace_name", "Mercado Livre")
+          .in("marketplace_item_id", idsAll);
+        const updatedMap = new Map((pricesRows || []).map((r: any) => [String(r.marketplace_item_id), String(r.updated_at || "")]));
+        idsFiltered = idsAll.filter((id) => {
+          const u = updatedMap.get(id);
+          if (!u) return true;
+          const ts = Date.parse(u);
+          const cutoffTs = Date.parse(cutoffIso);
+          return Number.isNaN(ts) || ts < cutoffTs;
+        });
+      } catch (_) { /* ignore */ }
+      targetItems = idsFiltered.map((id) => ({ marketplace_item_id: id }));
     }
 
     const limiter = createLimiter(3);
@@ -210,14 +227,30 @@ serve(async (req) => {
         }, { onConflict: "organizations_id,marketplace_name,marketplace_item_id" });
       if (upErr) return { ok: false, error: upErr.message };
 
-      // Update convenience price and TTL on marketplace_items
-      const { error: updErr } = await admin
-        .from("marketplace_items")
-        .update({ price: saleAmt ?? basePrice ?? null, last_prices_update: nowIso })
-        .eq("organizations_id", organizationId)
-        .eq("marketplace_name", "Mercado Livre")
-        .eq("marketplace_item_id", itemId);
-      if (updErr) return { ok: false, error: updErr.message };
+      try {
+        const { data: rawRow } = await admin
+          .from("marketplace_items_raw")
+          .select("data")
+          .eq("organizations_id", organizationId)
+          .eq("marketplace_name", "Mercado Livre")
+          .eq("marketplace_item_id", itemId)
+          .single();
+        const curRaw = (rawRow && typeof (rawRow as any)?.data === "object") ? ((rawRow as any).data as Record<string, unknown>) : {};
+        const newRaw = { 
+          ...curRaw, 
+          price: saleAmt ?? basePrice ?? null, 
+          prices: pricesByQty || curRaw?.prices || null,
+          sale_price_currency_id: saleCur,
+          last_prices_update: nowIso
+        } as Record<string, unknown>;
+        const { error: rawErr } = await admin
+          .from("marketplace_items_raw")
+          .update({ data: newRaw, updated_at: nowIso })
+          .eq("organizations_id", organizationId)
+          .eq("marketplace_name", "Mercado Livre")
+          .eq("marketplace_item_id", itemId);
+        if (rawErr) return { ok: false, error: rawErr.message };
+      } catch (_) { /* ignore */ }
 
       return { ok: true, sale_price: saleAmt, listing_prices: !!listingPrices, prices_by_quantity: !!pricesByQty };
     };

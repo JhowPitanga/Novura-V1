@@ -52,7 +52,7 @@ export function GlobalHeader() {
 
   return (
     <>
-    <header className="fixed inset-x-0 z-[9999] h-16 bg-white shadow-sm flex items-center justify-between gap-1 px-3 top-1 rounded-t-xl">
+    <header className="fixed inset-x-0 z-[9999] h-16 bg-white shadow-sm flex items-center justify-between gap-1 px-8 top-0 rounded-t-xl">
       {/* SidebarTrigger removido para evitar dependência de provider */}
       <div className="flex-1 flex items-center justify-between">
         {/* Left: Brand / Title */}
@@ -255,7 +255,7 @@ export function GlobalHeader() {
       </Drawer>
     </header>
     {/* Spacer para empurrar conteúdo abaixo do header fixo */}
-    <div className="h-[58px]" />
+    <div className="h-[65px]" />
     </>
   );
 }

@@ -8,11 +8,12 @@ interface StepIndicatorProps {
   clickable?: boolean;
   maxVisitedStep?: number;
   onStepClick?: (stepId: number) => void;
+  errorSteps?: number[];
 }
 
-export function StepIndicator({ steps, currentStep, clickable = false, maxVisitedStep, onStepClick }: StepIndicatorProps) {
+export function StepIndicator({ steps, currentStep, clickable = false, maxVisitedStep, onStepClick, errorSteps = [] }: StepIndicatorProps) {
   return (
-    <div className="flex items-center justify-between mb-10">
+    <div className="flex items-center justify-between mb-5">
       {steps.map((step, index) => (
         <div key={step.id} className="flex items-center">
           <div
@@ -23,10 +24,12 @@ export function StepIndicator({ steps, currentStep, clickable = false, maxVisite
             }}
           >
             <div
-              className={`w-12 h-12 rounded-full flex items-center justify-center border-2 ${
-                currentStep >= step.id
-                  ? "bg-novura-primary border-novura-primary text-white"
-                  : "border-gray-300 text-gray-400"
+              className={`w-9 h-9 rounded-full flex items-center justify-center border-2 ${
+                errorSteps.includes(step.id)
+                  ? "bg-red-500 border-red-500 text-white"
+                  : (currentStep >= step.id
+                      ? "bg-novura-primary border-novura-primary text-white"
+                      : "border-gray-300 text-gray-400")
               }`}
             >
               {currentStep > step.id ? (
@@ -36,9 +39,9 @@ export function StepIndicator({ steps, currentStep, clickable = false, maxVisite
               )}
             </div
             >
-            <div className="mt-3 text-center">
-              <p className="text-sm font-medium text-gray-900">{step.title}</p>
-              <p className="text-xs text-gray-500">{step.description}</p>
+            <div className="mt-2 text-center w-20">
+              <p className="text-sm font-medium text-gray-900 leading-tight">{step.title}</p>
+              <p className="text-xs text-gray-500 leading-snug h-8 overflow-hidden">{step.description}</p>
             </div>
           </div>
           {index < steps.length - 1 && (
