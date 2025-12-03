@@ -87,6 +87,7 @@ serve(async (req) => {
     const integrationId: string | undefined = parsed?.integrationId;
     const payload: any = parsed?.payload || {};
     const description: any = parsed?.description || {};
+    const sellerShippingPreferences: any = parsed?.seller_shipping_preferences || null;
     const uploadVariationFiles: any[] = Array.isArray(parsed?.upload_variation_files) ? parsed.upload_variation_files : [];
     if (!organizationId) return jsonResponse({ error: "organizationId required", rid }, 400);
 
@@ -239,6 +240,77 @@ serve(async (req) => {
       descResult = await descResp.json();
     }
 
+    let flexAction: string | null = null;
+    let flexError: any = null;
+    try {
+      const preferFlex = !!(sellerShippingPreferences && sellerShippingPreferences.prefer_flex === true);
+      const siteId = String(payload?.site_id || createJson?.site_id || "");
+      const categoryId = String(payload?.category_id || createJson?.category_id || "");
+      if (itemId && siteId) {
+        let allowedSelfService = false;
+        if (categoryId) {
+          try {
+            let catResp = await fetch(`https://api.mercadolibre.com/categories/${categoryId}/shipping_preferences`, { headers: { Authorization: `Bearer ${String(accessToken)}`, Accept: "application/json" } });
+            let catJson: any = null; try { catJson = await catResp.json(); } catch { catJson = {}; }
+            if (!catResp.ok && (catResp.status === 401 || catResp.status === 403)) {
+              const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
+              if (refreshed.success && refreshed.accessToken) {
+                catResp = await fetch(`https://api.mercadolibre.com/categories/${categoryId}/shipping_preferences`, { headers: { Authorization: `Bearer ${refreshed.accessToken}`, Accept: "application/json" } });
+                try { catJson = await catResp.json(); } catch { catJson = {}; }
+              }
+            }
+            const logisticsArr = Array.isArray(catJson?.logistics) ? catJson.logistics : [];
+            const typesSet = new Set<string>((logisticsArr.flatMap((e: any) => Array.isArray(e?.types) ? e.types : []) || []).map((t: any) => String(t?.type || t)));
+            allowedSelfService = typesSet.has("self_service");
+          } catch {}
+        }
+        let hasFlex = false;
+        try {
+          let chkResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { headers: { Authorization: `Bearer ${String(accessToken)}`, Accept: "application/json" } });
+          let chkJson: any = null; try { chkJson = await chkResp.json(); } catch { chkJson = {}; }
+          if (!chkResp.ok && (chkResp.status === 401 || chkResp.status === 403)) {
+            const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
+            if (refreshed.success && refreshed.accessToken) {
+              chkResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { headers: { Authorization: `Bearer ${refreshed.accessToken}`, Accept: "application/json" } });
+              try { chkJson = await chkResp.json(); } catch { chkJson = {}; }
+            }
+          }
+          hasFlex = !!chkJson?.has_flex;
+        } catch {}
+        if (preferFlex && allowedSelfService) {
+          if (!hasFlex) {
+            try {
+              let actResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "POST", headers: { Authorization: `Bearer ${String(accessToken)}` } });
+              if (!actResp.ok && (actResp.status === 401 || actResp.status === 403)) {
+                const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
+                if (refreshed.success && refreshed.accessToken) {
+                  actResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "POST", headers: { Authorization: `Bearer ${refreshed.accessToken}` } });
+                }
+              }
+              if (actResp.status === 204) flexAction = "enabled"; else { flexError = { status: actResp.status }; }
+            } catch (e) { flexError = String(e); }
+          } else {
+            flexAction = "enabled";
+          }
+        } else {
+          if (hasFlex) {
+            try {
+              let delResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "DELETE", headers: { Authorization: `Bearer ${String(accessToken)}` } });
+              if (!delResp.ok && (delResp.status === 401 || delResp.status === 403)) {
+                const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
+                if (refreshed.success && refreshed.accessToken) {
+                  delResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "DELETE", headers: { Authorization: `Bearer ${refreshed.accessToken}` } });
+                }
+              }
+              if (delResp.status === 204) flexAction = "disabled"; else { flexError = { status: delResp.status }; }
+            } catch (e) { flexError = String(e); }
+          } else {
+            flexAction = "disabled";
+          }
+        }
+      }
+    } catch (e) { flexError = String(e); }
+
     const nowIso = new Date().toISOString();
     const upsertData = {
       organizations_id: integration.organizations_id,
@@ -276,7 +348,7 @@ serve(async (req) => {
       }, { onConflict: "organizations_id,marketplace_name,marketplace_item_id" });
     }
 
-    return jsonResponse({ ok: true, item_id: itemId, permalink: createJson?.permalink || null, description_result: descResult || null, rid }, 200);
+    return jsonResponse({ ok: true, item_id: itemId, permalink: createJson?.permalink || null, description_result: descResult || null, flex_action: flexAction, flex_error: flexError, rid }, 200);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return jsonResponse({ error: msg }, 500);

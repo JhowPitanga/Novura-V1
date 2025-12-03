@@ -1,0 +1,3 @@
+[functions.mercado-livre-update-item-fields]
+verify_jwt = false
+

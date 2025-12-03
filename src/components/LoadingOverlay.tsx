@@ -12,22 +12,24 @@ interface LoadingOverlayProps {
   durationMs?: number;
   fullscreen?: boolean;
   message?: string;
+  messages?: string[];
   topOffset?: number;
 }
 
-export default function LoadingOverlay({ durationMs = 5000, fullscreen = false, message, topOffset = 0 }: LoadingOverlayProps) {
+export default function LoadingOverlay({ durationMs = 5000, fullscreen = false, message, messages, topOffset = 0 }: LoadingOverlayProps) {
   const [index, setIndex] = useState(0);
+  const list = Array.isArray(messages) && messages.length > 0 ? messages : MESSAGES;
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setIndex((i) => (i + 1) % MESSAGES.length);
+      setIndex((i) => (i + 1) % list.length);
     }, 1400);
     return () => clearInterval(interval);
-  }, []);
+  }, [list.length]);
 
   return (
     <div
-      className={`${fullscreen ? "fixed inset-0" : "absolute left-0 right-0 bottom-0"} z-[1000] bg-white flex flex-col items-center justify-center`}
+      className={`${fullscreen ? "fixed inset-0" : "absolute inset-0"} z-[1000] bg-white flex flex-col items-center justify-center`}
       style={fullscreen ? undefined : { top: topOffset }}
     >
       <UniqueLoading variant="morph" size="lg" className="mb-6" />
@@ -36,7 +38,7 @@ export default function LoadingOverlay({ durationMs = 5000, fullscreen = false, 
           key={index}
           className="text-primary font-medium transition-opacity duration-500 ease-in-out"
         >
-          {message ?? MESSAGES[index]}
+          {message ?? list[index]}
         </span>
       </div>
     </div>

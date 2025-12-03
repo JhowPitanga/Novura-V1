@@ -29,14 +29,14 @@ export async function fetchMercadoLivreItems(
 ): Promise<MarketplaceItem[]> {
   const limit = opts?.limit ?? 200;
   const { data, error } = await supabase
-    .from('marketplace_items')
+    .from('marketplace_items_unified')
     .select('*')
     .eq('organizations_id', organizationId)
     .eq('marketplace_name', 'Mercado Livre')
     .order('updated_at', { ascending: false })
     .limit(limit);
   if (error) throw error;
-  return data || [];
+  return (data as any[]) || [];
 }
 
 export async function syncMercadoLivreItems(
