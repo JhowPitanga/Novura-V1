@@ -136,7 +136,7 @@ export const useCreateProduct = () => {
 
 // Hook para buscar produtos que podem ser vinculados
 // Este resolve o erro 'useBindableProducts'
-export function useBindableProducts() {
+export function useBindableProducts(enabled: boolean = true) {
     const [bindableProducts, setBindableProducts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -144,8 +144,7 @@ export function useBindableProducts() {
 
     useEffect(() => {
         const fetchBindableProducts = async () => {
-            // Exige sessão válida para cumprir RLS, mas não restringe por user_id
-            if (!user) {
+            if (!user || !enabled) {
                 setLoading(false);
                 return;
             }
@@ -212,7 +211,7 @@ export function useBindableProducts() {
         };
 
         fetchBindableProducts();
-    }, [user]);
+    }, [user, enabled]);
 
     return { bindableProducts, loading, error };
 }

@@ -64,6 +64,28 @@ async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise
   return `enc:gcm:${ivStr}:${ctStr}`;
 }
 
+function normalizeOrderNumbers(order: any): any {
+  try {
+    const o = JSON.parse(JSON.stringify(order));
+    const toNumOrDelete = (obj: any, key: string) => {
+      if (!obj || typeof obj !== "object" || !(key in obj)) return;
+      const v = obj[key];
+      if (typeof v === "number" && Number.isFinite(v)) return;
+      if (typeof v === "string" && /^\d+$/.test(v)) { obj[key] = Number(v); return; }
+      try { delete obj[key]; } catch {}
+    };
+    if (o && o.buyer) toNumOrDelete(o.buyer, "id");
+    toNumOrDelete(o, "pack_id");
+    if (o && o.data) {
+      toNumOrDelete(o.data, "pack_id");
+      if (o.data.buyer) toNumOrDelete(o.data.buyer, "id");
+    }
+    return o;
+  } catch (_) {
+    return order;
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return jsonResponse(null, 200);
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
@@ -195,6 +217,7 @@ serve(async (req) => {
     }
 
     const orderData = await orderResp.json();
+    const orderDataClean = normalizeOrderNumbers(orderData);
 
     async function fetchShipmentDetails(shipmentId: string, token: string): Promise<any | null> {
       if (!shipmentId) return null;
@@ -297,32 +320,26 @@ serve(async (req) => {
     }
     console.log("mercado-livre-webhook-orders shipments_normalized", { correlationId, count: shipmentsNormalized.length });
 
-    const upsertData = {
-      organizations_id: integration.organizations_id,
-      company_id: integration.company_id,
-      marketplace_name: "Mercado Livre",
-      marketplace_order_id: orderData.id,
-      status: orderData.status || null,
-      status_detail: orderData.status_detail || null,
-      order_items: Array.isArray(orderData.order_items) ? orderData.order_items : [],
-      buyer: orderData.buyer || null,
-      seller: orderData.seller || null,
-      payments: Array.isArray(orderData.payments) ? orderData.payments : [],
-      shipments: shipmentsNormalized,
-      feedback: orderData.feedback || null,
-      tags: Array.isArray(orderData.tags) ? orderData.tags : [],
-      data: orderData,
-      date_created: orderData.date_created || null,
-      date_closed: orderData.date_closed || null,
-      last_updated: orderData.last_updated || null,
-      last_synced_at: nowIso,
-      updated_at: nowIso,
-    };
-
-    // Upsert no banco na tabela de dados brutos (marketplace_orders_raw)
-    const { error: upErr } = await admin
-      .from("marketplace_orders_raw")
-      .upsert(upsertData, { onConflict: "organizations_id,marketplace_name,marketplace_order_id" });
+    const { data: upId, error: upErr } = await admin.rpc('upsert_marketplace_order_raw', {
+      p_organizations_id: integration.organizations_id,
+      p_company_id: integration.company_id,
+      p_marketplace_name: "Mercado Livre",
+      p_marketplace_order_id: String(orderDataClean.id),
+      p_status: orderDataClean.status || null,
+      p_status_detail: orderDataClean.status_detail || null,
+      p_order_items: Array.isArray(orderDataClean.order_items) ? orderDataClean.order_items : [],
+      p_buyer: orderDataClean.buyer || null,
+      p_seller: orderDataClean.seller || null,
+      p_payments: Array.isArray(orderDataClean.payments) ? orderDataClean.payments : [],
+      p_shipments: shipmentsNormalized,
+      p_feedback: orderDataClean.feedback || null,
+      p_tags: Array.isArray(orderDataClean.tags) ? orderDataClean.tags : [],
+      p_data: orderDataClean,
+      p_date_created: orderDataClean.date_created || null,
+      p_date_closed: orderDataClean.date_closed || null,
+      p_last_updated: orderDataClean.last_updated || null,
+      p_last_synced_at: nowIso,
+    });
 
     // If order upsert succeeded, also upsert normalized shipments into marketplace_shipments
     if (!upErr) {
@@ -330,10 +347,54 @@ serve(async (req) => {
     }
 
     if (upErr) {
-      console.error("mercado-livre-webhook-orders upsert_failed", { correlationId, error: upErr.message });
-      return jsonResponse({ ok: false, error: `Failed to upsert order: ${upErr.message}`, correlationId }, 200);
+      console.error("mercado-livre-webhook-orders rpc_upsert_failed", { correlationId, message: (upErr as any).message, details: (upErr as any).details, hint: (upErr as any).hint });
+      try {
+        const isNewRaw = true;
+        const buyerClean = (() => {
+          const b = orderDataClean?.buyer && typeof orderDataClean.buyer === "object" ? { ...orderDataClean.buyer } : null;
+          if (b && typeof (b as any).id !== "number") { try { delete (b as any).id; } catch {} }
+          return b;
+        })();
+        const dataClean = (() => {
+          const d = JSON.parse(JSON.stringify(orderDataClean));
+          if (d && typeof d.pack_id !== "number") { try { delete (d as any).pack_id; } catch {} }
+          if (d && d.buyer && typeof d.buyer === "object" && typeof (d.buyer as any).id !== "number") { try { delete (d.buyer as any).id; } catch {} }
+          return d;
+        })();
+        const upsertData = {
+          organizations_id: integration.organizations_id,
+          company_id: integration.company_id,
+          marketplace_name: "Mercado Livre",
+          marketplace_order_id: String(orderDataClean.id),
+          status: orderDataClean.status || null,
+          status_detail: orderDataClean.status_detail || null,
+          order_items: Array.isArray(orderDataClean.order_items) ? orderDataClean.order_items : [],
+          buyer: buyerClean,
+          seller: orderDataClean.seller || null,
+          payments: Array.isArray(orderDataClean.payments) ? orderDataClean.payments : [],
+          shipments: Array.isArray(shipmentsNormalized) ? shipmentsNormalized : [],
+          feedback: orderDataClean.feedback || null,
+          tags: Array.isArray(orderDataClean.tags) ? orderDataClean.tags : [],
+          data: dataClean,
+          date_created: orderDataClean.date_created || null,
+          date_closed: orderDataClean.date_closed || null,
+          last_updated: orderDataClean.last_updated || null,
+          last_synced_at: nowIso,
+          updated_at: nowIso,
+        } as const;
+        const { error: upErr2 } = await admin
+          .from("marketplace_orders_raw")
+          .upsert(upsertData, { onConflict: "organizations_id,marketplace_name,marketplace_order_id" });
+        if (upErr2) {
+          console.error("mercado-livre-webhook-orders upsert_failed_fallback", { correlationId, message: upErr2.message });
+          return jsonResponse({ ok: false, error: `Failed to upsert order: ${upErr.message}`, correlationId, code: (upErr as any).code, details: (upErr as any).details, hint: (upErr as any).hint }, 200);
+        }
+      } catch (_) {
+        console.error("mercado-livre-webhook-orders upsert_exception_fallback", { correlationId });
+        return jsonResponse({ ok: false, error: `Failed to upsert order: ${upErr.message}`, correlationId, code: (upErr as any).code, details: (upErr as any).details, hint: (upErr as any).hint }, 200);
+      }
     }
-    console.log("mercado-livre-webhook-orders upsert_ok", { correlationId, order_id: orderId, organizations_id: integration.organizations_id });
+    console.log("mercado-livre-webhook-orders upsert_ok", { correlationId, order_id: orderId, organizations_id: integration.organizations_id, raw_id: upId });
 
     return jsonResponse({ 
       ok: true, 

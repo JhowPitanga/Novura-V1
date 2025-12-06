@@ -41,7 +41,7 @@ interface VincularPedidoModalProps {
 }
 
 export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anunciosParaVincular }: VincularPedidoModalProps) {
-  const { bindableProducts, loading, error } = useBindableProducts();
+  const { bindableProducts, loading, error } = useBindableProducts(isOpen);
   const { organizationId: orgIdFromAuth } = useAuth();
 
   // Estado principal de vinculações por anúncio
