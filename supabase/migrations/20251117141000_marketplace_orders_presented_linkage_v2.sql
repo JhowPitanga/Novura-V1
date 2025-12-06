@@ -120,8 +120,8 @@ SELECT
   COALESCE(b.buyer->>'nickname', trim(concat_ws(' ', b.buyer->>'first_name', b.buyer->>'last_name'))) AS customer_name,
 
   COALESCE(
-    (b.buyer->>'id')::bigint,
-    (b.data->'buyer'->>'id')::bigint,
+    CASE WHEN (b.buyer->>'id') ~ '^\d+$' THEN (b.buyer->>'id')::bigint ELSE NULL END,
+    CASE WHEN (b.data->'buyer'->>'id') ~ '^\d+$' THEN (b.data->'buyer'->>'id')::bigint ELSE NULL END,
     0
   ) AS id_buyer,
   COALESCE(
@@ -244,7 +244,7 @@ SELECT
   COALESCE(first_item_json->'item'->>'id', first_item_json->>'id', '') AS first_item_id,
   COALESCE(first_item_json->'item'->>'title', first_item_json->>'title', '') AS first_item_title,
   COALESCE(first_item_json->'item'->>'seller_sku', first_item_json->>'seller_sku', '') AS first_item_sku,
-  COALESCE((first_item_json->'item'->>'variation_id')::bigint, 0) AS first_item_variation_id,
+  COALESCE(CASE WHEN (first_item_json->'item'->>'variation_id') ~ '^\d+$' THEN (first_item_json->'item'->>'variation_id')::bigint ELSE 0 END, 0) AS first_item_variation_id,
   COALESCE(mi.permalink, '') AS first_item_permalink,
   colors.variation_color_names,
   ia.category_ids,
@@ -254,7 +254,7 @@ SELECT
   ia.has_bundle,
   ia.has_kit,
 
-  COALESCE((b.data->>'pack_id')::bigint, 0) AS pack_id,
+  COALESCE(CASE WHEN (b.data->>'pack_id') ~ '^\d+$' THEN (b.data->>'pack_id')::bigint ELSE 0 END, 0) AS pack_id,
 
   COALESCE((b.labels ? 'content_base64'), false) AS label_cached,
   b.labels->>'response_type' AS label_response_type,

@@ -18,7 +18,7 @@ export function GlobalHeader() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [notifTab, setNotifTab] = useState("novidades");
-  const { channels = [], directChannels = [], teamChannels = [] } = useChatChannels();
+  const { channels = [], directChannels = [], teamChannels = [] } = useChatChannels(chatOpen);
   const [quickChannelId, setQuickChannelId] = useState<string | null>(null);
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -32,11 +32,12 @@ export function GlobalHeader() {
   };
 
   useEffect(() => {
+    if (!chatOpen) return;
     if (!quickChannelId) {
       const first = (directChannels[0]?.id) || (teamChannels[0]?.id) || (channels[0]?.id) || null;
       if (first) setQuickChannelId(first);
     }
-  }, [channels, directChannels, teamChannels, quickChannelId]);
+  }, [chatOpen, channels, directChannels, teamChannels, quickChannelId]);
 
   // Abrir drawer rápido ao receber evento do AppSidebar
   useEffect(() => {

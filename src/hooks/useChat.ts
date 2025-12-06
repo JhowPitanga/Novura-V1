@@ -30,14 +30,14 @@ export type ChatMessage = {
   isPending?: boolean;
 };
 
-export function useChatChannels() {
+export function useChatChannels(enabled: boolean = true) {
   const { user, organizationId } = useAuth();
   const { toast } = useToast();
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
   const fetchChannels = async () => {
-    if (!user) {
+    if (!enabled || !user) {
       setLoading(false);
       return;
     }
@@ -90,6 +90,7 @@ export function useChatChannels() {
   };
 
   useEffect(() => {
+    if (!enabled) { setLoading(false); return; }
     fetchChannels();
     if (!user) return;
 
@@ -99,7 +100,7 @@ export function useChatChannels() {
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [user]);
+  }, [user, enabled]);
 
   const directChannels = useMemo(() => channels.filter(c => c.type === 'dm'), [channels]);
   const teamChannels = useMemo(() => channels.filter(c => c.type === 'team'), [channels]);
