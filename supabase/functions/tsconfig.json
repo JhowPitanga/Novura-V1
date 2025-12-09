@@ -8,18 +8,20 @@
     "strictNullChecks": false,
     "skipLibCheck": true,
     "types": [
-      "./deno.d.ts"
+      "./deno.d.ts",
+      "./edge-declarations.d.ts"
     ],
     "moduleResolution": "node",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "module": "esnext",
-    "allowImportingTsExtensions": false,
+    "allowImportingTsExtensions": true,
     "noEmit": true
   },
   "include": [
     "**/*.ts",
     "**/*.tsx",
-    "./deno.d.ts"
+    "./deno.d.ts",
+    "./edge-declarations.d.ts"
   ]
 }

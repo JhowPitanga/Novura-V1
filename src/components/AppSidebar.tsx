@@ -59,6 +59,7 @@ const toolsModules: ModuleItem[] = [
   { title: "Aplicativos", url: "/aplicativos", icon: Puzzle, module: "aplicativos" },
   { title: "Comunidade", url: "/comunidade", icon: MessageSquare, module: "comunidade" },
   { title: "Novura Academy", url: "/novura-academy", icon: Award, module: "novura_academy" },
+  { title: "Novura Admin", url: "/novura-admin", icon: Settings, module: "novura_admin" },
 ];
 
 export function AppSidebar() {
@@ -324,8 +325,6 @@ export function AppSidebar() {
                 <SidebarMenu className="space-y-1">
                   {managementModules
                     .filter((m) => {
-                      // Donos têm acesso a tudo; membros filtram por permissão do módulo
-                      if (userRole === "owner") return true;
                       return m.module ? hasModuleAccess(m.module) : true;
                     })
                     .map((item) => (
@@ -363,7 +362,6 @@ export function AppSidebar() {
                 <SidebarMenu className="space-y-1">
                   {toolsModules
                     .filter((m) => {
-                      if (userRole === "owner") return true;
                       return m.module ? hasModuleAccess(m.module) : true;
                     })
                     .map((item) => (

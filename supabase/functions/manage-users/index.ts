@@ -84,6 +84,21 @@ serve(async (req) => {
       return jsonResponse({ error: 'User not found in any organization' }, 404);
     }
 
+    let globalRole: string | null = null;
+    try {
+      const { data: gRow } = await admin
+        .from('users')
+        .select('global_role')
+        .eq('id', user.id)
+        .maybeSingle();
+      globalRole = (gRow as any)?.global_role ?? null;
+    } catch (_) {}
+    if (!globalRole) {
+      const meta = (user as any)?.user_metadata || {};
+      const app = (user as any)?.app_metadata || {};
+      globalRole = (meta?.global_role as string | null) || (app?.global_role as string | null) || null;
+    }
+
     // 3) Try to load role/permissions via RPC (it has invite fallback semantics)
     try {
       const { data: permsRow, error: permsErr } = await admin.rpc('rpc_get_member_permissions', {
@@ -112,11 +127,18 @@ serve(async (req) => {
     }
 
     switch (action) {
+      case "toggle_module":
+        return await handleToggleModule(admin, req, organizationId, globalRole);
       case "list_users":
         if (!["owner", "admin"].includes(userRole)) {
           return jsonResponse({ error: "Insufficient permissions to list users" }, 403);
         }
         return await handleListUsers(admin, organizationId, userRole);
+      case "list_all_users":
+        if (!(["owner", "admin", "super"].includes(userRole) || globalRole === 'nv_superadmin')) {
+          return jsonResponse({ error: "Insufficient permissions to list all users" }, 403);
+        }
+        return await handleListAllUsers(admin, organizationId);
       case "invite_user":
         {
           const canInvite = ["owner", "admin"].includes(userRole)
@@ -221,6 +243,202 @@ async function handleListUsers(admin: any, organizationId: string, userRole: str
     };
   });
 
+  return jsonResponse({ users: usersWithDetails });
+}
+
+async function handleToggleModule(admin: any, req: Request, organizationId: string, globalRole: string | null) {
+  const { module_id, module_name, active, organization_id } = await req.json();
+  if (globalRole !== 'nv_superadmin') {
+    return jsonResponse({ error: 'Insufficient permissions' }, 403);
+  }
+  if (typeof active !== 'boolean') {
+    return jsonResponse({ error: 'Active flag is required' }, 400);
+  }
+  const targetOrgId = (organization_id as string | undefined) || organizationId;
+  let name = module_name as string | undefined;
+  let id = module_id as string | undefined;
+  if (!name && id) {
+    const { data } = await admin
+      .from('system_modules')
+      .select('name')
+      .eq('id', id)
+      .maybeSingle();
+    name = (data as any)?.name || undefined;
+  }
+  if (!id && name) {
+    const { data } = await admin
+      .from('system_modules')
+      .select('id')
+      .eq('name', name)
+      .maybeSingle();
+    id = (data as any)?.id || undefined;
+  }
+  if (!name || !id) {
+    return jsonResponse({ error: 'Module not found' }, 404);
+  }
+  try {
+    const { error: modErr } = await admin
+      .from('system_modules')
+      .update({ active })
+      .eq('id', id);
+  } catch (_) {}
+
+  let permsErr: any = null;
+  try {
+    const { error } = await admin.rpc('bulk_set_module_enabled', {
+      p_organization_id: targetOrgId,
+      p_module: name,
+      p_enabled: active,
+    });
+    permsErr = error || null;
+  } catch (e) {
+    permsErr = e as any;
+  }
+  if (permsErr) {
+    const ok = await updateModuleEnabledWithoutRpc(admin, targetOrgId, name, active);
+    if (!ok) {
+      return jsonResponse({ error: 'Failed to update permissions' }, 500);
+    }
+  }
+
+  let switchErr: any = null;
+  try {
+    const { error } = await admin.rpc('set_global_module_switch', {
+      p_organization_id: targetOrgId,
+      p_module: name,
+      p_active: active,
+    });
+    switchErr = error || null;
+  } catch (e) {
+    switchErr = e as any;
+  }
+  if (switchErr) {
+    try {
+      await setGlobalModuleSwitchWithoutRpc(admin, targetOrgId, name, active);
+    } catch (_) {}
+  }
+
+  return jsonResponse({ success: true });
+}
+
+async function updateModuleEnabledWithoutRpc(admin: any, orgId: string, moduleName: string, enabled: boolean) {
+  let moduleId: string | null = null;
+  try {
+    const { data: m } = await admin
+      .from('system_modules')
+      .select('id')
+      .eq('name', moduleName)
+      .maybeSingle();
+    moduleId = (m as any)?.id || null;
+  } catch (_) {}
+
+  let actions: string[] = [];
+  if (moduleId) {
+    try {
+      const { data: acts } = await admin
+        .from('module_actions')
+        .select('name')
+        .eq('module_id', moduleId);
+      actions = (acts || []).map((a: any) => String(a.name));
+    } catch (_) {}
+  }
+  if (!actions || actions.length === 0) actions = ['view'];
+  const vJson: any = {};
+  for (const a of actions) vJson[a] = enabled;
+
+  const { data: members } = await admin
+    .from('organization_members')
+    .select('user_id, role, permissions')
+    .eq('organization_id', orgId)
+    .in('role', ['admin','member']);
+  const memberIds = (members || []).map((m: any) => String(m.user_id));
+
+  let superIds: string[] = [];
+  if (memberIds.length > 0) {
+    try {
+      const { data: users } = await admin
+        .from('users')
+        .select('id, global_role')
+        .in('id', memberIds);
+      superIds = (users || [])
+        .filter((u: any) => (u?.global_role === 'nv_superadmin'))
+        .map((u: any) => String(u.id));
+    } catch (_) {}
+  }
+
+  const targets = (members || []).filter((m: any) => !superIds.includes(String(m.user_id)));
+  const updates = targets.map(async (m: any) => {
+    const current = m.permissions || {};
+    const next = { ...current, [moduleName]: vJson };
+    const { error } = await admin
+      .from('organization_members')
+      .update({ permissions: next })
+      .eq('organization_id', orgId)
+      .eq('user_id', m.user_id);
+    if (error) throw error;
+  });
+  try {
+    await Promise.all(updates);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function setGlobalModuleSwitchWithoutRpc(admin: any, orgId: string, moduleName: string, active: boolean) {
+  const { data: members } = await admin
+    .from('organization_members')
+    .select('user_id, module_switches')
+    .eq('organization_id', orgId);
+  const updates = (members || []).map(async (m: any) => {
+    const raw = m.module_switches || {};
+    const global = (raw && typeof raw === 'object') ? (raw.global || {}) : {};
+    const next = { ...raw, global: { ...global, [moduleName]: { active } } };
+    const { error } = await admin
+      .from('organization_members')
+      .update({ module_switches: next })
+      .eq('organization_id', orgId)
+      .eq('user_id', m.user_id);
+    if (error) throw error;
+  });
+  await Promise.all(updates);
+}
+
+async function handleListAllUsers(admin: any, organizationId: string) {
+  let page = 1;
+  const perPage = 100;
+  const all: any[] = [];
+  for (let i = 0; i < 20; i++) {
+    const { data: list, error: listErr } = await admin.auth.admin.listUsers({ page, perPage });
+    if (listErr) throw listErr;
+    const batch = (list?.users || []);
+    all.push(...batch);
+    if (!list || !list.users || batch.length < perPage) break;
+    page += 1;
+  }
+  const ids = all.map((u: any) => String(u.id));
+  const { data: members } = await admin
+    .from("organization_members")
+    .select("user_id, role, permissions")
+    .eq("organization_id", organizationId)
+    .in("user_id", ids);
+  const memMap = new Map<string, { role?: string; permissions?: any }>();
+  for (const m of members || []) {
+    memMap.set(String(m.user_id), { role: m.role, permissions: m.permissions });
+  }
+  const usersWithDetails = all.map((u: any) => {
+    const m = memMap.get(String(u.id)) || {};
+    const email = u?.email || undefined;
+    const nameFromMeta = u?.user_metadata?.name || u?.user_metadata?.full_name || null;
+    const name = nameFromMeta || email || null;
+    return {
+      id: String(u.id),
+      user_id: String(u.id),
+      role: m.role || undefined,
+      permissions: m.permissions || {},
+      users: { id: String(u.id), email, name, last_login: u?.last_sign_in_at || null },
+    };
+  });
   return jsonResponse({ users: usersWithDetails });
 }
 
