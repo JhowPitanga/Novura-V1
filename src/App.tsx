@@ -27,9 +27,9 @@ const Pedidos = lazy(() => import("./pages/Pedidos"));
 const Equipe = lazy(() => import("./pages/Equipe"));
 const Landing = lazy(() => import("./pages/Landing"));
 const Login = lazy(() => import("./pages/Login"));
-const Cadastro = lazy(() => import("./pages/Cadastro"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const NovuraAcademy = lazy(() => import("./pages/NovuraAcademy"));
+const NovuraAdmin = lazy(() => import("./pages/NovuraAdmin"));
 const ProductDetailsPage = lazy(() => import("./pages/ProductDetailsPage"));
 const Configuracoes = lazy(() => import("./pages/Configuracoes"));
 const NovaEmpresa = lazy(() => import("./pages/NovaEmpresa"));
@@ -37,6 +37,7 @@ const SAC = lazy(() => import("./pages/SAC"));
 const Comunidade = lazy(() => import("./pages/Comunidade"));
 const Auth = lazy(() => import("./pages/Auth"));
 const MercadoLivreCallback = lazy(() => import("./pages/MercadoLivreCallback"));
+const ShopeeCallback = lazy(() => import("./pages/ShopeeCallback"));
 const ConviteAceito = lazy(() => import("./pages/ConviteAceito"));
 
 const queryClient = new QueryClient();
@@ -85,6 +86,14 @@ const App = () => (
               }
             />
             <Route
+              path="/cadastro"
+              element={
+                <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                  <Auth />
+                </Suspense>
+              }
+            />
+            <Route
               path="/convite-aceito"
               element={
                 <Suspense fallback={<div className="p-6">Carregando...</div>}>
@@ -97,6 +106,14 @@ const App = () => (
               element={
                 <Suspense fallback={<div className="p-6">Carregando...</div>}>
                   <MercadoLivreCallback />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/oauth/shopee/callback"
+              element={
+                <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                  <ShopeeCallback />
                 </Suspense>
               }
             />
@@ -310,6 +327,18 @@ const App = () => (
                   <RestrictedRoute module="novura_academy" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
                       <NovuraAcademy />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/novura-admin/*"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="novura_admin" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <NovuraAdmin />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>

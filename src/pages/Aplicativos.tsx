@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
@@ -25,6 +25,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { startMercadoLivreAuth, listenForMeliOAuthSuccess } from '@/WebhooksAPI/marketplace/mercado-livre';
+import { startShopeeAuth, listenForShopeeOAuthSuccess } from '@/WebhooksAPI/marketplace/shopee';
 
 interface App {
   id: string;
@@ -42,6 +43,8 @@ interface App {
 const APPS_API_URL = import.meta.env.VITE_APPS_API_URL || "/api/apps";
 // URL de redirect para o callback do Mercado Livre (defina em .env: VITE_MERCADO_LIVRE_REDIRECT_URI)
 const MELI_REDIRECT_URI = import.meta.env.VITE_MERCADO_LIVRE_REDIRECT_URI as string | undefined;
+// URL de redirect para o callback da Shopee (defina em .env: VITE_SHOPEE_REDIRECT_URI)
+const SHOPEE_REDIRECT_URI = import.meta.env.VITE_SHOPEE_REDIRECT_URI as string | undefined;
 
 interface AppConnection {
   appId: string;
@@ -85,7 +88,8 @@ export default function Aplicativos() {
 
         if (isMounted && Array.isArray(data)) {
           const allowedCategories = ['marketplaces', 'logistics', 'dropshipping', 'others'] as const;
-          const mapped = data.map((row: any) => {
+          type AppViewRow = { id: string; name: string; description: string; logo_url: string; category: string; price_type: string; auth_url?: string | null };
+          const mapped = (data as AppViewRow[]).map((row) => {
             const category = allowedCategories.includes(row.category)
               ? row.category
               : 'others';
@@ -101,10 +105,11 @@ export default function Aplicativos() {
           });
           setApps(mapped);
         }
-      } catch (err: any) {
+      } catch (err) {
         if (isMounted) {
+          const msg = err instanceof Error ? err.message : 'Não foi possível carregar o catálogo de apps.';
           setApps([]);
-          setAppsError(err?.message || 'Não foi possível carregar o catálogo de apps.');
+          setAppsError(msg);
         }
       } finally {
         if (isMounted) setLoadingApps(false);
@@ -151,7 +156,7 @@ export default function Aplicativos() {
     setIsDialogOpen(true);
   };
 
-  const loadConnections = async () => {
+  const loadConnections = useCallback(async () => {
     try {
       if (!organizationId) return;
       const { data, error } = await supabase
@@ -162,7 +167,8 @@ export default function Aplicativos() {
       if (error) throw error;
 
       const nextConnections: Record<string, AppConnection> = {};
-      (data || []).forEach((row: any) => {
+      type IntegrationRow = { marketplace_name: string; config?: { storeName?: string; connectedAt?: string }; expires_in?: number | string };
+      ((data as IntegrationRow[]) || []).forEach((row) => {
         // Normaliza nome do app para localizar no catálogo carregado
         const marketplaceName = row.marketplace_name === 'mercado_livre' ? 'Mercado Livre' : row.marketplace_name;
         const app = apps.find(a => a.name === marketplaceName);
@@ -187,13 +193,13 @@ export default function Aplicativos() {
     } catch (e) {
       console.error('Falha ao carregar integrações', e);
     }
-  };
+  }, [organizationId, apps]);
 
   useEffect(() => {
     if (organizationId && apps.length > 0) {
       loadConnections();
     }
-  }, [organizationId, apps.length]);
+  }, [organizationId, apps.length, loadConnections]);
 
   // Helper para mapear nome exibido para nome no banco
   const toDbMarketplaceName = (name: string) => {
@@ -219,46 +225,82 @@ export default function Aplicativos() {
         return;
       }
 
-      // Obter URL de autorização via utilitário da pasta WebhooksAPI
-      const { authorization_url } = await startMercadoLivreAuth(supabase, {
-        organizationId,
-        storeName: trimmedStoreName,
-        marketplaceName: selectedApp.name,
-        connectedByUserId: user?.id || null,
-        redirectUri: MELI_REDIRECT_URI || undefined,
-      });
+      const appNameLower = selectedApp.name.toLowerCase();
 
-      // Abre janela de autorização e escuta retorno pelo postMessage
-      const popup = window.open(authorization_url, 'meli_auth', 'width=960,height=800,menubar=no,toolbar=no');
-      if (!popup) {
-        toast({ title: 'Janela bloqueada', description: 'Permita pop-ups no navegador para continuar.' });
-        return;
-      }
+      if (appNameLower === 'shopee') {
+        const { authorization_url } = await startShopeeAuth(supabase, {
+          organizationId,
+          storeName: trimmedStoreName,
+          connectedByUserId: user?.id || null,
+          redirectUri: SHOPEE_REDIRECT_URI || undefined,
+        });
 
-      const unsubscribe = listenForMeliOAuthSuccess((_payload) => {
-        try {
-          // Atualiza UI marcando como conectado
-          setIsDialogOpen(false);
-          setStoreName('');
-          setAppConnections(prev => ({
-            ...prev,
-            [selectedApp.id]: {
-              appId: selectedApp.id,
-              storeName: trimmedStoreName,
-              status: 'active',
-              authenticatedAt: new Date().toISOString(),
-              // expiração estimada (30 dias) caso não retornado
-              expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-            },
-          }));
-          setApps(prev => prev.map(a => a.id === selectedApp.id ? { ...a, isConnected: true } : a));
-          toast({ title: 'Conexão concluída', description: `${selectedApp.name} foi conectado com sucesso.` });
-          navigate('/aplicativos/conectados');
-        } finally {
-          unsubscribe();
-          try { popup.close(); } catch (_) {}
+        const popup = window.open(authorization_url, 'shopee_auth', 'width=960,height=800,menubar=no,toolbar=no');
+        if (!popup) {
+          toast({ title: 'Janela bloqueada', description: 'Permita pop-ups no navegador para continuar.' });
+          return;
         }
-      });
+
+        const unsubscribe = listenForShopeeOAuthSuccess((_payload) => {
+          try {
+            setIsDialogOpen(false);
+            setStoreName('');
+            setAppConnections(prev => ({
+              ...prev,
+              [selectedApp.id]: {
+                appId: selectedApp.id,
+                storeName: trimmedStoreName,
+                status: 'active',
+                authenticatedAt: new Date().toISOString(),
+                expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+              },
+            }));
+            setApps(prev => prev.map(a => a.id === selectedApp.id ? { ...a, isConnected: true } : a));
+            toast({ title: 'Conexão concluída', description: `${selectedApp.name} foi conectado com sucesso.` });
+            navigate('/aplicativos/conectados');
+          } finally {
+            unsubscribe();
+          popup.close?.();
+          }
+        });
+      } else {
+        const { authorization_url } = await startMercadoLivreAuth(supabase, {
+          organizationId,
+          storeName: trimmedStoreName,
+          marketplaceName: selectedApp.name,
+          connectedByUserId: user?.id || null,
+          redirectUri: MELI_REDIRECT_URI || undefined,
+        });
+
+        const popup = window.open(authorization_url, 'meli_auth', 'width=960,height=800,menubar=no,toolbar=no');
+        if (!popup) {
+          toast({ title: 'Janela bloqueada', description: 'Permita pop-ups no navegador para continuar.' });
+          return;
+        }
+
+        const unsubscribe = listenForMeliOAuthSuccess((_payload) => {
+          try {
+            setIsDialogOpen(false);
+            setStoreName('');
+            setAppConnections(prev => ({
+              ...prev,
+              [selectedApp.id]: {
+                appId: selectedApp.id,
+                storeName: trimmedStoreName,
+                status: 'active',
+                authenticatedAt: new Date().toISOString(),
+                expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+              },
+            }));
+            setApps(prev => prev.map(a => a.id === selectedApp.id ? { ...a, isConnected: true } : a));
+            toast({ title: 'Conexão concluída', description: `${selectedApp.name} foi conectado com sucesso.` });
+            navigate('/aplicativos/conectados');
+          } finally {
+            unsubscribe();
+          popup.close?.();
+          }
+        });
+      }
     } catch (e) {
       console.error('Erro inesperado ao conectar app:', e);
       toast({ title: 'Erro inesperado', description: 'Ocorreu um erro ao conectar o aplicativo.', variant: 'destructive' });

@@ -176,24 +176,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     message = 'A senha deve ter pelo menos 6 caracteres.';
                 } else if (error.message?.includes('email')) {
                     message = 'Por favor, insira um email válido.';
+                } else if (String(error.message || '').includes('Unexpected status code returned from hook')) {
+                    message = 'Falha no hook de cadastro. Tente novamente em alguns minutos.';
                 } else if ((error as any).status === 500) {
                     message = 'Erro interno no serviço de autenticação. Verifique as configurações de Authentication > Email no Supabase.';
                 }
-
-                // Fallback: tenta criar pelo Edge Function admin (se configurado)
-                try {
-                    const { data: fnData, error: fnErr } = await supabase.functions.invoke('create-user', {
-                        body: { email, password, metadata: meta || {} },
-                    });
-                    if (!fnErr && !(fnData as any)?.error) {
-                        toast({ title: "Conta criada com sucesso!", description: "Conta criada pelo administrador. Faça login para continuar." });
-                        const userId = (fnData as any)?.userId as string | undefined;
-                        if (userId) {
-                            try { await supabase.rpc('rpc_bootstrap_user_org', { p_user_id: userId }); } catch (_) {}
-                        }
-                        return { error: null, userId };
-                    }
-                } catch (_) {}
 
                 toast({ title: "Erro no cadastro", description: message, variant: "destructive" });
                 return { error };
