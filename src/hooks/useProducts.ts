@@ -167,17 +167,7 @@ export function useBindableProducts(enabled: boolean = true) {
                     .order('name', { ascending: true });
 
                 if (organizationId) {
-                    try {
-                        query = (query as any).eq('organizations_id', organizationId);
-                    } catch (_) {
-                        try {
-                            const { data: orgRes } = await supabase.rpc('get_current_user_organization_id');
-                            const orgId = Array.isArray(orgRes) ? orgRes?.[0] : orgRes;
-                            if (orgId) {
-                                query = (query as any).eq('organizations_id', orgId as any);
-                            }
-                        } catch { }
-                    }
+                    query = (query as any).eq('organizations_id', organizationId);
                 }
 
                 const { data, error } = await query;

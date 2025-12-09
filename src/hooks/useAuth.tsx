@@ -38,6 +38,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 return;
             }
 
+            if (organizationId && permissions && userRole) {
+                return;
+            }
+
             // 1) Tenta via metadados do usuário
             const metaOrg = (u.user_metadata as any)?.organization_id as string | undefined;
             if (metaOrg) {
@@ -78,27 +82,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function loadUserPermissionsAndRole(userId: string, orgId: string) {
         try {
-            const { data: perms, error: permsErr } = await supabase.rpc('get_user_permissions', {
+            const { data: permsRow, error: permsErr } = await supabase.rpc('rpc_get_member_permissions', {
                 p_user_id: userId,
                 p_organization_id: orgId,
             });
             if (permsErr) {
-                console.warn('Erro ao carregar permissões do usuário (RPC):', permsErr);
+                console.warn('Erro ao carregar permissões/role (RPC):', permsErr);
                 setPermissions({});
+                setUserRole('member');
             } else {
-                const p = Array.isArray(perms) ? (perms[0] as any) : (perms as any);
-                setPermissions(p || {});
+                const row = Array.isArray(permsRow) ? (permsRow[0] as any) : (permsRow as any);
+                setPermissions(row?.permissions || {});
+                setUserRole(row?.role || 'member');
             }
-
-            const { data: memberRow } = await supabase
-                .from('organization_members')
-                .select('role')
-                .eq('organization_id', orgId)
-                .eq('user_id', userId)
-                .maybeSingle();
-            setUserRole((memberRow as any)?.role || 'member');
         } catch (e) {
-            console.warn('Falha ao carregar permissões e role do usuário (RPC)', e);
+            console.warn('Falha ao carregar permissões e role (RPC)', e);
             setPermissions({});
             setUserRole('member');
         }
@@ -156,9 +154,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setSession(session);
             const currentUser = session?.user ?? null;
             setUser(currentUser);
-            await resolveOrganizationId(currentUser);
-            setLoading(false);
-            initDoneRef.current = true;
+            if (!initDoneRef.current) {
+                await resolveOrganizationId(currentUser);
+                setLoading(false);
+                initDoneRef.current = true;
+            }
         });
 
         return () => subscription.unsubscribe();

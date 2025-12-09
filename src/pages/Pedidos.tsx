@@ -45,9 +45,6 @@ import { PedidoDetailsDrawer } from "@/components/pedidos/PedidoDetailsDrawer";
 import { supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
-// Cache simples para requisições ao endpoint público de Items do Mercado Livre
-const mlItemCache = new Map<string, any>();
-
 function mapTipoEnvioLabel(v?: string) {
     const s = String(v || '').toLowerCase();
     if (s === 'full' || s === 'fulfillment' || s === 'fbm') return 'Full';
@@ -84,162 +81,6 @@ function ensureHttpUrl(url?: string | null): string | null {
 }
 
 
-async function fetchMLItemDetails(itemId: string): Promise<any | null> {
-    if (!itemId) return null;
-    const key = itemId.toUpperCase();
-    if (mlItemCache.has(key)) return mlItemCache.get(key);
-    try {
-        const resp = await fetch(`https://api.mercadolibre.com/items/${key}?include_attributes=all`);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const json = await resp.json();
-        mlItemCache.set(key, json);
-        return json;
-    } catch (e) {
-        console.warn('Falha ao buscar item MLB', key, e);
-        mlItemCache.set(key, null);
-        return null;
-    }
-}
-
-function resolveVariationImageUrl(itemJson: any, variationId?: number | string): string | null {
-    if (!itemJson) return null;
-    const pictures: any[] = Array.isArray(itemJson?.pictures) ? itemJson.pictures : [];
-    // Se houver variação, tentar pegar picture_ids da variação correspondente
-    if (variationId && Array.isArray(itemJson?.variations)) {
-        const vId = typeof variationId === 'string' ? variationId : Number(variationId);
-        const variation = itemJson.variations.find((v: any) => String(v?.id) === String(vId));
-        if (variation && Array.isArray(variation.picture_ids) && variation.picture_ids.length > 0) {
-            const picId = variation.picture_ids[0];
-            const pic = pictures.find(p => p?.id === picId);
-            if (pic?.url) return pic.url;
-        }
-    }
-    // Fallback: primeira imagem do anúncio
-    if (pictures.length > 0 && pictures[0]?.url) return pictures[0].url;
-    // Último recurso: thumbnail
-    if (itemJson?.thumbnail) return itemJson.thumbnail;
-    return null;
-}
-
-async function enrichPedidosWithMLImages(parsedPedidos: any[], _marketplaceByOrderId: Record<string, any>) {
-    const pedidosClonados = parsedPedidos.map(p => ({ ...p, itens: p.itens.map((it: any) => ({ ...it })) }));
-    type Target = { item_id: string, variation_id?: string | number, apply: Array<{ pedidoIndex: number, itemIndex: number }> };
-    const targetsByKey = new Map<string, Target>();
-    const uniqueItemIds = new Set<string>();
-
-    pedidosClonados.forEach((pedido, pIdx) => {
-        for (let idx = 0; idx < pedido.itens.length; idx++) {
-            const it = pedido.itens[idx];
-            const itemId: string | undefined = it?.marketplaceItemId || undefined;
-            const variationId: string | number | undefined = it?.variationId || undefined;
-            if (!itemId) continue;
-            const key = `${itemId}::${variationId ?? ''}`;
-            uniqueItemIds.add(String(itemId));
-            if (!targetsByKey.has(key)) {
-                targetsByKey.set(key, { item_id: String(itemId), variation_id: variationId, apply: [] });
-            }
-            targetsByKey.get(key)!.apply.push({ pedidoIndex: pIdx, itemIndex: idx });
-        }
-    });
-
-    if (uniqueItemIds.size === 0) {
-        // Nada para resolver, apenas garanta placeholder nas imagens primárias
-        pedidosClonados.forEach((pedido) => {
-            pedido.imagem = pedido.itens?.[0]?.imagem || "/placeholder.svg";
-        });
-        return pedidosClonados;
-    }
-
-        // Buscar dados dos itens no backend (tabela unificada) — evita chamadas à API pública do ML
-        let itemRows: any[] = [];
-        try {
-            const { data: rows, error } = await (supabase as any)
-            .from('marketplace_items_unified')
-            .select('marketplace_item_id, pictures, variations, data, marketplace_name')
-            .eq('marketplace_name', 'Mercado Livre')
-            .in('marketplace_item_id', Array.from(uniqueItemIds));
-            if (error) throw error;
-            itemRows = rows || [];
-    } catch (err) {
-        console.warn('Falha ao buscar marketplace_items para imagens:', err);
-        // fallback: mantém placeholders
-        pedidosClonados.forEach((pedido) => {
-            pedido.imagem = pedido.itens?.[0]?.imagem || "/placeholder.svg";
-        });
-        return pedidosClonados;
-    }
-
-    const rowByItemId = new Map<string, any>();
-    for (const r of itemRows) {
-        if (r?.marketplace_item_id) rowByItemId.set(String(r.marketplace_item_id), r);
-    }
-
-    // Helper para resolver URL a partir do row armazenado
-    const resolveFromRow = (row: any, variationId?: string | number): string | null => {
-        if (!row) return null;
-        const pictures: any[] = Array.isArray(row?.pictures) ? row.pictures : [];
-        const variations: any[] = Array.isArray(row?.variations) ? row.variations : [];
-        if (variationId && variations.length > 0) {
-            const v = variations.find((vv: any) => String(vv?.id) === String(variationId));
-            if (v && Array.isArray(v.picture_ids) && v.picture_ids.length > 0) {
-                const picId = v.picture_ids[0];
-                const pic = pictures.find((p: any) => String(p?.id) === String(picId));
-                if (pic?.url) return pic.url;
-                if (pic?.secure_url) return pic.secure_url;
-            }
-        }
-        if (pictures.length > 0) {
-            if (pictures[0]?.url) return pictures[0].url;
-            if (pictures[0]?.secure_url) return pictures[0].secure_url;
-        }
-        const thumb = row?.data?.thumbnail || row?.data?.thumbnail_id || null;
-        if (typeof thumb === 'string' && thumb.startsWith('http')) return thumb;
-        return null;
-    };
-
-    // Primeiro: resolver imagens do anúncio MLB a partir de marketplace_items
-    const mlbByItemId: Record<string, string> = {};
-    for (const [, target] of targetsByKey) {
-        const k = String(target.item_id);
-        const row = rowByItemId.get(k);
-        const url = resolveFromRow(row, target.variation_id) || null;
-        if (url) mlbByItemId[k] = url;
-    }
-
-    // Depois: buscar imagens do produto ERP vinculado e sobrescrever quando existir vínculo
-    const resolvedByItemId: Record<string, string> = { ...mlbByItemId };
-    try {
-        const { data: linkRowsAll } = await (supabase as any)
-            .from('marketplace_item_product_links')
-            .select('marketplace_item_id, product:products (image_urls)')
-            .eq('marketplace_name', 'Mercado Livre')
-            .in('marketplace_item_id', Array.from(uniqueItemIds));
-        if (Array.isArray(linkRowsAll)) {
-            for (const lr of linkRowsAll as any[]) {
-                const k = String(lr?.marketplace_item_id || '');
-                const prod = lr?.product || {};
-                const url = (Array.isArray(prod?.image_urls) ? prod.image_urls[0] : null) || null;
-                if (k && url) resolvedByItemId[k] = url;
-            }
-        }
-    } catch (_) {
-    }
-
-    // Aplicar URLs resolvidas aos itens dos pedidos
-    for (const [, target] of targetsByKey) {
-        const k = String(target.item_id);
-        const url = resolvedByItemId[k] || "/placeholder.svg";
-        for (const ap of target.apply) {
-            pedidosClonados[ap.pedidoIndex].itens[ap.itemIndex].imagem = url;
-        }
-    }
-
-    // Ajustar imagem principal do pedido (primeiro item)
-    for (const pedido of pedidosClonados) {
-        pedido.imagem = pedido.itens?.[0]?.imagem || "/placeholder.svg";
-    }
-    return pedidosClonados;
-}
 
 // --- Mockup de PDF de Lista de Separação (Novo Componente) ---
 const PickingListPDFMockup = ({ pedidos, settings, onPrint }: { pedidos: any[]; settings: any; onPrint?: () => void }) => {
@@ -556,10 +397,9 @@ function Pedidos() {
     const columnsDrawerRef = useRef<HTMLDivElement | null>(null);
     const listContainerRef = useRef<HTMLDivElement | null>(null);
     const orgIdRef = useRef<string | null>(null);
-    const ordersRawCacheRef = useRef<Record<string, any>>({});
-    const shipmentsCacheRef = useRef<Record<string, any[]>>({});
     const loadRunIdRef = useRef<number>(0);
     const loadDebounceRef = useRef<number | null>(null);
+    const ensureDebounceRef = useRef<number | null>(null);
     const theadRef = useRef<HTMLTableSectionElement | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     
@@ -637,97 +477,29 @@ function Pedidos() {
     // Carregar contagens globais (independente da paginação) aplicando filtros de data e busca
     const loadGlobalStatusCounts = async () => {
         try {
-            let qBase: any = (supabase as any)
-                .from('marketplace_orders_presented_new')
-                .select('id', { count: 'exact' });
-            if (organizationId) qBase = (qBase as any).eq('organizations_id', organizationId);
-            if (marketplaceFilter === 'mercado-livre') {
-                qBase = (qBase as any).ilike('marketplace', '%Mercado%');
-            }
-            if (shippingTypeFilter !== 'all') {
-                const map = (
-                    shippingTypeFilter === 'full' ? ['full', 'fulfillment', 'fbm'] :
-                    (shippingTypeFilter === 'flex' ? ['flex', 'self_service'] :
-                        (shippingTypeFilter === 'envios'
-                            ? ['envios', 'xd_drop_off', 'cross_docking', 'me2', 'custom']
-                            : (shippingTypeFilter === 'correios'
-                                ? ['correios', 'drop_off']
-                                : ['no_shipping'])))
-                );
-                qBase = (qBase as any).in('shipping_type', map);
-            }
-            if (dateRange?.from || dateRange?.to) {
-                const fromISO = dateRange?.from ? new Date(dateRange.from as Date).toISOString() : undefined;
-                const toISO = dateRange?.to ? new Date(dateRange.to as Date).toISOString() : (dateRange?.from ? new Date(dateRange.from as Date).toISOString() : undefined);
-                if (fromISO) qBase = (qBase as any).gte('payment_date_approved', fromISO);
-                if (toISO) qBase = (qBase as any).lte('payment_date_approved', toISO);
-            }
-            // Busca global: para evitar conflito com múltiplos OR encadeados, aplicar uma única coluna representativa
-            if ((searchTerm || '').trim() !== '') {
-                const term = `%${String(searchTerm).trim()}%`;
-                qBase = (qBase as any).ilike('customer_name', term);
-            }
-
-            
-
-            const buildBase = () => {
-                let q: any = (supabase as any)
-                    .from('marketplace_orders_presented_new')
-                    .select('id', { count: 'exact' });
-                if (organizationId) q = (q as any).eq('organizations_id', organizationId);
-                if (marketplaceFilter === 'mercado-livre') {
-                    q = (q as any).ilike('marketplace', '%Mercado%');
-                }
-                if (shippingTypeFilter !== 'all') {
-                    const map = (
-                        shippingTypeFilter === 'full' ? ['full', 'fulfillment', 'fbm'] :
-                        (shippingTypeFilter === 'flex' ? ['flex', 'self_service'] :
-                            (shippingTypeFilter === 'envios'
-                                ? ['envios', 'xd_drop_off', 'cross_docking', 'me2', 'custom']
-                                : (shippingTypeFilter === 'correios'
-                                    ? ['correios', 'drop_off']
-                                    : ['no_shipping'])))
-                    );
-                    q = (q as any).in('shipping_type', map);
-                }
-                if (dateRange?.from || dateRange?.to) {
-                    const fromISO = dateRange?.from ? new Date(dateRange.from as Date).toISOString() : undefined;
-                    const toISO = dateRange?.to ? new Date(dateRange.to as Date).toISOString() : (dateRange?.from ? new Date(dateRange.from as Date).toISOString() : undefined);
-                    if (fromISO) q = (q as any).gte('payment_date_approved', fromISO);
-                    if (toISO) q = (q as any).lte('payment_date_approved', toISO);
-                }
-                if ((searchTerm || '').trim() !== '') {
-                    const term = `%${String(searchTerm).trim()}%`;
-                    q = (q as any).ilike('customer_name', term);
-                }
-                return q;
+            setStatusCountsGlobal(null);
+            setCountsReady(false);
+            const effectiveFromMs = dateRange?.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
+            const effectiveToMs = dateRange?.to ? calendarEndOfDaySPEpochMs(dateRange.to as Date) : (dateRange?.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
+            const term = (searchTerm || "").toLowerCase();
+            const inDate = (p: any) => {
+                const baseDateStr = p.dataPagamento || p.data;
+                const eventMs = baseDateStr ? eventToSPEpochMs(baseDateStr) : null;
+                return effectiveFromMs === undefined ? true : (eventMs !== null && eventMs >= effectiveFromMs && (effectiveToMs === undefined || eventMs <= effectiveToMs));
             };
-
-            const { count: canceladosCount } = await (buildBase() as any)
-                .in('status_interno', ['Cancelado', 'Devolução', 'Devolucao']);
-            const { count: enviadoCount } = await (buildBase() as any)
-                .in('status_interno', ['Enviado']);
-            const { count: aVincularCount } = await (buildBase() as any)
-                .or(
-                    'status_interno.eq.A vincular,status_interno.eq.A Vincular,status_interno.eq.A VINCULAR,and(shipment_status.eq.pending,shipment_substatus.eq.buffered,has_unlinked_items.is.true)'
-                );
-            const { count: todosCount } = await (buildBase() as any);
-            const { count: emissaoCount } = await (buildBase() as any)
-                .in('status_interno', ['Emissao NF', 'Emissão NF', 'EMISSÃO NF']);
-            const { count: impressaoCount } = await (buildBase() as any)
-                .in('status_interno', ['Impressao', 'Impressão', 'IMPRESSÃO']);
-            const { count: aguardandoColetaCount } = await (buildBase() as any)
-                .in('status_interno', ['Aguardando Coleta', 'Aguardando coleta', 'AGUARDANDO COLETA']);
-
-            setStatusCountsGlobal({
-                cancelado: Number(canceladosCount || 0),
-                enviado: Number(enviadoCount || 0),
-                'a-vincular': Number(aVincularCount || 0),
-                'emissao-nf': Number(emissaoCount || 0),
-                impressao: Number(impressaoCount || 0),
-                'aguardando-coleta': Number(aguardandoColetaCount || 0),
-                todos: Number(todosCount || 0),
-            });
+            const matchesSearch = (p: any) => term === "" || p.id?.toLowerCase?.().includes(term) || p.cliente?.toLowerCase?.().includes(term) || (p.sku && p.sku.toLowerCase().includes(term)) || (Array.isArray(p.itens) && p.itens.some((it: any) => (it?.nome && String(it.nome).toLowerCase().includes(term)) || (it?.product_name && String(it.product_name).toLowerCase().includes(term))));
+            const marketplaceOk = (p: any) => marketplaceFilter === 'all' ? true : String(p.marketplace || '').toLowerCase().includes('mercado');
+            const shippingOk = (p: any) => shippingTypeFilter === 'all' ? true : normalizeShippingType(String(p.tipoEnvio ?? '')) === shippingTypeFilter;
+            const base = pedidos.filter(p => inDate(p) && matchesSearch(p) && marketplaceOk(p) && shippingOk(p));
+            const hasStatus = (p: any, arr: string[]) => arr.includes(String(p.status_interno || ''));
+            const cancelado = base.filter(p => hasStatus(p, ['Cancelado', 'Devolução', 'Devolucao'])).length;
+            const enviado = base.filter(p => hasStatus(p, ['Enviado'])).length;
+            const aVincular = base.filter(p => hasStatus(p, ['A vincular', 'A Vincular', 'A VINCULAR']) || Boolean(p.has_unlinked_items)).length;
+            const emissao = base.filter(p => hasStatus(p, ['Emissao NF', 'Emissão NF', 'EMISSÃO NF'])).length;
+            const impressao = base.filter(p => hasStatus(p, ['Impressao', 'Impressão', 'IMPRESSÃO'])).length;
+            const aguardando = base.filter(p => hasStatus(p, ['Aguardando Coleta', 'Aguardando coleta', 'AGUARDANDO COLETA'])).length;
+            const todos = base.length;
+            setStatusCountsGlobal({ cancelado, enviado, 'a-vincular': aVincular, 'emissao-nf': emissao, impressao, 'aguardando-coleta': aguardando, todos });
             setCountsReady(true);
         } catch (_) {
             setStatusCountsGlobal(null);
@@ -736,23 +508,146 @@ function Pedidos() {
     };
 
     // Atualizar contagens globais quando filtros mudarem, somente após primeira listagem
-    useEffect(() => {
-        const t = setTimeout(loadGlobalStatusCounts, 250);
-        return () => clearTimeout(t);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
+    useEffect(() => {}, [dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
 
-    useEffect(() => {
-        const t = setTimeout(loadGlobalStatusCounts, 250);
-        return () => clearTimeout(t);
-    }, [activeStatus]);
+    useEffect(() => {}, [activeStatus]);
 
     useEffect(() => {
         try {
             const channel = (supabase as any).channel('presented_new_changes');
             channel
-                .on('postgres_changes', { event: '*', schema: 'public', table: 'marketplace_orders_presented_new' }, () => {
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'marketplace_orders_presented_new' }, (payload: any) => {
+                    const o: any = payload?.new || payload?.old;
+                    if (!o) return;
+                    const qtyAgg = (typeof o?.items_total_quantity === 'number' ? o.items_total_quantity : Number(o?.items_total_quantity)) || 1;
+                    const amtAgg = (typeof o?.items_total_amount === 'number' ? o.items_total_amount : Number(o?.items_total_amount)) || 0;
+                    const unitPriceAgg = qtyAgg > 0 ? amtAgg / qtyAgg : amtAgg;
+                    const varLabel = Array.isArray(o?.variation_color_names) ? (o.variation_color_names as any[]).filter(Boolean).join(' • ') : String(o?.variation_color_names || '');
+                    const items = [{
+                        id: `${o.marketplace_order_id || o.id}-ITEM-1`,
+                        nome: o.first_item_title || 'Item',
+                        sku: o.first_item_sku || null,
+                        quantidade: qtyAgg,
+                        valor: unitPriceAgg,
+                        bipado: false,
+                        vinculado: !!o.first_item_sku,
+                        imagem: "/placeholder.svg",
+                        marketplace: o.marketplace,
+                        marketplaceItemId: o.first_item_id || null,
+                        variationId: (typeof o?.first_item_variation_id === 'number' || typeof o?.first_item_variation_id === 'string') ? o.first_item_variation_id : '',
+                        permalink: o.first_item_permalink || null,
+                        variationLabel: varLabel,
+                    }];
+                    const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
+                    const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
+                    const valorRecebidoFrete = toNum(o?.payment_shipping_cost);
+                    const saleFeeOrderItems = (typeof o?.items_total_sale_fee === 'number' ? o.items_total_sale_fee : Number(o?.items_total_sale_fee)) || 0;
+                    const taxaMarketplace = saleFeeOrderItems;
+                    const liquidoCalculado = (items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0) || orderTotal) + valorRecebidoFrete - taxaMarketplace;
+                    const labelInfo = {
+                        cached: Boolean(o?.label_cached || o?.label_content_base64 || o?.label_pdf_base64 || o?.label_zpl2_base64),
+                        response_type: (o?.label_response_type || (o?.label_pdf_base64 ? 'pdf' : (o?.label_zpl2_base64 ? 'zpl2' : null))) as string | null,
+                        fetched_at: (o?.label_fetched_at || null) as string | null,
+                        size_bytes: (typeof o?.label_size_bytes === 'number' ? o.label_size_bytes : Number(o?.label_size_bytes)) || null,
+                        shipment_ids: [],
+                        content_base64: o?.label_content_base64 || o?.label_pdf_base64 || o?.label_zpl2_base64 || null,
+                        content_type: o?.label_content_type || (o?.label_pdf_base64 ? 'application/pdf' : (o?.label_zpl2_base64 ? 'text/plain' : null)),
+                        pdf_base64: o?.label_pdf_base64 || null,
+                        zpl2_base64: o?.label_zpl2_base64 || null,
+                    } as const;
+                    const linksArr: any[] = Array.isArray((o as any)?.linked_products) ? (o as any).linked_products : [];
+                    const getVid = (v: any) => { const s = String(v ?? '').trim(); return s === '0' ? '' : s; };
+                    const cleanId = (s: any) => { const str = String(s || ''); const mm = str.match(/(\d+)/); return mm ? String(mm[1]) : str; };
+                    const pl = String(o?.first_item_permalink || '');
+                    const m = pl.match(/ML[A-Z]-?(\d+)/i);
+                    const altId = m ? String(m[1]) : '';
+                    const firstId = cleanId(String(o?.first_item_id || '')) || altId;
+                    const firstVid = getVid(o?.first_item_variation_id);
+                    const match = linksArr.find((l: any) => cleanId(l?.marketplace_item_id) === firstId && getVid(l?.variation_id) === firstVid) || linksArr.find((l: any) => cleanId(l?.marketplace_item_id) === firstId) || linksArr[0] || null;
+                    const skuLinked = match && match.sku ? String(match.sku) : null;
+                    const updated = {
+                        id: o.id,
+                        marketplace_order_id: o.marketplace_order_id || null,
+                        marketplace: o.marketplace,
+                        produto: items[0]?.nome || "",
+                        sku: items[0]?.sku || null,
+                        permalink: o.first_item_permalink || null,
+                        cliente: o.first_name_buyer || o.customer_name || '',
+                        valor: orderTotal,
+                        data: o.created_at,
+                        status: (String(o?.shipment_status || '').toLowerCase() === 'delivered' ? 'Entregue' : (o.status_interno ?? o.status ?? 'Pendente')),
+                        status_interno: o?.status_interno ?? null,
+                        has_unlinked_items: Boolean(o?.has_unlinked_items),
+                        shipment_status: o?.shipment_status || null,
+                        slaDespacho: {
+                            status: o?.shipment_sla_status ?? null,
+                            service: o?.shipment_sla_service ?? null,
+                            expected_date: o?.shipment_sla_expected_date ?? null,
+                            last_updated: o?.shipment_sla_last_updated ?? null,
+                        },
+                        variationColorNames: varLabel,
+                        atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : null,
+                        dataPagamento: o?.payment_date_approved || o?.payment_date_created || o?.created_at || null,
+                        payment_status: o?.payment_status || null,
+                        payment_date_approved: o?.payment_date_approved || null,
+                        tipoEnvio: normalizeShippingType(o?.shipping_type),
+                        idPlataforma: (o as any)?.pack_id || o.pack_id || "",
+                        shippingCity: o?.shipping_city_name || null,
+                        shippingState: o?.shipping_state_name || null,
+                        shippingUF: o?.shipping_state_uf || null,
+                        quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
+                        imagem: (items[0]?.imagem || "/placeholder.svg"),
+                        itens: items,
+                        linked_products: (o as any)?.linked_products || null,
+                        financeiro: {
+                            valorPedido: items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0) || orderTotal,
+                            freteRecebido: valorRecebidoFrete,
+                            freteRecebidoLiquido: valorRecebidoFrete,
+                            taxaFrete: 0,
+                            taxaMarketplace: taxaMarketplace,
+                            saleFee: saleFeeOrderItems,
+                            feesPayments: 0,
+                            shippingFeeBuyer: 0,
+                            envioMetodo: o?.shipping_method_name || null,
+                            envioTags: [],
+                            freteDiferenca: valorRecebidoFrete - 0,
+                            cupom: 0,
+                            impostos: 0,
+                            liquido: liquidoCalculado,
+                            margem: 0,
+                            pagamentos: [],
+                            envios: [],
+                        },
+                        impressoEtiqueta: Boolean(o?.printed_label),
+                        impressoLista: false,
+                        label: labelInfo,
+                        linkedSku: skuLinked,
+                    };
+                    if (payload?.eventType === 'DELETE') {
+                        startTransition(() => setPedidos(prev => prev.filter(p => p.id !== o.id)));
+                    } else {
+                        startTransition(() => setPedidos(prev => {
+                            const idx = prev.findIndex(p => p.id === o.id);
+                            const next = [...prev];
+                            if (idx >= 0) next[idx] = updated; else next.unshift(updated);
+                            try { const key = `pedidos_cache_${organizationId || ''}`; localStorage.setItem(key, JSON.stringify(next)); } catch {}
+                            return next;
+                        }));
+                    }
                     loadGlobalStatusCounts();
+                    const packId = (payload && payload.new && (payload.new as any).pack_id) ?? null;
+                    const orderId = (payload && payload.new && (payload.new as any).id) ?? null;
+                    if (ensureDebounceRef.current) { clearTimeout(ensureDebounceRef.current); ensureDebounceRef.current = null; }
+                    ensureDebounceRef.current = window.setTimeout(async () => {
+                        try {
+                            if (packId !== null && (typeof packId === 'number' || typeof packId === 'string')) {
+                                await (supabase as any).rpc('ensure_inventory_by_pack_id', { p_pack_id: Number(packId) });
+                            } else if (orderId) {
+                                await (supabase as any).rpc('ensure_inventory_for_order', { p_order_id: orderId });
+                            }
+                        } catch {}
+                        ensureDebounceRef.current = null;
+                    }, 500);
                 })
                 .subscribe();
             return () => {
@@ -761,10 +656,7 @@ function Pedidos() {
         } catch {}
     }, [organizationId, marketplaceFilter, shippingTypeFilter, dateRange, searchTerm]);
 
-    useEffect(() => {
-        const id = window.setInterval(() => { loadGlobalStatusCounts(); }, 15000);
-        return () => { clearInterval(id); };
-    }, []);
+    useEffect(() => {}, []);
 
     useEffect(() => {
         const onError = (e: ErrorEvent) => {
@@ -816,14 +708,16 @@ function Pedidos() {
             }
 
             // Filtros de data e busca
-            const fromMs = dateRange?.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
-            const toMs = dateRange?.to
-                ? calendarEndOfDaySPEpochMs(dateRange.to as Date)
-                : (dateRange?.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
-            const fromIso = typeof fromMs === 'number' ? new Date(fromMs).toISOString() : null;
-            const toIso = typeof toMs === 'number' ? new Date(toMs).toISOString() : null;
-            const term = (searchTerm || '').trim();
-            const pattern = term ? `%${term}%` : null;
+            const cacheKey = `pedidos_cache_${organizationId || ''}`;
+            if (!background) {
+                try {
+                    const raw = typeof window !== 'undefined' ? localStorage.getItem(cacheKey) : null;
+                    if (raw) {
+                        const cached = JSON.parse(raw);
+                        if (Array.isArray(cached)) { startTransition(() => setPedidos(cached)); setListReady(true); }
+                    }
+                } catch {}
+            }
 
             let q: any = (supabase as any)
                 .from("marketplace_orders_presented_new")
@@ -832,6 +726,7 @@ function Pedidos() {
                         pack_id,
                         marketplace_order_id,
                         customer_name,
+                        first_name_buyer,
                         order_total,
                         status,
                         status_interno,
@@ -849,6 +744,7 @@ function Pedidos() {
                         first_item_permalink,
                         first_item_sku,
                         first_item_variation_id,
+                        variation_color_names,
                         has_unlinked_items,
                         unlinked_items_count,
                         shipment_status,
@@ -868,7 +764,8 @@ function Pedidos() {
                         label_pdf_base64,
                         label_zpl2_base64,
                         printed_label,
-                        printed_schedule
+                        printed_schedule,
+                        linked_products
                     `, { count: 'exact' })
                 ;
 
@@ -881,76 +778,33 @@ function Pedidos() {
                 q = (q as any).ilike('marketplace', '%Mercado%');
             }
 
-            if (fromIso) q = q.gte('payment_date_approved', fromIso);
-            if (toIso) q = q.lte('payment_date_approved', toIso);
-
-            // Busca (multi-coluna)
-            if (pattern) {
-                q = (q as any).or(`marketplace_order_id.ilike.${pattern},customer_name.ilike.${pattern},first_item_sku.ilike.${pattern},first_item_title.ilike.${pattern}`);
-            }
+            if (false) {}
 
 
 
-            if (shippingTypeFilter !== 'all') {
-                const map = shippingTypeFilter === 'full'
-                    ? ['full', 'fulfillment', 'fbm']
-                    : (shippingTypeFilter === 'flex'
-                        ? ['flex', 'self_service']
-                        : (shippingTypeFilter === 'envios'
-                            ? ['envios', 'xd_drop_off', 'cross_docking', 'me2', 'custom']
-                            : (shippingTypeFilter === 'correios'
-                                ? ['correios', 'drop_off']
-                                : ['no_shipping'])));
-                q = (q as any).in('shipping_type', map);
-            }
+            if (false) {}
 
-            if (activeStatus !== 'todos') {
-                if (activeStatus === 'a-vincular') {
-                    q = (q as any).or(
-                        'status_interno.eq.A vincular,status_interno.eq.A Vincular,status_interno.eq.A VINCULAR,and(shipment_status.eq.pending,shipment_substatus.eq.buffered,has_unlinked_items.is.true)'
-                    );
-                } else if (activeStatus === 'emissao-nf') {
-                    q = (q as any).in('status_interno', ['Emissao NF', 'Emissão NF', 'EMISSÃO NF']);
-                } else if (activeStatus === 'impressao') {
-                    q = (q as any).in('status_interno', ['Impressao', 'Impressão', 'IMPRESSÃO']);
-                } else if (activeStatus === 'aguardando-coleta') {
-                    q = (q as any).in('status_interno', ['Aguardando Coleta', 'Aguardando coleta', 'AGUARDANDO COLETA']);
-                } else if (activeStatus === 'enviado') {
-                    q = (q as any).in('status_interno', ['Enviado']);
-                } else if (activeStatus === 'cancelado') {
-                    q = (q as any).in('status_interno', ['Cancelado', 'Devolução', 'Devolucao']);
-                }
-            }
+            if (false) {}
 
-            // Ordenação conforme sortKey/sortDir
-            if (sortKey === 'sku') {
-                q = q.order('first_item_sku', { ascending });
-            } else if (sortKey === 'items') {
-                q = q.order('items_total_quantity', { ascending });
-            } else if (sortKey === 'shipping') {
-                q = q.order('shipping_type', { ascending });
-            } else if (sortKey === 'sla') {
-                q = q.order('shipment_sla_expected_date', { ascending, nullsFirst: false });
-            } else {
-                // 'recent' => prioriza pagamento aprovado depois criado
-                q = q.order('payment_date_approved', { ascending, nullsFirst: false })
-                     .order('created_at', { ascending });
-            }
+            if (false) {}
 
-            q = q.range(start, end);
+            q = q;
 
             const { data, count, error } = await q;
 
             if (error) throw error;
 
             const rows: any[] = Array.isArray(data) ? data : [];
-            setTotalPedidosCount(typeof count === 'number' ? count : rows.length);
+            setTotalPedidosCount(null);
 
             // Renderização imediata: construir uma lista leve apenas com dados agregados da view
             const lightParsed = rows.map((o: any) => {
                 const qtyAgg = (typeof o?.items_total_quantity === 'number' ? o.items_total_quantity : Number(o?.items_total_quantity)) || 1;
                 const amtAgg = (typeof o?.items_total_amount === 'number' ? o.items_total_amount : Number(o?.items_total_amount)) || 0;
                 const unitPriceAgg = qtyAgg > 0 ? amtAgg / qtyAgg : amtAgg;
+                const varLabel = Array.isArray(o?.variation_color_names)
+                    ? (o.variation_color_names as any[]).filter(Boolean).join(' • ')
+                    : String(o?.variation_color_names || '');
                 const items = [{
                     id: `${o.marketplace_order_id || o.id}-ITEM-1`,
                     nome: o.first_item_title || 'Item',
@@ -964,6 +818,7 @@ function Pedidos() {
                     marketplaceItemId: o.first_item_id || null,
                     variationId: (typeof o?.first_item_variation_id === 'number' || typeof o?.first_item_variation_id === 'string') ? o.first_item_variation_id : '',
                     permalink: o.first_item_permalink || null,
+                    variationLabel: varLabel,
                 }];
 
                 const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
@@ -991,13 +846,25 @@ function Pedidos() {
                     zpl2_base64: o?.label_zpl2_base64 || null,
                 } as const;
 
+                const linkedProductsArr: any[] = Array.isArray((o as any)?.linked_products) ? (o as any).linked_products : [];
+                const getVid = (v: any) => { const s = String(v ?? '').trim(); return s === '0' ? '' : s; };
+                const cleanId = (s: any) => { const str = String(s || ''); const mm = str.match(/(\d+)/); return mm ? String(mm[1]) : str; };
+                const pl = String(o?.first_item_permalink || '');
+                const m = pl.match(/ML[A-Z]-?(\d+)/i);
+                const altId = m ? String(m[1]) : '';
+                const firstId = cleanId(String(o?.first_item_id || '')) || altId;
+                const firstVid = getVid(o?.first_item_variation_id);
+                const matchLink = linkedProductsArr.find((l: any) => cleanId(l?.marketplace_item_id) === firstId && getVid(l?.variation_id) === firstVid) || linkedProductsArr.find((l: any) => cleanId(l?.marketplace_item_id) === firstId) || linkedProductsArr[0] || null;
+                const skuLinked = matchLink && matchLink.sku ? String(matchLink.sku) : null;
+
                 return {
                     id: o.id,
+                    marketplace_order_id: o.marketplace_order_id || null,
                     marketplace: o.marketplace,
                     produto: items[0]?.nome || "",
                     sku: items[0]?.sku || null,
                     permalink: o.first_item_permalink || null,
-                    cliente: o.customer_name || '',
+                    cliente: o.first_name_buyer || o.customer_name || '',
                     valor: orderTotal,
                     data: o.created_at,
                     status: statusUI,
@@ -1010,6 +877,7 @@ function Pedidos() {
                         expected_date: o?.shipment_sla_expected_date ?? null,
                         last_updated: o?.shipment_sla_last_updated ?? null,
                     },
+                    variationColorNames: varLabel,
                     atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : null,
                     dataPagamento: o?.payment_date_approved || o?.payment_date_created || o?.created_at || null,
                     payment_status: o?.payment_status || null,
@@ -1022,6 +890,7 @@ function Pedidos() {
                     quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
                     imagem: (items[0]?.imagem || "/placeholder.svg"),
                     itens: items,
+                    linked_products: (o as any)?.linked_products || null,
                     financeiro: {
                         valorPedido: items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0) || orderTotal,
                         freteRecebido: valorRecebidoFrete,
@@ -1044,340 +913,16 @@ function Pedidos() {
                     impressoEtiqueta: Boolean(o?.printed_label),
                     impressoLista: false,
                     label: labelInfo,
+                    linkedSku: skuLinked,
                 };
             });
 
             const runId = ++loadRunIdRef.current;
             startTransition(() => setPedidos(lightParsed));
+            try { if (typeof window !== 'undefined') localStorage.setItem(cacheKey, JSON.stringify(lightParsed)); } catch {}
             setListReady(true);
-            if (rows.length > 0) {
-                // Carregamento secundário: manter overlay até concluir
-                const pageRows = rows.slice(start, end + 1);
-                const orderIds = Array.from(new Set(pageRows.map((o: any) => o.marketplace_order_id).filter(Boolean)));
-                orgIdRef.current = organizationId ?? orgIdRef.current;
-                const orgPromise = Promise.resolve(orgIdRef.current ?? null);
-                const orgIdResolved = await orgPromise;
-                let marketplaceByOrderId: Record<string, any> = {};
-                let shipmentsByOrderId: Record<string, any[]> = {};
-                if (orderIds.length > 0) {
-                    try {
-                        const missingOrderIds = orderIds.filter(id => !ordersRawCacheRef.current[id]);
-                        if (missingOrderIds.length > 0) {
-                            let mq1: any = (supabase as any)
-                                .from('marketplace_orders_raw')
-                                .select('marketplace_order_id, payments, data, marketplace_name, status, status_detail, date_created, buyer')
-                                .in('marketplace_order_id', missingOrderIds);
-                            if (orgIdResolved) mq1 = (mq1 as any).eq('organizations_id', orgIdResolved);
-                            const { data: mqRows1, error: mqErr1 } = await mq1;
-                            let rows: any[] | null = null;
-                            if (!mqErr1 && Array.isArray(mqRows1) && mqRows1.length > 0) {
-                                rows = mqRows1 as any[];
-                            } else {
-                                const { data: mqRows2, error: mqErr2 } = await (supabase as any)
-                                    .from('marketplace_orders_raw')
-                                    .select('marketplace_order_id, payments, data, marketplace_name, status, status_detail, date_created, buyer')
-                                    .in('marketplace_order_id', missingOrderIds);
-                                if (!mqErr2 && Array.isArray(mqRows2)) rows = mqRows2 as any[];
-                            }
-                            if (rows) {
-                                for (const row of rows) {
-                                    const k = row?.marketplace_order_id;
-                                    if (k) ordersRawCacheRef.current[k] = row;
-                                }
-                            }
-                        }
-                        marketplaceByOrderId = orderIds.reduce((acc, k) => { acc[k] = ordersRawCacheRef.current[k] || null; return acc; }, {} as Record<string, any>);
-                        shipmentsByOrderId = orderIds.reduce((acc, k) => { acc[k] = shipmentsCacheRef.current[k] || []; return acc; }, {} as Record<string, any[]>);
-                    } catch (mqCatch) {
-                        if (!isAbortLikeError(mqCatch)) {
-                            console.warn('Falha ao buscar marketplace_orders_presented_new:', mqCatch);
-                        }
-                    }
-                }
 
-                
-
-                const parsedHeavyPage = pageRows.map((o: any) => {
-                // Dados do marketplace bruto
-                const mq = o.marketplace_order_id ? marketplaceByOrderId[o.marketplace_order_id] : null;
-                const payments: any[] = Array.isArray(mq?.payments) ? mq.payments : [];
-                const shipmentsNormalized: any[] = Array.isArray(shipmentsByOrderId[o.marketplace_order_id]) ? shipmentsByOrderId[o.marketplace_order_id] : [];
-                const shipments: any[] = shipmentsNormalized.length > 0
-                    ? shipmentsNormalized
-                    : (Array.isArray(mq?.shipments) ? mq.shipments : []);
-                const orderDataRaw: any = mq?.data || {};
-                const rawOrderItems: any[] = Array.isArray(orderDataRaw?.order_items) ? orderDataRaw.order_items : [];
-
-                // Construção dos itens do pedido a partir do RAW; fallback para agregados da view
-                let items: any[] = [];
-                if (rawOrderItems.length > 0) {
-                    items = rawOrderItems.map((rit: any, idx: number) => {
-                        const itemId = rit?.item?.id ? String(rit.item.id) : null;
-                        const resolvedSku = (
-                            rit?.item?.seller_sku ?? rit?.seller_sku ?? rit?.sku ?? o.first_item_sku ?? null
-                        );
-                        const isLinked = !!(rit?.item?.seller_sku || rit?.seller_sku || rit?.sku || o.first_item_sku);
-                        return {
-                            id: `${o.marketplace_order_id || o.id}-ITEM-${idx + 1}`,
-                            nome: rit?.item?.title ?? rit?.item?.name ?? rit?.title ?? o.first_item_title ?? 'Item',
-                            sku: resolvedSku,
-                            quantidade: (typeof rit?.quantity === 'number' ? rit.quantity : Number(rit?.quantity)) || 0,
-                            valor: (typeof rit?.unit_price === 'number' ? rit.unit_price : Number(rit?.unit_price))
-                                || (typeof rit?.full_unit_price === 'number' ? rit.full_unit_price : Number(rit?.full_unit_price))
-                                || (typeof rit?.price === 'number' ? rit.price : Number(rit?.price))
-                                || 0,
-                            bipado: false,
-                            vinculado: isLinked,
-                            imagem: "/placeholder.svg",
-                            marketplace: o.marketplace,
-                            marketplaceItemId: itemId,
-                            variationId: (rit?.variation_id !== undefined && rit?.variation_id !== null) ? String(rit.variation_id) : '',
-                            permalink: ensureHttpUrl(o.first_item_permalink || null),
-                        };
-                    });
-                } else {
-                    const qtyAgg = (typeof o?.items_total_quantity === 'number' ? o.items_total_quantity : Number(o?.items_total_quantity)) || 1;
-                    const amtAgg = (typeof o?.items_total_amount === 'number' ? o.items_total_amount : Number(o?.items_total_amount)) || 0;
-                    const unitPriceAgg = qtyAgg > 0 ? amtAgg / qtyAgg : amtAgg;
-                    items = [{
-                        id: `${o.marketplace_order_id || o.id}-ITEM-1`,
-                        nome: o.first_item_title || 'Item',
-                        sku: o.first_item_sku || null,
-                        quantidade: qtyAgg,
-                        valor: unitPriceAgg,
-                        bipado: false,
-                        vinculado: !!o.first_item_sku,
-                        imagem: "/placeholder.svg",
-                        marketplace: o.marketplace,
-                        marketplaceItemId: o.first_item_id || null,
-                        variationId: (typeof o?.first_item_variation_id === 'number' || typeof o?.first_item_variation_id === 'string') ? o.first_item_variation_id : '',
-                        // Fallback: usar o permalink agregado do primeiro item
-                        permalink: ensureHttpUrl(o.first_item_permalink || null),
-                    }];
-                }
-
-                const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
-
-                // Helpers de número
-                const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
-
-                // Receitas
-                const valorBrutoItens = items.reduce((sum: number, it: any) => sum + (toNum(it.valor) * (toNum(it.quantidade) || 0)), 0);
-                const valorRecebidoFrete = (
-                    toNum(o?.payment_shipping_cost) ||
-                    payments.reduce((sum, p) => sum + toNum(p?.shipping_cost), 0)
-                );
-                const cupom = payments.reduce((sum, p) => sum + toNum(p?.coupon_amount), 0);
-
-                // Taxas da plataforma (quando disponível no pagamento)
-                const feesFromPayments = toNum(o?.payment_marketplace_fee) || payments.reduce((sum, p) => sum + toNum((p?.marketplace_fee ?? p?.fee_amount ?? p?.fees_total)), 0);
-                // sale_fee por item vindo do payload bruto do pedido ou agregado da view
-                const saleFeeOrderItems = (
-                    (typeof o?.items_total_sale_fee === 'number' ? o.items_total_sale_fee : Number(o?.items_total_sale_fee)) ||
-                    (Array.isArray(orderDataRaw?.order_items)
-                        ? orderDataRaw.order_items.reduce((sum: number, oi: any) => sum + toNum(oi?.sale_fee), 0)
-                        : 0)
-                );
-                // Se o marketplace detalha tarifa de frete (pagador: comprador), normalmente aparece em fees dos pagamentos
-                // Estimamos essa tarifa como o excedente sobre sale_fee e limitamos ao frete recebido para evitar dupla contagem
-                const diffFees = Math.max(feesFromPayments - saleFeeOrderItems, 0);
-                const shippingFeeBuyer = Math.min(diffFees, valorRecebidoFrete);
-                // Comissão efetiva usada nos cálculos (sem a tarifa de frete do comprador)
-                const taxaMarketplace = saleFeeOrderItems > 0
-                    ? saleFeeOrderItems
-                    : Math.max(feesFromPayments - shippingFeeBuyer, 0);
-
-                // Custo real de frete (a partir de shipments)
-                const shippingFromOrder = orderDataRaw?.shipping || null;
-                const firstShipment = shipments?.[0] || shippingFromOrder || null;
-                const freteCusto = firstShipment
-                    ? (
-                        toNum(firstShipment?.shipping_option?.cost) ||
-                        toNum(firstShipment?.cost) ||
-                        toNum(firstShipment?.base_cost) ||
-                        toNum(firstShipment?.original_cost) ||
-                        toNum(firstShipment?.cost_components?.total)
-                      )
-                    : 0;
-
-                // Método de envio (ex.: flex, me2, fulfillment)
-                const envioMetodo = (
-                    firstShipment?.logistic_type ||
-                    firstShipment?.shipping_mode ||
-                    firstShipment?.mode ||
-                    shippingFromOrder?.logistic_type ||
-                    shippingFromOrder?.mode ||
-                    null
-                );
-                const envioTags = Array.isArray(firstShipment?.tags)
-                    ? firstShipment.tags
-                    : (Array.isArray(shippingFromOrder?.tags) ? shippingFromOrder.tags : []);
-                const freteRecebidoLiquido = valorRecebidoFrete - shippingFeeBuyer; // crédito de frete já descontando a tarifa repassada ao ML
-                const freteDiferenca = freteRecebidoLiquido - freteCusto; // positivo: reembolso/recebimento líquido; negativo: custo adicional
-
-                
-
-                // Nome do cliente a partir do marketplace (buyer first/last), com limite de 3 palavras; fallback ao nome da tabela orders
-                const buyer = mq?.buyer || orderDataRaw?.buyer || {};
-                const rawClienteNome = [buyer?.first_name, buyer?.last_name].filter(Boolean).join(' ').trim() || (o.customer_name || "");
-                const clienteNome = rawClienteNome.split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
-
-                // Data do pedido/pagamento: usar marketplace_orders.date_created (timestamptz, América/São Paulo) como fonte principal
-                let dataPagamento: string | null = null;
-                const pdApproved = o?.payment_date_approved ? new Date(o.payment_date_approved) : null;
-                const pdCreated = o?.payment_date_created ? new Date(o.payment_date_created) : null;
-                const createdAt = o?.created_at ? new Date(o.created_at) : null;
-                const primaryDate = pdApproved || pdCreated || createdAt || null;
-                if (primaryDate) dataPagamento = primaryDate.toISOString();
-                if (!dataPagamento) {
-                    const approvedPayments = payments
-                        .filter((p: any) => String(p?.status || '').toLowerCase() === 'approved' && p?.date_approved)
-                        .map((p: any) => new Date(p.date_approved));
-                    const fallbackPaymentDates = payments
-                        .map((p: any) => p?.date_approved || p?.date_created || p?.date_last_updated)
-                        .filter(Boolean)
-                        .map((d: any) => new Date(d));
-                    const paymentDateObj = approvedPayments.length > 0
-                        ? new Date(Math.min(...approvedPayments.map(d => d.getTime())))
-                        : (fallbackPaymentDates.length > 0 ? new Date(Math.min(...fallbackPaymentDates.map(d => d.getTime()))) : null);
-                    dataPagamento = paymentDateObj ? paymentDateObj.toISOString() : null;
-                }
-
-                const shipmentStatusLower = String(o?.shipment_status || (firstShipment?.status ?? '')).toLowerCase();
-                const statusUI = (shipmentStatusLower === 'delivered' ? 'Entregue' : (o.status_interno ?? o.status ?? 'Pendente'));
-
-                // Ajuste de financeiro para cancelados
-                const liquidoCalculado = (valorBrutoItens || orderTotal) + freteRecebidoLiquido - taxaMarketplace - cupom;
-                const liquidoFinal = (statusUI === 'Cancelado' || statusUI === 'Devolução') ? 0 : liquidoCalculado;
-                const margemFinal = (statusUI === 'Cancelado' || statusUI === 'Devolução') ? 0 : 0;
-
-                const marketplaceName = (
-                    mq?.marketplace_name ||
-                    o.marketplace ||
-                    (String(o.marketplace_order_id || '').toUpperCase().startsWith('ML') ? 'Mercado Livre' : 'Desconhecido')
-                );
-
-                // Fallback local para tipo de envio quando ainda não populado em orders.shipping_type
-                const classifyType = (sh: any): string | null => {
-                    if (!sh) return null;
-                    const lt = String(sh?.logistic_type || sh?.shipping_mode || sh?.mode || '').toLowerCase();
-                    if (!lt) return null;
-                    if (lt === 'fulfillment' || lt === 'fbm') return 'full';
-                    if (lt === 'self_service') return 'flex';
-                    if (lt === 'xd_drop_off' || lt === 'cross_docking') return 'envios';
-                    if (lt === 'drop_off') return 'correios';
-                    if (lt === 'me2' || lt === 'custom') return 'envios';
-                    return null;
-                };
-
-                const tipoEnvioDerivado = (() => {
-                    if (o?.shipping_type) return normalizeShippingType(o.shipping_type);
-                    const t = classifyType(firstShipment);
-                    if (t) return t;
-                    const tags = Array.isArray(orderDataRaw?.tags) ? orderDataRaw.tags : [];
-                    if (tags.includes('no_shipping')) return 'no_shipping';
-                    return '';
-                })();
-
-                // Dados adicionais para impressão e filtragem
-                const shipmentSubstatus = o?.shipment_substatus || (firstShipment?.substatus ?? null);
-                const shipmentId = (firstShipment?.marketplace_shipment_id ?? firstShipment?.id) ?? null;
-                const impressoEtiquetaComputed = Boolean(o?.printed_label);
-
-                // Indicadores e conteúdo de etiqueta (cache)
-                const rawLabels = (mq?.labels || null) as any;
-                const viewPdf = o?.label_pdf_base64 || null;
-                const viewZpl = o?.label_zpl2_base64 || null;
-                const viewContent = o?.label_content_base64 || null;
-                const viewType = o?.label_content_type || null;
-                const hasPdf = Boolean(viewPdf || rawLabels?.pdf_base64);
-                const hasZpl = Boolean(viewZpl || rawLabels?.zpl2_base64);
-                const topContent = viewContent || viewPdf || viewZpl || rawLabels?.content_base64 || rawLabels?.pdf_base64 || rawLabels?.zpl2_base64 || null;
-                const topType = viewType || (viewPdf ? 'application/pdf' : (viewZpl ? 'text/plain' : (rawLabels?.content_type || (rawLabels?.pdf_base64 ? 'application/pdf' : (rawLabels?.zpl2_base64 ? 'text/plain' : null)))));
-                const labelInfo = {
-                    cached: Boolean(o?.label_cached || topContent),
-                    response_type: (o?.label_response_type || (viewPdf ? 'pdf' : (viewZpl ? 'zpl2' : null)) || rawLabels?.response_type || (rawLabels?.pdf_base64 ? 'pdf' : (rawLabels?.zpl2_base64 ? 'zpl2' : null))) as string | null,
-                    fetched_at: (o?.label_fetched_at || rawLabels?.fetched_at || null) as string | null,
-                    size_bytes: (typeof o?.label_size_bytes === 'number' ? o.label_size_bytes : Number(o?.label_size_bytes)) || (typeof rawLabels?.size_bytes === 'number' ? rawLabels.size_bytes : Number(rawLabels?.size_bytes)) || null,
-                    shipment_ids: Array.isArray(rawLabels?.shipment_ids) ? rawLabels.shipment_ids.map((x: any) => String(x)) : [],
-                    content_base64: topContent,
-                    content_type: topType,
-                    pdf_base64: viewPdf || rawLabels?.pdf_base64 || null,
-                    zpl2_base64: viewZpl || rawLabels?.zpl2_base64 || null,
-                } as const;
-
-                return {
-                    id: o.id,
-                    marketplace: marketplaceName,
-                    produto: items[0]?.nome || "",
-                    sku: items[0]?.sku || null,
-                    cliente: clienteNome,
-                    valor: orderTotal,
-                    data: o.created_at,
-                    status: statusUI,
-                    status_interno: o?.status_interno ?? null,
-                    has_unlinked_items: Boolean(o?.has_unlinked_items),
-                    shipment_status: o?.shipment_status || (firstShipment?.status ?? null),
-                    shipment_substatus: shipmentSubstatus,
-                    shipment_id: shipmentId,
-                    // Permalink do primeiro item (para evitar desaparecimento do link)
-                    permalink: ensureHttpUrl(o.first_item_permalink || null),
-                    first_item_permalink: ensureHttpUrl(o.first_item_permalink || null),
-                    // SLA de despacho e atrasos: prioriza colunas da view presented
-                    slaDespacho: {
-                        status: o?.shipment_sla_status ?? (firstShipment?.sla_status ?? null),
-                        service: o?.shipment_sla_service ?? (firstShipment?.sla_service ?? null),
-                        expected_date: o?.shipment_sla_expected_date ?? (firstShipment?.sla_expected_date ?? null),
-                        last_updated: o?.shipment_sla_last_updated ?? (firstShipment?.sla_last_updated ?? null),
-                    },
-                    atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : (Array.isArray(firstShipment?.delays) ? firstShipment?.delays : null),
-                    dataPagamento,
-                    tipoEnvio: tipoEnvioDerivado,
-                    idPlataforma: o.platform_id || o.pack_id || "",
-                    shippingCity: o?.shipping_city_name || null,
-                    shippingState: o?.shipping_state_name || null,
-                    shippingUF: o?.shipping_state_uf || null,
-                    quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
-                    imagem: "/placeholder.svg",
-                    itens: items,
-                    financeiro: {
-                        valorPedido: valorBrutoItens || orderTotal,
-                        freteRecebido: valorRecebidoFrete,
-                        freteRecebidoLiquido: freteRecebidoLiquido,
-                        taxaFrete: freteCusto,
-                        taxaMarketplace: taxaMarketplace,
-                        saleFee: saleFeeOrderItems,
-                        feesPayments: feesFromPayments,
-                        shippingFeeBuyer,
-                        envioMetodo,
-                        envioTags,
-                        freteDiferenca,
-                        cupom: cupom,
-                        impostos: 0, // Preparado para futura integração por regime tributário
-                        liquido: liquidoFinal, // líquido da plataforma (estimado) ou 0 se cancelado
-                        margem: margemFinal, // 0 se cancelado
-                        pagamentos: payments,
-                        envios: shipments,
-                    },
-                    impressoEtiqueta: impressoEtiquetaComputed,
-                    impressoLista: false,
-                    label: labelInfo,
-                };
-            });
-
-                if (runId !== loadRunIdRef.current) return;
-                const heavyById = parsedHeavyPage.reduce((acc: Record<string, any>, h: any) => {
-                    acc[String(h.id)] = h;
-                    return acc;
-                }, {});
-                const merged = lightParsed.map((lp: any) => heavyById[String(lp.id)] ? heavyById[String(lp.id)] : lp);
-                // Atualiza lista com dados secundários da página atual
-                startTransition(() => setPedidos(merged));
-                // Lista pronta após secundário
-                setListReady(true);
-                // Enriquecimento de imagens pode seguir em segundo plano
-                
-            }
+            
         } catch (err) {
             if (!isAbortLikeError(err)) {
                 console.error("Erro ao buscar pedidos:", err);
@@ -1539,23 +1084,23 @@ function Pedidos() {
     // Definição das colunas da tabela (valores padrão)
     const [columns, setColumns] = useState([
         { id: "produto", name: "Produto", enabled: true, alwaysVisible: true, render: (pedido: any) => (
-            <div className="flex flex-col space-y-2">
+            <div className="flex flex-col space-y-1">
                 {pedido.itens?.map((it: any, idx: number) => (
-                    <div key={idx} className="flex items-center space-x-2 h-12">
+                    <div key={idx} className="flex items-center space-x-1 min-h-8 py-0.5">
                         <img
                             src={((idx === 0 ? (pedido.imagem || it?.imagem) : it?.imagem) || '/placeholder.svg')}
                             alt={(idx === 0 ? (pedido.produto || it?.nome || 'Produto') : (it?.nome || 'Produto'))}
                             className="w-10 h-10 rounded-lg object-cover"
                             loading="lazy"
                             decoding="async"
-                            
                             width="40"
                             height="40"
                         />
-                        <div className="min-w-0 flex-1">
+                        <div className="min-w-0 flex-none w-[82%]">
                             <div className={`text-sm font-medium text-gray-900 ${pedido.quantidadeTotal >= 2 ? 'font-bold' : ''}`}>
                                 {(() => {
-                                    const title: string = idx === 0 ? (pedido.produto || it?.nome || 'Produto') : (it?.nome || 'Produto');
+                                    const rawTitle: string = idx === 0 ? (pedido.produto || it?.nome || 'Produto') : (it?.nome || 'Produto');
+                                    const displayTitle: string = rawTitle.length > 40 ? rawTitle.slice(0, 40) + '..' : rawTitle;
                                     const link: string | null = (
                                         idx === 0
                                             ? (pedido?.permalink || pedido?.first_item_permalink || it?.permalink || null)
@@ -1567,32 +1112,37 @@ function Pedidos() {
                                                 href={ensureHttpUrl(link)}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
-                                                className="line-clamp-1 sm:line-clamp-2 lg:line-clamp-3 text-gray-900 hover:text-purple-600 group-hover:text-purple-600 hover:underline group-hover:underline underline-offset-2 cursor-pointer transition-colors"
-                                                title={title}
+                                            className="text-gray-900 hover:text-purple-600 group-hover:text-purple-600 cursor-pointer transition-colors block truncate"
+                                                title={rawTitle}
                                             >
-                                                {title}
+                                                {displayTitle}
                                             </a>
                                         );
                                     }
                                     return (
-                                        <span className="line-clamp-1 sm:line-clamp-2 lg:line-clamp-3" title={title}>
-                                            {title}
+                                        <span className="block truncate" title={rawTitle}>
+                                            {displayTitle}
                                         </span>
                                     );
                                 })()}
                             </div>
-                            <div className="text-xs text-gray-500">SKU: {idx === 0 ? (pedido.sku ?? it?.sku ?? 'Não Vinculado') : (it?.sku ?? 'Não Vinculado')}</div>
+                            {pedido.linkedSku && (
+                                <div className="text-xs text-gray-500">SKU: {pedido.linkedSku}</div>
+                            )}
+                            {(it?.variationLabel || (idx === 0 ? pedido.variationColorNames : '')) && (
+                                <div className="text-xs text-gray-500">{it?.variationLabel || pedido.variationColorNames}</div>
+                            )}
                         </div>
                     </div>
                 ))}
             </div>
         )},
         { id: "itens", name: "Itens", enabled: true, alwaysVisible: true, render: (pedido) => (
-            <div className="flex flex-col space-y-2">
+            <div className="flex flex-col items-center space-y-1">
                 {pedido.itens?.map((item: any, index: number) => (
-                    <div key={index} className="h-12 flex items-center">
+                    <div key={index} className="min-h-10 py-0.5 flex items-center justify-center w-full">
                         <span
-                            className={`inline-flex items-center justify-center h-6 min-w-6 rounded-md px-2 text-xs md:text-sm border ${pedido.quantidadeTotal >= 2 ? 'text-[#800080] border-[#800080] bg-[#800080]/10' : 'text-gray-700 border-gray-300'}`}
+                            className={`inline-flex items-center justify-center h-6 min-w-6 rounded-md px-2 text-sm md:text-base border ${pedido.quantidadeTotal >= 2 ? 'text-purple-600 border-purple-600 bg-purple-600/10' : 'text-gray-700 border-gray-300'}`}
                             title={`Qtd: ${item.quantidade}`}
                         >
                             {item.quantidade}
@@ -1601,9 +1151,9 @@ function Pedidos() {
                 ))}
             </div>
         )},
-        { id: "cliente", name: "Cliente", enabled: true, render: (pedido) => {
-            const name = String(pedido?.cliente || "");
-            const truncated = name.length > 30 ? name.slice(0, 30) + "…" : name;
+        { id: "cliente", name: "Cliente", enabled: false, render: (pedido) => {
+            const name = String(pedido?.first_name_buyer || pedido?.cliente || "");
+            const truncated = name.length > 20? name.slice(0, 20) + "…" : name;
             return (<span className="text-gray-900 block truncate">{truncated}</span>);
         }},
         { id: "valor", name: "Valor do Pedido", enabled: true, render: (pedido) => (
@@ -1632,35 +1182,50 @@ function Pedidos() {
                 const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
                 const minutes = totalMinutes % 60;
                 const color = expired ? 'text-red-600' : 'text-purple-600';
+                const cdText = `ENVIE EM: ${days}d ${hours}h ${minutes}m`;
+                const cdLen = cdText.length;
+                const cdSize = cdLen > 30 ? 'text-[10px]': (cdLen > 15 ? 'text-[9px]' : 'text-[10px]');
                 countdown = (
-                    <span className={`text-xs font-medium ${color}`}>
-                        ENVIE EM: {days}d {hours}h {minutes}m
+                    <span className={`${cdSize} leading-[1rem] font-medium whitespace-nowrap ${color}`}>
+                        {cdText}
                     </span>
                 );
             }
             return (
-                <div className="flex flex-col gap-1">
-                    <Badge className={`uppercase bg-purple-600 text-white hover:bg-purple-700 h-5 px-2 text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md`}>
-                        {mapTipoEnvioLabel(pedido.tipoEnvio)}
-                    </Badge>
+                <div className="flex flex-col items-center justify-center gap-1 text-center">
+                    {(() => {
+                        const lbl = mapTipoEnvioLabel(pedido.tipoEnvio);
+                        const len = lbl.length;
+                        const size = len > 12 ? 'text-[8px]' : (len > 10 ? 'text-[9px]' : 'text-[10px]');
+                        return (
+                            <Badge className={`uppercase bg-purple-600 text-white hover:bg-purple-700 h-5 px-2 w-[92px] ${size} leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
+                                {lbl}
+                            </Badge>
+                        );
+                    })()}
                     {countdown}
                 </div>
             );
         }},
         
         
-        { id: "marketplace", name: "Marketplace", enabled: true, render: (pedido) => (<span className="text-gray-900">{pedido.marketplace}</span>)},
-        { id: "idPlataforma", name: "ID da Plataforma", enabled: false, render: (pedido) => (pedido.idPlataforma)},
+        { id: "marketplace", name: "Marketplace", enabled: true, render: (pedido) => (
+            <div className="flex flex-col leading-tight">
+                <span className="text-gray-900 text-sm">{pedido.marketplace}</span>
+                <span className="text-xs text-gray-500 break-all">{String(pedido.idPlataforma || '')}</span>
+            </div>
+        )},
         { id: "status", name: "Status", enabled: true, alwaysVisible: true, render: (pedido) => {
             const boardLabel = String(pedido?.status || 'Pendente');
+            const displayLabel = boardLabel === 'Aguardando Coleta' ? 'Coleta' : boardLabel;
             const badgeClass = getStatusColor(boardLabel);
             return (
-                <div className="flex flex-col items-start space-y-2">
-                    <Badge className={`uppercase ${badgeClass}`}>
-                        {boardLabel}
+                <div className="flex flex-col items-center space-y-2 text-center">
+                    <Badge className={`uppercase ${badgeClass} h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
+                        {displayLabel}
                     </Badge>
                     {activeStatus === 'enviado' && String(pedido?.shipment_status || '').toLowerCase() === 'delivered' && (
-                        <Badge className={`uppercase bg-green-600 hover:bg-green-700 text-white h-5 px-2 text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md`}>
+                        <Badge className={`uppercase bg-green-600 hover:bg-green-700 text-white h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
                             Entregue
                         </Badge>
                     )}
@@ -1758,7 +1323,7 @@ function Pedidos() {
                 return "bg-orange-500 hover:bg-orange-500 text-white";
             case "NF Emitida":
             case "Impressao":
-                return "bg-cyan-500 hover:bg-cyan-500 text-white";
+                return "bg-purple-600 hover:bg-purple-700 text-white";
             case "Aguardando Coleta":
                 return "bg-blue-500 hover:bg-blue-500 text-white";
             case "Enviado":
@@ -2093,62 +1658,20 @@ function Pedidos() {
         setCurrentPage(1);
     }, [searchTerm, activeStatus, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
 
-    useEffect(() => {
-        if (!countsReady) return;
-        if (loadDebounceRef.current) {
-            clearTimeout(loadDebounceRef.current);
-            loadDebounceRef.current = null;
-        }
-        loadDebounceRef.current = window.setTimeout(() => {
-            loadPedidos();
-            loadDebounceRef.current = null;
-        }, 200);
-        return () => {
-            if (loadDebounceRef.current) {
-                clearTimeout(loadDebounceRef.current);
-                loadDebounceRef.current = null;
-            }
-        };
-    }, [activeStatus]);
+    useEffect(() => {}, [activeStatus]);
 
-    useEffect(() => {
-        if (loadDebounceRef.current) {
-            clearTimeout(loadDebounceRef.current);
-            loadDebounceRef.current = null;
-        }
-        loadDebounceRef.current = window.setTimeout(() => {
-            loadPedidos();
-            loadDebounceRef.current = null;
-        }, 200);
-        return () => {
-            if (loadDebounceRef.current) {
-                clearTimeout(loadDebounceRef.current);
-                loadDebounceRef.current = null;
-            }
-        };
-    }, [currentPage, pageSize]);
+    useEffect(() => {}, [currentPage, pageSize]);
 
-    useEffect(() => {
-        if (loadDebounceRef.current) {
-            clearTimeout(loadDebounceRef.current);
-            loadDebounceRef.current = null;
-        }
-        loadDebounceRef.current = window.setTimeout(() => {
-            loadPedidos();
-            loadDebounceRef.current = null;
-        }, 200);
-        return () => {
-            if (loadDebounceRef.current) {
-                clearTimeout(loadDebounceRef.current);
-                loadDebounceRef.current = null;
-            }
-        };
-    }, [searchTerm, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
+    useEffect(() => {}, [searchTerm, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
 
     // Carregar imediatamente ao entrar no módulo após preparar contagens globais
     useEffect(() => {
         loadPedidos();
-    }, [countsReady]);
+    }, [organizationId]);
+
+    useEffect(() => {
+        try { loadGlobalStatusCounts(); } catch {}
+    }, [pedidos, dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
 
     useLayoutEffect(() => {
         const container = listContainerRef.current;
@@ -2171,151 +1694,13 @@ function Pedidos() {
         }
     }, [totalPedidosCount, filteredPedidos.length, pageSize, currentPage]);
 
-    useEffect(() => {
-        (async () => {
-            try {
-                if (activeStatus !== 'enviado') return;
-                const toProcess = filteredPedidos.filter((p: any) => p.status_interno === 'Enviado' && !processedConsume[p.id]);
-                if (toProcess.length === 0) return;
-                const { data: authUserData } = await supabase.auth.getUser();
-                const uid = authUserData?.user?.id;
-                const orgId: string | null = organizationId || null;
-                let storageId: string | null = null;
-                if (uid && orgId) {
-                    try {
-                        const { data: userOrgSettings } = await supabase
-                            .from('user_organization_settings')
-                            .select('default_storage_id')
-                            .eq('organization_id', orgId)
-                            .eq('user_id', uid)
-                            .maybeSingle();
-                        storageId = (userOrgSettings as any)?.default_storage_id ?? null;
-                    } catch { /* noop */ }
-                }
-                if (!storageId && typeof window !== 'undefined') {
-                    try { storageId = localStorage.getItem('defaultStorageId') || null; } catch { /* noop */ }
-                }
-                if (!storageId) {
-                    try {
-                        let q: any = supabase
-                            .from('storage')
-                            .select('id')
-                            .eq('active', true)
-                            .order('created_at', { ascending: true })
-                            .limit(1);
-                        if (orgId) q = (q as any).eq('organizations_id', orgId);
-                        const { data } = await q;
-                        if (data && data.length > 0) storageId = String(data[0].id);
-                    } catch {}
-                }
-                if (!storageId) return;
-                setProcessedConsume(prev => ({ ...prev, ...Object.fromEntries(toProcess.map((p: any) => [p.id, true])) }));
-            } catch (_) { /* noop */ }
-        })();
-    }, [activeStatus, filteredPedidos, processedConsume]);
+    useEffect(() => {}, [activeStatus, filteredPedidos, processedConsume]);
 
-    useEffect(() => {
-        (async () => {
-            try {
-                if (activeStatus !== 'a-vincular') return;
-                const toProcess = filteredPedidos.filter((p: any) => (!!p.has_unlinked_items) && !processedReserve[p.id]);
-                if (toProcess.length === 0) return;
-                const { data: authUserData } = await supabase.auth.getUser();
-                const uid = authUserData?.user?.id;
-                const orgId: string | null = organizationId || null;
-                let storageId: string | null = null;
-                if (uid && orgId) {
-                    try {
-                        const { data: userOrgSettings } = await supabase
-                            .from('user_organization_settings')
-                            .select('default_storage_id')
-                            .eq('organization_id', orgId)
-                            .eq('user_id', uid)
-                            .maybeSingle();
-                        storageId = (userOrgSettings as any)?.default_storage_id ?? null;
-                    } catch { /* noop */ }
-                }
-                if (!storageId && typeof window !== 'undefined') {
-                    try { storageId = localStorage.getItem('defaultStorageId') || null; } catch { /* noop */ }
-                }
-                if (!storageId) {
-                    try {
-                        let q: any = supabase
-                            .from('storage')
-                            .select('id')
-                            .eq('active', true)
-                            .order('created_at', { ascending: true })
-                            .limit(1);
-                        if (orgId) q = (q as any).eq('organizations_id', orgId);
-                        const { data } = await q;
-                        if (data && data.length > 0) storageId = String(data[0].id);
-                    } catch {}
-                }
-                if (!storageId) return;
-                setProcessedReserve(prev => ({ ...prev, ...Object.fromEntries(toProcess.map((p: any) => [p.id, true])) }));
-            } catch (_) { /* noop */ }
-        })();
-    }, [activeStatus, filteredPedidos, processedReserve]);
+    useEffect(() => {}, [activeStatus, filteredPedidos, processedReserve]);
 
-    useEffect(() => {
-        (async () => {
-            try {
-                if (activeStatus !== 'cancelado') return;
-                const toProcess = filteredPedidos.filter((p: any) => (
-                    p.status_interno === 'Cancelado' || p.status_interno === 'Devolução'
-                ) && !processedRefund[p.id]);
-                if (toProcess.length === 0) return;
-                const { data: authUserData } = await supabase.auth.getUser();
-                const uid = authUserData?.user?.id;
-                const orgId: string | null = organizationId || null;
-                let storageId: string | null = null;
-                if (uid && orgId) {
-                    try {
-                        const { data: userOrgSettings } = await supabase
-                            .from('user_organization_settings')
-                            .select('default_storage_id')
-                            .eq('organization_id', orgId)
-                            .eq('user_id', uid)
-                            .maybeSingle();
-                        storageId = (userOrgSettings as any)?.default_storage_id ?? null;
-                    } catch { /* noop */ }
-                }
-                if (!storageId && typeof window !== 'undefined') {
-                    try { storageId = localStorage.getItem('defaultStorageId') || null; } catch { /* noop */ }
-                }
-                if (!storageId) {
-                    try {
-                        let q: any = supabase
-                            .from('storage')
-                            .select('id')
-                            .eq('active', true)
-                            .order('created_at', { ascending: true })
-                            .limit(1);
-                        if (orgId) q = (q as any).eq('organizations_id', orgId);
-                        const { data } = await q;
-                        if (data && data.length > 0) storageId = String(data[0].id);
-                    } catch {}
-                }
-                if (!storageId) return;
-                setProcessedRefund(prev => ({ ...prev, ...Object.fromEntries(toProcess.map((p: any) => [p.id, true])) }));
-            } catch (_) { /* noop */ }
-        })();
-    }, [filteredPedidos, processedRefund]);
+    useEffect(() => {}, [filteredPedidos, processedRefund]);
 
-    useEffect(() => {
-        (async () => {
-            try {
-                const eligibleTabs = ['impressao', 'aguardando-coleta', 'enviado', 'cancelado'];
-                if (!eligibleTabs.includes(activeStatus)) return;
-                const toProcess = filteredPedidos.filter((p: any) => !Boolean(p?.has_unlinked_items) && !processedEnsure[p.id]);
-                if (toProcess.length === 0) return;
-                for (const ord of toProcess) {
-                    try { await supabase.rpc('ensure_inventory_for_order', { p_order_id: ord.id }); } catch {}
-                }
-                setProcessedEnsure(prev => ({ ...prev, ...Object.fromEntries(toProcess.map((p: any) => [p.id, true])) }));
-            } catch (_) {}
-        })();
-    }, [activeStatus, filteredPedidos, processedEnsure]);
+    useEffect(() => {}, [activeStatus, filteredPedidos, processedEnsure]);
 
     
     
@@ -2383,12 +1768,7 @@ function Pedidos() {
         if (!s && target !== 'a-vincular') return false;
         if (target === 'impressao') return s === 'impressao';
         if (target === 'aguardando-coleta') return s === 'aguardando coleta';
-        if (target === 'a-vincular') {
-            const ship = String(p?.shipment_status || '').toLowerCase();
-            const sub = String(p?.shipment_substatus || '').toLowerCase();
-            const unlinked = Boolean(p?.has_unlinked_items);
-            return s === 'a vincular' || (unlinked && ship === 'pending' && sub === 'buffered');
-        }
+        if (target === 'a-vincular') return s === 'a vincular' || Boolean(p?.has_unlinked_items);
         if (target === 'cancelado') return s === 'cancelado' || s === 'devolucao';
         if (target === 'emissao-nf') return s === 'emissao nf';
         if (target === 'enviado') return s === 'enviado';
@@ -2396,14 +1776,18 @@ function Pedidos() {
         return normalized === target;
     }
 
+    const marketplaceOkLocal = (p: any) => (marketplaceFilter === 'all' ? true : String(p?.marketplace || '').toLowerCase().includes('mercado'));
+    const shippingOkLocal = (p: any) => (shippingTypeFilter === 'all' ? true : normalizeShippingType(String(p?.tipoEnvio ?? '')) === shippingTypeFilter);
+    const baseForCounts = baseFiltered.filter(p => marketplaceOkLocal(p) && shippingOkLocal(p));
+
     const statusBlocks = [
-        { id: 'todos', title: 'Todos os Pedidos', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['todos'] === 'number') ? statusCountsGlobal['todos'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'todos')).length : 0)), description: 'Sincronizados com marketplaces' },
-        { id: 'a-vincular', title: 'A Vincular', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['a-vincular'] === 'number') ? statusCountsGlobal['a-vincular'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'a-vincular')).length : 0)), description: 'Pedidos sem vínculo de SKU' },
-        { id: 'emissao-nf', title: 'Emissão de NFe', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['emissao-nf'] === 'number') ? statusCountsGlobal['emissao-nf'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'emissao-nf')).length : 0)), description: 'Aguardando emissão' },
-        { id: 'impressao', title: 'Impressão', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['impressao'] === 'number') ? statusCountsGlobal['impressao'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'impressao')).length : 0)), description: 'NF e etiqueta' },
-        { id: 'aguardando-coleta', title: 'Aguardando Coleta', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['aguardando-coleta'] === 'number') ? statusCountsGlobal['aguardando-coleta'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'aguardando-coleta')).length : 0)), description: 'Prontos para envio' },
-        { id: 'enviado', title: 'Enviado', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['enviado'] === 'number') ? statusCountsGlobal['enviado'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'enviado')).length : 0)), description: 'Pedidos em trânsito' },
-        { id: 'cancelado', title: 'Cancelados', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['cancelado'] === 'number') ? statusCountsGlobal['cancelado'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'cancelado')).length : 0)), description: 'Pedidos cancelados/devolvidos' },
+        { id: 'todos', title: 'Todos os Pedidos', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['todos'] === 'number') ? statusCountsGlobal['todos'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'todos')).length : 0)), description: 'Sincronizados com marketplaces' },
+        { id: 'a-vincular', title: 'A Vincular', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['a-vincular'] === 'number') ? statusCountsGlobal['a-vincular'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'a-vincular')).length : 0)), description: 'Pedidos sem vínculo de SKU' },
+        { id: 'emissao-nf', title: 'Emissão de NFe', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['emissao-nf'] === 'number') ? statusCountsGlobal['emissao-nf'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'emissao-nf')).length : 0)), description: 'Aguardando emissão' },
+        { id: 'impressao', title: 'Impressão', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['impressao'] === 'number') ? statusCountsGlobal['impressao'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'impressao')).length : 0)), description: 'NF e etiqueta' },
+        { id: 'aguardando-coleta', title: 'Coleta', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['aguardando-coleta'] === 'number') ? statusCountsGlobal['aguardando-coleta'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'aguardando-coleta')).length : 0)), description: 'Prontos para envio' },
+        { id: 'enviado', title: 'Enviado', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['enviado'] === 'number') ? statusCountsGlobal['enviado'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'enviado')).length : 0)), description: 'Pedidos em trânsito' },
+        { id: 'cancelado', title: 'Cancelados', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['cancelado'] === 'number') ? statusCountsGlobal['cancelado'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'cancelado')).length : 0)), description: 'Pedidos cancelados/devolvidos' },
     ];
 
     const handlePrintPickingList = () => {
@@ -2528,7 +1912,7 @@ function Pedidos() {
 
                             {activeStatus === "todos" && (
                                 <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
-                                    <div className="relative w-full md:max-w-[420px]">
+                                    <div className="relative w-full md:w-1/4">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
                                             placeholder="Buscar por ID, cliente, SKU ou produto..."
@@ -2641,20 +2025,20 @@ function Pedidos() {
                                                 </SelectContent>
                                             </Select>
                                         </div>
-                                        <div className="flex items-center gap-1 select-none">
+                                        <div className="flex items-center gap-2 select-none">
                                             <Button
                                                 variant="outline"
-                                                className={`h-10 w-8 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
+                                                className={`h-9 w-9 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
                                                 disabled={safeCurrentPage === 1}
                                                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                                                 aria-label="Página anterior"
                                             >
                                                 <ChevronLeft className="h-4 w-4" />
                                             </Button>
-                                            <div className="text-sm font-medium w-[48px] text-center">{safeCurrentPage}/{totalPages}</div>
+                                            <div className="text-sm font-medium w-[56px] text-center">{safeCurrentPage}/{totalPages}</div>
                                             <Button
                                                 variant="outline"
-                                                className={`h-10 w-8 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
+                                                className={`h-9 w-9 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
                                                 disabled={safeCurrentPage === totalPages}
                                                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                                                 aria-label="Próxima página"
@@ -2668,7 +2052,7 @@ function Pedidos() {
 
                             {activeStatus === "emissao-nf" && (
                                 <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
-                                    <div className="relative w-full md:max-w-[420px]">
+                                    <div className="relative w-full md:w-1/4">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
                                             placeholder="Buscar por ID, cliente, SKU ou produto..."
@@ -2698,20 +2082,20 @@ function Pedidos() {
                                             <FileText className="w-4 h-4 mr-2" />
                                             Emitir Selecionados ({selectedPedidosEmissao.length})
                                         </Button>
-                                        <div className="flex items-center gap-2 select-none">
+                                        <div className="flex items-center gap-0.5 select-none">
                                             <Button
                                                 variant="outline"
-                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
+                                                className={`h-10 w-8 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
                                                 disabled={safeCurrentPage === 1}
                                                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                                                 aria-label="Página anterior"
                                             >
                                                 <ChevronLeft className="h-4 w-4" />
                                             </Button>
-                                            <div className="text-sm font-medium w-[56px] text-center">{safeCurrentPage}/{totalPages}</div>
+                                            <div className="text-sm font-medium w-[40px] text-center">{safeCurrentPage}/{totalPages}</div>
                                             <Button
                                                 variant="outline"
-                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
+                                                className={`h-10 w-8 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
                                                 disabled={safeCurrentPage === totalPages}
                                                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                                                 aria-label="Próxima página"
@@ -2725,7 +2109,7 @@ function Pedidos() {
                             
                             {activeStatus === "impressao" && (
                                 <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
-                                    <div className="relative w-full md:max-w-[420px]">
+                                    <div className="relative w-full md:w-1/4">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
                                             placeholder="Buscar por ID, cliente, SKU ou produto..."
@@ -2734,7 +2118,7 @@ function Pedidos() {
                                             className="h-12 w-full pl-10 pr-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
                                         />
                                     </div>
-                                    <div className="flex items-center gap-3 flex-wrap">
+                                    <div className="flex items-center gap-4 flex-wrap">
                                         {/* Ordenação específica da aba Impressão */}
                                         <DropdownMenu>
                                             <DropdownMenuTrigger asChild>
@@ -2772,7 +2156,7 @@ function Pedidos() {
                                             </DropdownMenuContent>
                                         </DropdownMenu>
                                         {/* Filtro Marketplace */}
-                                        <div className="w-[132px]">
+                                        <div className="w-[160px]">
                                             <Select value={marketplaceFilter} onValueChange={(v) => setMarketplaceFilter(v as any)}>
                                                 <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
                                                     <span className={`text-sm ${marketplaceFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
@@ -2789,7 +2173,7 @@ function Pedidos() {
                                             </Select>
                                         </div>
                                         {/* Filtro Tipo de Envio */}
-                                        <div className="w-[132px]">
+                                        <div className="w-[160px]">
                                             <Select value={shippingTypeFilter} onValueChange={(v) => setShippingTypeFilter(v as any)}>
                                                 <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
                                                     <span className={`text-sm ${shippingTypeFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
@@ -2841,27 +2225,26 @@ function Pedidos() {
                                         >
                                             <FileBadge className="w-5 h-5" />
                                         </Button>
-                                        <Button className="h-12 px-6 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsScannerOpen(true)}>
-                                            <Scan className="w-4 h-4 mr-2" />
-                                            Scanner
+                                        <Button size="icon" variant="outline" className="h-12 w-12 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsScannerOpen(true)} aria-label="Scanner">
+                                            <Scan className="w-5 h-5" />
                                         </Button>
                                         <Button variant="outline" size="icon" className="rounded-2xl" onClick={() => setIsPrintConfigOpen(true)} aria-label="Configurações de impressão">
                                             <Settings className="w-4 h-4" />
                                         </Button>
-                                        <div className="flex items-center gap-2 select-none">
+                                        <div className="flex items-center gap-0.5 select-none">
                                             <Button
                                                 variant="outline"
-                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
+                                                className={`h-10 w-8 p-0 rounded-2xl ${safeCurrentPage > 1 ? 'text-primary' : 'text-gray-300'}`}
                                                 disabled={safeCurrentPage === 1}
                                                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                                                 aria-label="Página anterior"
                                             >
                                                 <ChevronLeft className="h-4 w-4" />
                                             </Button>
-                                            <div className="text-sm font-medium w-[56px] text-center">{safeCurrentPage}/{totalPages}</div>
+                                            <div className="text-sm font-medium w-[40px] text-center">{safeCurrentPage}/{totalPages}</div>
                                             <Button
                                                 variant="outline"
-                                                className={`h-12 w-9 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
+                                                className={`h-10 w-8 p-0 rounded-2xl ${safeCurrentPage < totalPages ? 'text-primary' : 'text-gray-300'}`}
                                                 disabled={safeCurrentPage === totalPages}
                                                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                                                 aria-label="Próxima página"
@@ -2875,7 +2258,7 @@ function Pedidos() {
 
                             {activeStatus === "enviado" && (
                                 <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
-                                    <div className="relative w-full md:max-w-[420px]">
+                                    <div className="relative w-full md:w-1/4">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
                                             placeholder="Buscar por ID, cliente, SKU ou produto..."
@@ -2964,11 +2347,66 @@ function Pedidos() {
                                 </div>
                             )}
 
+                            {activeStatus === "cancelados" && (
+                                <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
+                                    <div className="relative w-full md:w-1/4">
+                                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+                                        <Input
+                                            placeholder="Buscar por ID, cliente, SKU ou produto..."
+                                            value={searchTerm}
+                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            className="h-12 w-full pl-10 pr-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
+                                        />
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
+                                                >
+                                                    {sortDir === 'asc' ? (
+                                                        <ChevronUp className="w-4 h-4 mr-2" />
+                                                    ) : (
+                                                        <ChevronDown className="w-4 h-4 mr-2" />
+                                                    )}
+                                                    Ordenar
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="start">
+                                                <DropdownMenuItem
+                                                    className={sortKey === 'recent' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => { e.preventDefault(); setSortKey('recent'); setSortDir('desc'); }}
+                                                >
+                                                    Mais recente
+                                                </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+                                        <div className="w-[160px]">
+                                            <Select value={marketplaceFilter} onValueChange={(v) => setMarketplaceFilter(v as any)}>
+                                                <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
+                                                    <span className={`text-sm ${marketplaceFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}> 
+                                                        {marketplaceFilter !== 'all' ? (marketplaceFilter === 'mercado-livre' ? 'Mercado Livre' : '') : 'Marketplace'}
+                                                    </span>
+                                                    <span className="sr-only">
+                                                        <SelectValue placeholder="Marketplace" />
+                                                    </span>
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="all">Todos</SelectItem>
+                                                    <SelectItem value="mercado-livre">Mercado Livre</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             <div ref={listContainerRef} className="rounded-2xl bg-white shadow-lg overflow-hidden relative">
                                 {isLoading && (
                                     <LoadingOverlay fullscreen={false} topOffset={listTopOffset} message={"Carregando pedidos..."} />
                                 )}
-                                <div className="overflow-x-auto">
+                                <div className="overflow-x-auto text-[clamp(12px,0.95vw,14px)]">
                                     <table className="min-w-full table-fixed divide-y divide-gray-200">
                                         <thead ref={theadRef} className="bg-gray-50">
                                             {(() => {
@@ -3010,7 +2448,7 @@ function Pedidos() {
                                                 }
                                                 return (
                                                     <tr>
-                                                        <th className="w-12 px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                        <th className="w-[2%] px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
                                                                 <div className="w-5 h-5 flex items-center justify-center">
                                                                 <CustomCheckbox
@@ -3033,12 +2471,12 @@ function Pedidos() {
                                                         {columns.filter(col => col.enabled).map(col => (
                                                                 <th
                                                                     key={col.id}
-                                                                    className={`px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'text-left min-w-[160px] sm:min-w-[200px] md:min-w-[240px] lg:min-w-[300px] xl:min-w-[360px]' : ''} ${col.id === 'itens' ? 'text-left w-24 md:w-28' : ''} ${col.id === 'cliente' ? 'text-left w-[140px] md:w-[200px] lg:w-[220px] pr-1' : ''} ${col.id === 'valor' ? 'text-right w-24 md:w-28' : ''} ${col.id === 'tipoEnvio' ? 'text-center w-[120px] md:w-[140px]' : ''} ${col.id === 'marketplace' ? 'text-left w-[110px] md:w-[120px]' : ''} ${col.id === 'idPlataforma' ? 'text-left w-[140px]' : ''} ${col.id === 'status' ? 'text-center w-[130px]' : ''}`}
+                                                                    className={`py-1 text-[clamp(11px,0.9vw,13px)] font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'text-center w-[4%] pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'text-center w-[15%] pr-0' : ''} ${col.id === 'valor' ? 'text-center w-[10%]' : ''} ${col.id === 'tipoEnvio' ? 'text-center w-[10%]' : ''} ${col.id === 'marketplace' ? 'text-center w-[10%]' : ''} ${col.id === 'status' ? 'text-center w-[10%]' : ''}`}
                                                                 >
                                                                     {col.name}
                                                                 </th>
                                                             ))}
-                                                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Detalhes</th>
+                                                        <th className="py-1 text-[clamp(11px,0.9vw,13px)] text-center font-medium text-gray-500 uppercase tracking-wider w-[8%]">Detalhes</th>
                                                     </tr>
                                                 );
                                             })()}
@@ -3060,7 +2498,7 @@ function Pedidos() {
                                                                 : (isRefundedRow ? 'Pagamento reembolsado' : 'Abrir vinculação')));
                                                     return (
                                                     <tr key={pedido.id} className="group hover:bg-gray-50 transition-colors">
-                                                        <td className="w-12 px-3 py-2 whitespace-nowrap">
+                                                        <td className="w-[2%] px-2 py-1 whitespace-nowrap">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
                                                                 <div className="w-5 h-5 flex items-center justify-center">
                                                                 <CustomCheckbox
@@ -3084,12 +2522,12 @@ function Pedidos() {
                                                         {columns.filter(col => col.enabled).map(col => (
                                                             <td
                                                                 key={col.id}
-                                                                className={`px-3 py-2 whitespace-nowrap text-sm text-gray-500 ${col.id === 'produto' ? 'min-w-[160px] sm:min-w-[200px] md:min-w-[240px] lg:min-w-[300px] xl:min-w-[360px]' : ''} ${col.id === 'itens' ? 'w-24 md:w-28' : ''} ${col.id === 'cliente' ? 'w-[140px] md:w-[200px] lg:w-[220px] pr-1' : ''} ${col.id === 'valor' ? 'w-24 md:w-28 text-right' : ''} ${col.id === 'tipoEnvio' ? 'w-[120px] md:w-[140px] text-center' : ''} ${col.id === 'marketplace' ? 'w-[110px] md:w-[120px]' : ''} ${col.id === 'idPlataforma' ? 'w-[140px]' : ''} ${col.id === 'status' ? 'w-[130px] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
+                                                                className={`py-1 whitespace-nowrap text-sm text-gray-500 min-w-0 ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'w-[4%] text-center pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'w-[15%] text-center pr-0' : ''} ${col.id === 'valor' ? 'w-[10%] text-center' : ''} ${col.id === 'tipoEnvio' ? 'w-[10%] text-center' : ''} ${col.id === 'marketplace' ? 'w-[10%] text-center' : ''} ${col.id === 'status' ? 'w-[10%] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
                                                             >
                                                                 {col.render(pedido)}
                                                             </td>
                                                         ))}
-                                                        <td className="px-3 py-2 whitespace-nowrap text-right text-sm font-medium">
+                                                        <td className="py-1 w-[8%] whitespace-nowrap text-center text-sm font-medium">
                                                             {activeStatus === "a-vincular" ? (
                                                                 <TooltipProvider>
                                                                     <Tooltip>
@@ -3109,36 +2547,55 @@ function Pedidos() {
                                                                     </Tooltip>
                                                                 </TooltipProvider>
                                                             ) : activeStatus === "aguardando-coleta" ? (
-                                                                <div className="flex items-center justify-end gap-2">
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        className="h-8 px-4"
-                                                                        onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
-                                                                    >
-                                                                        Reimprimir
-                                                                    </Button>
-                                                                    <Button variant="outline" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
-                                                                        <ChevronDown className="h-4 w-4" />
+                                                                <div className="flex items-center justify-center gap-2">
+                                                                    <TooltipProvider>
+                                                                        <Tooltip>
+                                                                            <TooltipTrigger asChild>
+                                                                                <Button
+                                                                                    variant="link"
+                                                                                    className="h-8 w-8 p-0 text-purple-600"
+                                                                                    onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
+                                                                                    aria-label="Reimprimir"
+                                                                                >
+                                                                                    <FileBadge className="h-4 w-4" />
+                                                                                </Button>
+                                                                            </TooltipTrigger>
+                                                                            <TooltipContent>
+                                                                                <span>Reimprimir</span>
+                                                                            </TooltipContent>
+                                                                        </Tooltip>
+                                                                    </TooltipProvider>
+                                                                    <Button variant="link" className="h-8 w-8 p-0 text-primary" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
+                                                                        <ChevronRight className="h-4 w-4" />
                                                                     </Button>
                                                                 </div>
                                                             ) : activeStatus === "impressao" ? (
-                                                                <div className="flex items-center justify-end gap-2">
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        className="h-8 w-8 p-0"
-                                                                        onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
-                                                                        disabled={String(pedido?.shipment_substatus || '').toLowerCase() === 'buffered'}
-                                                                        aria-label="Imprimir etiqueta"
-                                                                    >
-                                                                        <Printer className="h-4 w-4" />
-                                                                    </Button>
-                                                                    <Button variant="outline" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
-                                                                        <ChevronDown className="h-4 w-4" />
+                                                                <div className="flex items-center justify-center gap-2">
+                                                                    <TooltipProvider>
+                                                                        <Tooltip>
+                                                                            <TooltipTrigger asChild>
+                                                                                <Button
+                                                                                    variant="link"
+                                                                                    className="h-8 w-8 p-0"
+                                                                                    onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
+                                                                                    disabled={String(pedido?.shipment_substatus || '').toLowerCase() === 'buffered'}
+                                                                                    aria-label="Reimprimir etiqueta"
+                                                                                >
+                                                                                    <FileBadge className={`h-4 w-4 ${pedido?.impressoEtiqueta ? 'text-purple-600' : 'text-gray-500'}`} />
+                                                                                </Button>
+                                                                            </TooltipTrigger>
+                                                                            <TooltipContent>
+                                                                                <span>Reimprimir</span>
+                                                                            </TooltipContent>
+                                                                        </Tooltip>
+                                                                    </TooltipProvider>
+                                                                    <Button variant="link" className="h-8 w-8 p-0 text-primary" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
+                                                                        <ChevronRight className="h-4 w-4" />
                                                                     </Button>
                                                                 </div>
                                                             ) : (
-                                                                <Button variant="outline" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
-                                                                    <ChevronDown className="h-4 w-4" />
+                                                                <Button variant="link" className="h-8 w-8 p-0 text-primary" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
+                                                                    <ChevronRight className="h-4 w-4" />
                                                                 </Button>
                                                             )}
                                                         </td>

@@ -17,6 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useStorage } from "@/hooks/useStorage";
+import { useAuth } from "@/hooks/useAuth";
 
 interface EstoqueProduct {
   id: string;
@@ -62,6 +63,7 @@ export function EstoqueManagementDrawer({
   );
   const { storageLocations, loading: storageLoading } = useStorage();
   const { toast } = useToast();
+  const { organizationId } = useAuth();
 
   const contentRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
@@ -167,8 +169,7 @@ export function EstoqueManagementDrawer({
           }
           const moveType = operationType === 'entrada' ? 'ENTRADA' : 'SAIDA';
           const qtyChange = operationType === 'entrada' ? Math.abs(adjustmentQuantity || 0) : -Math.abs(adjustmentQuantity || 0);
-          const { data: orgRes } = await (supabase as any).rpc('get_current_user_organization_id');
-          const orgId = orgRes ? String(orgRes) : null;
+          const orgId = organizationId ? String(organizationId) : null;
           let prodCompanyId: string | null = null;
           const { data: prod } = await (supabase as any)
             .from('products')

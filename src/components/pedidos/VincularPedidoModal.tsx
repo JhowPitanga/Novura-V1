@@ -264,12 +264,10 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
     const reservationErrors: string[] = [];
     try {
       const { data: ord } = await (supabase as any)
-        .from('marketplace_orders_presented')
+        .from('marketplace_orders_presented_new')
         .select('id, marketplace_order_id, company_id, pack_id')
         .or(`id.eq.${pedidoId},marketplace_order_id.eq.${pedidoId}`)
         .maybeSingle();
-      const resolvedOrderId = ord?.id || null;
-      const resolvedMkOrderId = ord?.marketplace_order_id || null;
       const resolvedCompanyId = ord?.company_id || null;
       const resolvedPackId = (ord as any)?.pack_id || null;
       const resolvedOrgId = orgIdFromAuth ? String(orgIdFromAuth) : null;
@@ -282,23 +280,58 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
         if (error) {
           reservationErrors.push(error.message);
         } else {
-          await (supabase as any)
+          const { data: existingTx } = await (supabase as any)
             .from('inventory_transactions')
-            .insert({
-              organizations_id: resolvedOrgId,
-              company_id: resolvedCompanyId,
-              product_id: item.productId,
-              storage_id: storageId,
-              pack_id: resolvedPackId ?? null,
-              movement_type: 'RESERVA',
-              quantity_change: -Math.abs(item.quantity || 0),
-              source_ref: `PEDIDO[${resolvedPackId ?? ''}]`,
-            });
+            .select('id')
+            .eq('pack_id', resolvedPackId)
+            .eq('product_id', item.productId)
+            .eq('storage_id', storageId)
+            .eq('movement_type', 'RESERVA')
+            .maybeSingle();
+          if (!existingTx) {
+            await (supabase as any)
+              .from('inventory_transactions')
+              .insert({
+                organizations_id: resolvedOrgId,
+                company_id: resolvedCompanyId,
+                product_id: item.productId,
+                storage_id: storageId,
+                pack_id: resolvedPackId ?? null,
+                movement_type: 'RESERVA',
+                quantity_change: -Math.abs(item.quantity || 0),
+                source_ref: `PEDIDO[${resolvedPackId ?? ''}]`,
+              });
+          }
         }
       }
     } catch (e: any) {
       reservationErrors.push(e?.message || 'Falha ao reservar estoque para o pedido.');
     }
+
+    try {
+      const { data: ordNew2 } = await (supabase as any)
+        .from('marketplace_orders_presented_new')
+        .select('id')
+        .or(`id.eq.${pedidoId},marketplace_order_id.eq.${pedidoId}`)
+        .maybeSingle();
+      const resolvedOrderId2 = ordNew2?.id || null;
+      if (resolvedOrderId2) {
+        const ephLinks = linkedItems
+          .filter(li => !li.permanent && !!li.marketplaceItemId && !!li.productId)
+          .map(li => ({
+            marketplace_item_id: li.marketplaceItemId,
+            variation_id: li.variationId || '',
+            product_id: li.productId,
+          }));
+        const { error: rpcErr } = await supabase.rpc('update_presented_order_links', {
+          p_order_id: resolvedOrderId2,
+          p_links: ephLinks,
+        });
+        if (rpcErr) {
+          persistErrors.push(rpcErr.message);
+        }
+      }
+    } catch {}
 
     // Montar payload novo para salvar (inclui flags permanentes e dados de reserva)
     const payload = {

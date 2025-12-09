@@ -21,6 +21,11 @@ function b64ToUint8(b64: string): Uint8Array {
   return bytes; 
 }
 
+function uint8ToB64(bytes: Uint8Array): string { 
+  const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join(""); 
+  return btoa(bin); 
+}
+
 async function importAesGcmKey(base64Key: string): Promise<CryptoKey> { 
   const keyBytes = b64ToUint8(base64Key); 
   return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); 
@@ -234,6 +239,69 @@ serve(async (req) => {
       } catch (_) { return null; }
     }
 
+    async function fetchShipmentLabels(
+      shipmentIds: string[],
+      responseType: "pdf" | "zpl2",
+    ): Promise<{ ok: boolean; content_base64?: string; content_type?: string; size_bytes?: number; fetched_at?: string; error?: any; }> {
+      if (shipmentIds.length === 0) return { ok: false };
+      const url = new URL("https://api.mercadolibre.com/shipment_labels");
+      url.searchParams.set("shipment_ids", shipmentIds.join(","));
+      url.searchParams.set("response_type", responseType.toUpperCase());
+      const tryFetch = async (token: string) => fetch(url.toString(), { method: "GET", headers: { Authorization: `Bearer ${token}` } });
+
+      let mlResp = await tryFetch(accessToken);
+      if (!mlResp.ok && (mlResp.status === 401 || mlResp.status === 403) && integration.refresh_token) {
+        try {
+          const { data: appRow, error: appErr } = await admin
+            .from("apps")
+            .select("client_id, client_secret")
+            .eq("name", integration.marketplace_name === "mercado_livre" ? "Mercado Livre" : integration.marketplace_name)
+            .single();
+          if (!appErr && appRow) {
+            let refreshTokenPlain: string | null = null;
+            try { refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token); } catch { refreshTokenPlain = null; }
+            if (refreshTokenPlain) {
+              const form = new URLSearchParams();
+              form.append("grant_type", "refresh_token");
+              form.append("client_id", appRow.client_id);
+              form.append("client_secret", appRow.client_secret);
+              form.append("refresh_token", refreshTokenPlain);
+              const refreshResp = await fetch("https://api.mercadolibre.com/oauth/token", {
+                method: "POST",
+                headers: { "accept": "application/json", "content-type": "application/x-www-form-urlencoded" },
+                body: form.toString(),
+              });
+              const refreshJson = await refreshResp.json();
+              if (refreshResp.ok) {
+                const newAccessToken = String(refreshJson.access_token || "");
+                const newRefreshToken = String(refreshJson.refresh_token || "");
+                const expiresIn = Number(refreshJson.expires_in) || 0;
+                const newExpiresAtIso = new Date(Date.now() + expiresIn * 1000).toISOString();
+                const newAccessTokenEnc = await aesGcmEncryptToString(aesKey, newAccessToken);
+                const newRefreshTokenEnc = await aesGcmEncryptToString(aesKey, newRefreshToken);
+                await admin
+                  .from("marketplace_integrations")
+                  .update({ access_token: newAccessTokenEnc, refresh_token: newRefreshTokenEnc, token_expires_at: newExpiresAtIso })
+                  .eq("id", integration.id);
+                mlResp = await tryFetch(newAccessToken);
+              }
+            }
+          }
+        } catch (_) { }
+      }
+
+      const buf = await mlResp.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      const b64 = uint8ToB64(bytes);
+      const ct = responseType === "pdf" ? "application/pdf" : "text/plain";
+      if (mlResp.ok) {
+        return { ok: true, content_base64: b64, content_type: ct, size_bytes: bytes.byteLength, fetched_at: nowIso };
+      }
+      let errJson: any = {};
+      try { errJson = JSON.parse(new TextDecoder().decode(bytes)); } catch { errJson = { raw: new TextDecoder().decode(bytes) }; }
+      return { ok: false, error: errJson };
+    }
+
     // Buscar detalhes de TODOS os envios possíveis (shipping.id e elementos de shipments)
     const candidateShipmentIds = new Set<string>();
     if (orderData?.shipping?.id) {
@@ -320,6 +388,55 @@ serve(async (req) => {
     }
     console.log("mercado-livre-webhook-orders shipments_normalized", { correlationId, count: shipmentsNormalized.length });
 
+    let labelsObj: any | null = null;
+    try {
+      const labelIds = Array.from(candidateShipmentIds);
+      if (labelIds.length > 0) {
+        const pdf = await fetchShipmentLabels(labelIds, "pdf");
+        const zpl = await fetchShipmentLabels(labelIds, "zpl2");
+        if (pdf.ok || zpl.ok) {
+          const primary = pdf.ok ? { type: "pdf", ...pdf } : { type: "zpl2", ...zpl };
+          labelsObj = {
+            cached: true,
+            response_type: primary.type,
+            content_base64: primary.content_base64,
+            content_type: primary.content_type || (primary.type === "pdf" ? "application/pdf" : "text/plain"),
+            shipment_ids: labelIds,
+            fetched_at: primary.fetched_at,
+            size_bytes: primary.size_bytes,
+            pdf_base64: pdf.ok ? pdf.content_base64 : undefined,
+            pdf_size_bytes: pdf.ok ? pdf.size_bytes : undefined,
+            pdf_fetched_at: pdf.ok ? pdf.fetched_at : undefined,
+            zpl2_base64: zpl.ok ? zpl.content_base64 : undefined,
+            zpl2_size_bytes: zpl.ok ? zpl.size_bytes : undefined,
+            zpl2_fetched_at: zpl.ok ? zpl.fetched_at : undefined,
+          };
+        } else {
+          labelsObj = {
+            error: true,
+            message: (pdf.error?.message || zpl.error?.message || "ML error"),
+            shipment_ids: labelIds,
+            fetched_at: nowIso,
+          };
+        }
+      } else {
+        labelsObj = {
+          error: true,
+          message: "no shipments found",
+          shipment_ids: [],
+          fetched_at: nowIso,
+        };
+      }
+    } catch (_) {}
+    if (!labelsObj) {
+      labelsObj = {
+        error: true,
+        message: "label fetch failed",
+        shipment_ids: Array.from(candidateShipmentIds),
+        fetched_at: nowIso,
+      };
+    }
+
     const { data: upId, error: upErr } = await admin.rpc('upsert_marketplace_order_raw', {
       p_organizations_id: integration.organizations_id,
       p_company_id: integration.company_id,
@@ -341,9 +458,14 @@ serve(async (req) => {
       p_last_synced_at: nowIso,
     });
 
-    // If order upsert succeeded, also upsert normalized shipments into marketplace_shipments
-    if (!upErr) {
-      // Não gravar mais em marketplace_shipments: todos os dados de envio ficam em marketplace_orders_raw.shipments
+    if (!upErr && upId) {
+      const { error: updLabelsErr } = await admin
+        .from("marketplace_orders_raw")
+        .update({ labels: labelsObj, last_updated: nowIso })
+        .eq("id", upId);
+      if (!updLabelsErr) {
+        try { await admin.rpc('refresh_presented_order', { p_order_id: upId }); } catch (_) {}
+      }
     }
 
     if (upErr) {
@@ -373,6 +495,7 @@ serve(async (req) => {
           seller: orderDataClean.seller || null,
           payments: Array.isArray(orderDataClean.payments) ? orderDataClean.payments : [],
           shipments: Array.isArray(shipmentsNormalized) ? shipmentsNormalized : [],
+          labels: labelsObj,
           feedback: orderDataClean.feedback || null,
           tags: Array.isArray(orderDataClean.tags) ? orderDataClean.tags : [],
           data: dataClean,
