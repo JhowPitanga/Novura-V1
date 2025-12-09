@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 
 export default function ShopeeCallback() {
   const [searchParams] = useSearchParams();
@@ -13,16 +13,21 @@ export default function ShopeeCallback() {
     const state = searchParams.get("state");
     const shopId = searchParams.get("shop_id");
 
-    if (!code || !state || !shopId) {
+    if (!code || !shopId) {
       setStatus("error");
-      setErrorMsg("Parâmetros inválidos: code/state/shop_id ausentes.");
+      setErrorMsg("Parâmetros inválidos: code/shop_id ausentes.");
       return;
     }
 
     const run = async () => {
       try {
-        const { data, error } = await supabase.functions.invoke("shopee-callback", {
-          body: { code, state, shop_id: shopId },
+        const { data: sessionRes } = await supabase.auth.getSession();
+        const token: string | undefined = sessionRes?.session?.access_token;
+        const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const { data, error } = await supabase.functions.invoke<{ ok?: boolean; error?: string }>("shopee-callback", {
+          body: { code, state: state || undefined, shop_id: shopId },
+          headers,
         });
         if (error || (data && typeof data === "object" && (data as Record<string, unknown>)["error"])) {
           const msg = error?.message || String((data as Record<string, unknown>)["error"]);

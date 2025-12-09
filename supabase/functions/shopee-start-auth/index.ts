@@ -72,15 +72,14 @@ serve(async (req) => {
     if (!partnerId || !partnerKey || !redirectUri) return jsonResponse({ error: "Missing partner credentials or redirect_uri" }, 400);
     if (!/^\d+$/.test(partnerId)) return jsonResponse({ error: "Invalid partner_id format" }, 400);
 
-    const parsedAuth = new URL(authUrlBase.startsWith("http") ? authUrlBase : `https://partner.shopeemobile.com/api/v2/shop/auth_partner`);
-    const path = parsedAuth.pathname || "/api/v2/shop/auth_partner";
+    const fixedAuthPath = "/api/v2/shop/auth_partner";
 
     const timestamp = Math.floor(Date.now() / 1000);
-    const baseString = `${partnerId}${path}${timestamp}`;
+    const baseString = `${partnerId}${fixedAuthPath}${timestamp}`;
     const sign = (await hmacSha256Hex(partnerKey, baseString)).toUpperCase();
 
     const hostForUrl = new URL(authUrlBase).origin;
-    const authorizationUrl = new URL(`${hostForUrl}${path}`);
+    const authorizationUrl = new URL(`${hostForUrl}${fixedAuthPath}`);
     authorizationUrl.searchParams.set("partner_id", partnerId);
     authorizationUrl.searchParams.set("timestamp", String(timestamp));
     authorizationUrl.searchParams.set("sign", sign);
@@ -88,7 +87,15 @@ serve(async (req) => {
 
     const statePayload = { organizationId, storeName, connectedByUserId, redirect_uri: redirectUri };
     const state = btoa(JSON.stringify(statePayload));
-
+    let redirectWithState = redirectUri;
+    try {
+      const r = new URL(redirectUri);
+      r.searchParams.set("state", state);
+      redirectWithState = r.toString();
+    } catch (_) {
+      redirectWithState = redirectUri;
+    }
+    authorizationUrl.searchParams.set("redirect", redirectWithState);
     return jsonResponse({ authorization_url: authorizationUrl.toString(), state }, 200);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
