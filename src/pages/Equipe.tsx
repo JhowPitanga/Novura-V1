@@ -93,9 +93,14 @@ function ChatModule() {
             if (!(channelId in prev)) return prev;
             const next = { ...prev };
             next[channelId] = 0;
+            try {
+                if (typeof window !== 'undefined' && user?.id) {
+                    const cacheKey = `chat_unread_counts:${user.id}`;
+                    localStorage.setItem(cacheKey, JSON.stringify(next));
+                }
+            } catch {}
             return next;
         });
-        // Persistência no Supabase (RPC usa auth.uid por padrão)
         (async () => {
             try {
                 await (supabase as any).rpc('mark_channel_read', { p_channel_id: channelId });
@@ -148,19 +153,41 @@ function ChatModule() {
         (async () => {
             if (!user?.id) return;
             try {
-                const { data, error } = await (supabase as any)
-                    .from('chat_unread_counts')
-                    .select('channel_id, unread_count')
-                    .eq('user_id', user.id);
-                if (!error && data) {
-                    const map: Record<string, number> = {};
-                    (data as any[]).forEach((row) => { map[row.channel_id] = row.unread_count || 0; });
-                    if (mounted) setUnreadCounts(map);
+                let hasCache = false;
+                try {
+                    if (typeof window !== 'undefined') {
+                        const cacheKey = `chat_unread_counts:${user.id}`;
+                        const cached = localStorage.getItem(cacheKey);
+                        if (cached) {
+                            const parsed = JSON.parse(cached || '{}');
+                            if (parsed && typeof parsed === 'object') {
+                                setUnreadCounts(parsed as Record<string, number>);
+                                hasCache = Object.keys(parsed).length > 0;
+                            }
+                        }
+                    }
+                } catch {}
+                if (!hasCache) {
+                    const { data, error } = await (supabase as any)
+                        .from('chat_unread_counts')
+                        .select('channel_id, unread_count')
+                        .eq('user_id', user.id);
+                    if (!error && data) {
+                        const map: Record<string, number> = {};
+                        (data as any[]).forEach((row) => { map[row.channel_id] = row.unread_count || 0; });
+                        if (mounted) setUnreadCounts(map);
+                        try {
+                            if (typeof window !== 'undefined') {
+                                const cacheKey = `chat_unread_counts:${user.id}`;
+                                localStorage.setItem(cacheKey, JSON.stringify(map));
+                            }
+                        } catch {}
+                    }
                 }
             } catch {}
         })();
         return () => { mounted = false; };
-    }, [user?.id, allChannels.length]);
+    }, [user?.id]);
 
     // Ouvir novas mensagens e acumular não lidas em canais não ativos + persistência
     useEffect(() => {
@@ -174,7 +201,14 @@ function ChatModule() {
             let nextCount = 0;
             setUnreadCounts(prev => {
                 nextCount = (prev[chId] || 0) + 1;
-                return { ...prev, [chId]: nextCount };
+                const next = { ...prev, [chId]: nextCount };
+                try {
+                    if (typeof window !== 'undefined' && user?.id) {
+                        const cacheKey = `chat_unread_counts:${user.id}`;
+                        localStorage.setItem(cacheKey, JSON.stringify(next));
+                    }
+                } catch {}
+                return next;
             });
             if (user?.id) {
                 try {
@@ -193,7 +227,16 @@ function ChatModule() {
         const handler = (ev: any) => {
             const { channelId, count } = ev?.detail || {};
             if (!channelId || typeof count !== 'number') return;
-            setUnreadCounts(prev => ({ ...prev, [channelId]: count }));
+            setUnreadCounts(prev => {
+                const next = { ...prev, [channelId]: count };
+                try {
+                    if (typeof window !== 'undefined' && user?.id) {
+                        const cacheKey = `chat_unread_counts:${user.id}`;
+                        localStorage.setItem(cacheKey, JSON.stringify(next));
+                    }
+                } catch {}
+                return next;
+            });
             // Persistência: quando zerar, chamar RPC para marcar lido (atualiza last_read_at)
             if (count === 0) {
                 (async () => { try { await (supabase as any).rpc('mark_channel_read', { p_channel_id: channelId }); } catch {} })();
@@ -214,7 +257,16 @@ function ChatModule() {
                 // Preferir valor de new.unread_count quando disponível
                 const count = (payload?.new?.unread_count ?? row?.unread_count ?? 0) as number;
                 if (!chId) return;
-                setUnreadCounts(prev => ({ ...prev, [chId]: count }));
+                setUnreadCounts(prev => {
+                    const next = { ...prev, [chId]: count };
+                    try {
+                        if (typeof window !== 'undefined' && user?.id) {
+                            const cacheKey = `chat_unread_counts:${user.id}`;
+                            localStorage.setItem(cacheKey, JSON.stringify(next));
+                        }
+                    } catch {}
+                    return next;
+                });
             })
             .subscribe();
         return () => { supabase.removeChannel(channel); };
