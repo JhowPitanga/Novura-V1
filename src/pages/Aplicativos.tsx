@@ -90,7 +90,7 @@ export default function Aplicativos() {
           const allowedCategories = ['marketplaces', 'logistics', 'dropshipping', 'others'] as const;
           type AppViewRow = { id: string; name: string; description: string; logo_url: string; category: string; price_type: string; auth_url?: string | null };
           const mapped = (data as AppViewRow[]).map((row) => {
-            const category = allowedCategories.includes(row.category)
+            const category = allowedCategories.includes(row.category as (typeof allowedCategories)[number])
               ? row.category
               : 'others';
             return {
@@ -188,18 +188,17 @@ export default function Aplicativos() {
       });
 
       setAppConnections(nextConnections);
-      // Marca visualmente os apps conectados
       setApps(prev => prev.map(app => ({ ...app, isConnected: !!nextConnections[app.id] })));
     } catch (e) {
       console.error('Falha ao carregar integrações', e);
     }
-  }, [organizationId, apps]);
+  }, [organizationId]);
 
   useEffect(() => {
     if (organizationId && apps.length > 0) {
       loadConnections();
     }
-  }, [organizationId, apps.length, loadConnections]);
+  }, [organizationId, apps.length]);
 
   // Helper para mapear nome exibido para nome no banco
   const toDbMarketplaceName = (name: string) => {
