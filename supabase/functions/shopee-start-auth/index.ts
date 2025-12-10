@@ -13,6 +13,12 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+function sanitizeRedirect(raw: string | null): string | null {
+  if (!raw) return null;
+  const s = String(raw).trim().replace(/^`+|`+$/g, "");
+  return s;
+}
+
 async function hmacSha256Hex(key: string, message: string): Promise<string> {
   const enc = new TextEncoder();
   const rawKey = enc.encode(key);
@@ -43,7 +49,7 @@ serve(async (req) => {
     const organizationId = body?.organizationId || null;
     const storeName = body?.storeName || null;
     const connectedByUserId = body?.connectedByUserId || null;
-    const redirectOverride = body?.redirect_uri || null;
+    const redirectOverride = sanitizeRedirect(body?.redirect_uri || null);
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -66,21 +72,20 @@ serve(async (req) => {
     const defaultHost = envName === "sandbox" || envName === "test" ? "https://partner.test-st.shopeemobile.com" : "https://partner.shopeemobile.com";
     const defaultAuthUrl = `${defaultHost}/api/v2/shop/auth_partner`;
     const authUrlBase = String(app.auth_url || Deno.env.get("SHOPEE_AUTH_URL") || defaultAuthUrl);
-    const redirectFromConfig = (cfg && typeof cfg["redirect_uri"] === "string") ? String(cfg["redirect_uri"]) : null;
-    const redirectEnv = Deno.env.get("SHOPEE_REDIRECT_URI") || null;
+    const redirectFromConfig = sanitizeRedirect((cfg && typeof cfg["redirect_uri"] === "string") ? String(cfg["redirect_uri"]) : null);
+    const redirectEnv = sanitizeRedirect(Deno.env.get("SHOPEE_REDIRECT_URI") || null);
     const redirectUri = redirectOverride || redirectFromConfig || redirectEnv || "https://novuraerp.com.br/oauth/shopee/callback";
     if (!partnerId || !partnerKey || !redirectUri) return jsonResponse({ error: "Missing partner credentials or redirect_uri" }, 400);
     if (!/^\d+$/.test(partnerId)) return jsonResponse({ error: "Invalid partner_id format" }, 400);
 
-    const parsedAuth = new URL(authUrlBase.startsWith("http") ? authUrlBase : `https://partner.shopeemobile.com/api/v2/shop/auth_partner`);
-    const path = parsedAuth.pathname || "/api/v2/shop/auth_partner";
+    const fixedAuthPath = "/api/v2/shop/auth_partner";
 
     const timestamp = Math.floor(Date.now() / 1000);
-    const baseString = `${partnerId}${path}${timestamp}`;
+    const baseString = `${partnerId}${fixedAuthPath}${timestamp}`;
     const sign = (await hmacSha256Hex(partnerKey, baseString)).toUpperCase();
 
     const hostForUrl = new URL(authUrlBase).origin;
-    const authorizationUrl = new URL(`${hostForUrl}${path}`);
+    const authorizationUrl = new URL(`${hostForUrl}${fixedAuthPath}`);
     authorizationUrl.searchParams.set("partner_id", partnerId);
     authorizationUrl.searchParams.set("timestamp", String(timestamp));
     authorizationUrl.searchParams.set("sign", sign);
@@ -88,7 +93,15 @@ serve(async (req) => {
 
     const statePayload = { organizationId, storeName, connectedByUserId, redirect_uri: redirectUri };
     const state = btoa(JSON.stringify(statePayload));
-
+    let redirectWithState = redirectUri;
+    try {
+      const r = new URL(redirectUri);
+      r.searchParams.set("state", state);
+      redirectWithState = r.toString();
+    } catch (_) {
+      redirectWithState = redirectUri;
+    }
+    authorizationUrl.searchParams.set("redirect", redirectWithState);
     return jsonResponse({ authorization_url: authorizationUrl.toString(), state }, 200);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

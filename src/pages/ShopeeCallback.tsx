@@ -1,32 +1,56 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function ShopeeCallback() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [status, setStatus] = useState<"processing" | "success" | "error">("processing");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const { organizationId } = useAuth();
 
   useEffect(() => {
     const code = searchParams.get("code");
     const state = searchParams.get("state");
     const shopId = searchParams.get("shop_id");
 
-    if (!code || !state || !shopId) {
+    if (!shopId) {
       setStatus("error");
-      setErrorMsg("Parâmetros inválidos: code/state/shop_id ausentes.");
+      setErrorMsg("Parâmetros inválidos: code/shop_id ausentes.");
       return;
     }
 
     const run = async () => {
       try {
-        const { data, error } = await supabase.functions.invoke("shopee-callback", {
-          body: { code, state, shop_id: shopId },
-        });
-        if (error || (data && typeof data === "object" && (data as Record<string, unknown>)["error"])) {
-          const msg = error?.message || String((data as Record<string, unknown>)["error"]);
-          throw new Error(msg || "Falha ao concluir autorização");
+        if (code) {
+          const { data: sessionRes } = await supabase.auth.getSession();
+          const token: string | undefined = sessionRes?.session?.access_token;
+          const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY };
+          if (token) headers.Authorization = `Bearer ${token}`;
+          const { data, error } = await supabase.functions.invoke<{ ok?: boolean; error?: string }>("shopee-callback", {
+            body: { code, state: state || undefined, shop_id: shopId },
+            headers,
+          });
+          if (error || (data && typeof data === "object" && (data as Record<string, unknown>)["error"])) {
+            const msg = error?.message || String((data as Record<string, unknown>)["error"]);
+            throw new Error(msg || "Falha ao concluir autorização");
+          }
+        } else {
+          if (!organizationId) {
+            throw new Error("Sessão ausente para validar a conexão.");
+          }
+          const { data: integrations, error: qErr } = await supabase
+            .from("marketplace_integrations")
+            .select("id, config")
+            .eq("organizations_id", organizationId)
+            .eq("marketplace_name", "Shopee")
+            .contains("config", { shopee_shop_id: String(shopId) })
+            .limit(1);
+          if (qErr) throw qErr;
+          if (!integrations || integrations.length === 0) {
+            throw new Error("Falha na autorização: código ausente no redirecionamento.");
+          }
         }
         setStatus("success");
         try {
@@ -48,7 +72,7 @@ export default function ShopeeCallback() {
     };
 
     run();
-  }, [searchParams, navigate]);
+  }, [searchParams, navigate, organizationId]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/20 p-6">
