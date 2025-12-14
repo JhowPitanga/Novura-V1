@@ -13,6 +13,10 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+function tryParseJson(text: string): unknown {
+  try { return JSON.parse(text); } catch (_) { return null; }
+}
+
 function b64ToUint8(b64: string): Uint8Array {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -68,15 +72,57 @@ function getStr(obj: unknown, path: string[]): string | null {
 }
 
 function detectOrderSn(payload: unknown): string | null {
-  const cand = [["order_sn"],["ordersn"],["data","order_sn"],["msg","order_sn"],["order","order_sn"],["orders","0","order_sn"]];
+  const cand = [
+    ["order_sn"],
+    ["ordersn"],
+    ["ordersn_list","0"],
+    ["order_sn_list","0"],
+    ["data","order_sn"],
+    ["msg","order_sn"],
+    ["message","order_sn"],
+    ["order","order_sn"],
+    ["orders","0","order_sn"],
+  ];
   for (const p of cand) { const v = getStr(payload, p); if (v) return v; }
-  return null;
+  const tryNested = (key: string): string | null => {
+    const raw = getStr(payload, [key]);
+    if (raw && (raw.trim().startsWith("{") || raw.trim().startsWith("["))) {
+      try {
+        const nested = JSON.parse(raw);
+        for (const p of cand) {
+          const v = getStr(nested, p);
+          if (v) return v;
+        }
+      } catch (_) { /* ignore */ }
+    }
+    return null;
+  };
+  return tryNested("data") || tryNested("msg") || tryNested("message");
 }
 
 function detectShopId(payload: unknown): string | null {
   const cand = [["shop_id"],["data","shop_id"],["msg","shop_id"],["merchant_id"],["shopid"]];
   for (const p of cand) { const v = getStr(payload, p); if (v) return v; }
   return null;
+}
+
+function detectOrderStatus(payload: unknown): string | null {
+  const cand = [["order_status"],["status"],["data","order_status"],["data","status"],["msg","order_status"],["msg","status"],["message","order_status"],["message","status"],["current_state"],["new_status"]];
+  for (const p of cand) { const v = getStr(payload, p); if (v) return v; }
+  const tryNested = (key: string): string | null => {
+    const raw = getStr(payload, [key]);
+    if (raw && (raw.trim().startsWith("{") || raw.trim().startsWith("["))) {
+      try {
+        const nested = JSON.parse(raw);
+        for (const p of cand) {
+          const v = getStr(nested, p);
+          if (v) return v;
+        }
+      } catch (_) {}
+    }
+    return null;
+  };
+  return tryNested("data") || tryNested("msg") || tryNested("message");
 }
 
 serve(async (req) => {
@@ -92,13 +138,16 @@ serve(async (req) => {
   const aesKey = await importAesGcmKey(ENC_KEY_B64);
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const bodyText = await req.text();
+    const body = tryParseJson(bodyText) ?? {};
     const correlationId = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || crypto.randomUUID();
-    console.log("shopee-webhook-orders inbound", { correlationId, method: req.method, url: req.url });
+    console.log("shopee-webhook-orders inbound", { correlationId, method: req.method, url: req.url, bodyPreview: bodyText.slice(0, 500) });
 
     const orderSn = detectOrderSn(body);
     const shopId = detectShopId(body);
     if (!orderSn) return jsonResponse({ ok: false, error: "Missing order_sn", correlationId }, 200);
+
+    const notifPayload = (getField(body, "notification") ?? body) as unknown;
 
     const { data: appRow, error: appErr } = await admin
       .from("apps")
@@ -114,28 +163,44 @@ serve(async (req) => {
     let explicitHost: string | null = null;
     try {
       const au = getField(appRow, "auth_url") as string | null | undefined;
-      if (au && typeof au === "string" && au.trim()) explicitHost = new URL(au).origin;
+      if (au && typeof au === "string" && au.trim()) {
+        const u = new URL(au);
+        if (u.hostname.includes("shopee")) explicitHost = u.origin;
+      }
     } catch (_) { explicitHost = null; }
     const hosts: string[] = [];
     if (explicitHost) hosts.push(explicitHost);
     if (envName === "sandbox" || envName === "test") {
-      hosts.push(
-        "https://openplatform.sandbox.test-stable.shopee.sg",
-        "https://partner.test-stable.shopeemobile.com",
-        "https://partner.test-st.shopeemobile.com"
-      );
+      hosts.push("https://partner.test-stable.shopeemobile.com");
     } else {
       hosts.push("https://partner.shopeemobile.com");
     }
+    if (!hosts.includes("https://partner.shopeemobile.com")) hosts.push("https://partner.shopeemobile.com");
 
-    const { data: integration, error: integErr } = await admin
-      .from("marketplace_integrations")
-      .select("id, organizations_id, company_id, marketplace_name, access_token, refresh_token, config")
-      .eq("marketplace_name", "Shopee")
-      .contains("config", shopId ? { shopee_shop_id: String(shopId) } : {})
-      .limit(1)
-      .single();
-    if (integErr || !integration) return jsonResponse({ ok: false, error: "Integration not found", correlationId }, 200);
+    let integration: any = null;
+    let integErr: any = null;
+    try {
+      const { data, error } = await admin
+        .from("marketplace_integrations")
+        .select("id, organizations_id, company_id, marketplace_name, access_token, refresh_token, config, meli_user_id")
+        .eq("marketplace_name", "Shopee")
+        .contains("config", shopId ? { shopee_shop_id: String(shopId) } : {})
+        .limit(1)
+        .single();
+      integration = data;
+      integErr = error;
+    } catch (_) {}
+    if ((!integration || integErr) && shopId) {
+      const { data: byUserId } = await admin
+        .from("marketplace_integrations")
+        .select("id, organizations_id, company_id, marketplace_name, access_token, refresh_token, config, meli_user_id")
+        .eq("marketplace_name", "Shopee")
+        .eq("meli_user_id", Number(shopId))
+        .limit(1)
+        .single();
+      if (byUserId) integration = byUserId;
+    }
+    if (!integration) return jsonResponse({ ok: false, error: "Integration not found", correlationId }, 200);
 
     let accessToken = await aesGcmDecryptFromString(aesKey, String(getField(integration, "access_token")));
     let refreshTokenPlain = await aesGcmDecryptFromString(aesKey, String(getField(integration, "refresh_token")));
@@ -186,10 +251,10 @@ serve(async (req) => {
             const accEnc = `enc:gcm:${btoa(String.fromCharCode(...iv))}:${btoa(String.fromCharCode(...new Uint8Array(ctA)))}`;
             const refEnc = `enc:gcm:${btoa(String.fromCharCode(...iv))}:${btoa(String.fromCharCode(...new Uint8Array(ctB)))}`;
             const expiresAtIso = new Date(Date.now() + (Number(json.expire_in) || 14400) * 1000).toISOString();
-            await admin
-              .from("marketplace_integrations")
-              .update({ access_token: accEnc, refresh_token: refEnc, expires_in: expiresAtIso })
-              .eq("id", String(getField(integration, "id")));
+      await admin
+        .from("marketplace_integrations")
+        .update({ access_token: accEnc, refresh_token: refEnc, expires_in: expiresAtIso })
+        .eq("id", String(getField(integration, "id")));
             break;
           }
         } catch (_) { continue; }
@@ -200,9 +265,12 @@ serve(async (req) => {
     if (!orderJson) return jsonResponse({ ok: false, error: "Failed to fetch order detail", correlationId }, 200);
 
     const nowIso = new Date().toISOString();
-    const status = getStr(orderJson, ["order_status"]) || getStr(orderJson, ["data","order_status"]) || null;
-    const dateCreatedTs = getStr(orderJson, ["create_time"]) || getStr(orderJson, ["data","create_time"]) || null;
-    const lastUpdatedTs = getStr(orderJson, ["update_time"]) || getStr(orderJson, ["data","update_time"]) || null;
+    const statusFromOrder = getStr(orderJson, ["order_status"]) || getStr(orderJson, ["data","order_status"]) || getStr(orderJson, ["data","status"]) || null;
+    const statusFromNotif = detectOrderStatus(notifPayload);
+    const status = statusFromOrder || statusFromNotif || null;
+    const statusDetailFromNotif = getStr(notifPayload, ["completed_scenario"]) || getStr(notifPayload, ["data","completed_scenario"]) || null;
+    const dateCreatedTs = getStr(orderJson, ["create_time"]) || getStr(orderJson, ["data","create_time"]) || getStr(notifPayload, ["create_time"]) || getStr(notifPayload, ["data","create_time"]) || null;
+    const lastUpdatedTs = getStr(orderJson, ["update_time"]) || getStr(orderJson, ["data","update_time"]) || getStr(notifPayload, ["update_time"]) || getStr(notifPayload, ["data","update_time"]) || null;
     const toIso = (ts: string | null) => {
       const n = ts ? Number(ts) : NaN;
       if (!Number.isFinite(n)) return null;
@@ -216,13 +284,15 @@ serve(async (req) => {
       if (Array.isArray(il)) orderItems = il;
     }
 
+    const combinedData = { notification: notifPayload, order_detail: orderJson } as const;
+
     const { data: upId, error: upErr } = await admin.rpc('upsert_marketplace_order_raw', {
       p_organizations_id: String(getField(integration, "organizations_id")),
       p_company_id: String(getField(integration, "company_id")),
       p_marketplace_name: "Shopee",
       p_marketplace_order_id: String(orderSn),
       p_status: status,
-      p_status_detail: null,
+      p_status_detail: statusDetailFromNotif,
       p_order_items: Array.isArray(orderItems) ? orderItems : [],
       p_buyer: null,
       p_seller: null,
@@ -230,7 +300,7 @@ serve(async (req) => {
       p_shipments: [],
       p_feedback: null,
       p_tags: [],
-      p_data: orderJson,
+      p_data: combinedData,
       p_date_created: toIso(dateCreatedTs),
       p_date_closed: null,
       p_last_updated: toIso(lastUpdatedTs),
@@ -238,8 +308,52 @@ serve(async (req) => {
     });
 
     if (upErr) {
-      const emsg = typeof upErr === "object" && upErr !== null && "message" in (upErr as Record<string, unknown>) ? String((upErr as Record<string, unknown>).message) : "Upsert failed";
-      return jsonResponse({ ok: false, error: emsg, correlationId }, 200);
+      try {
+        const upsertData = {
+          organizations_id: String(getField(integration, "organizations_id")),
+          company_id: String(getField(integration, "company_id")),
+          marketplace_name: "Shopee",
+          marketplace_order_id: String(orderSn),
+          status: status,
+          status_detail: statusDetailFromNotif,
+          order_items: Array.isArray(orderItems) ? orderItems : [],
+          buyer: null,
+          seller: null,
+          payments: [],
+          shipments: [],
+          feedback: null,
+          tags: [],
+          data: combinedData,
+          date_created: toIso(dateCreatedTs),
+          date_closed: null,
+          last_updated: toIso(lastUpdatedTs),
+          last_synced_at: nowIso,
+          updated_at: nowIso,
+        } as const;
+        const { error: upErr2 } = await admin
+          .from("marketplace_orders_raw")
+          .upsert(upsertData, { onConflict: "organizations_id,marketplace_name,marketplace_order_id" });
+        if (upErr2) {
+          const emsg = typeof upErr === "object" && upErr !== null && "message" in (upErr as Record<string, unknown>) ? String((upErr as Record<string, unknown>).message) : "Upsert failed";
+          return jsonResponse({ ok: false, error: emsg, correlationId }, 200);
+        }
+        const { data: row } = await admin
+          .from("marketplace_orders_raw")
+          .select("id")
+          .eq("organizations_id", String(getField(integration, "organizations_id")))
+          .eq("marketplace_name", "Shopee")
+          .eq("marketplace_order_id", String(orderSn))
+          .limit(1)
+          .single();
+        const rawId = row?.id || null;
+        if (rawId) {
+          try { await admin.rpc('refresh_presented_order', { p_order_id: rawId }); } catch (_) {}
+        }
+        return jsonResponse({ ok: true, order_id: orderSn, raw_id: rawId, correlationId }, 200);
+      } catch (_) {
+        const emsg = typeof upErr === "object" && upErr !== null && "message" in (upErr as Record<string, unknown>) ? String((upErr as Record<string, unknown>).message) : "Upsert failed";
+        return jsonResponse({ ok: false, error: emsg, correlationId }, 200);
+      }
     }
 
     try { await admin.rpc('refresh_presented_order', { p_order_id: upId }); } catch (err) {

@@ -236,7 +236,7 @@ export function NovaEmpresa() {
         // 1) Carrega catálogo de apps para obter logos
         const { data: appsView, error: appsErr } = await supabase
           .from('apps_public_view')
-          .select('id, name, logo_url');
+          .select('*');
 
         const appLogoByName = new Map<string, string>();
         if (!appsErr && Array.isArray(appsView)) {

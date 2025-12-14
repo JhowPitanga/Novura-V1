@@ -159,6 +159,7 @@ const PickingListPDFMockup = ({ pedidos, settings, onPrint }: { pedidos: any[]; 
         }
     };
 
+    
     return (
         <div className="h-full flex flex-col p-6 bg-gray-100 rounded-lg">
             <div className="flex justify-between items-center mb-6">
@@ -371,6 +372,10 @@ function Pedidos() {
     const [pedidos, setPedidos] = useState<any[]>([]);
     const [isEmitting, setIsEmitting] = useState(false);
     const [isSyncing, setIsSyncing] = useState(false);
+    const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+    const [syncMarketplace, setSyncMarketplace] = useState<'mercado_livre' | 'shopee'>('mercado_livre');
+    const [shopeeShopOptions, setShopeeShopOptions] = useState<Array<{ id: string; shop_id: number; label: string }>>([]);
+    const [selectedShopeeShopId, setSelectedShopeeShopId] = useState<number | null>(null);
     const [emissionProgress, setEmissionProgress] = useState(0);
     const [emittedCount, setEmittedCount] = useState(0);
     const [failedCount, setFailedCount] = useState(0);
@@ -973,6 +978,55 @@ function Pedidos() {
             setSelectedPedidosEmissao([]);
             setSelectedPedidosImpressao([]);
             setSelectedPedidosEnviado([]);
+        }
+    };
+
+    const loadShopeeShops = async () => {
+        try {
+            if (!organizationId) return;
+            const { data } = await (supabase as any)
+                .from('marketplace_integrations')
+                .select('id, organizations_id, marketplace_name, config, meli_user_id')
+                .eq('marketplace_name', 'Shopee')
+                .eq('organizations_id', organizationId);
+            const opts: Array<{ id: string; shop_id: number; label: string }> = Array.isArray(data) ? data.map((row: any) => {
+                const cfg = row?.config || {};
+                const sid = Number(cfg?.shopee_shop_id || row?.meli_user_id || 0);
+                const lbl = String(cfg?.shop_name || `Shop ${sid || ''}`).trim();
+                return { id: String(row.id), shop_id: sid, label: lbl || String(sid) };
+            }).filter((x: any) => Number(x.shop_id) > 0) : [];
+            setShopeeShopOptions(opts);
+            if (opts.length > 0 && !selectedShopeeShopId) setSelectedShopeeShopId(Number(opts[0].shop_id));
+        } catch {}
+    };
+
+    const handleSyncShopeeOrders = async () => {
+        try {
+            setIsSyncing(true);
+            const { data: sessionRes } = await (supabase as any).auth.getSession();
+            const token: string | undefined = sessionRes?.session?.access_token;
+            if (!token) throw new Error('Sessão expirada ou ausente. Faça login novamente.');
+            const orgId = organizationId;
+            const resp = await fetch(`${SUPABASE_URL}/functions/v1/shopee-sync-orders`, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'apikey': SUPABASE_PUBLISHABLE_KEY,
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({ organizationId: orgId, shop_id: selectedShopeeShopId }),
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                const msg = json?.error ? String(json.error) : `HTTP ${resp.status}`;
+                throw new Error(msg);
+            }
+            await loadPedidos();
+            setIsSyncModalOpen(false);
+        } catch (e) {
+            console.error('Falha ao sincronizar pedidos Shopee:', e);
+        } finally {
+            setIsSyncing(false);
         }
     };
 
@@ -1844,6 +1898,14 @@ function Pedidos() {
         }
     };
 
+    const selectedCount = (
+        activeStatus === 'todos' ? selectedPedidos.length :
+        activeStatus === 'emissao-nf' ? selectedPedidosEmissao.length :
+        activeStatus === 'impressao' ? selectedPedidosImpressao.length :
+        activeStatus === 'enviado' ? selectedPedidosEnviado.length :
+        0
+    );
+
     return (
         <TooltipProvider>
           <SidebarProvider>
@@ -1863,31 +1925,10 @@ function Pedidos() {
                                         0
                                     );
                                     return (
-                                        <DropdownMenu>
-                                            <DropdownMenuTrigger asChild>
-                                                <Button className="h-10 px-4 rounded-xl bg-primary text-white shadow-lg disabled:opacity-50" disabled={isSyncing}>
-                                                    <Zap className="w-4 h-4 mr-2" />
-                                                    {isSyncing ? 'Sincronizando...' : 'Sincronizar pedidos'}
-                                                    <ChevronDown className="w-4 h-4 ml-2" />
-                                                </Button>
-                                            </DropdownMenuTrigger>
-                                            <DropdownMenuContent align="end">
-                                                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleSyncOrders(); }} disabled={isSyncing}>
-                                                    Sincronizar todos pedidos
-                                                </DropdownMenuItem>
-                                                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleSyncSelectedOrders(); }} disabled={isSyncing || selectedCount === 0}>
-                                                    {selectedCount > 0 ? `Sincronizar selecionados (${selectedCount})` : 'Sincronizar selecionados'}
-                                                </DropdownMenuItem>
-                                                <DropdownMenuSeparator />
-                                                <DropdownMenuItem onSelect={(e) => {
-                                                    e.preventDefault();
-                                                    const id = window.prompt('Informe o ID interno (orders.id) para sincronizar:');
-                                                    if (id) handleSyncOrderByInternalId(id);
-                                                }} disabled={isSyncing}>
-                                                    Sincronizar por ID interno...
-                                                </DropdownMenuItem>
-                                            </DropdownMenuContent>
-                                        </DropdownMenu>
+                                        <Button className="h-10 px-4 rounded-xl bg-primary text-white shadow-lg disabled:opacity-50" disabled={isSyncing} onClick={() => { setIsSyncModalOpen(true); loadShopeeShops(); }}>
+                                            <Zap className="w-4 h-4 mr-2" />
+                                            {isSyncing ? 'Sincronizando...' : 'Sincronizar pedidos'}
+                                        </Button>
                                     );
                                 })()}
                             </div>
@@ -2049,6 +2090,46 @@ function Pedidos() {
                                     </div>
                                 </div>
                             )}
+
+                            <Dialog open={isSyncModalOpen} onOpenChange={setIsSyncModalOpen}>
+                                <DialogContent>
+                                    <DialogHeader>
+                                        <DialogTitle>Sincronizar pedidos</DialogTitle>
+                                        <DialogDescription>Selecione o marketplace e a loja para sincronizar.</DialogDescription>
+                                    </DialogHeader>
+                                    <div className="space-y-4">
+                                        <div className="flex items-center gap-4">
+                                            <Button variant={syncMarketplace === 'mercado_livre' ? 'default' : 'outline'} onClick={() => setSyncMarketplace('mercado_livre')}>Mercado Livre</Button>
+                                            <Button variant={syncMarketplace === 'shopee' ? 'default' : 'outline'} onClick={() => setSyncMarketplace('shopee')}>Shopee</Button>
+                                        </div>
+                                        {syncMarketplace === 'mercado_livre' && (
+                                            <div className="space-y-2">
+                                                <Button className="w-full" disabled={isSyncing} onClick={() => { setIsSyncModalOpen(false); handleSyncOrders(); }}>Sincronizar todos pedidos</Button>
+                                                <Button className="w-full" disabled={isSyncing || selectedCount === 0} onClick={() => { setIsSyncModalOpen(false); handleSyncSelectedOrders(); }}>{selectedCount > 0 ? `Sincronizar selecionados (${selectedCount})` : 'Sincronizar selecionados'}</Button>
+                                                <Button className="w-full" disabled={isSyncing} onClick={() => { const id = window.prompt('Informe o ID interno (orders.id) para sincronizar:'); if (id) { setIsSyncModalOpen(false); handleSyncOrderByInternalId(id); } }}>Sincronizar por ID interno...</Button>
+                                            </div>
+                                        )}
+                                        {syncMarketplace === 'shopee' && (
+                                            <div className="space-y-3">
+                                                <Select value={selectedShopeeShopId ? String(selectedShopeeShopId) : undefined} onValueChange={(v) => setSelectedShopeeShopId(Number(v))}>
+                                                    <SelectTrigger className="w-full">
+                                                        <SelectValue placeholder="Selecione a loja da Shopee" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {shopeeShopOptions.map((opt) => (
+                                                            <SelectItem key={opt.id} value={String(opt.shop_id)}>{opt.label} ({opt.shop_id})</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                                <Button className="w-full" disabled={isSyncing || !selectedShopeeShopId} onClick={handleSyncShopeeOrders}>Sincronizar Shopee</Button>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <DialogFooter>
+                                        <Button variant="outline" onClick={() => setIsSyncModalOpen(false)}>Fechar</Button>
+                                    </DialogFooter>
+                                </DialogContent>
+                            </Dialog>
 
                             {activeStatus === "emissao-nf" && (
                                 <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">

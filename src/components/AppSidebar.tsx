@@ -62,7 +62,11 @@ const toolsModules: ModuleItem[] = [
   { title: "Novura Admin", url: "/novura-admin", icon: Settings, module: "novura_admin" },
 ];
 
-export function AppSidebar() {
+interface AppSidebarProps {
+  disableChat?: boolean;
+}
+
+export function AppSidebar({ disableChat = false }: AppSidebarProps) {
   const latestChannelRef = useRef<string | null>(null);
   const [hasChatNotif, setHasChatNotif] = useState(false);
   const [unreadTotal, setUnreadTotal] = useState<number>(0);
@@ -91,6 +95,7 @@ export function AppSidebar() {
   }, [unreadTotal]);
 
   useEffect(() => {
+    if (disableChat) return;
     const onNewMsg = (e: any) => {
       const detail = e?.detail || {};
       const chId = detail?.channelId as string | undefined;
@@ -109,9 +114,9 @@ export function AppSidebar() {
         (async () => {
           try {
             const { data } = await supabase
-              .from('chat_unread_counts')
+              .from('chat_unread_counts' as any)
               .select('unread_count')
-              .eq('user_id', user?.id as string);
+              .eq('user_id', user!.id);
             const total = (data as any[] || []).reduce((sum, r) => sum + ((r?.unread_count || 0) as number), 0);
             setUnreadTotal(total);
           } catch { /* noop */ }
@@ -121,10 +126,11 @@ export function AppSidebar() {
     };
     window.addEventListener('chat:message-received', onNewMsg);
     return () => window.removeEventListener('chat:message-received', onNewMsg);
-  }, []);
+  }, [disableChat]);
 
   // Agregado de não lidas vindo do módulo de chat
   useEffect(() => {
+    if (disableChat) return;
     const onTotal = (e: any) => {
       const detail = e?.detail || {};
       // Respeita origem: apenas atualiza quando vier do módulo Equipe
@@ -135,7 +141,7 @@ export function AppSidebar() {
     };
     window.addEventListener('chat:unread-total', onTotal);
     return () => window.removeEventListener('chat:unread-total', onTotal);
-  }, []);
+  }, [disableChat]);
 
   // Carga inicial do agregado via Supabase (persistência)
   // (movido para depois do useAuth para evitar TDZ com 'user')
@@ -144,18 +150,19 @@ export function AppSidebar() {
   const navigate = useNavigate();
   const currentPath = location.pathname;
   const isCollapsed = state === "collapsed";
-  const { user, signOut } = useAuth();
+  const { user, signOut, displayName: ctxDisplayName } = useAuth();
   const { hasModuleAccess, userRole } = usePermissions();
-  const [dbName, setDbName] = useState<string | null>(null);
+  
 
   // Carga inicial do agregado via Supabase (persistência)
   useEffect(() => {
+    if (disableChat) return;
     let mounted = true;
     (async () => {
       try {
         if (!user?.id) { if (mounted) setUnreadTotal(0); return; }
         const { data, error } = await supabase
-          .from('chat_unread_counts')
+          .from('chat_unread_counts' as any)
           .select('channel_id, unread_count')
           .eq('user_id', user.id);
         if (!error && data) {
@@ -167,10 +174,11 @@ export function AppSidebar() {
       } catch { if (mounted) setUnreadTotal(0); }
     })();
     return () => { mounted = false; };
-  }, [user?.id]);
+  }, [user?.id, disableChat]);
 
   // Assinatura em tempo real para atualizar badge quando chat_unread_counts mudar
   useEffect(() => {
+    if (disableChat) return;
     if (!user?.id) return;
     const channel = supabase
       .channel(`realtime-unread-sidebar-${user.id}`)
@@ -188,52 +196,12 @@ export function AppSidebar() {
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [user?.id]);
+  }, [user?.id, disableChat]);
 
-  useEffect(() => {
-    let mounted = true;
-    const fetchDbName = async () => {
-      try {
-        if (!user?.id) {
-          if (mounted) setDbName(null);
-          return;
-        }
-        // 1) Tenta pegar do perfil (display_name)
-        const { data: profile, error: profileError } = await supabase
-          .from('user_profiles')
-          .select('display_name')
-          .eq('id', user.id)
-          .maybeSingle();
-        if (profileError) {
-          console.error('Erro ao buscar display_name em user_profiles:', profileError.message);
-        }
-
-        if (profile && (profile as any)?.display_name) {
-          if (mounted) setDbName((profile as any).display_name);
-          return;
-        }
-
-        // 2) Fallback: pega de users.name
-        const { data: userRow, error: userError } = await supabase
-          .from('users')
-          .select('name')
-          .eq('id', user.id)
-          .maybeSingle();
-        if (userError) {
-          console.error('Erro ao buscar nome do usuário em users:', userError.message);
-        }
-        if (mounted) setDbName((userRow as any)?.name ?? null);
-      } catch (e) {
-        console.error('Falha ao carregar nome do usuário:', e);
-        if (mounted) setDbName(null);
-      }
-    };
-    fetchDbName();
-    return () => { mounted = false; };
-  }, [user?.id]);
+  
 
   const displayName =
-    dbName ||
+    ctxDisplayName ||
     (user?.user_metadata as any)?.full_name ||
     (user?.user_metadata as any)?.name ||
     user?.email ||

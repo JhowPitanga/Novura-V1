@@ -27,8 +27,8 @@ export default function Configuracoes() {
       ];
     }
     return [
-      { title: "Usuários", path: "usuarios", description: "Gerencie usuários e permissões" },
-      { title: "Configurações Fiscais", path: "fiscais", description: "Parâmetros e regras fiscais" },
+      { title: "Usuários", path: "usuarios", description: "Usuários e permissões" },
+      { title: "Configurações Fiscais", path: "fiscais", description: "Regras fiscais" },
     ];
   }, [userRole]);
 

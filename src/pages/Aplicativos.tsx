@@ -18,7 +18,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Routes, Route, useNavigate } from "react-router-dom";
+import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import { CleanNavigation } from "@/components/CleanNavigation";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
@@ -69,11 +69,23 @@ export default function Aplicativos() {
   const [isCannotDisconnectOpen, setIsCannotDisconnectOpen] = useState(false);
   const [cannotDisconnectMessage, setCannotDisconnectMessage] = useState('');
   const { toast } = useToast();
-  const { user, organizationId } = useAuth();
+  const { user, organizationId, permissions, userRole } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const isLojaRoute = location.pathname === '/aplicativos' || location.pathname === '/aplicativos/';
+  const isConectadosRoute = location.pathname.startsWith('/aplicativos/conectados');
+  const canAccess = (() => {
+    if (userRole === 'owner') return true;
+    const mod = (permissions as any)?.aplicativos;
+    if (!mod) return false;
+    if (typeof mod === 'object' && mod !== null) return Boolean((mod as any).view);
+    return false;
+  })();
 
   // Carregar catálogo de apps via API (quando disponível)
   useEffect(() => {
+    if (!isLojaRoute || !canAccess) return;
     let isMounted = true;
     const loadApps = async () => {
       setLoadingApps(true);
@@ -81,7 +93,7 @@ export default function Aplicativos() {
       try {
         const { data, error } = await supabase
           .from('apps_public_view')
-          .select('id, name, description, logo_url, category, price_type, auth_url')
+          .select('*')
           .order('name');
 
         if (error) throw error;
@@ -119,7 +131,7 @@ export default function Aplicativos() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [isLojaRoute, canAccess]);
 
   const navigationItems = [
      { title: "Loja de Apps", path: "", description: "Explore e conecte aplicativos" },
@@ -129,9 +141,6 @@ export default function Aplicativos() {
   const categories = [
     { id: "all", name: "Todos", icon: Settings },
     { id: "marketplaces", name: "Marketplaces", icon: Store },
-    { id: "dropshipping", name: "Dropshipping", icon: Truck },
-    { id: "logistics", name: "Logística", icon: Truck },
-    { id: "others", name: "Outros", icon: Settings },
   ];
 
   const filteredApps = apps.filter(app => {
@@ -142,8 +151,8 @@ export default function Aplicativos() {
   });
 
   const connectedApps = apps.filter(app => {
-    const hasConnection = !!appConnections[app.id];
-    const isConnected = app.isConnected || hasConnection;
+    const conn = appConnections[app.id];
+    const isConnected = !!conn && conn.status !== 'inactive';
     const matchesFilter = connectedFilter === "all" || 
                          (connectedFilter === "connected" && isConnected) ||
                          (connectedFilter === "disconnected" && !isConnected);
@@ -168,37 +177,99 @@ export default function Aplicativos() {
 
       const nextConnections: Record<string, AppConnection> = {};
       type IntegrationRow = { marketplace_name: string; config?: { storeName?: string; connectedAt?: string }; expires_in?: number | string };
-      ((data as IntegrationRow[]) || []).forEach((row) => {
-        // Normaliza nome do app para localizar no catálogo carregado
-        const marketplaceName = row.marketplace_name === 'mercado_livre' ? 'Mercado Livre' : row.marketplace_name;
-        const app = apps.find(a => a.name === marketplaceName);
-        if (!app) return;
+      const rows = ((data as IntegrationRow[]) || []);
 
-        const expiresMs = (typeof row.expires_in === 'number' ? row.expires_in : Number(row.expires_in)) || 0;
-        const expiresAtDate = expiresMs > 0 ? new Date(Date.now() + expiresMs * 1000) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-        const storeNameCfg = row?.config?.storeName || 'Minha Loja';
+      const normalize = (n: string) => n.toLowerCase().replace(/[_\s-]+/g, '');
+      const toDisplayName = (name: string) => {
+        const canon = name.toLowerCase().replace(/[_\s-]+/g, '_');
+        if (canon === 'mercado_livre' || canon === 'meli') return 'Mercado Livre';
+        if (canon === 'shopee') return 'Shopee';
+        if (canon === 'amazon') return 'Amazon';
+        return name
+          .replace(/[_-]+/g, ' ')
+          .split(' ')
+          .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(' ');
+      };
 
-        nextConnections[app.id] = {
-          appId: app.id,
+      let catalog = apps;
+      if (!catalog || catalog.length === 0) {
+        const names = Array.from(new Set(rows.map(r => toDisplayName(r.marketplace_name))));
+        if (names.length > 0) {
+          const { data: appRows } = await supabase
+            .from('apps_public_view')
+            .select('*');
+          const allowedCategories = ['marketplaces', 'logistics', 'dropshipping', 'others'] as const;
+          type AppViewRow = { id: string; name: string; description: string; logo_url: string; category: string; price_type: string };
+          catalog = ((appRows as AppViewRow[]) || []).map(row => ({
+            id: row.id,
+            name: row.name,
+            description: row.description,
+            logo: row.logo_url,
+            category: allowedCategories.includes(row.category as (typeof allowedCategories)[number]) ? (row.category as any) : 'others',
+            isConnected: false,
+            price: (row.price_type === 'free' ? 'free' : 'paid') as App['price'],
+          }));
+          setApps(catalog);
+        } else {
+          setApps([]);
+        }
+      }
+
+      rows.forEach((row) => {
+        const match = catalog.find(a => normalize(a.name) === normalize(row.marketplace_name));
+        if (!match) return;
+
+        const rawExp = row.expires_in;
+        let expiresAtDate: Date;
+        if (typeof rawExp === 'string' && rawExp.trim()) {
+          const d = new Date(rawExp);
+          expiresAtDate = Number.isFinite(d.getTime()) ? d : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        } else if (typeof rawExp === 'number' && Number.isFinite(rawExp)) {
+          expiresAtDate = new Date(Date.now() + rawExp * 1000);
+        } else {
+          expiresAtDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        }
+        const now = new Date();
+        let status: 'active' | 'reconnect' | 'inactive' = 'active';
+        if (expiresAtDate <= now) {
+          status = 'inactive';
+        } else {
+          const daysLeft = Math.ceil((expiresAtDate.getTime() - now.getTime()) / 86400000);
+          if (daysLeft <= 7) status = 'reconnect';
+        }
+        const storeNameCfg = (row as any)?.config?.storeName || 'Minha Loja';
+
+        const candidate = {
+          appId: match.id,
           storeName: storeNameCfg,
-          status: 'active',
-          authenticatedAt: row?.config?.connectedAt || new Date().toISOString(),
+          status,
+          authenticatedAt: (row as any)?.config?.connectedAt || new Date().toISOString(),
           expiresAt: expiresAtDate.toISOString(),
         };
+        const existing = nextConnections[match.id];
+        if (!existing || new Date(existing.expiresAt) < expiresAtDate) {
+          nextConnections[match.id] = candidate;
+        }
       });
 
       setAppConnections(nextConnections);
-      setApps(prev => prev.map(app => ({ ...app, isConnected: !!nextConnections[app.id] })));
+      setApps(prev => prev.map(app => {
+        const conn = nextConnections[app.id];
+        const connected = !!conn && conn.status !== 'inactive';
+        return { ...app, isConnected: connected };
+      }));
     } catch (e) {
       console.error('Falha ao carregar integrações', e);
     }
-  }, [organizationId]);
+  }, [organizationId, apps]);
 
   useEffect(() => {
-    if (organizationId && apps.length > 0) {
+    if (!canAccess) return;
+    if (isConectadosRoute && organizationId) {
       loadConnections();
     }
-  }, [organizationId, apps.length]);
+  }, [isConectadosRoute, organizationId, canAccess]);
 
   // Helper para mapear nome exibido para nome no banco
   const toDbMarketplaceName = (name: string) => {
@@ -387,7 +458,7 @@ export default function Aplicativos() {
   return (
     <SidebarProvider>
       <div className="min-h-screen flex w-full bg-gray-50">
-        <AppSidebar />
+        <AppSidebar disableChat />
         
         <div className="flex-1 flex flex-col">
           <GlobalHeader />
@@ -506,13 +577,10 @@ export default function Aplicativos() {
                           <Settings className="w-8 h-8 text-gray-400" />
                         </div>
                         <p className="text-gray-500">Nenhum aplicativo conectado ainda</p>
-                        <Button className="mt-4" onClick={() => setSelectedCategory("all")}>Explorar Aplicativos</Button>
                       </div>
                     ) : (
                       <>
-                        <div className="text-center py-6">
-                          <Button className="mt-2" onClick={() => setSelectedCategory("all")}>Explorar Aplicativos</Button>
-                        </div>
+                        
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
                           {connectedApps.map((app) => {
                             const { conn, status, color } = getConnectionInfo(app);
@@ -529,14 +597,12 @@ export default function Aplicativos() {
                                         <div className="flex items-center space-x-2 mt-1">
                                           <span className={`inline-block w-2 h-2 rounded-full ${color}`}></span>
                                           <span className="text-xs text-gray-600">
-                                            {status === 'active' ? 'Ativo' : status === 'reconnect' ? 'Reconectar' : 'Inativo'}
+                                            {status === 'inactive' ? 'Inativo' : 'Ativo'}
                                           </span>
                                         </div>
                                       </div>
                                     </div>
-                                    <Button variant="ghost" size="sm">
-                                      <ExternalLink className="w-4 h-4" />
-                                    </Button>
+                                    
                                   </div>
                                 </CardHeader>
                                 <CardContent className="pt-0">
@@ -549,7 +615,7 @@ export default function Aplicativos() {
                                     <div>Nome da loja: {conn?.storeName || '—'}</div>
                                   </div>
                                   <div className="flex space-x-2">
-                                    <Button variant="outline" size="sm" className="flex-1">Configurar</Button>
+                                    
                                     <AlertDialog>
                                       <AlertDialogTrigger asChild>
                                         <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700">Desconectar</Button>
