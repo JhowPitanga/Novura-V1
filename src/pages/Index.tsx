@@ -137,15 +137,15 @@ const Index = () => {
           <main className="flex-1 p-6 overflow-auto">
             {/* Alerta de Certificados A1 a vencer */}
             {expiringCerts.length > 0 && (
-              <Card className="mb-8 border-yellow-200 bg-yellow-50">
+              <Card className="mb-8 border-purple-200 bg-purple-50">
                 <CardContent className="p-4">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <AlertTriangle className="w-5 h-5 text-yellow-700" />
-                      <h3 className="text-base font-semibold text-yellow-800">Certificados A1 vencendo em até 30 dias</h3>
+                      <AlertTriangle className="w-5 h-5 text-purple-700" />
+                      <h3 className="text-base font-semibold text-purple-800">Certificados A1 vencendo em até 30 dias</h3>
                     </div>
                     {loadingCerts && (
-                      <span className="text-xs text-yellow-700">Atualizando...</span>
+                      <span className="text-xs text-purple-700">Atualizando...</span>
                     )}
                   </div>
                   <div className="space-y-2">
@@ -154,14 +154,25 @@ const Index = () => {
                       const critical = c.daysLeft <= 7;
                       const dateFmt = new Date(c.valid_to + 'T00:00:00').toLocaleDateString('pt-BR');
                       return (
-                        <div key={c.id} className="flex items-center justify-between p-3 rounded-md bg-white border border-yellow-200">
+                        <div
+                          key={c.id}
+                          className={`flex items-center justify-between p-3 rounded-md ${expired ? 'bg-red-50 border border-red-200' : 'bg-white border border-purple-200'}`}
+                        >
                           <div className="flex items-center gap-3">
-                            <Badge variant={expired ? "destructive" : "secondary"}>
+                            <Badge
+                              variant={expired ? "destructive" : "secondary"}
+                              className={expired ? "bg-red-600 text-white" : "bg-purple-100 text-purple-800"}
+                            >
                               {expired ? 'Vencido' : `${c.daysLeft} dia${Math.abs(c.daysLeft) === 1 ? '' : 's'}`}
                             </Badge>
                             <div className="text-sm text-gray-800">
                               <span className="font-medium">{c.company_name || 'Empresa'}</span>
                               <span className="text-gray-500"> • Validade: {dateFmt}</span>
+                              {expired ? (
+                                <div className="text-xs text-red-700 mt-1">
+                                  Certificado vencido, atualize para voltar a emitir suas notas
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                           <Button asChild size="sm" className={critical || expired ? 'bg-red-600 hover:bg-red-700' : 'bg-novura-primary hover:bg-novura-primary/90'}>
@@ -176,25 +187,24 @@ const Index = () => {
                 </CardContent>
               </Card>
             )}
-            {/* Banner de Ofertas Recursos Seller */}
-            <Card className="mb-8 gradient-purple text-white overflow-hidden relative">
-              <CardContent className="p-6">
+            <Card className="mb-8 bg-gradient-to-r from-novura-primary to-purple-600 text-white overflow-hidden relative rounded-xl">
+              <CardContent className="px-8 py-10 md:py-12">
                 <div className="flex items-center justify-between">
                   <div className="flex-1">
-                    <h2 className="text-xl font-bold mb-2">🛍️ Ofertas Especiais - Recursos Seller</h2>
-                    <p className="text-purple-100 mb-4">
-                      Descubra produtos com desconto exclusivo para sellers. Fitas, embalagens, etiquetas e impressoras com preços especiais!
+                    <h2 className="text-2xl md:text-3xl font-bold mb-2">🎉 Bem-vindo(a) ao Novura</h2>
+                    <p className="text-purple-100 mb-6">
+                      Gerencie sua empresa em um só lugar com desempenho e simplicidade.
                     </p>
-                    <Button asChild variant="secondary" className="bg-white text-novura-primary hover:bg-gray-100">
-                      <Link to="/recursos-seller">
-                        Ver Ofertas
+                    <Button asChild variant="secondary" className="bg-white text-novura-primary hover:bg-gray-100 rounded-xl h-11 px-5">
+                      <Link to="/novura-academy">
+                        Explorar Novura
                         <ChevronRight className="w-4 h-4 ml-2" />
                       </Link>
                     </Button>
                   </div>
                   <div className="hidden md:block">
-                    <div className="w-32 h-32 bg-white/10 rounded-full flex items-center justify-center backdrop-blur-sm">
-                      <span className="text-4xl">🎯</span>
+                    <div className="w-36 h-36 bg-white/10 rounded-full flex items-center justify-center backdrop-blur-sm">
+                      <span className="text-4xl">✨</span>
                     </div>
                   </div>
                 </div>
@@ -269,54 +279,6 @@ const Index = () => {
               </CardContent>
             </Card>
 
-            {/* Quadro de Estoque e CRM */}
-            <div className="grid grid-cols-2 gap-6 mb-8">
-              <Card className="border-0 shadow-lg rounded-xl bg-white">
-                <CardContent className="p-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Status do Estoque</h3>
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                      <span className="text-gray-700">Sem Estoque Full</span>
-                      <span className="font-semibold text-gray-900">5</span>
-                    </div>
-                    <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-              <span className="text-gray-700">Sem Estoque Armazém</span>
-                      <span className="font-semibold text-gray-900">12</span>
-                    </div>
-                    <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                      <span className="text-gray-700">Estoque Baixo</span>
-                      <span className="font-semibold text-gray-900">23</span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card className="border-0 shadow-lg rounded-xl bg-white">
-                <CardContent className="p-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">CRM</h3>
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                      <span className="text-gray-700 flex items-center">
-                        Perguntas
-                      </span>
-                      <span className="font-semibold text-gray-900">7</span>
-                    </div>
-                    <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                      <span className="text-red-600 flex items-center">
-                        Reclamações
-                      </span>
-                      <span className="font-semibold text-red-600">3</span>
-                    </div>
-                    <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                      <span className="text-gray-700 flex items-center">
-                        Mensagens de Clientes
-                      </span>
-                      <span className="font-semibold text-gray-900">15</span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
             
             {/* Academia Novura - Carrossel Centralizado */}
             <div>

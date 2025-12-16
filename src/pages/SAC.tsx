@@ -11,6 +11,9 @@ import { GlobalHeader } from "@/components/GlobalHeader";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CleanNavigation } from "@/components/CleanNavigation";
 
 // Tipos básicos
 type TicketType = "pergunta" | "reclamacao" | "pos_venda";
@@ -29,6 +32,12 @@ type Ticket = {
   atribuidoA?: string;
   historico: { time: string; event: string }[];
   slaMinLeft: number;
+  itemId?: string;
+  createdAt?: string;
+  hold?: boolean;
+  suspectedSpam?: boolean;
+  deletedFromListing?: boolean;
+  answerStatus?: "ACTIVE" | "DISABLED" | "BANNED" | null;
 };
 
 const membrosEquipe = ["Ana", "Carlos", "Marina", "João", "Fernanda"];
@@ -48,6 +57,12 @@ const mockTickets: Ticket[] = [
     tagsIA: ["Dúvida de Prazo"],
     historico: [{ time: "há 5 min", event: "Mensagem recebida" }],
     slaMinLeft: 95,
+    itemId: "MLB1623490410",
+    createdAt: "há 5 min",
+    hold: false,
+    suspectedSpam: false,
+    deletedFromListing: false,
+    answerStatus: null,
   },
   {
     id: "TCK-002",
@@ -92,6 +107,86 @@ const mockTickets: Ticket[] = [
     tagsIA: ["Troca / Devolução"],
     historico: [{ time: "há 20 min", event: "Mensagem recebida" }],
     slaMinLeft: 120,
+  },
+  {
+    id: "TCK-005",
+    canal: "Mercado Livre",
+    cliente: "Beatriz Souza",
+    assunto: "Tem tamanho P disponível?",
+    tipo: "pergunta",
+    pedidoId: undefined,
+    status: "em_andamento",
+    volatilidade: 52,
+    riscoPRR: "Baixo",
+    tagsIA: ["Disponibilidade", "Tamanho"],
+    historico: [{ time: "há 20 min", event: "Mensagem recebida" }],
+    slaMinLeft: 70,
+    itemId: "MLB1234567890",
+    createdAt: "há 20 min",
+    hold: false,
+    suspectedSpam: false,
+    deletedFromListing: false,
+    answerStatus: "ACTIVE",
+  },
+  {
+    id: "TCK-006",
+    canal: "Mercado Livre",
+    cliente: "Eduardo Lima",
+    assunto: "Posso retirar em loja?",
+    tipo: "pergunta",
+    pedidoId: undefined,
+    status: "aguardando_cliente",
+    volatilidade: 41,
+    riscoPRR: "Médio",
+    tagsIA: ["Retirada", "Entrega"],
+    historico: [{ time: "há 1 h", event: "Mensagem enviada: política de retirada" }],
+    slaMinLeft: 35,
+    itemId: "MLB0987654321",
+    createdAt: "há 1 h",
+    hold: true,
+    suspectedSpam: false,
+    deletedFromListing: false,
+    answerStatus: "DISABLED",
+  },
+  {
+    id: "TCK-007",
+    canal: "Mercado Livre",
+    cliente: "Carla M.",
+    assunto: "Qual a voltagem do produto?",
+    tipo: "pergunta",
+    pedidoId: undefined,
+    status: "resolvido",
+    volatilidade: 28,
+    riscoPRR: "Baixo",
+    tagsIA: ["Especificação Técnica"],
+    historico: [{ time: "há 2 h", event: "Resposta enviada: voltagem 110/220 bivolt" }],
+    slaMinLeft: 120,
+    itemId: "MLB1122334455",
+    createdAt: "há 2 h",
+    hold: false,
+    suspectedSpam: false,
+    deletedFromListing: false,
+    answerStatus: "ACTIVE",
+  },
+  {
+    id: "TCK-008",
+    canal: "Mercado Livre",
+    cliente: "Rafael P.",
+    assunto: "Preço por atacado?",
+    tipo: "pergunta",
+    pedidoId: undefined,
+    status: "novo",
+    volatilidade: 76,
+    riscoPRR: "Alto",
+    tagsIA: ["Negociação", "Atacado"],
+    historico: [{ time: "há 10 min", event: "Mensagem recebida" }],
+    slaMinLeft: 25,
+    itemId: "MLB5566778899",
+    createdAt: "há 10 min",
+    hold: false,
+    suspectedSpam: true,
+    deletedFromListing: false,
+    answerStatus: "BANNED",
   },
 ];
 
@@ -141,6 +236,12 @@ function RiskBadge({ risco }: { risco: Ticket["riscoPRR"] }) {
   return <span className={`text-xs px-2 py-1 rounded-full ${cls}`}>Risco {risco}</span>;
 }
 
+function SLABadge({ minutesLeft }: { minutesLeft: number }) {
+  const variant = minutesLeft <= 30 ? "bg-red-600 text-white" : minutesLeft <= 90 ? "bg-orange-500 text-white" : "bg-emerald-500 text-white";
+  const label = minutesLeft <= 30 ? "Urgente" : minutesLeft <= 90 ? "Atenção" : "Confortável";
+  return <Badge className={`${variant} rounded-full px-2 py-1 text-xs`}>{label} • {minutesLeft}m</Badge>;
+}
+
 function SACTicketInbox({
   tickets,
   onSelect,
@@ -169,47 +270,56 @@ function SACTicketInbox({
         </div>
       </div>
 
-      <div className="rounded-lg border bg-white">
-        <div className="grid grid-cols-12 px-4 py-2 text-xs font-medium text-gray-600 border-b">
-          <div className="col-span-2">Cliente</div>
-          <div className="col-span-3">Assunto</div>
-          <div className="col-span-2">Canal</div>
-          <div className="col-span-2">Classificação (IA)</div>
-          <div className="col-span-1">Volatilidade</div>
-          <div className="col-span-2">Risco / SLA</div>
-        </div>
+      <div className="grid grid-cols-1 gap-3">
         {sorted.map((t) => (
-          <button key={t.id} onClick={() => onSelect(t)} className="grid grid-cols-12 w-full px-4 py-3 text-sm text-left hover:bg-gray-50">
-            <div className="col-span-2">
-              <div className="font-medium text-gray-900 flex items-center gap-2">
-                {t.cliente}
-                <span className="text-xs text-gray-500">#{t.id}</span>
+          <Card key={t.id} className="border border-gray-200">
+            <CardHeader className="p-4 pb-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-gray-900">{t.cliente}</span>
+                  <span className="text-xs text-gray-500">#{t.id}</span>
+                  <ChannelBadge canal={t.canal} />
+                  <span className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 capitalize">{t.status.replace("_", " ")}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <RiskBadge risco={t.riscoPRR} />
+                  <SLABadge minutesLeft={t.slaMinLeft} />
+                </div>
               </div>
-              <div className="text-xs text-gray-500">Pedido: {t.pedidoId ?? "-"}</div>
-            </div>
-            <div className="col-span-3">
-              <div className="text-gray-800">{t.assunto}</div>
-              <div className="text-xs text-gray-500 capitalize">{t.tipo.replace("_", " ")}</div>
-            </div>
-            <div className="col-span-2 flex items-center gap-2">
-              <ChannelBadge canal={t.canal} />
-              <span className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 capitalize">{t.status.replace("_", " ")}</span>
-            </div>
-            <div className="col-span-2 flex items-center gap-2 flex-wrap">
-              {t.tagsIA.map((tag) => (
-                <ClassificationChip key={tag} label={tag} />
-              ))}
-            </div>
-            <div className="col-span-1 flex items-center gap-1">
-              <AlertTriangle className={`w-4 h-4 ${t.volatilidade > 70 ? "text-red-600" : t.volatilidade > 50 ? "text-amber-600" : "text-emerald-600"}`} />
-              <span>{t.volatilidade}</span>
-            </div>
-            <div className="col-span-2 flex items-center gap-2">
-              <RiskBadge risco={t.riscoPRR} />
-              <Clock className="w-4 h-4 text-gray-500" />
-              <span className="text-xs text-gray-600">SLA 2h</span>
-            </div>
-          </button>
+            </CardHeader>
+            <CardContent className="p-4 pt-2">
+              <div className="flex items-start justify-between">
+                <div className="space-y-1">
+                  <div className="text-gray-800">{t.assunto}</div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {t.tagsIA.map((tag) => (
+                      <ClassificationChip key={tag} label={tag} />
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className={`w-4 h-4 ${t.volatilidade > 70 ? "text-red-600" : t.volatilidade > 50 ? "text-amber-600" : "text-emerald-600"}`} />
+                  <span className="text-sm text-gray-700">{t.volatilidade}</span>
+                </div>
+              </div>
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                {t.itemId && <Badge className="bg-gray-100 text-gray-700">Item {t.itemId}</Badge>}
+                {t.createdAt && <Badge className="bg-gray-100 text-gray-700">Criado {t.createdAt}</Badge>}
+                {t.hold && <Badge className="bg-blue-500 text-white">Hold</Badge>}
+                {t.suspectedSpam && <Badge className="bg-amber-500 text-white">Spam suspeito</Badge>}
+                {t.deletedFromListing && <Badge className="bg-gray-500 text-white">Removido do anúncio</Badge>}
+                {t.answerStatus === "BANNED" && <Badge className="bg-red-600 text-white">Resposta BANIDA</Badge>}
+                {t.answerStatus === "ACTIVE" && <Badge className="bg-emerald-600 text-white">Resposta ATIVA</Badge>}
+                {t.answerStatus === "DISABLED" && <Badge className="bg-gray-600 text-white">Resposta DESABILITADA</Badge>}
+              </div>
+              <div className="mt-3 flex items-center space-x-3">
+                <Input className="flex-1 h-12 rounded-full px-6 bg-gray-100 border-gray-200 focus:border-purple-500" placeholder="Responder..." />
+                <Button className="w-12 h-12 rounded-full bg-purple-600 hover:bg-purple-700" size="icon">
+                  <Send className="w-5 h-5" />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         ))}
       </div>
     </div>
@@ -413,9 +523,12 @@ export default function SAC() {
   const [prioridadeInteligenteAtiva, setPrioridadeInteligenteAtiva] = useState(true);
   const [tickets] = useState<Ticket[]>(mockTickets);
   const [selectedTicket, setSelectedTicket] = useState<Ticket | undefined>(mockTickets[0]);
+  const [activeMarketplacePath, setActiveMarketplacePath] = useState("/sac/mercado-livre");
+  const [questionsTab, setQuestionsTab] = useState("todas");
   const perguntas = tickets.filter((t) => t.tipo === "pergunta");
   const reclamacoes = tickets.filter((t) => t.tipo === "reclamacao");
   const posVenda = tickets.filter((t) => t.tipo === "pos_venda");
+  const perguntasML = perguntas.filter((t) => t.canal === "Mercado Livre");
 
   return (
     <SidebarProvider>
@@ -429,10 +542,6 @@ export default function SAC() {
                 <h1 className="text-2xl font-semibold text-gray-900 flex items-center"><MessageSquare className="w-6 h-6 mr-2" /> Central de SAC</h1>
                 <p className="text-sm text-gray-600">Integração Multi-Canal • Priorização Inteligente • Classificação Automática • PRR</p>
               </div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm"><User className="w-4 h-4 mr-2" /> Minha Fila</Button>
-                <Button variant="default" size="sm" className="bg-novura-primary text-white">Novo Ticket</Button>
-              </div>
             </div>
 
             <div className="rounded-lg border bg-amber-50 border-amber-200 p-3 flex items-center gap-3 mt-4">
@@ -443,67 +552,84 @@ export default function SAC() {
               </div>
             </div>
 
-            <Tabs defaultValue="metricas" className="w-full mt-4">
-              <TabsList className="bg-white p-1 rounded-xl border shadow-sm">
-                <TabsTrigger value="metricas">Métricas</TabsTrigger>
-                <TabsTrigger value="perguntas">Perguntas</TabsTrigger>
-                <TabsTrigger value="reclamacoes">Reclamações</TabsTrigger>
-                <TabsTrigger value="posvenda">Pós-venda</TabsTrigger>
-              </TabsList>
+            <CleanNavigation
+              items={[
+                { title: "Mercado Livre", path: "/sac/mercado-livre", description: "Perguntas" },
+                { title: "Shopee", path: "/sac/shopee", description: "Em breve" },
+                { title: "Magalu", path: "/sac/magalu", description: "Em breve" },
+                { title: "Amazon", path: "/sac/amazon", description: "Em breve" },
+              ]}
+              basePath=""
+              activePath={activeMarketplacePath}
+              onNavigate={(path) => setActiveMarketplacePath(path)}
+            />
 
-              <TabsContent value="metricas" className="mt-6">
-                <MetricsTab />
-              </TabsContent>
+            <Tabs defaultValue="perguntas" className="w-full mt-4">
+              <div className="border-b border-gray-200 w-full">
+                <TabsList className="bg-transparent p-0 h-auto">
+                  <TabsTrigger value="perguntas" className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent">Perguntas</TabsTrigger>
+                  <TabsTrigger value="reclamacoes" className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent">Reclamações</TabsTrigger>
+                  <TabsTrigger value="posvenda" className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent">Pós-venda</TabsTrigger>
+                </TabsList>
+              </div>
 
               <TabsContent value="perguntas" className="mt-6">
-                <div className="grid grid-cols-12 gap-6">
-                  <div className="col-span-12 lg:col-span-7">
-                    <SACTicketInbox
-                      tickets={perguntas}
-                      titulo="Perguntas"
-                      onSelect={setSelectedTicket}
-                      prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
-                      setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
-                    />
-                  </div>
-                  <div className="col-span-12 lg:col-span-5">
-                    <SACChatPanel ticket={selectedTicket} />
-                  </div>
+                <div className="border-b border-gray-200 w-full mb-4">
+                  <Tabs value={questionsTab} onValueChange={setQuestionsTab} className="w-full">
+                    <TabsList className="bg-transparent p-0 h-auto">
+                      <TabsTrigger value="todas" className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent">Todas</TabsTrigger>
+                      <TabsTrigger value="nao-respondidas" className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent">Não Respondidas</TabsTrigger>
+                      <TabsTrigger value="respondidas" className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent">Respondidas</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="todas" className="mt-4">
+                      <SACTicketInbox
+                        tickets={activeMarketplacePath === "/sac/mercado-livre" ? perguntasML : perguntas}
+                        titulo="Perguntas"
+                        onSelect={setSelectedTicket}
+                        prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
+                        setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
+                      />
+                    </TabsContent>
+                    <TabsContent value="nao-respondidas" className="mt-4">
+                      <SACTicketInbox
+                        tickets={(activeMarketplacePath === "/sac/mercado-livre" ? perguntasML : perguntas).filter((t) => t.status === "novo")}
+                        titulo="Não Respondidas"
+                        onSelect={setSelectedTicket}
+                        prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
+                        setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
+                      />
+                    </TabsContent>
+                    <TabsContent value="respondidas" className="mt-4">
+                      <SACTicketInbox
+                        tickets={(activeMarketplacePath === "/sac/mercado-livre" ? perguntasML : perguntas).filter((t) => t.status !== "novo")}
+                        titulo="Respondidas"
+                        onSelect={setSelectedTicket}
+                        prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
+                        setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
+                      />
+                    </TabsContent>
+                  </Tabs>
                 </div>
               </TabsContent>
 
               <TabsContent value="reclamacoes" className="mt-6">
-                <div className="grid grid-cols-12 gap-6">
-                  <div className="col-span-12 lg:col-span-7">
-                    <SACTicketInbox
-                      tickets={reclamacoes}
-                      titulo="Reclamações"
-                      onSelect={setSelectedTicket}
-                      prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
-                      setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
-                    />
-                  </div>
-                  <div className="col-span-12 lg:col-span-5">
-                    <SACChatPanel ticket={selectedTicket} />
-                  </div>
-                </div>
+                <SACTicketInbox
+                  tickets={reclamacoes}
+                  titulo="Reclamações"
+                  onSelect={setSelectedTicket}
+                  prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
+                  setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
+                />
               </TabsContent>
 
               <TabsContent value="posvenda" className="mt-6">
-                <div className="grid grid-cols-12 gap-6">
-                  <div className="col-span-12 lg:col-span-7">
-                    <SACTicketInbox
-                      tickets={posVenda}
-                      titulo="Pós-venda"
-                      onSelect={setSelectedTicket}
-                      prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
-                      setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
-                    />
-                  </div>
-                  <div className="col-span-12 lg:col-span-5">
-                    <SACChatPanel ticket={selectedTicket} />
-                  </div>
-                </div>
+                <SACTicketInbox
+                  tickets={posVenda}
+                  titulo="Pós-venda"
+                  onSelect={setSelectedTicket}
+                  prioridadeInteligenteAtiva={prioridadeInteligenteAtiva}
+                  setPrioridadeInteligenteAtiva={setPrioridadeInteligenteAtiva}
+                />
               </TabsContent>
             </Tabs>
           </main>

@@ -8,11 +8,19 @@ function jsonResponse(body: unknown, status = 200) {
       "content-type": "application/json",
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-request-id, x-correlation-id, x-origin, x-shopee-signature",
+      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
     },
   });
 }
 
+function sanitizeRedirect(raw: string | null): string | null {
+  if (!raw) return null;
+  // Remove espaços em branco e backticks indesejados
+  const s = String(raw).trim().replace(/^`+|`+$/g, "");
+  return s;
+}
+
+// Assinatura HMAC-SHA256 (Retorna minúsculas conforme doc Shopee)
 async function hmacSha256Hex(key: string, message: string): Promise<string> {
   const enc = new TextEncoder();
   const rawKey = enc.encode(key);
@@ -21,161 +29,107 @@ async function hmacSha256Hex(key: string, message: string): Promise<string> {
   const bytes = new Uint8Array(sig);
   let hex = "";
   for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex;
-}
-
-function tryParseJson(text: string): unknown {
-  try { return JSON.parse(text); } catch (_) { return null; }
-}
-
-function getStr(obj: unknown, path: string[]): string | null {
-  let cur: unknown = obj;
-  for (const k of path) {
-    if (!cur || typeof cur !== "object" || !(k in (cur as Record<string, unknown>))) return null;
-    cur = (cur as Record<string, unknown>)[k];
-  }
-  const v = cur as unknown;
-  if (typeof v === "string" && v.trim()) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return null;
-}
-
-function detectOrderSn(payload: unknown): string | null {
-  const cand = [
-    ["order_sn"],
-    ["ordersn"],
-    ["ordersn_list", "0"],
-    ["order_sn_list", "0"],
-    ["data", "order_sn"],
-    ["msg", "order_sn"],
-    ["message", "order_sn"],
-    ["order", "order_sn"],
-    ["orders", "0", "order_sn"],
-  ];
-  for (const p of cand) {
-    const v = getStr(payload, p);
-    if (v) return v;
-  }
-  // tentar decodificar quando data/msg/message são strings com JSON
-  const tryNested = (key: string): string | null => {
-    const raw = getStr(payload, [key]);
-    if (raw && (raw.trim().startsWith("{") || raw.trim().startsWith("["))) {
-      try {
-        const nested = JSON.parse(raw);
-        for (const p of cand) {
-          const v = getStr(nested, p);
-          if (v) return v;
-        }
-      } catch (_) { /* ignore */ }
-    }
-    return null;
-  };
-  return tryNested("data") || tryNested("msg") || tryNested("message");
-}
-
-function detectShopId(payload: unknown): string | null {
-  const cand = [
-    ["shop_id"],
-    ["data", "shop_id"],
-    ["msg", "shop_id"],
-    ["message", "shop_id"],
-    ["merchant_id"],
-    ["shopid"],
-  ];
-  for (const p of cand) {
-    const v = getStr(payload, p);
-    if (v) return v;
-  }
-  const tryNested = (key: string): string | null => {
-    const raw = getStr(payload, [key]);
-    if (raw && (raw.trim().startsWith("{") || raw.trim().startsWith("["))) {
-      try {
-        const nested = JSON.parse(raw);
-        for (const p of cand) {
-          const v = getStr(nested, p);
-          if (v) return v;
-        }
-      } catch (_) { /* ignore */ }
-    }
-    return null;
-  };
-  return tryNested("data") || tryNested("msg") || tryNested("message");
+  return hex; // Retorna em minúsculas
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return jsonResponse(null, 200);
-  if (req.method === "GET") return jsonResponse({ ok: true }, 200);
-  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
-
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      headers: {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, POST, OPTIONS",
+        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
+      },
+    });
+  }
 
   try {
     const correlationId = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
-    const hdrLog = {
-      authorization_present: !!req.headers.get("authorization"),
-      apikey_present: !!req.headers.get("apikey"),
-      x_internal_call_present: !!req.headers.get("x-internal-call"),
-      x_shopee_signature_present: !!req.headers.get("x-shopee-signature"),
-      "x-request-id": req.headers.get("x-request-id") || null,
-      "x-correlation-id": req.headers.get("x-correlation-id") || null,
-    } as const;
-    const bodyText = await req.text();
-    const payload = tryParseJson(bodyText);
-    console.log("shopee-sync-all inbound", { correlationId, method: req.method, url: req.url, headers: hdrLog, bodyPreview: bodyText.slice(0, 500) });
+    const method = req.method;
+    
+    type StartBody = { organizationId?: string; storeName?: string; connectedByUserId?: string; redirect_uri?: string };
+    const body = method === "GET" ? null : (await req.json() as StartBody);
+    
+    // Dados para o STATE (passados para o callback)
+    const organizationId = body?.organizationId || null;
+    const storeName = body?.storeName || null;
+    const connectedByUserId = body?.connectedByUserId || null;
+    const redirectOverride = sanitizeRedirect(body?.redirect_uri || null);
 
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
-    let partnerKey: string | null = null;
+    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
+    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+
+    // Busca Credenciais do App Shopee (Tabela APPS)
+    const { data: appRow, error: appErr } = await admin
+      .from("apps")
+      .select("client_id, client_secret, config") // Removido auth_url, pois será fixo para produção
+      .eq("name", "Shopee")
+      .single();
+    if (appErr || !appRow) return jsonResponse({ error: appErr?.message || "App not found" }, 404);
+
+    type AppRow = { client_id?: string; client_secret?: string; config?: Record<string, unknown> };
+    const app = appRow as AppRow;
+    
+    // --- OTIMIZAÇÃO: Recuperação segura e validação do Partner ID ---
+    const partnerId = String(app.client_id || "").trim();
+    const partnerKey = String(app.client_secret || "").trim();
+    
+    if (!partnerId || !partnerKey || !/^\d+$/.test(partnerId)) {
+      console.error("[shopee-start] partner_credentials_error", { correlationId, partnerId, hasKey: !!partnerKey });
+      return jsonResponse({ error: "Missing or invalid Partner ID (client_id) or Partner Key (client_secret)" }, 400);
+    }
+    
+    // --- CONFIGURAÇÃO ESTRITAMENTE DE PRODUÇÃO ---
+    const PROD_AUTH_HOST = "https://partner.shopeemobile.com";
+    const fixedAuthPath = "/api/v2/shop/auth_partner";
+    const defaultRedirectUri = "https://novuraerp.com.br/oauth/shopee/callback"; // Default de fallback
+
+    // Lógica de REDIRECT URI
+    const cfg = app.config as Record<string, unknown> | undefined;
+    const redirectFromConfig = sanitizeRedirect((cfg && typeof cfg["redirect_uri"] === "string") ? String(cfg["redirect_uri"]) : null);
+    const redirectEnv = sanitizeRedirect(Deno.env.get("SHOPEE_REDIRECT_URI") || null);
+    
+    const redirectUri = redirectOverride || redirectFromConfig || redirectEnv || defaultRedirectUri;
+
+    // Assinatura (HMAC)
+    const timestamp = Math.floor(Date.now() / 1000);
+    // BaseString: partner_id + path + timestamp
+    const baseString = `${partnerId}${fixedAuthPath}${timestamp}`;
+    
+    // CORREÇÃO: Assinatura deve ser minúscula (lowercase)
+    const sign = await hmacSha256Hex(partnerKey, baseString);
+
+    // Montagem da URL de Autorização
+    const authorizationUrl = new URL(`${PROD_AUTH_HOST}${fixedAuthPath}`);
+    authorizationUrl.searchParams.set("partner_id", partnerId);
+    authorizationUrl.searchParams.set("timestamp", String(timestamp));
+    authorizationUrl.searchParams.set("sign", sign);
+    
+    // Montagem do STATE e inserção na URL de Redirect
+    const statePayload = { organizationId, storeName, connectedByUserId, redirect_uri: redirectUri };
+    const state = btoa(JSON.stringify(statePayload));
+    
+    let redirectWithState = redirectUri;
     try {
-      const { data: appRow } = await admin
-        .from("apps")
-        .select("client_secret")
-        .eq("name", "Shopee")
-        .single();
-      partnerKey = appRow?.client_secret ? String(appRow.client_secret) : null;
-    } catch (_) {
-      partnerKey = null;
+      const r = new URL(redirectUri);
+      r.searchParams.set("state", state);
+      redirectWithState = r.toString();
+    } catch (e) {
+      console.warn("[shopee-start] invalid_redirect_uri", { correlationId, redirectUri, error: e instanceof Error ? e.message : String(e) });
+      redirectWithState = redirectUri;
     }
+    
+  
+    authorizationUrl.searchParams.set("redirect", redirectWithState);
+    
+    console.log("[shopee-start] success", { correlationId, authUrl: authorizationUrl.toString() });
 
-    const isInternal = req.headers.get("x-internal-call") === "1";
-    if (!isInternal && partnerKey && bodyText.trim()) {
-      const rawHeaderSig = req.headers.get("x-shopee-signature") || req.headers.get("X-Shopee-Signature");
-      const headerSig = rawHeaderSig ? rawHeaderSig.replace(/^sha256=/i, "").trim() : "";
-      if (headerSig) {
-        const computed = await hmacSha256Hex(partnerKey, bodyText);
-        const ok = headerSig.toLowerCase() === computed.toLowerCase();
-        if (!ok) {
-          console.warn("shopee-sync-all signature_invalid", { correlationId });
-          return jsonResponse({ ok: false, error: "Invalid signature", correlationId }, 401);
-        }
-      }
-    }
-
-    const orderSn = payload ? detectOrderSn(payload) : null;
-    const shopId = payload ? detectShopId(payload) : null;
-    if (!orderSn) {
-      console.warn("shopee-sync-all no_order_detected", { correlationId });
-      return jsonResponse({ ok: false, error: "No order detected", correlationId }, 200);
-    }
-
-    const invHeaders = {
-      "x-request-id": correlationId,
-      "x-correlation-id": correlationId,
-      "x-origin": "webhook",
-      "apikey": SERVICE_ROLE_KEY,
-      "authorization": `Bearer ${SERVICE_ROLE_KEY}`,
-      "x-internal-call": "1",
-    } as const;
-    const forwardBody = { order_sn: orderSn, shop_id: shopId, notification: payload } as const;
-    console.log("shopee-sync-all -> orders invoke_start", { correlationId, order_sn: orderSn, shop_id: shopId });
-    const { data, error } = await admin.functions.invoke("shopee-webhook-orders", { body: forwardBody, headers: invHeaders });
-    const success = !error && data && typeof data === "object" && data !== null && "ok" in (data as Record<string, unknown>) && Boolean((data as Record<string, unknown>).ok);
-    console.log("shopee-sync-all -> orders invoke_done", { correlationId, ok: success });
-    return jsonResponse(data ?? { ok: success, correlationId }, 200);
+    return jsonResponse({ authorization_url: authorizationUrl.toString(), state }, 200);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("shopee-sync-all unexpected_error", { message: msg });
-    return jsonResponse({ ok: false, error: msg }, 200);
+    console.error("[shopee-start] unexpected_error", { message: msg });
+    return jsonResponse({ error: msg }, 500);
   }
 });

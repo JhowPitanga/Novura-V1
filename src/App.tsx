@@ -285,7 +285,7 @@ const App = () => (
               }
             />
             <Route
-              path="/notas-fiscais"
+              path="/notas-fiscais/*"
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="notas_fiscais" actions={["view"]}>

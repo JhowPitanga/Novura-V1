@@ -1,76 +1,20 @@
 import { useAuth } from './useAuth';
 import { useEffect, useState } from 'react';
-import { supabase } from '@/integrations/supabase/client';
 
 export function usePermissions() {
-    const { permissions, userRole, organizationId, user } = useAuth();
+    const { permissions, userRole, organizationId, moduleSwitches, globalRole } = useAuth();
     const [activeMap, setActiveMap] = useState<Record<string, boolean> | null>(null);
-    const [globalRole, setGlobalRole] = useState<string | null>(null);
 
     useEffect(() => {
-        const loadActive = async () => {
-            try {
-                if (!user?.id || !organizationId) { setActiveMap(null); return; }
-                const { data } = await supabase
-                    .from('organization_members')
-                    .select('module_switches')
-                    .eq('user_id', user.id as string)
-                    .eq('organization_id', organizationId as string)
-                    .maybeSingle();
-                const raw = (data as any)?.module_switches || {};
-                const global = (raw && typeof raw === 'object') ? (raw.global || {}) : {};
-                const map: Record<string, boolean> = {};
-                for (const key of Object.keys(global || {})) {
-                    const v = (global as any)[key];
-                    map[key] = Boolean(v?.active);
-                }
-                setActiveMap(map);
-            } catch (_) {
-                setActiveMap(null);
-            }
-        };
-        loadActive();
-    }, [organizationId, user?.id]);
-
-    useEffect(() => {
-        const loadRole = async () => {
-            try {
-                const { data } = await supabase
-                    .from('users')
-                    .select('global_role')
-                    .eq('id', user?.id as string)
-                    .maybeSingle();
-                setGlobalRole((data as any)?.global_role ?? null);
-            } catch {
-                setGlobalRole(null);
-            }
-        };
-        loadRole();
-    }, [user?.id]);
-
-    useEffect(() => {
-        if (!user?.id) return;
-        const channel = supabase
-            .channel(`org-members-switch-${user.id}`)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'organization_members', filter: `user_id=eq.${user.id}` }, (payload: any) => {
-                try {
-                    const row = (payload?.new || payload?.old || {}) as any;
-                    const raw = row?.module_switches || {};
-                    const global = (raw && typeof raw === 'object') ? (raw.global || {}) : {};
-                    const map: Record<string, boolean> = {};
-                    for (const key of Object.keys(global || {})) {
-                        const v = (global as any)[key];
-                        map[key] = Boolean(v?.active);
-                    }
-                    setActiveMap(map);
-                } catch (_) {}
-            })
-            .subscribe();
-
-        return () => {
-            try { supabase.removeChannel(channel); } catch {}
-        };
-    }, [user?.id]);
+        const raw = moduleSwitches || {};
+        const global = (raw && typeof raw === 'object') ? (raw as any).global || {} : {};
+        const map: Record<string, boolean> = {};
+        for (const key of Object.keys(global || {})) {
+            const v = (global as any)[key];
+            map[key] = Boolean(v?.active);
+        }
+        setActiveMap(map);
+    }, [moduleSwitches]);
 
     const hasPermission = (module: string, action: string): boolean => {
         if (module === 'novura_admin') {

@@ -7,12 +7,15 @@ interface AuthContextType {
     user: User | null;
     session: Session | null;
     loading: boolean;
-    signUp: (email: string, password: string, meta?: Record<string, any>) => Promise<{ error: any, userId?: string }>;
-    signIn: (email: string, password: string) => Promise<{ error: any }>;
-    signOut: () => Promise<void>;
-    organizationId: string | null;
-    permissions: Record<string, Record<string, boolean>> | null;
-    userRole: string | null;
+    signUp: (email: string, password: string, meta?: Record<string, any>) => Promise<{ error: any, userId?: string }>; 
+    signIn: (email: string, password: string) => Promise<{ error: any }>; 
+    signOut: () => Promise<void>; 
+    organizationId: string | null; 
+    permissions: Record<string, Record<string, boolean>> | null; 
+    userRole: string | null; 
+    globalRole: string | null; 
+    moduleSwitches: Record<string, any> | null;
+    displayName: string | null;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -27,78 +30,66 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [organizationId, setOrganizationId] = useState<string | null>(null);
     const [permissions, setPermissions] = useState<Record<string, Record<string, boolean>> | null>(null);
     const [userRole, setUserRole] = useState<string | null>(null);
+    const [globalRole, setGlobalRole] = useState<string | null>(null);
+    const [moduleSwitches, setModuleSwitches] = useState<Record<string, any> | null>(null);
+    const [displayName, setDisplayName] = useState<string | null>(null);
     const initDoneRef = useRef(false);
-
-    async function resolveOrganizationId(u: User | null) {
+    async function loadAccessContext(u: User | null) {
         try {
             if (!u) {
                 setOrganizationId(null);
                 setPermissions(null);
                 setUserRole(null);
+                setGlobalRole(null);
+                setModuleSwitches(null);
                 return;
             }
 
-            if (organizationId && permissions && userRole) {
+            const cacheKey = `access_context:${u.id}`;
+            const raw = sessionStorage.getItem(cacheKey);
+            let fromCache: any = null;
+            if (raw) {
+                try { fromCache = JSON.parse(raw); } catch {}
+            }
+            const now = Date.now();
+            const ttlMs = 5 * 60 * 1000;
+            const validCache = fromCache && typeof fromCache === 'object' && Number.isFinite(fromCache.cachedAt) && (now - fromCache.cachedAt) < ttlMs;
+
+            if (validCache) {
+                setOrganizationId(fromCache.organization_id || null);
+                setPermissions(fromCache.permissions || {});
+                setUserRole(fromCache.role || 'member');
+                setGlobalRole(fromCache.global_role || null);
+                setModuleSwitches(fromCache.module_switches || {});
+                setDisplayName(fromCache.display_name || null);
                 return;
             }
 
-            // 1) Tenta via metadados do usuário
-            const metaOrg = (u.user_metadata as any)?.organization_id as string | undefined;
-            if (metaOrg) {
-                setOrganizationId(metaOrg);
-                await loadUserPermissionsAndRole(u.id, metaOrg);
-                return;
-            }
-
-            // 2) Tenta via RPC que resolve organização atual por membership (evita criar org indevida)
-            const { data: rpcOrgId, error: rpcErr } = await supabase.rpc('get_current_user_organization_id');
-            if (rpcErr) {
-                const m = String((rpcErr as any)?.message || (rpcErr as any)?.name || '').toLowerCase();
-                if (!m.includes('abort') && !m.includes('aborted')) {
-                    console.warn('Falha ao obter organização via RPC get_current_user_organization_id:', rpcErr);
-                }
-            }
-            const orgIdFromRpc = Array.isArray(rpcOrgId) ? (rpcOrgId?.[0] as string | undefined) : (rpcOrgId as string | undefined);
-            if (orgIdFromRpc) {
-                setOrganizationId(orgIdFromRpc);
-                await loadUserPermissionsAndRole(u.id, orgIdFromRpc);
-                return;
-            }
-
-            // 3) Sem organização resolvida: manter contexto vazio (evita chamadas RPC não tipadas)
-            setOrganizationId(null);
-            setPermissions(null);
-            setUserRole(null);
-        } catch (e) {
-            const m = String((e as any)?.message || (e as any)?.name || '').toLowerCase();
-            if (!m.includes('abort') && !m.includes('aborted')) {
-                console.warn('Falha ao resolver organization_id do usuário', e);
-            }
-            setOrganizationId(null);
-            setPermissions(null);
-            setUserRole(null);
-        }
-    }
-
-    async function loadUserPermissionsAndRole(userId: string, orgId: string) {
-        try {
-            const { data: permsRow, error: permsErr } = await supabase.rpc('rpc_get_member_permissions', {
-                p_user_id: userId,
-                p_organization_id: orgId,
-            });
-            if (permsErr) {
-                console.warn('Erro ao carregar permissões/role (RPC):', permsErr);
+            // @ts-expect-error – RPC not typed by Supabase codegen yet
+            const { data, error } = await supabase.rpc('rpc_get_user_access_context', { p_user_id: u.id });
+            if (error) {
+                setOrganizationId(null);
                 setPermissions({});
                 setUserRole('member');
-            } else {
-                const row = Array.isArray(permsRow) ? (permsRow[0] as any) : (permsRow as any);
-                setPermissions(row?.permissions || {});
-                setUserRole(row?.role || 'member');
+                setGlobalRole(null);
+                setModuleSwitches({});
+                return;
             }
+            const ctx = Array.isArray(data) ? (data?.[0] as any) : (data as any);
+            setOrganizationId(ctx?.organization_id || null);
+            setPermissions(ctx?.permissions || {});
+            setUserRole(ctx?.role || 'member');
+            setGlobalRole(ctx?.global_role || null);
+            setModuleSwitches(ctx?.module_switches || {});
+            setDisplayName(ctx?.display_name || null);
+            sessionStorage.setItem(cacheKey, JSON.stringify({ ...(ctx || {}), cachedAt: Date.now() }));
         } catch (e) {
-            console.warn('Falha ao carregar permissões e role (RPC)', e);
+            setOrganizationId(null);
             setPermissions({});
             setUserRole('member');
+            setGlobalRole(null);
+            setModuleSwitches({});
+            setDisplayName(null);
         }
     }
 
@@ -118,9 +109,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 },
                 (payload) => {
                     try {
-                        const newOrg = (payload.new as any)?.organization_id ?? (payload.old as any)?.organization_id;
+                        const row = (payload.new as any) ?? (payload.old as any) ?? {};
+                        const newOrg = row?.organization_id;
                         if (newOrg === organizationId) {
-                            loadUserPermissionsAndRole(user.id, organizationId);
+                            setPermissions(row?.permissions || {});
+                            setUserRole(row?.role || 'member');
+                            setModuleSwitches(row?.module_switches || {});
+                            const cacheKey = `access_context:${user.id}`;
+                            const raw = sessionStorage.getItem(cacheKey);
+                            let prev: any = null;
+                            if (raw) { try { prev = JSON.parse(raw); } catch {} }
+                            const next = { ...(prev || {}), organization_id: organizationId, permissions: row?.permissions || {}, role: row?.role || 'member', module_switches: row?.module_switches || {} };
+                            sessionStorage.setItem(cacheKey, JSON.stringify({ ...next, cachedAt: Date.now() }));
                         }
                     } catch (e) {
                         console.warn('Falha ao processar atualização de permissões em tempo real:', e);
@@ -142,7 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 setUser(currentUser);
                 (async () => {
                     if (!initDoneRef.current) {
-                        await resolveOrganizationId(currentUser);
+                        await loadAccessContext(currentUser);
                         setLoading(false);
                         initDoneRef.current = true;
                     }
@@ -155,7 +155,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const currentUser = session?.user ?? null;
             setUser(currentUser);
             if (!initDoneRef.current) {
-                await resolveOrganizationId(currentUser);
+                await loadAccessContext(currentUser);
                 setLoading(false);
                 initDoneRef.current = true;
             }
@@ -198,7 +198,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 try {
                     await supabase.rpc('rpc_bootstrap_user_org', { p_user_id: createdUser.id });
                 } catch (_) { }
-                await resolveOrganizationId(createdUser);
+                    await loadAccessContext(createdUser);
             }
 
             return { error: null, userId: createdUser?.id };
@@ -240,7 +240,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 if (currentUser) {
                     await ensureEditorRecord(currentUser);
                     await ensurePublicUserRecord(currentUser);
-                    await resolveOrganizationId(currentUser);
+                    await loadAccessContext(currentUser);
                 }
             }
 
@@ -272,6 +272,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setOrganizationId(null);
             setPermissions(null);
             setUserRole(null);
+            setGlobalRole(null);
+            setModuleSwitches(null);
+            setDisplayName(null);
         } catch (err: any) {
             // Trata caso específico: Auth session missing
             const msg = String(err?.message || '').toLowerCase();
@@ -286,6 +289,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 setOrganizationId(null);
                 setPermissions(null);
                 setUserRole(null);
+                setGlobalRole(null);
+                setModuleSwitches(null);
+                setDisplayName(null);
                 return;
             }
 
@@ -294,6 +300,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 setOrganizationId(null);
                 setPermissions(null);
                 setUserRole(null);
+                setGlobalRole(null);
+                setModuleSwitches(null);
+                setDisplayName(null);
                 toast({
                     title: "Logout realizado",
                     description: "Você foi desconectado com sucesso.",
@@ -320,6 +329,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         organizationId,
         permissions,
         userRole,
+        globalRole,
+        moduleSwitches,
+        displayName,
     };
 
     return (

@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Bell, Users, BookOpen, MessageSquare, Hash, Image as ImageIcon, Paperclip, ArrowRight, Settings, LogOut } from "lucide-react";
+import { Bell, Users, BookOpen, MessageSquare, Hash, Image as ImageIcon, Paperclip, ArrowRight, Settings, LogOut, ChevronDown } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Link, useNavigate } from "react-router-dom";
@@ -102,11 +102,13 @@ export function GlobalHeader() {
           {/* Perfil do Usuário */}
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="ghost" size="sm" className="p-0 rounded-full">
+              <Button variant="ghost" size="sm" className="rounded-full px-2 py-1 hover:bg-gray-100 flex items-center gap-2">
                 <Avatar className="h-8 w-8 rounded-full">
                   {avatarUrl ? (<AvatarImage src={avatarUrl} alt={displayName} />) : null}
                   <AvatarFallback className="rounded-full">{initial}</AvatarFallback>
                 </Avatar>
+                <span className="text-sm text-gray-700">{displayName}</span>
+                <ChevronDown className="w-4 h-4 text-purple-600" />
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-64 z-[10000]">

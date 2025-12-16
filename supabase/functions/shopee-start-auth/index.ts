@@ -15,10 +15,12 @@ function jsonResponse(body: unknown, status = 200) {
 
 function sanitizeRedirect(raw: string | null): string | null {
   if (!raw) return null;
+  // Remove espaços em branco e backticks indesejados
   const s = String(raw).trim().replace(/^`+|`+$/g, "");
   return s;
 }
 
+// Assinatura HMAC-SHA256 (Retorna minúsculas conforme doc Shopee)
 async function hmacSha256Hex(key: string, message: string): Promise<string> {
   const enc = new TextEncoder();
   const rawKey = enc.encode(key);
@@ -27,7 +29,7 @@ async function hmacSha256Hex(key: string, message: string): Promise<string> {
   const bytes = new Uint8Array(sig);
   let hex = "";
   for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex;
+  return hex; // Retorna em minúsculas
 }
 
 serve(async (req) => {
@@ -42,10 +44,13 @@ serve(async (req) => {
   }
 
   try {
+    const correlationId = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
     const method = req.method;
-    const url = new URL(req.url);
+    
     type StartBody = { organizationId?: string; storeName?: string; connectedByUserId?: string; redirect_uri?: string };
     const body = method === "GET" ? null : (await req.json() as StartBody);
+    
+    // Dados para o STATE (passados para o callback)
     const organizationId = body?.organizationId || null;
     const storeName = body?.storeName || null;
     const connectedByUserId = body?.connectedByUserId || null;
@@ -56,55 +61,75 @@ serve(async (req) => {
     if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
+    // Busca Credenciais do App Shopee (Tabela APPS)
     const { data: appRow, error: appErr } = await admin
       .from("apps")
-      .select("client_id, client_secret, auth_url, config")
+      .select("client_id, client_secret, config") // Removido auth_url, pois será fixo para produção
       .eq("name", "Shopee")
       .single();
     if (appErr || !appRow) return jsonResponse({ error: appErr?.message || "App not found" }, 404);
 
-    type AppRow = { client_id?: string; client_secret?: string; auth_url?: string; config?: Record<string, unknown> };
+    type AppRow = { client_id?: string; client_secret?: string; config?: Record<string, unknown> };
     const app = appRow as AppRow;
-    const partnerId = String(app.client_id || "");
-    const partnerKey = String(app.client_secret || "");
+    
+    // --- OTIMIZAÇÃO: Recuperação segura e validação do Partner ID ---
+    const partnerId = String(app.client_id || "").trim();
+    const partnerKey = String(app.client_secret || "").trim();
+    
+    if (!partnerId || !partnerKey || !/^\d+$/.test(partnerId)) {
+      console.error("[shopee-start] partner_credentials_error", { correlationId, partnerId, hasKey: !!partnerKey });
+      return jsonResponse({ error: "Missing or invalid Partner ID (client_id) or Partner Key (client_secret)" }, 400);
+    }
+    
+    // --- CONFIGURAÇÃO ESTRITAMENTE DE PRODUÇÃO ---
+    const PROD_AUTH_HOST = "https://partner.shopeemobile.com";
+    const fixedAuthPath = "/api/v2/shop/auth_partner";
+    const defaultRedirectUri = "https://novuraerp.com.br/oauth/shopee/callback"; // Default de fallback
+
+    // Lógica de REDIRECT URI
     const cfg = app.config as Record<string, unknown> | undefined;
-    const envName = (Deno.env.get("SHOPEE_ENV") || (typeof cfg?.["env"] === "string" ? String(cfg?.["env"]) : "")).toLowerCase();
-    const defaultHost = envName === "sandbox" || envName === "test" ? "https://partner.test-st.shopeemobile.com" : "https://partner.shopeemobile.com";
-    const defaultAuthUrl = `${defaultHost}/api/v2/shop/auth_partner`;
-    const authUrlBase = String(app.auth_url || Deno.env.get("SHOPEE_AUTH_URL") || defaultAuthUrl);
     const redirectFromConfig = sanitizeRedirect((cfg && typeof cfg["redirect_uri"] === "string") ? String(cfg["redirect_uri"]) : null);
     const redirectEnv = sanitizeRedirect(Deno.env.get("SHOPEE_REDIRECT_URI") || null);
-    const redirectUri = redirectOverride || redirectFromConfig || redirectEnv || "https://novuraerp.com.br/oauth/shopee/callback";
-    if (!partnerId || !partnerKey || !redirectUri) return jsonResponse({ error: "Missing partner credentials or redirect_uri" }, 400);
-    if (!/^\d+$/.test(partnerId)) return jsonResponse({ error: "Invalid partner_id format" }, 400);
+    
+    const redirectUri = redirectOverride || redirectFromConfig || redirectEnv || defaultRedirectUri;
 
-    const fixedAuthPath = "/api/v2/shop/auth_partner";
-
+    // Assinatura (HMAC)
     const timestamp = Math.floor(Date.now() / 1000);
+    // BaseString: partner_id + path + timestamp
     const baseString = `${partnerId}${fixedAuthPath}${timestamp}`;
-    const sign = (await hmacSha256Hex(partnerKey, baseString)).toUpperCase();
+    
+    // CORREÇÃO: Assinatura deve ser minúscula (lowercase)
+    const sign = await hmacSha256Hex(partnerKey, baseString);
 
-    const hostForUrl = new URL(authUrlBase).origin;
-    const authorizationUrl = new URL(`${hostForUrl}${fixedAuthPath}`);
+    // Montagem da URL de Autorização
+    const authorizationUrl = new URL(`${PROD_AUTH_HOST}${fixedAuthPath}`);
     authorizationUrl.searchParams.set("partner_id", partnerId);
     authorizationUrl.searchParams.set("timestamp", String(timestamp));
     authorizationUrl.searchParams.set("sign", sign);
-    authorizationUrl.searchParams.set("redirect", redirectUri);
-
+    
+    // Montagem do STATE e inserção na URL de Redirect
     const statePayload = { organizationId, storeName, connectedByUserId, redirect_uri: redirectUri };
     const state = btoa(JSON.stringify(statePayload));
+    
     let redirectWithState = redirectUri;
     try {
       const r = new URL(redirectUri);
       r.searchParams.set("state", state);
       redirectWithState = r.toString();
-    } catch (_) {
+    } catch (e) {
+      console.warn("[shopee-start] invalid_redirect_uri", { correlationId, redirectUri, error: e instanceof Error ? e.message : String(e) });
       redirectWithState = redirectUri;
     }
+    
+  
     authorizationUrl.searchParams.set("redirect", redirectWithState);
+    
+    console.log("[shopee-start] success", { correlationId, authUrl: authorizationUrl.toString() });
+
     return jsonResponse({ authorization_url: authorizationUrl.toString(), state }, 200);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    console.error("[shopee-start] unexpected_error", { message: msg });
     return jsonResponse({ error: msg }, 500);
   }
 });

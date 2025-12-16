@@ -32,8 +32,8 @@ export function ConfiguracoesFiscais() {
   const [editingTax, setEditingTax] = useState<TaxRecord | null>(null);
 
   const subNavItems = [
-    { title: "Empresas", path: "empresas", description: "Cadastro e gestão de empresas emissoras" },
-    { title: "Configurações de Impostos", path: "impostos", description: "Regras, CFOP, CST e alíquotas" },
+    { title: "Empresas", path: "empresas", description: "Gestão de empresas" },
+    { title: "Impostos", path: "impostos", description: "Regras, CFOP, CST e alíquotas" },
   ];
 
   useEffect(() => {

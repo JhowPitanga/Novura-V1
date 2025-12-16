@@ -263,7 +263,7 @@ export function EstoqueManagementDrawer({
     <Drawer open={isOpen} onOpenChange={(open) => { if (!open) handleCloseDrawer(); }} direction="right">
       <DrawerContent
         ref={contentRef}
-        className="fixed inset-y-0 right-0 flex h-full w-3/5 flex-col max-h-screen"
+        className="fixed right-0 top-[65px] bottom-0 flex h-[calc(100vh-65px)] w-[35%] flex-col"
         aria-describedby={descriptionId}
         aria-labelledby={titleId}
         role="dialog"
@@ -342,114 +342,15 @@ export function EstoqueManagementDrawer({
 
             <Separator />
 
-            {/* Seleção de Armazém para Ajuste */}
-            <div className="space-y-4">
-              <h3 className="text-sm font-medium text-muted-foreground">Armazém para Ajuste</h3>
-              <div>
-                <Label htmlFor="ajuste-galpao">Armazém</Label>
-                <Select
-                  value={selectedStorageId}
-                  onValueChange={(value) => setSelectedStorageId(value)}
-                >
-                  <SelectTrigger className="mt-2">
-                    <SelectValue placeholder="Selecione o armazém" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {storageLoading && (
-                      <SelectItem value="__loading" disabled>Carregando armazéns...</SelectItem>
-                    )}
-                    {!storageLoading && storageLocations.length === 0 && (
-                      <SelectItem value="__empty" disabled>Nenhum armazém cadastrado</SelectItem>
-                    )}
-                    {!storageLoading && storageLocations.map((storage) => (
-                      <SelectItem key={storage.id} value={storage.id}>
-                        {storage.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            
 
-            <Separator />
-
-            {/* Estoque por Localização */}
-            {product.stock_by_location && product.stock_by_location.length > 0 && (
-              <>
-                <div className="space-y-4">
-                  <h3 className="text-sm font-medium text-muted-foreground">Estoque por Localização</h3>
-                  
-                  <div className="space-y-3">
-                    {product.stock_by_location.map((location) => (
-                      <div key={location.storage_id} className="p-3 bg-muted rounded-lg">
-                        <div className="flex justify-between items-start mb-2">
-                          <p className="font-medium">{location.storage_name}</p>
-                        </div>
-                        <div className="grid grid-cols-3 gap-2 text-xs">
-                          <div>
-                            <p className="text-muted-foreground">Atual</p>
-                            <p className="font-bold">{location.current}</p>
-                          </div>
-                          <div>
-                            <p className="text-muted-foreground">Reservado</p>
-                            <p className="font-bold text-orange-500">{location.reserved}</p>
-                          </div>
-                          <div>
-                            <p className="text-muted-foreground">Disponível</p>
-                            <p className="font-bold text-green-500">{location.available}</p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <Separator />
-              </>
-            )}
+            
 
             {/* Ajuste de Estoque */}
             <div className="space-y-4">
               <h3 className="text-sm font-medium text-muted-foreground">Ajuste de Estoque</h3>
 
-              {/* Botões de Ajuste Rápido */}
-              <div className="space-y-3">
-                <Label className="text-xs text-muted-foreground">Ajustes Rápidos</Label>
-                <div className="grid grid-cols-4 gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleQuickAdjustment(1)}
-                    className="h-8"
-                  >
-                    +1
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleQuickAdjustment(10)}
-                    className="h-8"
-                  >
-                    +10
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleQuickAdjustment(-1)}
-                    className="h-8"
-                  >
-                    -1
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleQuickAdjustment(-10)}
-                    className="h-8"
-                  >
-                    -10
-                  </Button>
-                </div>
-              </div>
+              
 
               {/* Tipo de Operação */}
               <div className="space-y-2">

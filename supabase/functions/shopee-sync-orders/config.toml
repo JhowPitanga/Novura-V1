@@ -1,0 +1,3 @@
+[functions.shopee-sync-orders]
+verify_jwt = false
+
