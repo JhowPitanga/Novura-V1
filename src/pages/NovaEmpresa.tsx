@@ -35,6 +35,7 @@ interface EmpresaData {
   numero: string;
   bairro: string;
   complemento?: string;
+  logo_url?: string;
   certificado_a1_url?: string;
   certificado_senha?: string;
   certificado_validade?: string;
@@ -62,6 +63,7 @@ export function NovaEmpresa() {
   const debounceRef = useRef<number | null>(null);
   const lastFetchedRef = useRef<string>("");
   const pfxFileRef = useRef<File | null>(null);
+  const logoFileRef = useRef<File | null>(null);
   type VerifyStatus = 'idle' | 'checking' | 'valid' | 'invalid';
   const [certVerifyStatus, setCertVerifyStatus] = useState<VerifyStatus>('idle');
   const { organizationId, user, session } = useAuth();
@@ -81,6 +83,7 @@ export function NovaEmpresa() {
     numero: "",
     bairro: "",
     complemento: "",
+    logo_url: "",
     lojas_associadas: [],
     numero_serie: "",
     proxima_nfe: 0,
@@ -301,47 +304,25 @@ export function NovaEmpresa() {
         endereco: company.endereco || "",
         numero: company.numero || "",
         bairro: company.bairro || "",
-        complemento: company.complemento || "",
-        lojas_associadas: Array.isArray(company.lojas_associadas) ? company.lojas_associadas : [],
+        lojas_associadas: Array.isArray(company.lojas_associadas) ? (company.lojas_associadas as any[]).map(String) : [],
         numero_serie: company.numero_serie || "",
         proxima_nfe: company.proxima_nfe || 1,
-        situacao_cnpj: company.situacao_cnpj || "",
       };
       setEmpresaData(prev => ({ ...prev, ...mapped }));
 
-      // Carrega configuração NF-e normalizada, se existir, para sobrescrever
-      const { data: nfConf } = await supabase
-        .from('company_nf_configs')
-        .select('numero_serie, proxima_nfe')
-        .eq('company_id', companyId)
-        .maybeSingle();
-      if (nfConf) {
-        setEmpresaData(prev => ({
-          ...prev,
-          numero_serie: nfConf.numero_serie || prev.numero_serie || "",
-          proxima_nfe: nfConf.proxima_nfe ?? prev.proxima_nfe ?? 1,
-        }));
-      }
+      // NF-e: já carregado diretamente da tabela companies (unificado)
 
-      // Carrega certificado ativo para preencher Step 2 (somente metadados)
-      const { data: cert } = await supabase
-        .from('company_certificates')
-        .select('valid_to, file_name')
-        .eq('company_id', companyId)
-        .eq('active', true)
-        .maybeSingle();
-      if (cert) {
-        const parseToBR = (iso: string) => {
-          const ymd = String(iso || '').slice(0,10);
-          const [y,m,d] = ymd.split('-');
-          return (y && m && d) ? `${d}/${m}/${y}` : '';
-        };
-        setEmpresaData(prev => ({
-          ...prev,
-          certificado_validade: cert.valid_to ? parseToBR(String(cert.valid_to)) : "",
-          certificado_a1_url: cert.file_name || undefined,
-        }));
-      }
+      // Certificado A1: preenche a partir dos metadados da própria companies
+      const parseToBR = (iso: string) => {
+        const ymd = String(iso || '').slice(0,10);
+        const [y,m,d] = ymd.split('-');
+        return (y && m && d) ? `${d}/${m}/${y}` : '';
+      };
+      setEmpresaData(prev => ({
+        ...prev,
+        certificado_validade: company.certificado_validade ? parseToBR(String(company.certificado_validade)) : prev.certificado_validade,
+        certificado_a1_url: company.certificado_a1_url || prev.certificado_a1_url,
+      }));
     } catch (e) {
       console.error('Falha ao carregar empresa para edição:', e);
     }
@@ -351,17 +332,26 @@ export function NovaEmpresa() {
     switch (currentStep) {
       case 1:
         if (cnpjBlocked) return false;
-        return empresaData.razao_social && empresaData.cnpj && empresaData.tipo_empresa && 
-               empresaData.tributacao && empresaData.email && empresaData.cep && 
-               empresaData.cidade && empresaData.estado && empresaData.endereco && 
-               empresaData.numero && empresaData.bairro;
+        return Boolean(
+          empresaData.razao_social &&
+          empresaData.cnpj &&
+          empresaData.tipo_empresa &&
+          empresaData.tributacao &&
+          empresaData.email &&
+          empresaData.cep &&
+          empresaData.cidade &&
+          empresaData.estado &&
+          empresaData.endereco &&
+          empresaData.numero &&
+          empresaData.bairro
+        );
       case 2:
         if (pfxFileRef.current) {
           return certVerifyStatus === 'valid';
         }
         return true;
       case 3:
-        return empresaData.numero_serie && empresaData.proxima_nfe; // NF-e obrigatório
+        return Boolean(empresaData.numero_serie && empresaData.proxima_nfe);
       case 4:
         return true; // Lojas são opcionais
       default:
@@ -417,6 +407,75 @@ export function NovaEmpresa() {
     if (!m) return null;
     const dd = m[1], mm = m[2], yyyy = m[3];
     return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const resizeImageToPNG = (file: File, maxW = 200, maxH = 200): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let w = img.naturalWidth || img.width;
+        let h = img.naturalHeight || img.height;
+        const ratio = Math.min(maxW / w, maxH / h, 1);
+        w = Math.max(1, Math.floor(w * ratio));
+        h = Math.max(1, Math.floor(h * ratio));
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('Canvas context not available'));
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob((blob) => {
+          if (!blob) return reject(new Error('Failed to generate PNG blob'));
+          resolve(blob);
+        }, 'image/png', 1.0);
+      };
+      img.onerror = (e) => reject(e);
+      const reader = new FileReader();
+      reader.onload = () => {
+        img.src = String(reader.result || '');
+      };
+      reader.onerror = (e) => reject(e);
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const uploadLogoToStorage = async (blob: Blob): Promise<string | null> => {
+    try {
+      const safeName = 'logo.png';
+      const folder = `${organizationId ? `org_${organizationId}` : 'org_anon'}/companies/${crypto.randomUUID()}`;
+      const path = `${folder}/${safeName}`;
+      // Prefer bucket existente; se falhar, tente outro nome
+      const tryBuckets = ['ad-images', 'company-logos'];
+      for (const bucket of tryBuckets) {
+        const { error: upErr } = await supabase.storage.from(bucket).upload(path, blob, { upsert: true, contentType: 'image/png' });
+        if (!upErr) {
+          const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+          return data?.publicUrl || null;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const handleLogoSelected = async (file: File | null) => {
+    logoFileRef.current = file;
+    if (!file) {
+      updateEmpresaData({ logo_url: '' });
+      return;
+    }
+    try {
+      const preview = URL.createObjectURL(file);
+      updateEmpresaData({ logo_url: preview });
+      const pngBlob = await resizeImageToPNG(file, 200, 200);
+      const publicUrl = await uploadLogoToStorage(pngBlob);
+      if (publicUrl) {
+        updateEmpresaData({ logo_url: publicUrl });
+      }
+    } catch {
+      // mantém preview; usuário pode tentar novamente
+    }
   };
 
   const handleVerifyCertPassword = async () => {
@@ -479,8 +538,8 @@ export function NovaEmpresa() {
       const sessionUser = user; // via useAuth
       if (!sessionUser) throw new Error('Usuário não autenticado');
 
-      // Evita inserir dados sensíveis na tabela companies
-      const { certificado_a1_url, certificado_senha, certificado_validade, complemento, numero_serie, proxima_nfe, ...companyPayload } = empresaData as any;
+      // Evita inserir senha do certificado na tabela companies
+      const { certificado_senha, ...companyPayload } = empresaData as any;
       // Normaliza enums para respeitar constraints do banco
       const safeCompanyPayload = {
         ...companyPayload,
@@ -490,7 +549,24 @@ export function NovaEmpresa() {
       if (editCompanyId) {
         // Atualização
         const updatePayload: any = {
-          ...safeCompanyPayload,
+          razao_social: safeCompanyPayload.razao_social,
+          cnpj: safeCompanyPayload.cnpj,
+          tipo_empresa: safeCompanyPayload.tipo_empresa,
+          tributacao: safeCompanyPayload.tributacao,
+          inscricao_estadual: safeCompanyPayload.inscricao_estadual,
+          email: safeCompanyPayload.email,
+          cep: safeCompanyPayload.cep,
+          cidade: safeCompanyPayload.cidade,
+          estado: safeCompanyPayload.estado,
+          endereco: safeCompanyPayload.endereco,
+          numero: safeCompanyPayload.numero,
+          bairro: safeCompanyPayload.bairro,
+          complemento: safeCompanyPayload.complemento,
+          lojas_associadas: safeCompanyPayload.lojas_associadas,
+          numero_serie: safeCompanyPayload.numero_serie,
+          proxima_nfe: safeCompanyPayload.proxima_nfe,
+          certificado_validade: ddmmyyyyToISO(safeCompanyPayload.certificado_validade) || safeCompanyPayload.certificado_validade || null,
+          certificado_a1_url: safeCompanyPayload.certificado_a1_url || null,
         };
         if (organizationId) updatePayload.organization_id = organizationId;
 
@@ -503,18 +579,21 @@ export function NovaEmpresa() {
 
         if (updErr) throw updErr;
 
-        // Upsert de configuração de NF-e na tabela normalizada
-        const { error: nfUpdErr } = await supabase
-          .from('company_nf_configs')
-          .upsert([
-            {
-              company_id: updated.id,
-              organizations_id: updated.organization_id || organizationId || null,
-              numero_serie: empresaData.numero_serie,
-              proxima_nfe: empresaData.proxima_nfe,
-            }
-          ], { onConflict: 'company_id' });
-        if (nfUpdErr) throw nfUpdErr;
+        // Atualiza metadados de certificado na companies caso presentes (sem senha)
+        if (!pfxFileRef.current && (empresaData.certificado_validade || empresaData.certificado_a1_url)) {
+          try {
+            const { error: certMetaErr } = await supabase
+              .from('companies')
+              .update({
+                certificado_validade: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
+                certificado_a1_url: empresaData.certificado_a1_url || null,
+              })
+              .eq('id', editCompanyId);
+            if (certMetaErr) console.warn('Falha ao atualizar metadados do certificado na companies:', certMetaErr.message);
+          } catch (e) {
+            console.warn('Exceção ao atualizar metadados do certificado na companies:', (e as any)?.message || e);
+          }
+        }
 
         if (pfxFileRef.current) {
           try {
@@ -530,10 +609,50 @@ export function NovaEmpresa() {
               headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
             });
             if (fnError) throw fnError;
+            // Atualiza companies com metadados após upload
+            try {
+              const { error: certMetaErr2 } = await supabase
+                .from('companies')
+                .update({
+                  certificado_validade: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
+                  certificado_a1_url: pfxFileRef.current.name || null,
+                })
+                .eq('id', editCompanyId);
+              if (certMetaErr2) console.warn('Falha ao refletir metadados do certificado na companies:', certMetaErr2.message);
+            } catch {}
           } catch (fnErr) {
             console.error('Falha ao salvar certificado com segurança:', fnErr);
             toast.error('Empresa atualizada, mas houve erro ao salvar o certificado A1. Tente novamente.');
           }
+        }
+
+        // Integra Focus NFe (dry_run por padrão)
+        try {
+          let certBase64ForFocus: string | undefined;
+          if (pfxFileRef.current && empresaData.certificado_senha) {
+            certBase64ForFocus = await readFileAsBase64(pfxFileRef.current);
+          }
+          const { data: focusRes, error: focusErr } = await supabase.functions.invoke('focus-company-create', {
+            body: {
+              company_id: updated.id,
+              organization_id: updated.organization_id || organizationId || null,
+              dry_run: true,
+              arquivo_certificado_base64: certBase64ForFocus,
+              senha_certificado: certBase64ForFocus ? empresaData.certificado_senha : undefined,
+            },
+            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
+          });
+          if (focusErr) {
+            console.warn('Focus NFe integração (update) falhou:', (focusErr as any)?.message || focusErr);
+            toast.warning('Empresa atualizada. Integração com Focus NFe não foi concluída (dry-run).');
+          } else if (focusRes?.ok) {
+            toast.success('Empresa atualizada e validada na Focus (dry-run).');
+          } else {
+            toast.warning('Empresa atualizada. Focus respondeu com aviso.');
+          }
+        } catch (e) {
+          console.warn('Exceção ao integrar Focus NFe (update):', (e as any)?.message || e);
+          toast.warning('Empresa atualizada. Integração com Focus não pôde ser verificada.');
         }
 
         toast.success('Empresa atualizada com sucesso!');
@@ -541,7 +660,24 @@ export function NovaEmpresa() {
       } else {
         // Inserção
         const insertPayload: any = {
-          ...safeCompanyPayload
+          razao_social: safeCompanyPayload.razao_social,
+          cnpj: safeCompanyPayload.cnpj,
+          tipo_empresa: safeCompanyPayload.tipo_empresa,
+          tributacao: safeCompanyPayload.tributacao,
+          inscricao_estadual: safeCompanyPayload.inscricao_estadual,
+          email: safeCompanyPayload.email,
+          cep: safeCompanyPayload.cep,
+          cidade: safeCompanyPayload.cidade,
+          estado: safeCompanyPayload.estado,
+          endereco: safeCompanyPayload.endereco,
+          numero: safeCompanyPayload.numero,
+          bairro: safeCompanyPayload.bairro,
+          complemento: safeCompanyPayload.complemento,
+          lojas_associadas: safeCompanyPayload.lojas_associadas,
+          numero_serie: safeCompanyPayload.numero_serie,
+          proxima_nfe: safeCompanyPayload.proxima_nfe,
+          certificado_validade: ddmmyyyyToISO(safeCompanyPayload.certificado_validade) || safeCompanyPayload.certificado_validade || null,
+          certificado_a1_url: safeCompanyPayload.certificado_a1_url || null,
         };
         if (organizationId) insertPayload.organization_id = organizationId;
 
@@ -553,18 +689,21 @@ export function NovaEmpresa() {
 
         if (insertErr) throw insertErr;
 
-        // Upsert de configuração de NF-e na tabela normalizada
-        const { error: nfInsErr } = await supabase
-          .from('company_nf_configs')
-          .upsert([
-            {
-              company_id: inserted.id,
-              organizations_id: inserted.organization_id || organizationId || null,
-              numero_serie: empresaData.numero_serie,
-              proxima_nfe: empresaData.proxima_nfe,
-            }
-          ], { onConflict: 'company_id' });
-        if (nfInsErr) throw nfInsErr;
+        // Atualiza metadados de certificado na companies caso presentes (sem senha)
+        if (!pfxFileRef.current && (empresaData.certificado_validade || empresaData.certificado_a1_url)) {
+          try {
+            const { error: certMetaErr } = await supabase
+              .from('companies')
+              .update({
+                certificado_validade: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
+                certificado_a1_url: empresaData.certificado_a1_url || null,
+              })
+              .eq('id', inserted.id);
+            if (certMetaErr) console.warn('Falha ao atualizar metadados do certificado na companies:', certMetaErr.message);
+          } catch (e) {
+            console.warn('Exceção ao atualizar metadados do certificado na companies:', (e as any)?.message || e);
+          }
+        }
 
         // Opcional: se o usuário selecionou um PFX, envia para função segura com criptografia
         if (pfxFileRef.current) {
@@ -581,11 +720,51 @@ export function NovaEmpresa() {
               headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
             });
             if (fnError) throw fnError;
+            // Atualiza companies com metadados após upload
+            try {
+              const { error: certMetaErr2 } = await supabase
+                .from('companies')
+                .update({
+                  certificado_validade: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
+                  certificado_a1_url: pfxFileRef.current.name || null,
+                })
+                .eq('id', inserted.id);
+              if (certMetaErr2) console.warn('Falha ao refletir metadados do certificado na companies:', certMetaErr2.message);
+            } catch {}
           } catch (fnErr) {
             console.error('Falha ao salvar certificado com segurança:', fnErr);
             // Não falha o cadastro da empresa, apenas alerta o usuário
             toast.error('Empresa criada, mas houve erro ao salvar o certificado A1. Você pode tentar novamente nas configurações.');
           }
+        }
+
+        // Integra Focus NFe (dry_run por padrão)
+        try {
+          let certBase64ForFocus: string | undefined;
+          if (pfxFileRef.current && empresaData.certificado_senha) {
+            certBase64ForFocus = await readFileAsBase64(pfxFileRef.current);
+          }
+          const { data: focusRes, error: focusErr } = await supabase.functions.invoke('focus-company-create', {
+            body: {
+              company_id: inserted.id,
+              organization_id: inserted.organization_id || organizationId || null,
+              dry_run: true,
+              arquivo_certificado_base64: certBase64ForFocus,
+              senha_certificado: certBase64ForFocus ? empresaData.certificado_senha : undefined,
+            },
+            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
+          });
+          if (focusErr) {
+            console.warn('Focus NFe integração (insert) falhou:', (focusErr as any)?.message || focusErr);
+            toast.warning('Empresa criada. Integração com Focus NFe não foi concluída (dry-run).');
+          } else if (focusRes?.ok) {
+            toast.success('Empresa criada e validada na Focus (dry-run).');
+          } else {
+            toast.warning('Empresa criada. Focus respondeu com aviso.');
+          }
+        } catch (e) {
+          console.warn('Exceção ao integrar Focus NFe (insert):', (e as any)?.message || e);
+          toast.warning('Empresa criada. Integração com Focus não pôde ser verificada.');
         }
 
         toast.success('Empresa cadastrada com sucesso!');
@@ -602,7 +781,7 @@ export function NovaEmpresa() {
   const renderCurrentStep = () => {
     switch (currentStep) {
       case 1:
-        return <EmpresaStep1 data={empresaData} updateData={updateEmpresaData} showErrors={showErrors} cnpjBlocked={cnpjBlocked} />;
+        return <EmpresaStep1 data={empresaData} updateData={updateEmpresaData} showErrors={showErrors} cnpjBlocked={cnpjBlocked} onLogoSelected={handleLogoSelected} />;
       case 2:
         return (
           <EmpresaStep2
@@ -663,7 +842,7 @@ export function NovaEmpresa() {
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
                       </svg>
-                      <span>Consultando dados do CNPJ na ReceitaWS...</span>
+                      <span>Consultando dados do CNPJ...</span>
                     </div>
                   </div>
                 )}

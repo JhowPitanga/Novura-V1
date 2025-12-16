@@ -58,6 +58,17 @@ DECLARE
     v_label_content_type text;
     v_label_pdf_base64 text;
     v_label_zpl2_base64 text;
+    -- Billing fields
+    v_billing_doc_number text;
+    v_billing_doc_type text;
+    v_billing_email text;
+    v_billing_phone text;
+    v_billing_name text;
+    v_billing_state_registration text;
+    v_billing_taxpayer_type text;
+    v_billing_cust_type text;
+    v_billing_is_normalized boolean;
+    v_billing_address jsonb;
 
 BEGIN
     BEGIN
@@ -93,7 +104,45 @@ BEGIN
           NULLIF(split_part(NEW.shipments->0->'destination'->'shipping_address'->'state'->>'id','-',2), ''),
           NULLIF(split_part(NEW.shipments->0->'receiver_address'->'state'->>'id','-',2), ''),
           NULLIF(split_part(NEW.data->'shipping'->'shipping_address'->'state'->>'id','-',2), '')
-        ) AS state_uf
+        ) AS state_uf,
+        COALESCE(
+          NEW.shipments->0->'destination'->'shipping_address'->>'street_name',
+          NEW.shipments->0->'receiver_address'->>'street_name',
+          NEW.data->'shipping'->'receiver_address'->>'street_name',
+          NEW.data->'shipping'->'shipping_address'->>'street_name'
+        ) AS street_name,
+        COALESCE(
+          NEW.shipments->0->'destination'->'shipping_address'->>'street_number',
+          NEW.shipments->0->'receiver_address'->>'street_number',
+          NEW.data->'shipping'->'receiver_address'->>'street_number',
+          NEW.data->'shipping'->'shipping_address'->>'street_number'
+        ) AS street_number,
+        COALESCE(
+          NEW.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'name',
+          NEW.shipments->0->'receiver_address'->'neighborhood'->>'name',
+          NEW.data->'shipping'->'receiver_address'->'neighborhood'->>'name',
+          NEW.data->'shipping'->'shipping_address'->'neighborhood'->>'name',
+          NEW.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'id',
+          NEW.shipments->0->'receiver_address'->'neighborhood'->>'id'
+        ) AS neighborhood_name,
+        COALESCE(
+          NEW.shipments->0->'destination'->'shipping_address'->>'zip_code',
+          NEW.shipments->0->'receiver_address'->>'zip_code',
+          NEW.data->'shipping'->'receiver_address'->>'zip_code',
+          NEW.data->'shipping'->'shipping_address'->>'zip_code'
+        ) AS zip_code,
+        COALESCE(
+          NEW.shipments->0->'destination'->'shipping_address'->>'comment',
+          NEW.shipments->0->'receiver_address'->>'comment',
+          NEW.data->'shipping'->'receiver_address'->>'comment',
+          NEW.data->'shipping'->'shipping_address'->>'comment'
+        ) AS comment,
+        COALESCE(
+          NEW.shipments->0->'destination'->'shipping_address'->>'address_line',
+          NEW.shipments->0->'receiver_address'->>'address_line',
+          NEW.data->'shipping'->'receiver_address'->>'address_line',
+          NEW.data->'shipping'->'shipping_address'->>'address_line'
+        ) AS address_line
     INTO shipping_address_agg;
 
     -- Items
@@ -181,8 +230,18 @@ BEGIN
           (NEW.shipments->0->'shipping_option'->'estimated_delivery_limit'->>'date')::timestamptz,
           (NEW.data->'shipping'->'estimated_delivery_limit'->>'date')::timestamptz
         ) AS estimated_delivery_limit_at,
-        COALESCE(NEW.shipments->0->'sla'->>'status', NEW.shipments->0->>'sla_status') AS shipment_sla_status,
-        COALESCE(NEW.shipments->0->'sla'->>'service', NEW.shipments->0->>'sla_service') AS shipment_sla_service,
+        (
+          SELECT COALESCE(s->'sla'->>'status', s->>'sla_status')
+          FROM jsonb_array_elements(COALESCE(NEW.shipments, '[]'::jsonb)) s
+          WHERE COALESCE(s->'sla'->>'status', s->>'sla_status') IS NOT NULL AND COALESCE(s->'sla'->>'status', s->>'sla_status') <> ''
+          LIMIT 1
+        ) AS shipment_sla_status,
+        (
+          SELECT COALESCE(s->'sla'->>'service', s->>'sla_service')
+          FROM jsonb_array_elements(COALESCE(NEW.shipments, '[]'::jsonb)) s
+          WHERE COALESCE(s->'sla'->>'service', s->>'sla_service') IS NOT NULL AND COALESCE(s->'sla'->>'service', s->>'sla_service') <> ''
+          LIMIT 1
+        ) AS shipment_sla_service,
         COALESCE(
           (NEW.shipments->0->'sla'->>'expected_date')::timestamptz,
           (NEW.shipments->0->>'sla_expected_date')::timestamptz,
@@ -348,10 +407,78 @@ BEGIN
     v_label_pdf_base64 := NEW.labels->>'pdf_base64';
     v_label_zpl2_base64 := NEW.labels->>'zpl2_base64';
 
+    -- Billing extraction from NEW.billing_info (shipments endpoint) with fallbacks
+    v_billing_doc_number := COALESCE(
+      NEW.billing_info->'receiver'->'identification'->>'number',
+      NEW.billing_info->'receiver'->'document'->>'value',
+      NEW.data->'buyer'->'billing_info'->'identification'->>'number',
+      NEW.buyer->'identification'->>'number',
+      NULL
+    );
+    v_billing_doc_type := COALESCE(
+      NEW.billing_info->'receiver'->'identification'->>'type',
+      NEW.billing_info->'receiver'->'document'->>'id',
+      NEW.data->'buyer'->'billing_info'->'identification'->>'type',
+      NULL
+    );
+    IF v_billing_doc_type IS NULL AND COALESCE(v_billing_doc_number, '') <> '' THEN
+      -- infer type by digits length
+      IF length(regexp_replace(v_billing_doc_number, '\D', '', 'g')) = 11 THEN
+        v_billing_doc_type := 'CPF';
+      ELSIF length(regexp_replace(v_billing_doc_number, '\D', '', 'g')) = 14 THEN
+        v_billing_doc_type := 'CNPJ';
+      END IF;
+    END IF;
+    v_billing_email := COALESCE(
+      NEW.data->'buyer'->>'email',
+      NEW.buyer->>'email',
+      NEW.data->'buyer'->'billing_info'->>'email',
+      NULL
+    );
+    v_billing_phone := COALESCE(
+      NEW.data->'buyer'->'phone'->>'number',
+      NEW.buyer->'phone'->>'number',
+      NEW.data->'buyer'->'billing_info'->>'phone',
+      NULL
+    );
+    v_billing_name := COALESCE(
+      NEW.billing_info->'receiver'->>'name',
+      NEW.data->'buyer'->'billing_info'->>'name',
+      NULLIF(concat_ws(' ', NEW.buyer->>'first_name', NEW.buyer->>'last_name'), ''),
+      NEW.buyer->>'nickname',
+      NULL
+    );
+    v_billing_state_registration := COALESCE(
+      NEW.data->'buyer'->'billing_info'->'taxes'->'inscriptions'->>'state_registration',
+      NEW.billing_info->'receiver'->'taxes'->'inscriptions'->>'state_registration',
+      NULL
+    );
+    v_billing_taxpayer_type := COALESCE(
+      NEW.data->'buyer'->'billing_info'->'taxes'->'taxpayer_type'->>'description',
+      NEW.billing_info->'receiver'->'taxes'->'taxpayer_type'->>'description',
+      NULL
+    );
+    v_billing_cust_type := COALESCE(
+      NEW.data->'buyer'->'billing_info'->'attributes'->>'cust_type',
+      NEW.billing_info->'receiver'->'attributes'->>'cust_type',
+      NULL
+    );
+    v_billing_is_normalized := COALESCE(
+      (NEW.data->'buyer'->'billing_info'->'attributes'->>'is_normalized')::boolean,
+      (NEW.billing_info->'receiver'->'attributes'->>'is_normalized')::boolean,
+      false
+    );
+    v_billing_address := COALESCE(
+      NEW.data->'buyer'->'billing_info'->'address',
+      NEW.billing_info->'receiver'->'address',
+      NULL
+    );
+
     INSERT INTO public.marketplace_orders_presented_new (
         id, organizations_id, company_id, marketplace, marketplace_order_id, status, status_detail, order_total,
         shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer, shipping_city_name,
-        shipping_state_name, shipping_state_uf, shipment_status, shipment_substatus, shipping_method_name,
+        shipping_state_name, shipping_state_uf, shipping_street_name, shipping_street_number, shipping_neighborhood_name, shipping_zip_code, shipping_comment, shipping_address_line,
+        shipment_status, shipment_substatus, shipping_method_name,
         estimated_delivery_limit_at, shipment_sla_status, shipment_sla_service, shipment_sla_expected_date,
         shipment_sla_last_updated, shipment_delays, printed_label, printed_schedule, payment_status, payment_total_paid_amount,
         payment_marketplace_fee, payment_shipping_cost, payment_date_created, payment_date_approved,
@@ -360,12 +487,15 @@ BEGIN
         first_item_variation_id, first_item_permalink, variation_color_names, category_ids, listing_type_ids,
         stock_node_ids, has_variations, has_bundle, has_kit, pack_id,
         label_cached, label_response_type, label_fetched_at, label_size_bytes, label_content_base64, label_content_type, label_pdf_base64, label_zpl2_base64,
-        unlinked_items_count, has_unlinked_items, linked_products, created_at, last_updated, last_synced_at, status_interno
+        unlinked_items_count, has_unlinked_items, linked_products, created_at, last_updated, last_synced_at, status_interno,
+        billing_doc_number, billing_doc_type, billing_email, billing_phone,
+        billing_name, billing_state_registration, billing_taxpayer_type, billing_cust_type, billing_is_normalized, billing_address
     )
     VALUES (
         NEW.id, NEW.organizations_id, NEW.company_id, NEW.marketplace_name, NEW.marketplace_order_id, NEW.status, NEW.status_detail::text, (NEW.data->>'total_amount')::numeric,
         v_shipping_type, buyer_agg.customer_name, buyer_agg.id_buyer, buyer_agg.first_name, buyer_agg.last_name, shipping_address_agg.city,
-        shipping_address_agg.state_name, shipping_address_agg.state_uf, v_shipment_status, v_shipment_substatus, shipments_agg.shipping_method_name,
+        shipping_address_agg.state_name, shipping_address_agg.state_uf, shipping_address_agg.street_name, shipping_address_agg.street_number, shipping_address_agg.neighborhood_name, shipping_address_agg.zip_code, shipping_address_agg.comment, shipping_address_agg.address_line,
+        v_shipment_status, v_shipment_substatus, shipments_agg.shipping_method_name,
         shipments_agg.estimated_delivery_limit_at, shipments_agg.shipment_sla_status, shipments_agg.shipment_sla_service, shipments_agg.shipment_sla_expected_date,
         shipments_agg.shipment_sla_last_updated, shipments_agg.shipment_delays, v_printed_label, v_printed_schedule, payments_agg.payment_status, payments_agg.total_paid_amount,
         payments_agg.marketplace_fee, payments_agg.shipping_cost, payments_agg.date_created, payments_agg.date_approved,
@@ -380,7 +510,9 @@ BEGIN
         END,
         v_label_cached, v_label_response_type, v_label_fetched_at, v_label_size_bytes, v_label_content_base64, v_label_content_type, v_label_pdf_base64, v_label_zpl2_base64,
         v_unlinked_items_count, v_has_unlinked_items, v_linked_products,
-        NEW.date_created, NEW.last_updated, NEW.last_synced_at, v_status_interno
+        NEW.date_created, NEW.last_updated, NEW.last_synced_at, v_status_interno,
+        v_billing_doc_number, v_billing_doc_type, v_billing_email, v_billing_phone,
+        v_billing_name, v_billing_state_registration, v_billing_taxpayer_type, v_billing_cust_type, v_billing_is_normalized, v_billing_address
     )
     ON CONFLICT (id) DO UPDATE SET
         organizations_id = EXCLUDED.organizations_id,
@@ -398,6 +530,12 @@ BEGIN
         shipping_city_name = EXCLUDED.shipping_city_name,
         shipping_state_name = EXCLUDED.shipping_state_name,
         shipping_state_uf = EXCLUDED.shipping_state_uf,
+        shipping_street_name = EXCLUDED.shipping_street_name,
+        shipping_street_number = EXCLUDED.shipping_street_number,
+        shipping_neighborhood_name = EXCLUDED.shipping_neighborhood_name,
+        shipping_zip_code = EXCLUDED.shipping_zip_code,
+        shipping_comment = EXCLUDED.shipping_comment,
+        shipping_address_line = EXCLUDED.shipping_address_line,
         shipment_status = EXCLUDED.shipment_status,
         shipment_substatus = EXCLUDED.shipment_substatus,
         shipping_method_name = EXCLUDED.shipping_method_name,
@@ -448,7 +586,17 @@ BEGIN
         linked_products = EXCLUDED.linked_products,
         last_updated = EXCLUDED.last_updated,
         last_synced_at = EXCLUDED.last_synced_at,
-        status_interno = EXCLUDED.status_interno;
+        status_interno = EXCLUDED.status_interno,
+        billing_doc_number = EXCLUDED.billing_doc_number,
+        billing_doc_type = EXCLUDED.billing_doc_type,
+        billing_email = EXCLUDED.billing_email,
+        billing_phone = EXCLUDED.billing_phone,
+        billing_name = EXCLUDED.billing_name,
+        billing_state_registration = EXCLUDED.billing_state_registration,
+        billing_taxpayer_type = EXCLUDED.billing_taxpayer_type,
+        billing_cust_type = EXCLUDED.billing_cust_type,
+        billing_is_normalized = EXCLUDED.billing_is_normalized,
+        billing_address = EXCLUDED.billing_address;
 
         RETURN NEW;
     EXCEPTION WHEN OTHERS THEN
@@ -575,6 +723,16 @@ DECLARE v_is_refunded boolean;
 DECLARE v_is_returned boolean;
 DECLARE v_printed_label boolean;
 DECLARE v_linked_products jsonb;
+DECLARE v_billing_doc_number text;
+DECLARE v_billing_doc_type text;
+DECLARE v_billing_email text;
+DECLARE v_billing_phone text;
+DECLARE v_billing_name text;
+DECLARE v_billing_state_registration text;
+DECLARE v_billing_taxpayer_type text;
+DECLARE v_billing_cust_type text;
+DECLARE v_billing_is_normalized boolean;
+DECLARE v_billing_address jsonb;
 BEGIN
   SELECT * INTO rec FROM public.marketplace_orders_raw WHERE id = p_order_id LIMIT 1;
   IF NOT FOUND THEN RETURN; END IF;
@@ -591,6 +749,47 @@ BEGIN
     rec.data->'shipping'->'receiver_address'->'state'->>'name' as state_name,
     rec.data->'shipping'->'receiver_address'->'state'->>'id' as state_uf
   INTO shipping_address_agg;
+  -- Expand shipping_address_agg with street details and fallbacks
+  SELECT
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'street_name',
+      rec.shipments->0->'receiver_address'->>'street_name',
+      rec.data->'shipping'->'receiver_address'->>'street_name',
+      rec.data->'shipping'->'shipping_address'->>'street_name'
+    ) AS street_name,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'street_number',
+      rec.shipments->0->'receiver_address'->>'street_number',
+      rec.data->'shipping'->'receiver_address'->>'street_number',
+      rec.data->'shipping'->'shipping_address'->>'street_number'
+    ) AS street_number,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'name',
+      rec.shipments->0->'receiver_address'->'neighborhood'->>'name',
+      rec.data->'shipping'->'receiver_address'->'neighborhood'->>'name',
+      rec.data->'shipping'->'shipping_address'->'neighborhood'->>'name',
+      rec.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'id',
+      rec.shipments->0->'receiver_address'->'neighborhood'->>'id'
+    ) AS neighborhood_name,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'zip_code',
+      rec.shipments->0->'receiver_address'->>'zip_code',
+      rec.data->'shipping'->'receiver_address'->>'zip_code',
+      rec.data->'shipping'->'shipping_address'->>'zip_code'
+    ) AS zip_code,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'comment',
+      rec.shipments->0->'receiver_address'->>'comment',
+      rec.data->'shipping'->'receiver_address'->>'comment',
+      rec.data->'shipping'->'shipping_address'->>'comment'
+    ) AS comment,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'address_line',
+      rec.shipments->0->'receiver_address'->>'address_line',
+      rec.data->'shipping'->'receiver_address'->>'address_line',
+      rec.data->'shipping'->'shipping_address'->>'address_line'
+    ) AS address_line
+  INTO STRICT shipping_address_agg;
   SELECT
     jsonb_array_length(rec.order_items) AS items_count,
     COALESCE(SUM(COALESCE((oi->>'quantity')::int, 1)), 0) AS items_total_quantity,
@@ -648,8 +847,8 @@ BEGIN
     lower(COALESCE(s->>'substatus', '')) AS shipment_substatus,
     s->'shipping_option'->>'name' as shipping_method_name,
     (s->'shipping_option'->'estimated_delivery_limit'->>'date')::timestamp with time zone as estimated_delivery_limit_at,
-    s->'sla'->>'status' as shipment_sla_status,
-    s->'sla'->>'service' as shipment_sla_service,
+    COALESCE(s->'sla'->>'status', s->>'sla_status') as shipment_sla_status,
+    COALESCE(s->'sla'->>'service', s->>'sla_service') as shipment_sla_service,
     (s->'sla'->>'expected_date')::timestamp with time zone as shipment_sla_expected_date,
     (s->'sla'->>'last_updated')::timestamp with time zone as shipment_sla_last_updated,
     COALESCE(s->'delays', '[]'::jsonb) as shipment_delays,
@@ -740,6 +939,71 @@ BEGIN
   v_is_refunded := payments_agg.is_refunded;
   v_is_returned := shipments_agg.is_returned;
   v_printed_label := v_shipment_substatus = 'printed';
+  -- Billing extraction from rec.billing_info with fallbacks
+  v_billing_doc_number := COALESCE(
+    rec.billing_info->'receiver'->'identification'->>'number',
+    rec.billing_info->'receiver'->'document'->>'value',
+    rec.data->'buyer'->'billing_info'->'identification'->>'number',
+    rec.buyer->'identification'->>'number',
+    NULL
+  );
+  v_billing_doc_type := COALESCE(
+    rec.billing_info->'receiver'->'identification'->>'type',
+    rec.billing_info->'receiver'->'document'->>'id',
+    rec.data->'buyer'->'billing_info'->'identification'->>'type',
+    NULL
+  );
+  IF v_billing_doc_type IS NULL AND COALESCE(v_billing_doc_number, '') <> '' THEN
+    IF length(regexp_replace(v_billing_doc_number, '\D', '', 'g')) = 11 THEN
+      v_billing_doc_type := 'CPF';
+    ELSIF length(regexp_replace(v_billing_doc_number, '\D', '', 'g')) = 14 THEN
+      v_billing_doc_type := 'CNPJ';
+    END IF;
+  END IF;
+  v_billing_email := COALESCE(
+    rec.data->'buyer'->>'email',
+    rec.buyer->>'email',
+    rec.data->'buyer'->'billing_info'->>'email',
+    NULL
+  );
+  v_billing_phone := COALESCE(
+    rec.data->'buyer'->'phone'->>'number',
+    rec.buyer->'phone'->>'number',
+    rec.data->'buyer'->'billing_info'->>'phone',
+    NULL
+  );
+  v_billing_name := COALESCE(
+    rec.billing_info->'receiver'->>'name',
+    rec.data->'buyer'->'billing_info'->>'name',
+    NULLIF(concat_ws(' ', rec.buyer->>'first_name', rec.buyer->>'last_name'), ''),
+    rec.buyer->>'nickname',
+    NULL
+  );
+  v_billing_state_registration := COALESCE(
+    rec.data->'buyer'->'billing_info'->'taxes'->'inscriptions'->>'state_registration',
+    rec.billing_info->'receiver'->'taxes'->'inscriptions'->>'state_registration',
+    NULL
+  );
+  v_billing_taxpayer_type := COALESCE(
+    rec.data->'buyer'->'billing_info'->'taxes'->'taxpayer_type'->>'description',
+    rec.billing_info->'receiver'->'taxes'->'taxpayer_type'->>'description',
+    NULL
+  );
+  v_billing_cust_type := COALESCE(
+    rec.data->'buyer'->'billing_info'->'attributes'->>'cust_type',
+    rec.billing_info->'receiver'->'attributes'->>'cust_type',
+    NULL
+  );
+  v_billing_is_normalized := COALESCE(
+    (rec.data->'buyer'->'billing_info'->'attributes'->>'is_normalized')::boolean,
+    (rec.billing_info->'receiver'->'attributes'->>'is_normalized')::boolean,
+    false
+  );
+  v_billing_address := COALESCE(
+    rec.data->'buyer'->'billing_info'->'address',
+    rec.billing_info->'receiver'->'address',
+    NULL
+  );
   IF v_is_cancelled OR v_is_refunded THEN v_status_interno := 'Cancelado';
   ELSIF v_is_returned THEN v_status_interno := 'Devolução';
   ELSIF v_shipment_status = 'pending' AND v_shipment_substatus = 'buffered' AND v_has_unlinked_items THEN v_status_interno := 'A vincular';
@@ -753,22 +1017,26 @@ BEGIN
   INSERT INTO public.marketplace_orders_presented_new (
     id, organizations_id, company_id, marketplace, marketplace_order_id, status, status_detail, order_total,
     shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer, shipping_city_name,
-    shipping_state_name, shipping_state_uf, shipment_status, shipment_substatus, shipping_method_name,
+    shipping_state_name, shipping_state_uf, shipping_street_name, shipping_street_number, shipping_neighborhood_name, shipping_zip_code, shipping_comment, shipping_address_line,
+    shipment_status, shipment_substatus, shipping_method_name,
     estimated_delivery_limit_at, shipment_sla_status, shipment_sla_service, shipment_sla_expected_date,
-    shipment_sla_last_updated, shipment_delays, printed_label, payment_status, payment_total_paid_amount,
+    shipment_sla_last_updated, shipment_delays, printed_label, printed_schedule, payment_status, payment_total_paid_amount,
     payment_marketplace_fee, payment_shipping_cost, payment_date_created, payment_date_approved,
     payment_refunded_amount, items_count, items_total_quantity, items_total_amount, items_total_full_amount,
     items_total_sale_fee, items_currency_id, first_item_id, first_item_title, first_item_sku,
     first_item_variation_id, first_item_permalink, variation_color_names, category_ids, listing_type_ids,
     stock_node_ids, has_variations, has_bundle, has_kit, pack_id, unlinked_items_count, has_unlinked_items,
-    linked_products, created_at, last_updated, last_synced_at, status_interno
+    linked_products, created_at, last_updated, last_synced_at, status_interno,
+    billing_doc_number, billing_doc_type, billing_email, billing_phone,
+    billing_name, billing_state_registration, billing_taxpayer_type, billing_cust_type, billing_is_normalized, billing_address
   )
   VALUES (
     rec.id, rec.organizations_id, rec.company_id, rec.marketplace_name, rec.marketplace_order_id, rec.status, rec.status_detail::text, (rec.data->>'total_amount')::numeric,
     v_shipping_type, buyer_agg.customer_name, buyer_agg.id_buyer, buyer_agg.first_name, buyer_agg.last_name, shipping_address_agg.city,
-    shipping_address_agg.state_name, shipping_address_agg.state_uf, v_shipment_status, v_shipment_substatus, shipments_agg.shipping_method_name,
+    shipping_address_agg.state_name, shipping_address_agg.state_uf, shipping_address_agg.street_name, shipping_address_agg.street_number, shipping_address_agg.neighborhood_name, shipping_address_agg.zip_code, shipping_address_agg.comment, shipping_address_agg.address_line,
+    v_shipment_status, v_shipment_substatus, shipments_agg.shipping_method_name,
     shipments_agg.estimated_delivery_limit_at, shipments_agg.shipment_sla_status, shipments_agg.shipment_sla_service, shipments_agg.shipment_sla_expected_date,
-    shipments_agg.shipment_sla_last_updated, shipments_agg.shipment_delays, v_printed_label, payments_agg.payment_status, payments_agg.total_paid_amount,
+    shipments_agg.shipment_sla_last_updated, shipments_agg.shipment_delays, v_printed_label, v_printed_schedule, payments_agg.payment_status, payments_agg.total_paid_amount,
     payments_agg.marketplace_fee, payments_agg.shipping_cost, payments_agg.date_created, payments_agg.date_approved,
     payments_agg.refunded_amount, items_agg.items_count, items_agg.items_total_quantity, items_agg.items_total_amount, items_agg.items_total_full_amount,
     items_agg.items_total_sale_fee, items_agg.currency_id, items_agg.first_item_id, items_agg.first_item_title, items_agg.first_item_sku,
@@ -778,7 +1046,9 @@ BEGIN
          WHEN jsonb_typeof(rec.data->'pack_id') = 'string' THEN CASE WHEN (rec.data->>'pack_id') ~ '^\d+$' THEN (rec.data->>'pack_id')::bigint ELSE NULL END
          ELSE NULL END,
     v_unlinked_items_count, v_has_unlinked_items, v_linked_products,
-    rec.date_created, rec.last_updated, rec.last_synced_at, v_status_interno
+    rec.date_created, rec.last_updated, rec.last_synced_at, v_status_interno,
+    v_billing_doc_number, v_billing_doc_type, v_billing_email, v_billing_phone,
+    v_billing_name, v_billing_state_registration, v_billing_taxpayer_type, v_billing_cust_type, v_billing_is_normalized, v_billing_address
   )
   ON CONFLICT (id) DO UPDATE SET
     organizations_id = EXCLUDED.organizations_id,
@@ -837,7 +1107,17 @@ BEGIN
     linked_products = EXCLUDED.linked_products,
     last_updated = EXCLUDED.last_updated,
     last_synced_at = EXCLUDED.last_synced_at,
-    status_interno = EXCLUDED.status_interno;
+    status_interno = EXCLUDED.status_interno,
+    billing_doc_number = EXCLUDED.billing_doc_number,
+    billing_doc_type = EXCLUDED.billing_doc_type,
+    billing_email = EXCLUDED.billing_email,
+    billing_phone = EXCLUDED.billing_phone,
+    billing_name = EXCLUDED.billing_name,
+    billing_state_registration = EXCLUDED.billing_state_registration,
+    billing_taxpayer_type = EXCLUDED.billing_taxpayer_type,
+    billing_cust_type = EXCLUDED.billing_cust_type,
+    billing_is_normalized = EXCLUDED.billing_is_normalized,
+    billing_address = EXCLUDED.billing_address;
 END;
 $$ LANGUAGE plpgsql SECURITY INVOKER;
 

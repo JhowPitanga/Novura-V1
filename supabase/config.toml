@@ -319,6 +319,9 @@ verify_jwt = false
 [functions.mercado-livre-sync-all]
 verify_jwt = false
 
+[functions.download-nfe-xml]
+verify_jwt = false
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

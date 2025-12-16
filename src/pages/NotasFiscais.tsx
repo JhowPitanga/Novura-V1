@@ -1,7 +1,7 @@
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import { FileText, Download, Eye, Plus, Search, Filter, MoreHorizontal } from "lucide-react";
+import { Download, Eye, Plus, Search, MoreHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,22 +13,94 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { CleanNavigation } from "@/components/CleanNavigation";
+import { supabase } from "@/integrations/supabase/client";
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 
-const notasFiscais = [
-  { id: 1, numero: "000001234", tipo: "Saída", cliente: "João Silva Santos", valor: 2599.99, data: "2024-01-15", status: "Autorizada", chave: "35240101234567000123550010000012341123456789" },
-  { id: 2, numero: "000001235", tipo: "Entrada", fornecedor: "Tech Distribuidora Ltda", valor: 15999.90, data: "2024-01-14", status: "Autorizada", chave: "35240101234567000123550010000012351123456789" },
-  { id: 3, numero: "000001236", tipo: "Saída", cliente: "Maria Oliveira Costa", valor: 899.99, data: "2024-01-13", status: "Pendente", chave: "35240101234567000123550010000012361123456789" },
-  { id: 4, numero: "000001237", tipo: "Compra", fornecedor: "Apple Inc.", valor: 45999.50, data: "2024-01-12", status: "Autorizada", chave: "35240101234567000123550010000012371123456789" },
-  { id: 5, numero: "000001238", tipo: "Saída", cliente: "Pedro Henrique Lima", valor: 1299.99, data: "2024-01-11", status: "Cancelada", chave: "35240101234567000123550010000012381123456789" },
-  { id: 6, numero: "000001239", tipo: "Entrada", fornecedor: "Samsung Brasil", valor: 8999.99, data: "2024-01-10", status: "Autorizada", chave: "35240101234567000123550010000012391123456789" },
-  { id: 7, numero: "000001240", tipo: "Saída", cliente: "Ana Paula Santos", valor: 3499.99, data: "2024-01-09", status: "Autorizada", chave: "35240101234567000123550010000012401123456789" },
-  { id: 8, numero: "000001241", tipo: "Compra", fornecedor: "Multilaser S.A.", valor: 2199.99, data: "2024-01-08", status: "Pendente", chave: "35240101234567000123550010000012411123456789" },
-];
+function extractXmlMeta(xml: string): { nfeNumber?: string; nfeKey?: string } {
+  let nfeNumber: string | undefined = undefined;
+  let nfeKey: string | undefined = undefined;
+  try {
+    const m = xml.match(/<nNF>(\d+)<\/nNF>/);
+    if (m && m[1]) nfeNumber = m[1];
+  } catch {}
+  try {
+    const m2 = xml.match(/Id="NFe(\d{44})"/);
+    if (m2 && m2[1]) nfeKey = m2[1];
+  } catch {}
+  if (!nfeKey) {
+    try {
+      const m3 = xml.match(/<chNFe>(\d{44})<\/chNFe>/);
+      if (m3 && m3[1]) nfeKey = m3[1];
+    } catch {}
+  }
+  return { nfeNumber, nfeKey };
+}
+
+function extractXmlTotal(xml: string): number | undefined {
+  try {
+    const m = xml.match(/<vNF>([\d.,]+)<\/vNF>/);
+    if (m && m[1]) {
+      const raw = m[1].replace(/\./g, "").replace(",", ".");
+      const num = parseFloat(raw);
+      return isNaN(num) ? undefined : num;
+    }
+  } catch {}
+  return undefined;
+}
+
+function normalizeTipo(tipoRaw: string): string {
+  const t = String(tipoRaw || "").trim().toLowerCase();
+  if (t === "saida" || t === "saída") return "Saída";
+  if (t === "entrada") return "Entrada";
+  if (t === "compra") return "Compra";
+  return tipoRaw || "-";
+}
+
+function padLeftNum(value: string | number, size: number): string {
+  const s = String(value ?? "").replace(/\D/g, "");
+  if (!s) return "".padStart(size, "0");
+  return s.padStart(size, "0");
+}
+
+function normalizeFocusUrl(path: string | null | undefined): string {
+  const p = String(path || "").trim();
+  if (!p) return "";
+  if (p.startsWith("http://") || p.startsWith("https://")) return p;
+  try {
+    const base = new URL("https://api.focusnfe.com.br/");
+    return new URL(p, base).toString();
+  } catch {
+    return p;
+  }
+}
 
 export default function NotasFiscais() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedTipo, setSelectedTipo] = useState("todos");
   const [selectedStatus, setSelectedStatus] = useState("todos");
+  const [notasDb, setNotasDb] = useState<any[]>([]);
+  const [loadingDb, setLoadingDb] = useState(true);
+  const [errorDb, setErrorDb] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchNotasFiscais = async () => {
+      setLoadingDb(true);
+      setErrorDb(null);
+      const { data, error } = await supabase
+        .from("notas_fiscais")
+        .select("*")
+        .order("authorized_at", { ascending: false })
+        .order("created_at", { ascending: false });
+      if (error) {
+        setErrorDb(error.message);
+        setNotasDb([]);
+      } else {
+        setNotasDb(Array.isArray(data) ? data : []);
+      }
+      setLoadingDb(false);
+    };
+    fetchNotasFiscais();
+  }, []);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -54,6 +126,13 @@ export default function NotasFiscais() {
       default:
         return <Badge variant="secondary">{tipo}</Badge>;
     }
+  };
+
+  const getEnvioBadge = (status?: string) => {
+    const s = String(status || "").toLowerCase();
+    if (s === "sent") return <Badge className="bg-green-500 text-white">Enviado</Badge>;
+    if (s === "error") return <Badge variant="destructive">Erro</Badge>;
+    return <Badge variant="outline">Pendente</Badge>;
   };
 
   return (
@@ -87,15 +166,15 @@ export default function NotasFiscais() {
               <Routes>
                 <Route
                   path="todas"
-                  element={<NotasTodas getStatusBadge={getStatusBadge} getTipoBadge={getTipoBadge} />}
+                  element={<NotasTodas getStatusBadge={getStatusBadge} getTipoBadge={getTipoBadge} getEnvioBadge={getEnvioBadge} notas={notasDb} loading={loadingDb} error={errorDb} />}
                 />
                 <Route
                   path="saidas"
-                  element={<NotasSaida getStatusBadge={getStatusBadge} getTipoBadge={getTipoBadge} />}
+                  element={<NotasSaida getStatusBadge={getStatusBadge} getTipoBadge={getTipoBadge} notas={notasDb} loading={loadingDb} error={errorDb} />}
                 />
                 <Route
                   path="entrada"
-                  element={<NotasEntrada getStatusBadge={getStatusBadge} getTipoBadge={getTipoBadge} />}
+                  element={<NotasEntrada getStatusBadge={getStatusBadge} getTipoBadge={getTipoBadge} notas={notasDb} loading={loadingDb} error={errorDb} />}
                 />
                 <Route index element={<Navigate to="todas" replace />} />
               </Routes>
@@ -108,17 +187,37 @@ export default function NotasFiscais() {
   );
 }
 
-function NotasTodas({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: string) => JSX.Element; getTipoBadge: (t: string) => JSX.Element }) {
+function NotasTodas({
+  getStatusBadge,
+  getTipoBadge,
+  getEnvioBadge,
+  notas,
+  loading,
+  error,
+}: {
+  getStatusBadge: (s: string) => JSX.Element;
+  getTipoBadge: (t: string) => JSX.Element;
+  getEnvioBadge: (s?: string) => JSX.Element;
+  notas: any[];
+  loading: boolean;
+  error: string | null;
+}) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedStatus, setSelectedStatus] = useState("todos");
-  const filtered = notasFiscais.filter((n) => {
+  const filtered = (Array.isArray(notas) ? notas : []).filter((n) => {
+    const numero = String(n?.nfe_number || "");
+    const chave = String(n?.nfe_key || "");
+    const marketplace = String(n?.marketplace || "");
+    const tipoLabel = normalizeTipo(String(n?.tipo || ""));
     const term = searchTerm.trim().toLowerCase();
-    const matchText = `${n.numero} ${n.cliente || ""} ${n.fornecedor || ""}`.toLowerCase().includes(term);
+    const matchText = `${numero} ${chave} ${marketplace} ${tipoLabel}`.toLowerCase().includes(term);
+    const sf = String(n?.status_focus || "").toLowerCase();
+    const statusLabel = sf === "autorizado" ? "Autorizada" : sf === "cancelada" ? "Cancelada" : sf === "pendente" ? "Pendente" : sf;
     const matchStatus =
       selectedStatus === "todos" ||
-      (selectedStatus === "autorizada" && n.status === "Autorizada") ||
-      (selectedStatus === "pendente" && n.status === "Pendente") ||
-      (selectedStatus === "cancelada" && n.status === "Cancelada");
+      (selectedStatus === "autorizada" && statusLabel === "Autorizada") ||
+      (selectedStatus === "pendente" && statusLabel === "Pendente") ||
+      (selectedStatus === "cancelada" && statusLabel === "Cancelada");
     return matchText && matchStatus;
   });
   return (
@@ -127,7 +226,7 @@ function NotasTodas({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: stri
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
           <Input
-            placeholder="Buscar por número, cliente ou fornecedor"
+            placeholder="Buscar por número, tipo ou marketplace"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"
@@ -144,76 +243,197 @@ function NotasTodas({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: stri
             <SelectItem value="cancelada">Cancelada</SelectItem>
           </SelectContent>
         </Select>
-        <Button variant="outline" size="sm">
-          <Filter className="w-4 h-4 mr-2" />
-          Mais Filtros
-        </Button>
       </div>
       <Card>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
               <TableRow className="border-b border-gray-100">
-                <TableHead>Número</TableHead>
+                <TableHead>Série/Número</TableHead>
                 <TableHead>Tipo</TableHead>
-                <TableHead>Cliente/Fornecedor</TableHead>
+                <TableHead>Marketplace</TableHead>
                 <TableHead>Valor</TableHead>
-                <TableHead>Data</TableHead>
+                <TableHead>Autorizada em</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-20">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((nota) => (
-                <TableRow key={nota.id} className="hover:bg-gray-50/50">
-                  <TableCell>
-                    <div>
-                      <p className="font-medium text-gray-900">{nota.numero}</p>
-                      <p className="text-xs text-gray-500 font-mono">
-                        {nota.chave.substring(0, 20)}...
-                      </p>
-                    </div>
-                  </TableCell>
-                  <TableCell>{getTipoBadge(nota.tipo)}</TableCell>
-                  <TableCell>
-                    <span className="text-gray-900">{nota.cliente || nota.fornecedor}</span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="font-medium">
-                      R$ {nota.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-gray-600">
-                      {new Date(nota.data).toLocaleDateString("pt-BR")}
-                    </span>
-                  </TableCell>
-                  <TableCell>{getStatusBadge(nota.status)}</TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="sm">
-                          <MoreHorizontal className="w-4 h-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-40">
-                        <DropdownMenuItem>
-                          <Eye className="w-4 h-4 mr-2" />
-                          Visualizar
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Download className="w-4 h-4 mr-2" />
-                          Download PDF
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Download className="w-4 h-4 mr-2" />
-                          Download XML
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+              {loading && (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <div className="py-6 text-center text-gray-600">Carregando notas fiscais...</div>
                   </TableCell>
                 </TableRow>
-              ))}
+              )}
+              {!loading && error && (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <div className="py-6 text-center text-red-600">{error}</div>
+                  </TableCell>
+                </TableRow>
+              )}
+              {!loading && !error && filtered.map((nota: any) => {
+                const numero = String(nota?.nfe_number || "");
+                const tipo = String(nota?.tipo || "");
+                const marketplace = String(nota?.marketplace || "");
+                const authorizedAt = nota?.authorized_at ? new Date(String(nota?.authorized_at)).toLocaleString("pt-BR") : "-";
+                const sf = String(nota?.status_focus || "").toLowerCase();
+                const statusLabel = sf === "autorizado" ? "Autorizada" : sf === "cancelada" ? "Cancelada" : sf === "pendente" ? "Pendente" : sf || "";
+                const serie = String(nota?.serie || "");
+                let valor: number | undefined = typeof nota?.total_value === "number" ? nota.total_value : undefined;
+                if (valor == null) {
+                  try {
+                    const xmlText = nota?.xml_base64 ? atob(String(nota.xml_base64)) : "";
+                    const v = xmlText ? extractXmlTotal(xmlText) : undefined;
+                    valor = v;
+                  } catch {}
+                }
+                const serieFmt = padLeftNum(serie, 3);
+                const numeroFmt = padLeftNum(numero, 9);
+                const tipoLabel = normalizeTipo(tipo);
+                return (
+                  <TableRow key={nota.id} className="hover:bg-gray-50/50">
+                    <TableCell>
+                      <div>
+                        <p className="font-medium text-gray-900">{serieFmt}</p>
+                        <p className="text-xs text-gray-600">{numeroFmt}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {getTipoBadge(tipoLabel)}
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-gray-900">{marketplace || "-"}</span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="font-medium">
+                        {valor != null ? `R$ ${Number(valor).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-gray-600">{authorizedAt}</span>
+                    </TableCell>
+                    <TableCell>{getStatusBadge(statusLabel || "")}</TableCell>
+                    <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm">
+                            <MoreHorizontal className="w-4 h-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-40">
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const url = String(nota?.pdf_url || "");
+                              if (url) {
+                                window.open(url, "_blank", "noopener,noreferrer");
+                                return;
+                              }
+                              try {
+                                const pdfB64 = String(nota?.pdf_base64 || "");
+                                if (!pdfB64) return;
+                                const pdfBytes = Uint8Array.from(atob(pdfB64), c => c.charCodeAt(0));
+                                const blob = new Blob([pdfBytes], { type: "application/pdf" });
+                                const objUrl = URL.createObjectURL(blob);
+                                window.open(objUrl, "_blank", "noopener,noreferrer");
+                              } catch {}
+                            }}
+                          >
+                            <Eye className="w-4 h-4 mr-2" />
+                            Visualizar
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              try {
+                                const xmlB64 = String(nota?.xml_base64 || "");
+                                const linksMeta: any = (nota as any)?.marketplace_submission_response || null;
+                                const directUrl = normalizeFocusUrl(String(nota?.xml_url || (linksMeta?.links?.caminho_xml ?? linksMeta?.caminho_xml) || ""));
+                                const nfeNumRaw = String(nota?.nfe_number || "").trim();
+                                const nfeKeyRaw = String(nota?.nfe_key || "").trim();
+                                let base = nfeNumRaw ? `nfe_${nfeNumRaw}` : (nfeKeyRaw ? `nfe_${nfeKeyRaw}` : "nfe");
+                                if (xmlB64) {
+                                  const xmlText = atob(xmlB64);
+                                  if (base === "nfe") {
+                                    const meta = extractXmlMeta(xmlText);
+                                    const nfeNum = String(meta.nfeNumber || "").trim();
+                                    const nfeKey = String(meta.nfeKey || "").trim();
+                                    base = nfeNum ? `nfe_${nfeNum}` : (nfeKey ? `nfe_${nfeKey}` : "nfe");
+                                  }
+                                  const blob = new Blob([xmlText], { type: "application/xml" });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement("a");
+                                  a.href = url;
+                                  a.download = `${base}.xml`;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                  return;
+                                }
+                                if (directUrl) {
+                                  const payload = { xml_url: directUrl, filename: `${base}.xml`, company_id: (nota as any)?.company_id, emissao_ambiente: (nota as any)?.emissao_ambiente };
+                                  ;(async () => {
+                                    const { data: { session } } = await (supabase as any).auth.getSession();
+                                    const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY };
+                                    if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+                                    try {
+                                      const res = await supabase.functions.invoke("download-nfe-xml", { body: payload, headers });
+                                      const b64 = String((res.data as any)?.content_base64 || "");
+                                      if (b64) {
+                                        const xmlText = atob(b64);
+                                        const blob = new Blob([xmlText], { type: "application/xml" });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement("a");
+                                        a.href = url;
+                                        a.download = `${base}.xml`;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                        return;
+                                      }
+                                      throw new Error("no_b64");
+                                    } catch {
+                                      try {
+                                        const urlFn = `${SUPABASE_URL}/functions/v1/download-nfe-xml`;
+                                        let resp = await fetch(urlFn, {
+                                          method: "POST",
+                                          headers: { "Content-Type": "application/json", apikey: SUPABASE_PUBLISHABLE_KEY, ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+                                          body: JSON.stringify(payload),
+                                        });
+                                        if (!resp.ok) {
+                                          resp = await fetch(urlFn, {
+                                            method: "POST",
+                                            headers: { "Content-Type": "text/plain" },
+                                            body: JSON.stringify(payload),
+                                          });
+                                        }
+                                        const data = await resp.json().catch(() => ({}));
+                                        const b64 = String((data as any)?.content_base64 || "");
+                                        if (!b64) return;
+                                        const xmlText = atob(b64);
+                                        const blob = new Blob([xmlText], { type: "application/xml" });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement("a");
+                                        a.href = url;
+                                        a.download = `${base}.xml`;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                      } catch {}
+                                    }
+                                  })();
+                                }
+                              } catch {}
+                            }}
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            Download XML
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </CardContent>
@@ -222,19 +442,36 @@ function NotasTodas({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: stri
   );
 }
 
-function NotasSaida({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: string) => JSX.Element; getTipoBadge: (t: string) => JSX.Element }) {
+function NotasSaida({
+  getStatusBadge,
+  getTipoBadge,
+  notas,
+  loading,
+  error,
+}: {
+  getStatusBadge: (s: string) => JSX.Element;
+  getTipoBadge: (t: string) => JSX.Element;
+  notas: any[];
+  loading: boolean;
+  error: string | null;
+}) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedStatus, setSelectedStatus] = useState("todos");
-  const filtered = notasFiscais
-    .filter((n) => n.tipo === "Saída")
+  const filtered = (Array.isArray(notas) ? notas : [])
+    .filter((n) => String(n?.tipo || "").toLowerCase() === "saída" || String(n?.tipo || "").toLowerCase() === "saida")
     .filter((n) => {
+      const numero = String(n?.nfe_number || "");
+      const marketplace = String(n?.marketplace || "");
+      const tipoLabel = normalizeTipo(String(n?.tipo || ""));
       const term = searchTerm.trim().toLowerCase();
-      const matchText = `${n.numero} ${n.cliente || ""}`.toLowerCase().includes(term);
+      const matchText = `${numero} ${marketplace} ${tipoLabel}`.toLowerCase().includes(term);
+      const sf = String(n?.status_focus || "").toLowerCase();
+      const statusLabel = sf === "autorizado" ? "Autorizada" : sf === "cancelada" ? "Cancelada" : sf === "pendente" ? "Pendente" : sf || "";
       const matchStatus =
         selectedStatus === "todos" ||
-        (selectedStatus === "autorizada" && n.status === "Autorizada") ||
-        (selectedStatus === "pendente" && n.status === "Pendente") ||
-        (selectedStatus === "cancelada" && n.status === "Cancelada");
+        (selectedStatus === "autorizada" && statusLabel === "Autorizada") ||
+        (selectedStatus === "pendente" && statusLabel === "Pendente") ||
+        (selectedStatus === "cancelada" && statusLabel === "Cancelada");
       return matchText && matchStatus;
     });
   return (
@@ -243,7 +480,7 @@ function NotasSaida({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: stri
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
           <Input
-            placeholder="Buscar por número ou cliente"
+            placeholder="Buscar por número ou marketplace"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"
@@ -260,10 +497,6 @@ function NotasSaida({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: stri
             <SelectItem value="cancelada">Cancelada</SelectItem>
           </SelectContent>
         </Select>
-        <Button variant="outline" size="sm">
-          <Filter className="w-4 h-4 mr-2" />
-          Mais Filtros
-        </Button>
       </div>
       <Card>
         <CardContent className="p-0">
@@ -272,64 +505,187 @@ function NotasSaida({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: stri
               <TableRow className="border-b border-gray-100">
                 <TableHead>Número</TableHead>
                 <TableHead>Tipo</TableHead>
-                <TableHead>Cliente</TableHead>
+                <TableHead>Marketplace</TableHead>
                 <TableHead>Valor</TableHead>
-                <TableHead>Data</TableHead>
+                <TableHead>Autorizada em</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-20">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((nota) => (
-                <TableRow key={nota.id} className="hover:bg-gray-50/50">
-                  <TableCell>
-                    <div>
-                      <p className="font-medium text-gray-900">{nota.numero}</p>
-                      <p className="text-xs text-gray-500 font-mono">
-                        {nota.chave.substring(0, 20)}...
-                      </p>
-                    </div>
-                  </TableCell>
-                  <TableCell>{getTipoBadge(nota.tipo)}</TableCell>
-                  <TableCell>
-                    <span className="text-gray-900">{nota.cliente}</span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="font-medium">
-                      R$ {nota.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-gray-600">
-                      {new Date(nota.data).toLocaleDateString("pt-BR")}
-                    </span>
-                  </TableCell>
-                  <TableCell>{getStatusBadge(nota.status)}</TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="sm">
-                          <MoreHorizontal className="w-4 h-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-40">
-                        <DropdownMenuItem>
-                          <Eye className="w-4 h-4 mr-2" />
-                          Visualizar
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Download className="w-4 h-4 mr-2" />
-                          Download PDF
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Download className="w-4 h-4 mr-2" />
-                          Download XML
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+              {loading && (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <div className="py-6 text-center text-gray-600">Carregando notas fiscais...</div>
                   </TableCell>
                 </TableRow>
-              ))}
+              )}
+              {!loading && error && (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <div className="py-6 text-center text-red-600">{error}</div>
+                  </TableCell>
+                </TableRow>
+              )}
+              {!loading && !error && filtered.map((nota: any) => {
+                const numero = String(nota?.nfe_number || "");
+                const tipo = String(nota?.tipo || "");
+                const marketplace = String(nota?.marketplace || "");
+                const authorizedAt = nota?.authorized_at ? new Date(String(nota?.authorized_at)).toLocaleString("pt-BR") : "-";
+                const sf = String(nota?.status_focus || "").toLowerCase();
+                const statusLabel = sf === "autorizado" ? "Autorizada" : sf === "cancelada" ? "Cancelada" : sf === "pendente" ? "Pendente" : sf || "";
+                const serie = String(nota?.serie || "");
+                let valor: number | undefined = typeof nota?.total_value === "number" ? nota.total_value : undefined;
+                if (valor == null) {
+                  try {
+                    const xmlText = nota?.xml_base64 ? atob(String(nota.xml_base64)) : "";
+                    const v = xmlText ? extractXmlTotal(xmlText) : undefined;
+                    valor = v;
+                  } catch {}
+                }
+                const serieFmt = padLeftNum(serie, 3);
+                const numeroFmt = padLeftNum(numero, 9);
+                const tipoLabel = normalizeTipo(tipo);
+                return (
+                  <TableRow key={nota.id} className="hover:bg-gray-50/50">
+                    <TableCell>
+                      <div>
+                        <p className="font-medium text-gray-900">{serieFmt}</p>
+                        <p className="text-xs text-gray-600">{numeroFmt}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell>{getTipoBadge(tipoLabel)}</TableCell>
+                    <TableCell>
+                      <span className="text-gray-900">{marketplace || "-"}</span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="font-medium">
+                        {valor != null ? `R$ ${Number(valor).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-gray-600">{authorizedAt}</span>
+                    </TableCell>
+                    <TableCell>{getStatusBadge(statusLabel || "")}</TableCell>
+                    <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm">
+                            <MoreHorizontal className="w-4 h-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-40">
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const url = String(nota?.pdf_url || "");
+                              if (url) {
+                                window.open(url, "_blank", "noopener,noreferrer");
+                                return;
+                              }
+                              try {
+                                const pdfB64 = String(nota?.pdf_base64 || "");
+                                if (!pdfB64) return;
+                                const pdfBytes = Uint8Array.from(atob(pdfB64), c => c.charCodeAt(0));
+                                const blob = new Blob([pdfBytes], { type: "application/pdf" });
+                                const objUrl = URL.createObjectURL(blob);
+                                window.open(objUrl, "_blank", "noopener,noreferrer");
+                              } catch {}
+                            }}
+                          >
+                            <Eye className="w-4 h-4 mr-2" />
+                            Visualizar
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              try {
+                                const xmlB64 = String(nota?.xml_base64 || "");
+                                const linksMeta: any = (nota as any)?.marketplace_submission_response || null;
+                                const directUrl = normalizeFocusUrl(String(nota?.xml_url || (linksMeta?.links?.caminho_xml ?? linksMeta?.caminho_xml) || ""));
+                                const nfeNumRaw = String(nota?.nfe_number || "").trim();
+                                const nfeKeyRaw = String(nota?.nfe_key || "").trim();
+                                let base = nfeNumRaw ? `nfe_${nfeNumRaw}` : (nfeKeyRaw ? `nfe_${nfeKeyRaw}` : "nfe");
+                                if (xmlB64) {
+                                  const xmlText = atob(xmlB64);
+                                  if (base === "nfe") {
+                                    const meta = extractXmlMeta(xmlText);
+                                    const nfeNum = String(meta.nfeNumber || "").trim();
+                                    const nfeKey = String(meta.nfeKey || "").trim();
+                                    base = nfeNum ? `nfe_${nfeNum}` : (nfeKey ? `nfe_${nfeKey}` : "nfe");
+                                  }
+                                  const blob = new Blob([xmlText], { type: "application/xml" });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement("a");
+                                  a.href = url;
+                                  a.download = `${base}.xml`;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                  return;
+                                }
+                                if (directUrl) {
+                                  const payload = { xml_url: directUrl, filename: `${base}.xml`, company_id: (nota as any)?.company_id, emissao_ambiente: (nota as any)?.emissao_ambiente };
+                                  ;(async () => {
+                                    const { data: { session } } = await (supabase as any).auth.getSession();
+                                    const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY };
+                                    if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+                                    try {
+                                      const res = await supabase.functions.invoke("download-nfe-xml", { body: payload, headers });
+                                      const b64 = String((res.data as any)?.content_base64 || "");
+                                      if (b64) {
+                                        const xmlText = atob(b64);
+                                        const blob = new Blob([xmlText], { type: "application/xml" });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement("a");
+                                        a.href = url;
+                                        a.download = `${base}.xml`;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                        return;
+                                      }
+                                      throw new Error("no_b64");
+                                    } catch {
+                                      try {
+                                        const urlFn = `${SUPABASE_URL}/functions/v1/download-nfe-xml`;
+                                        let resp = await fetch(urlFn, {
+                                          method: "POST",
+                                          headers: { "Content-Type": "application/json", apikey: SUPABASE_PUBLISHABLE_KEY, ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+                                          body: JSON.stringify(payload),
+                                        });
+                                        if (!resp.ok) {
+                                          resp = await fetch(urlFn, {
+                                            method: "POST",
+                                            headers: { "Content-Type": "text/plain" },
+                                            body: JSON.stringify(payload),
+                                          });
+                                        }
+                                        const data = await resp.json().catch(() => ({}));
+                                        const b64 = String((data as any)?.content_base64 || "");
+                                        if (!b64) return;
+                                        const xmlText = atob(b64);
+                                        const blob = new Blob([xmlText], { type: "application/xml" });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement("a");
+                                        a.href = url;
+                                        a.download = `${base}.xml`;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                      } catch {}
+                                    }
+                                  })();
+                                }
+                              } catch {}
+                            }}
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            Download XML
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </CardContent>
@@ -338,19 +694,36 @@ function NotasSaida({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: stri
   );
 }
 
-function NotasEntrada({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: string) => JSX.Element; getTipoBadge: (t: string) => JSX.Element }) {
+function NotasEntrada({
+  getStatusBadge,
+  getTipoBadge,
+  notas,
+  loading,
+  error,
+}: {
+  getStatusBadge: (s: string) => JSX.Element;
+  getTipoBadge: (t: string) => JSX.Element;
+  notas: any[];
+  loading: boolean;
+  error: string | null;
+}) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedStatus, setSelectedStatus] = useState("todos");
-  const filtered = notasFiscais
-    .filter((n) => n.tipo === "Entrada")
+  const filtered = (Array.isArray(notas) ? notas : [])
+    .filter((n) => String(n?.tipo || "").toLowerCase() === "entrada")
     .filter((n) => {
+      const numero = String(n?.nfe_number || "");
+      const marketplace = String(n?.marketplace || "");
+      const tipoLabel = normalizeTipo(String(n?.tipo || ""));
       const term = searchTerm.trim().toLowerCase();
-      const matchText = `${n.numero} ${n.fornecedor || ""}`.toLowerCase().includes(term);
+      const matchText = `${numero} ${marketplace} ${tipoLabel}`.toLowerCase().includes(term);
+      const sf = String(n?.status_focus || "").toLowerCase();
+      const statusLabel = sf === "autorizado" ? "Autorizada" : sf === "cancelada" ? "Cancelada" : sf === "pendente" ? "Pendente" : sf || "";
       const matchStatus =
         selectedStatus === "todos" ||
-        (selectedStatus === "autorizada" && n.status === "Autorizada") ||
-        (selectedStatus === "pendente" && n.status === "Pendente") ||
-        (selectedStatus === "cancelada" && n.status === "Cancelada");
+        (selectedStatus === "autorizada" && statusLabel === "Autorizada") ||
+        (selectedStatus === "pendente" && statusLabel === "Pendente") ||
+        (selectedStatus === "cancelada" && statusLabel === "Cancelada");
       return matchText && matchStatus;
     });
   return (
@@ -359,7 +732,7 @@ function NotasEntrada({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: st
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
           <Input
-            placeholder="Buscar por número ou fornecedor"
+            placeholder="Buscar por número ou marketplace"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"
@@ -388,64 +761,187 @@ function NotasEntrada({ getStatusBadge, getTipoBadge }: { getStatusBadge: (s: st
               <TableRow className="border-b border-gray-100">
                 <TableHead>Número</TableHead>
                 <TableHead>Tipo</TableHead>
-                <TableHead>Fornecedor</TableHead>
+                <TableHead>Marketplace</TableHead>
                 <TableHead>Valor</TableHead>
-                <TableHead>Data</TableHead>
+                <TableHead>Autorizada em</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-20">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((nota) => (
-                <TableRow key={nota.id} className="hover:bg-gray-50/50">
-                  <TableCell>
-                    <div>
-                      <p className="font-medium text-gray-900">{nota.numero}</p>
-                      <p className="text-xs text-gray-500 font-mono">
-                        {nota.chave.substring(0, 20)}...
-                      </p>
-                    </div>
-                  </TableCell>
-                  <TableCell>{getTipoBadge(nota.tipo)}</TableCell>
-                  <TableCell>
-                    <span className="text-gray-900">{nota.fornecedor}</span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="font-medium">
-                      R$ {nota.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-gray-600">
-                      {new Date(nota.data).toLocaleDateString("pt-BR")}
-                    </span>
-                  </TableCell>
-                  <TableCell>{getStatusBadge(nota.status)}</TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="sm">
-                          <MoreHorizontal className="w-4 h-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-40">
-                        <DropdownMenuItem>
-                          <Eye className="w-4 h-4 mr-2" />
-                          Visualizar
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Download className="w-4 h-4 mr-2" />
-                          Download PDF
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Download className="w-4 h-4 mr-2" />
-                          Download XML
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+              {loading && (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <div className="py-6 text-center text-gray-600">Carregando notas fiscais...</div>
                   </TableCell>
                 </TableRow>
-              ))}
+              )}
+              {!loading && error && (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <div className="py-6 text-center text-red-600">{error}</div>
+                  </TableCell>
+                </TableRow>
+              )}
+              {!loading && !error && filtered.map((nota: any) => {
+                const numero = String(nota?.nfe_number || "");
+                const tipo = String(nota?.tipo || "");
+                const marketplace = String(nota?.marketplace || "");
+                const authorizedAt = nota?.authorized_at ? new Date(String(nota?.authorized_at)).toLocaleString("pt-BR") : "-";
+                const sf = String(nota?.status_focus || "").toLowerCase();
+                const statusLabel = sf === "autorizado" ? "Autorizada" : sf === "cancelada" ? "Cancelada" : sf === "pendente" ? "Pendente" : sf || "";
+                const serie = String(nota?.serie || "");
+                let valor: number | undefined = typeof nota?.total_value === "number" ? nota.total_value : undefined;
+                if (valor == null) {
+                  try {
+                    const xmlText = nota?.xml_base64 ? atob(String(nota.xml_base64)) : "";
+                    const v = xmlText ? extractXmlTotal(xmlText) : undefined;
+                    valor = v;
+                  } catch {}
+                }
+                const serieFmt = padLeftNum(serie, 3);
+                const numeroFmt = padLeftNum(numero, 9);
+                const tipoLabel = normalizeTipo(tipo);
+                return (
+                  <TableRow key={nota.id} className="hover:bg-gray-50/50">
+                    <TableCell>
+                      <div>
+                        <p className="font-medium text-gray-900">{serieFmt}</p>
+                        <p className="text-xs text-gray-600">{numeroFmt}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell>{getTipoBadge(tipoLabel)}</TableCell>
+                    <TableCell>
+                      <span className="text-gray-900">{marketplace || "-"}</span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="font-medium">
+                        {valor != null ? `R$ ${Number(valor).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-gray-600">{authorizedAt}</span>
+                    </TableCell>
+                    <TableCell>{getStatusBadge(statusLabel || "")}</TableCell>
+                    <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm">
+                            <MoreHorizontal className="w-4 h-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-40">
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const url = String(nota?.pdf_url || "");
+                              if (url) {
+                                window.open(url, "_blank", "noopener,noreferrer");
+                                return;
+                              }
+                              try {
+                                const pdfB64 = String(nota?.pdf_base64 || "");
+                                if (!pdfB64) return;
+                                const pdfBytes = Uint8Array.from(atob(pdfB64), c => c.charCodeAt(0));
+                                const blob = new Blob([pdfBytes], { type: "application/pdf" });
+                                const objUrl = URL.createObjectURL(blob);
+                                window.open(objUrl, "_blank", "noopener,noreferrer");
+                              } catch {}
+                            }}
+                          >
+                            <Eye className="w-4 h-4 mr-2" />
+                            Visualizar
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              try {
+                                const xmlB64 = String(nota?.xml_base64 || "");
+                                const linksMeta: any = (nota as any)?.marketplace_submission_response || null;
+                                const directUrl = normalizeFocusUrl(String(nota?.xml_url || (linksMeta?.links?.caminho_xml ?? linksMeta?.caminho_xml) || ""));
+                                const nfeNumRaw = String(nota?.nfe_number || "").trim();
+                                const nfeKeyRaw = String(nota?.nfe_key || "").trim();
+                                let base = nfeNumRaw ? `nfe_${nfeNumRaw}` : (nfeKeyRaw ? `nfe_${nfeKeyRaw}` : "nfe");
+                                if (xmlB64) {
+                                  const xmlText = atob(xmlB64);
+                                  if (base === "nfe") {
+                                    const meta = extractXmlMeta(xmlText);
+                                    const nfeNum = String(meta.nfeNumber || "").trim();
+                                    const nfeKey = String(meta.nfeKey || "").trim();
+                                    base = nfeNum ? `nfe_${nfeNum}` : (nfeKey ? `nfe_${nfeKey}` : "nfe");
+                                  }
+                                  const blob = new Blob([xmlText], { type: "application/xml" });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement("a");
+                                  a.href = url;
+                                  a.download = `${base}.xml`;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                  return;
+                                }
+                                if (directUrl) {
+                                  const payload = { xml_url: directUrl, filename: `${base}.xml`, company_id: (nota as any)?.company_id, emissao_ambiente: (nota as any)?.emissao_ambiente };
+                                  ;(async () => {
+                                    const { data: { session } } = await (supabase as any).auth.getSession();
+                                    const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY };
+                                    if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+                                    try {
+                                      const res = await supabase.functions.invoke("download-nfe-xml", { body: payload, headers });
+                                      const b64 = String((res.data as any)?.content_base64 || "");
+                                      if (b64) {
+                                        const xmlText = atob(b64);
+                                        const blob = new Blob([xmlText], { type: "application/xml" });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement("a");
+                                        a.href = url;
+                                        a.download = `${base}.xml`;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                        return;
+                                      }
+                                      throw new Error("no_b64");
+                                    } catch {
+                                      try {
+                                        const urlFn = `${SUPABASE_URL}/functions/v1/download-nfe-xml`;
+                                        let resp = await fetch(urlFn, {
+                                          method: "POST",
+                                          headers: { "Content-Type": "application/json", apikey: SUPABASE_PUBLISHABLE_KEY, ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+                                          body: JSON.stringify(payload),
+                                        });
+                                        if (!resp.ok) {
+                                          resp = await fetch(urlFn, {
+                                            method: "POST",
+                                            headers: { "Content-Type": "text/plain" },
+                                            body: JSON.stringify(payload),
+                                          });
+                                        }
+                                        const data = await resp.json().catch(() => ({}));
+                                        const b64 = String((data as any)?.content_base64 || "");
+                                        if (!b64) return;
+                                        const xmlText = atob(b64);
+                                        const blob = new Blob([xmlText], { type: "application/xml" });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement("a");
+                                        a.href = url;
+                                        a.download = `${base}.xml`;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                      } catch {}
+                                    }
+                                  })();
+                                }
+                              } catch {}
+                            }}
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            Download XML
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </CardContent>

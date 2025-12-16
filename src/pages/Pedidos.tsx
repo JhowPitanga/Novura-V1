@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, startTransition } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, startTransition, useCallback } from "react";
 import { Search, Filter, Settings, FileText, Printer, Bot, TrendingUp, Zap, QrCode, Check, Calendar, Download, X, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Package, Truck, MinusCircle, CheckCircle2, Box, Scan, FileBadge, StickyNote, AudioWaveform, TextSelect, ListChecks, Table } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,8 +42,10 @@ import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { DateRange } from "react-day-picker";
 import LoadingOverlay from "@/components/LoadingOverlay";
 import { PedidoDetailsDrawer } from "@/components/pedidos/PedidoDetailsDrawer";
+import { EmissaoNFDrawer } from "@/components/pedidos/EmissaoNFDrawer";
 import { supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { toast } from "@/components/ui/use-toast";
 
 function mapTipoEnvioLabel(v?: string) {
     const s = String(v || '').toLowerCase();
@@ -379,9 +381,15 @@ function Pedidos() {
     const [emissionProgress, setEmissionProgress] = useState(0);
     const [emittedCount, setEmittedCount] = useState(0);
     const [failedCount, setFailedCount] = useState(0);
+    const [isEmissaoDrawerOpen, setIsEmissaoDrawerOpen] = useState(false);
+    const [pedidoIdParaEmissao, setPedidoIdParaEmissao] = useState<string | null>(null);
+    const [bulkIdsQueue, setBulkIdsQueue] = useState<string[]>([]);
+    const [emissaoRestartNonce, setEmissaoRestartNonce] = useState<number>(0);
     const [quickFilter, setQuickFilter] = useState("Todos");
     const [scannerTab, setScannerTab] = useState("nao-impressos");
     const [scannedSku, setScannedSku] = useState("");
+    const [nfeAuthorizedByPedidoId, setNfeAuthorizedByPedidoId] = useState<Record<string, boolean>>({});
+    const [nfeFocusStatusByPedidoId, setNfeFocusStatusByPedidoId] = useState<Record<string, string>>({});
     const [scannedPedido, setScannedPedido] = useState<any>(null);
     const [isCompleteModalOpen, setIsCompleteModalOpen] = useState(false);
     const [activePrintTab, setActivePrintTab] = useState("label");
@@ -424,6 +432,14 @@ function Pedidos() {
     // Estado para destacar alvo durante drag-and-drop
     const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
     const dragStartIndexRef = useRef<number | null>(null);
+    const [emitEnvironment, setEmitEnvironment] = useState<'homologacao' | 'producao'>(() => {
+        try {
+            const v = localStorage.getItem('nfe_environment');
+            return v === 'producao' ? 'producao' : 'homologacao';
+        } catch {
+            return 'homologacao';
+        }
+    });
 
     useEffect(() => {
         if (isColumnsDrawerOpen) {
@@ -587,7 +603,7 @@ function Pedidos() {
                         slaDespacho: {
                             status: o?.shipment_sla_status ?? null,
                             service: o?.shipment_sla_service ?? null,
-                            expected_date: o?.shipment_sla_expected_date ?? null,
+                            expected_date: o?.estimated_delivery_limit_at ?? o?.shipment_sla_expected_date ?? null,
                             last_updated: o?.shipment_sla_last_updated ?? null,
                         },
                         variationColorNames: varLabel,
@@ -757,6 +773,7 @@ function Pedidos() {
                         shipping_method_name,
                         shipment_sla_status,
                         shipment_sla_service,
+                        estimated_delivery_limit_at,
                         shipment_sla_expected_date,
                         shipment_sla_last_updated,
                         shipment_delays,
@@ -879,7 +896,7 @@ function Pedidos() {
                     slaDespacho: {
                         status: o?.shipment_sla_status ?? null,
                         service: o?.shipment_sla_service ?? null,
-                        expected_date: o?.shipment_sla_expected_date ?? null,
+                        expected_date: o?.estimated_delivery_limit_at ?? o?.shipment_sla_expected_date ?? null,
                         last_updated: o?.shipment_sla_last_updated ?? null,
                     },
                     variationColorNames: varLabel,
@@ -944,6 +961,167 @@ function Pedidos() {
     // Removida a sincronização automática; sincronizar apenas ao clicar no botão
 
     // Não atualizar ao alternar quadro para evitar remoções e telas de recarga
+    
+    const refreshNfeAuthorizedMapForList = useCallback(async () => {
+        try {
+            if (!organizationId) return;
+            const pedidosAtivos = pedidos.filter(p => p && p.status_interno === 'Emissao NF' && p.marketplace_order_id);
+            if (pedidosAtivos.length === 0) { setNfeAuthorizedByPedidoId({}); setNfeFocusStatusByPedidoId({}); return; }
+            const idsToCheck = pedidosAtivos.map(p => String(p.marketplace_order_id));
+            let companyId: string | null = null;
+            {
+                const { data: companiesForOrg } = await (supabase as any)
+                    .from('companies')
+                    .select('id')
+                    .eq('organization_id', organizationId)
+                    .order('is_active', { ascending: false })
+                    .order('created_at', { ascending: true })
+                    .limit(1);
+                companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+            }
+            if (!companyId) return;
+            const { data: nfRows } = await (supabase as any)
+                .from('notas_fiscais')
+                .select('marketplace_order_id, status_focus, emissao_ambiente')
+                .eq('company_id', companyId)
+                .in('marketplace_order_id', idsToCheck);
+            const envSel = emitEnvironment;
+            const byMarketId: Record<string, boolean> = {};
+            const byMarketStatus: Record<string, string> = {};
+            (Array.isArray(nfRows) ? nfRows : []).forEach((r: any) => {
+                const mk = String(r?.marketplace_order_id || '');
+                const st = String(r?.status_focus || '').toLowerCase();
+                const amb = String(r?.emissao_ambiente || '').toLowerCase();
+                if (!mk) return;
+                const okAmb = amb ? (envSel === 'producao' ? amb === 'producao' : amb === 'homologacao') : true;
+                if (st === 'autorizado' && okAmb) byMarketId[mk] = true;
+                if (okAmb) byMarketStatus[mk] = st;
+            });
+            const nextMap: Record<string, boolean> = {};
+            const nextStatusMap: Record<string, string> = {};
+            for (const p of pedidosAtivos) {
+                const mk = String(p.marketplace_order_id);
+                nextMap[String(p.id)] = byMarketId[mk] === true;
+                nextStatusMap[String(p.id)] = byMarketStatus[mk] || '';
+            }
+            setNfeAuthorizedByPedidoId(nextMap);
+            setNfeFocusStatusByPedidoId(nextStatusMap);
+        } catch {}
+    }, [organizationId, pedidos, emitEnvironment, supabase]);
+
+    useEffect(() => {
+        if (activeStatus === 'emissao-nf') {
+            refreshNfeAuthorizedMapForList();
+        }
+    }, [activeStatus, refreshNfeAuthorizedMapForList]);
+
+    
+
+    const mapStatusFocusToBadge = (status: string | undefined): { label: string; className: string } => {
+        const stLower = String(status || '').toLowerCase();
+        switch (stLower) {
+            case 'autorizado':
+            case 'autorizada':
+                return { label: 'Autorizada', className: 'bg-green-600 text-white' };
+            case 'pendente':
+                return { label: 'Pendente', className: 'bg-yellow-100 text-yellow-800 border border-yellow-200' };
+            case 'cancelado':
+            case 'cancelada':
+                return { label: 'Cancelada', className: 'bg-red-100 text-red-800 border border-red-200' };
+            case 'rejeitado':
+            case 'rejeitada':
+                return { label: 'Rejeitada', className: 'bg-red-100 text-red-800 border border-red-200' };
+            case 'denegado':
+            case 'denegada':
+                return { label: 'Denegada', className: 'bg-red-100 text-red-800 border border-red-200' };
+            case 'erro':
+            case 'error':
+                return { label: 'Erro', className: 'bg-red-100 text-red-800 border border-red-200' };
+            default:
+                return { label: status || 'Indefinido', className: 'bg-gray-100 text-gray-800 border border-gray-200' };
+        }
+    };
+
+    const handleSyncNfeForPedido = async (pedido: any) => {
+        try {
+            const { data: sessionRes } = await (supabase as any).auth.getSession();
+            const token: string | undefined = sessionRes?.session?.access_token;
+            if (!token) return;
+            if (!organizationId) return;
+            let companyId: string | null = null;
+            {
+                const { data: companiesForOrg } = await (supabase as any)
+                    .from('companies')
+                    .select('id')
+                    .eq('organization_id', organizationId)
+                    .order('is_active', { ascending: false })
+                    .order('created_at', { ascending: true })
+                    .limit(1);
+                companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+            }
+            if (!companyId) return;
+            const envSel = emitEnvironment;
+            const headers: Record<string, string> = {
+                apikey: SUPABASE_PUBLISHABLE_KEY,
+                Authorization: `Bearer ${token}`,
+            };
+            const { error } = await (supabase as any).functions.invoke('focus-nfe-sync', {
+                body: { organizationId, companyId, orderIds: [String(pedido.id)], environment: envSel },
+                headers,
+            } as any);
+            if (error) return;
+            await refreshNfeAuthorizedMapForList();
+        } catch {}
+    };
+
+    const handleEnviarNfeForPedido = async (pedido: any) => {
+        try {
+            const { data: sessionRes } = await (supabase as any).auth.getSession();
+            const token: string | undefined = sessionRes?.session?.access_token;
+            if (!token) throw new Error('Sessão inválida ou expirada.');
+            if (!organizationId) throw new Error('Organização não encontrada.');
+            let companyId: string | null = null;
+            {
+                const { data: companiesForOrg } = await (supabase as any)
+                    .from('companies')
+                    .select('id')
+                    .eq('organization_id', organizationId)
+                    .order('is_active', { ascending: false })
+                    .order('created_at', { ascending: true })
+                    .limit(1);
+                companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+            }
+            if (!companyId) throw new Error('Nenhuma empresa ativa encontrada.');
+            const { data: nfSel, error: nfErr } = await (supabase as any)
+                .from('notas_fiscais')
+                .select('id, nfe_key')
+                .eq('company_id', companyId)
+                .eq('marketplace_order_id', String(pedido.marketplace_order_id || ''))
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            if (nfErr || !nfSel) throw new Error(nfErr?.message || 'Nota fiscal não encontrada para este pedido.');
+            const headers: Record<string, string> = {
+                apikey: SUPABASE_PUBLISHABLE_KEY,
+                Authorization: `Bearer ${token}`,
+            };
+            const { data, error } = await (supabase as any).functions.invoke<any>('mercado-livre-submit-xml', {
+                body: {
+                    organizationId,
+                    companyId,
+                    notaFiscalId: (nfSel as any)?.id,
+                },
+                headers,
+            } as any);
+            if (error || (data && data.error)) {
+                throw new Error(error?.message || data?.error || "Falha ao enviar XML");
+            }
+            const status = String(data?.status || 'sent');
+            toast({ title: "Envio de XML", description: `XML enviado ao Mercado Livre (${status}).` });
+        } catch (e: any) {
+            toast({ title: "Erro no envio", description: e?.message || String(e), variant: "destructive" });
+        }
+    };
 
     const handleSyncOrders = async () => {
         try {
@@ -1303,6 +1481,15 @@ function Pedidos() {
                             </Tooltip>
                         </div>
                     )}
+                    {activeStatus === 'emissao-nf' && (() => {
+                        const st = nfeFocusStatusByPedidoId[String(pedido.id)];
+                        const b = mapStatusFocusToBadge(st);
+                        return st ? (
+                            <Badge className={`uppercase ${b.className} h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
+                                {b.label}
+                            </Badge>
+                        ) : null;
+                    })()}
                 </div>
             );
         }},
@@ -1485,52 +1672,70 @@ function Pedidos() {
         }
     };
 
-    // Lógica de Emissão de NF-e (simulada)
-    const handleEmitirNfe = (pedidosToEmit: any[]) => {
-        if (pedidosToEmit.length === 0) return;
-
+    const handleEmitirNfe = async (pedidosToEmit: any[]) => {
+        if (!pedidosToEmit || pedidosToEmit.length === 0) return;
         setIsEmitting(true);
         setEmissionProgress(0);
         setEmittedCount(0);
         setFailedCount(0);
-
-        const totalToEmit = pedidosToEmit.length;
-        let successCount = 0;
-        let failCount = 0;
-
-        const interval = setInterval(() => {
-            if (successCount + failCount >= totalToEmit) {
-                clearInterval(interval);
-                setTimeout(() => setIsEmitting(false), 1500);
-                return;
+        try {
+            const { data: sessionRes } = await supabase.auth.getSession();
+            const token: string | undefined = sessionRes?.session?.access_token;
+            if (!token) throw new Error("Sessão expirada");
+            let organizationId: string | null = null;
+            {
+                const { data: orgId } = await supabase.rpc('get_current_user_organization_id');
+                organizationId = (Array.isArray(orgId) ? orgId?.[0] : orgId) || null;
             }
-
-            const isSuccess = Math.random() > 0.3; // 70% de chance de sucesso
-            const currentPedido = pedidosToEmit[successCount + failCount];
-
-            setPedidos(prevPedidos => prevPedidos.map(p => {
-                if (p.id === currentPedido.id) {
-                    if (isSuccess) {
-                        // Move para o próximo status
-                        return { ...p, status: 'NF Emitida' };
-                    } else {
-                        // Simula uma falha
-                        return { ...p, subStatus: 'Falha na emissao' };
-                    }
-                }
-                return p;
-            }));
-
-            if (isSuccess) {
-                successCount++;
-                setEmittedCount(successCount);
-            } else {
-                failCount++;
-                setFailedCount(failCount);
+            if (!organizationId) throw new Error("Organização não encontrada");
+            let companyId: string | null = null;
+            {
+                const { data: companiesForOrg } = await supabase
+                    .from('companies')
+                    .select('id')
+                    .eq('organization_id', organizationId)
+                    .order('is_active', { ascending: false })
+                    .order('created_at', { ascending: true })
+                    .limit(1);
+                companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
             }
-
-            setEmissionProgress(((successCount + failCount) / totalToEmit) * 100);
-        }, 500);
+            if (!companyId) throw new Error("Nenhuma empresa ativa encontrada");
+            const headers: Record<string, string> = {
+                apikey: SUPABASE_PUBLISHABLE_KEY,
+                Authorization: `Bearer ${token}`,
+            };
+            const orderIds = pedidosToEmit.map(p => p.id).filter(Boolean);
+            let envSel: string = 'homologacao';
+            try { envSel = localStorage.getItem('nfe_environment') || 'homologacao'; } catch {}
+            const { data, error } = await supabase.functions.invoke<any>('focus-nfe-emit', {
+                body: { organizationId, companyId, orderIds, environment: envSel },
+                headers,
+            } as any);
+            if (error || (data && data.error)) throw new Error(error?.message || data?.error || "Falha na emissão");
+            const results = Array.isArray(data?.results) ? data.results : [];
+            let successCount = 0;
+            let failCount = 0;
+            const idsSucceeded: string[] = [];
+            const idsFailed: string[] = [];
+            results.forEach((r: any) => {
+                if (r?.ok) { successCount++; idsSucceeded.push(r.orderId); } else { failCount++; idsFailed.push(r.orderId); }
+            });
+            setEmittedCount(successCount);
+            setFailedCount(failCount);
+            setEmissionProgress(100);
+            if (successCount + failCount > 0) {
+                setPedidos(prev => prev.map(p => {
+                    if (idsSucceeded.includes(p.id)) return { ...p, status_interno: 'NF Emitida' };
+                    if (idsFailed.includes(p.id)) return { ...p, subStatus: 'Falha na emissao' };
+                    return p;
+                }));
+            }
+        } catch {
+            setFailedCount(pedidosToEmit.length);
+            setEmissionProgress(100);
+        } finally {
+            setTimeout(() => setIsEmitting(false), 800);
+        }
     };
 
     const handleScan = () => {
@@ -2155,14 +2360,69 @@ function Pedidos() {
                                                 </SelectContent>
                                             </Select>
                                         </div>
-                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => handleEmitirNfe(filteredPedidos)}>
+                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => {
+                                            const ids = filteredPedidos.map(p => p.id).filter(Boolean);
+                                            if (ids.length === 0) return;
+                                            setBulkIdsQueue(ids);
+                                            setPedidoIdParaEmissao(ids[0]);
+                                            setIsEmissaoDrawerOpen(true);
+                                            setEmissaoRestartNonce(Date.now());
+                                        }}>
                                             <FileText className="w-4 h-4 mr-2" />
                                             Emitir em Massa
                                         </Button>
-                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => handleEmitirNfe(filteredPedidos.filter(p => selectedPedidosEmissao.includes(p.id)))}>
+                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => {
+                                            const ids = filteredPedidos.filter(p => selectedPedidosEmissao.includes(p.id)).map(p => p.id).filter(Boolean);
+                                            if (ids.length === 0) return;
+                                            setBulkIdsQueue(ids);
+                                            setPedidoIdParaEmissao(ids[0]);
+                                            setIsEmissaoDrawerOpen(true);
+                                            setEmissaoRestartNonce(Date.now());
+                                        }}>
                                             <FileText className="w-4 h-4 mr-2" />
                                             Emitir Selecionados ({selectedPedidosEmissao.length})
                                         </Button>
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    size="icon"
+                                                    className="rounded-2xl"
+                                                    aria-label="Configurar ambiente de emissão"
+                                                >
+                                                    <Settings className="w-4 h-4" />
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="start">
+                                                <DropdownMenuItem
+                                                    className={emitEnvironment === 'homologacao' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => {
+                                                        e.preventDefault();
+                                                        setEmitEnvironment('homologacao');
+                                                        try { localStorage.setItem('nfe_environment', 'homologacao'); } catch {}
+                                                    }}
+                                                >
+                                                    Ambiente: Homologação
+                                                    {emitEnvironment === 'homologacao' && <Check className="w-4 h-4 ml-auto" />}
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem
+                                                    className={emitEnvironment === 'producao' ? 'text-novura-primary font-medium' : ''}
+                                                    onSelect={(e) => {
+                                                        e.preventDefault();
+                                                        setEmitEnvironment('producao');
+                                                        try { localStorage.setItem('nfe_environment', 'producao'); } catch {}
+                                                    }}
+                                                >
+                                                    Ambiente: Produção
+                                                    {emitEnvironment === 'producao' && <Check className="w-4 h-4 ml-auto" />}
+                                                </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+                                        {emitEnvironment === 'homologacao' && (
+                                            <Badge className="ml-1 bg-orange-100 text-orange-700 border border-orange-200">
+                                                Homologação
+                                            </Badge>
+                                        )}
                                         <div className="flex items-center gap-0.5 select-none">
                                             <Button
                                                 variant="outline"
@@ -2675,9 +2935,55 @@ function Pedidos() {
                                                                     </Button>
                                                                 </div>
                                                             ) : (
-                                                                <Button variant="link" className="h-8 w-8 p-0 text-primary" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
-                                                                    <ChevronRight className="h-4 w-4" />
-                                                                </Button>
+                                                                <div className="flex items-center justify-center gap-2">
+                                                                    {activeStatus === "emissao-nf" && !nfeAuthorizedByPedidoId[String(pedido.id)] && (
+                                                                        <Button
+                                                                            variant="outline"
+                                                                            className="h-8 px-4"
+                                                                            onClick={(e) => { e.stopPropagation(); setPedidoIdParaEmissao(pedido.id); setIsEmissaoDrawerOpen(true); setEmissaoRestartNonce(Date.now()); }}
+                                                                        >
+                                                                            Emitir
+                                                                        </Button>
+                                                                    )}
+                                                                    <DropdownMenu>
+                                                                        <DropdownMenuTrigger asChild>
+                                                                            <Button variant="outline" className="h-8 px-3" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); }} data-details-trigger>
+                                                                                Mais
+                                                                                <ChevronDown className="h-4 w-4 ml-1" />
+                                                                            </Button>
+                                                                        </DropdownMenuTrigger>
+                                                                        <DropdownMenuContent align="end">
+                                                                            <DropdownMenuItem
+                                                                                onClick={(e) => {
+                                                                                    e.stopPropagation();
+                                                                                    handleOpenDetailsDrawer(pedido);
+                                                                                }}
+                                                                            >
+                                                                                Mostrar detalhes
+                                                                            </DropdownMenuItem>
+                                                                            {activeStatus === "emissao-nf" && (
+                                                                                <DropdownMenuItem
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        handleSyncNfeForPedido(pedido);
+                                                                                    }}
+                                                                                >
+                                                                                    Sincronizar NF-e
+                                                                                </DropdownMenuItem>
+                                                                            )}
+                                                                            {activeStatus === "emissao-nf" && nfeAuthorizedByPedidoId[String(pedido.id)] && (
+                                                                                <DropdownMenuItem
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        handleEnviarNfeForPedido(pedido);
+                                                                                    }}
+                                                                                >
+                                                                                    Enviar NFe
+                                                                                </DropdownMenuItem>
+                                                                            )}
+                                                                        </DropdownMenuContent>
+                                                                    </DropdownMenu>
+                                                                </div>
                                                             )}
                                                         </td>
                                                     </tr>
@@ -2746,6 +3052,33 @@ function Pedidos() {
 
                 {/* Drawer de Detalhes do Pedido */}
                 <PedidoDetailsDrawer pedido={selectedPedido} open={isDetailsDrawerOpen} onOpenChange={(open) => { setIsDetailsDrawerOpen(open); if (!open) { const btn = document.querySelector<HTMLButtonElement>('button[data-details-trigger]'); btn?.focus(); } }} />
+
+                {/* Drawer de Emissão de NF-e */}
+                <EmissaoNFDrawer
+                    open={isEmissaoDrawerOpen}
+                    onOpenChange={(open) => { setIsEmissaoDrawerOpen(open); if (!open) { setPedidoIdParaEmissao(null); } }}
+                    pedidoId={pedidoIdParaEmissao}
+                    onOpenDetails={(id) => {
+                        const p = pedidos.find(pp => String(pp.id) === String(id));
+                        if (p) handleOpenDetailsDrawer(p);
+                    }}
+                    autoAdvance={bulkIdsQueue.length > 0}
+                    queueIndex={pedidoIdParaEmissao ? Math.max(0, bulkIdsQueue.findIndex(id => id === pedidoIdParaEmissao)) : undefined}
+                    queueTotal={bulkIdsQueue.length || undefined}
+                    restartNonce={emissaoRestartNonce}
+                    onEmissaoConcluida={() => {
+                        if (bulkIdsQueue.length > 1) {
+                            const next = bulkIdsQueue.slice(1);
+                            setBulkIdsQueue(next);
+                            setPedidoIdParaEmissao(next[0]);
+                        } else {
+                            setIsEmissaoDrawerOpen(false);
+                            setPedidoIdParaEmissao(null);
+                            setBulkIdsQueue([]);
+                        }
+                        try { refreshNfeAuthorizedMapForList(); } catch {}
+                    }}
+                />
 
                 {/* Drawer de Filtros */}
                 <Drawer direction="right" open={isFilterDrawerOpen} onOpenChange={(open) => { console.log('[Pedidos] Filter Drawer onOpenChange:', open); setIsFilterDrawerOpen(open); }}>

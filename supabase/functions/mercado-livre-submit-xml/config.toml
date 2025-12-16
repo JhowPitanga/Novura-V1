@@ -1,0 +1,2 @@
+[functions.mercado-livre-submit-xml]
+verify_jwt = true

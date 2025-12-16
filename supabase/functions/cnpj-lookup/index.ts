@@ -77,8 +77,18 @@ serve(async (req) => {
       situacao_cnpj: String(data?.situacao || ""),
     } as any;
 
-    // Fallback: se situacao_cnpj vier vazio, tentar outra API pública para obter a descrição da situação
-    if (!mapped.situacao_cnpj) {
+    try {
+      const simplesOpt = Boolean(data?.simples?.optante);
+      const simeiOpt = Boolean(data?.simei?.optante);
+      if (simeiOpt) {
+        mapped.tributacao = "MEI";
+      } else if (simplesOpt) {
+        mapped.tributacao = "Simples Nacional";
+      }
+    } catch (_) {}
+
+    // Fallback público: complementar IE/descrições se necessário
+    if (!mapped.inscricao_estadual || !mapped.situacao_cnpj) {
       try {
         const altUrl = `https://publica.cnpj.ws/cnpj/${digits}`;
         const altResp = await fetch(altUrl, { headers: { accept: "application/json" } });
@@ -111,13 +121,17 @@ serve(async (req) => {
     try {
       const daysNum = Number(days) > 0 ? Math.floor(Number(days)) : 365;
       if (token) {
-        const cccUrl = `https://receitaws.com.br/v1/ccc/${digits}/days/${daysNum}`;
+        const cccUrl = `https://receitaws.com.br/v1/ccc/${digits}/days/${daysNum}?fallback=cacheOnError`;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort("CCC timeout"), 9000);
         const cccResp = await fetch(cccUrl, {
           headers: {
             accept: "application/json",
             authorization: `Bearer ${token}`,
           },
+          signal: controller.signal,
         });
+        clearTimeout(timeout);
         if (cccResp.ok) {
           const cccJson = await cccResp.json();
           const ok = String(cccJson?.status || "").toUpperCase() === "OK";
@@ -125,18 +139,21 @@ serve(async (req) => {
             const registros = cccJson.registros as any[];
             const preferredUf = String(mapped.estado || "").toUpperCase();
             const normalize = (s: string) => String(s || "").toUpperCase();
-            let record = registros.find((r) => normalize(r.uf) === preferredUf)
+            let record = registros.find((r) => normalize(r.uf) === preferredUf && String(r?.ie || "").length > 0)
+              || registros.find((r) => String(r?.ie || "").length > 0)
               || registros.find((r) => /ATIV|HABIL|REGUL/.test(normalize(r?.situacao_ie)))
               || registros[0];
 
             if (record) {
               mapped.inscricao_estadual = String(record.ie || "");
+              mapped.estado = mapped.estado || String(record.uf || "");
+              mapped.situacao_cnpj = mapped.situacao_cnpj || String(record.situacao_cnpj || "");
               const regime = String(record.regime_icms || "");
               const regLower = regime.toLowerCase();
               let trib = "";
               if (regLower.includes("mei") || regLower.includes("simei") || regLower.includes("microempreendedor")) {
                 trib = "MEI";
-              } else if (regLower.includes("simples")) {
+              } else if (regLower.includes("simples") || regLower.includes("sn") || regLower.includes("simples nacional")) {
                 trib = "Simples Nacional";
               } else if (regLower) {
                 trib = "Regime Normal";

@@ -66,21 +66,22 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
   useEffect(() => {
     const loadTaxRules = async () => {
       try {
-        const { data, error } = await supabase
+        const { data, error } = await (supabase as any)
           .from('tax_rules_catalog')
           .select('scope, code, title, active')
           .eq('active', true)
           .in('scope', ['ICMS','IPI','PIS','COFINS'])
           .order('code', { ascending: true });
         if (error) throw error;
+        const rows: any[] = Array.isArray(data) ? (data as any[]) : [];
         const toOption = (r: any): CSOSNOption => ({
           value: r.code,
           label: `${r.code} - ${r.title}`,
         });
-        const icms = (data || []).filter(r => r.scope === 'ICMS').map(toOption);
-        const ipi = (data || []).filter(r => r.scope === 'IPI').map(toOption);
-        const pis = (data || []).filter(r => r.scope === 'PIS').map(toOption);
-        const cofins = (data || []).filter(r => r.scope === 'COFINS').map(toOption);
+        const icms = rows.filter(r => r.scope === 'ICMS').map(toOption);
+        const ipi = rows.filter(r => r.scope === 'IPI').map(toOption);
+        const pis = rows.filter(r => r.scope === 'PIS').map(toOption);
+        const cofins = rows.filter(r => r.scope === 'COFINS').map(toOption);
         setCsosnICMSOptions(icms);
         setCstIPIOptions(ipi);
         setCstPISOptions(pis);
@@ -223,6 +224,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
     if (currentStep === 1) {
       // Observação (nome do imposto) obrigatório (empresa opcional para testes)
       if (!observacao || observacao.trim().length < 2) return false;
+      if (!naturezaSaida || naturezaSaida.trim().length < 2) return false;
     }
     return true;
   };
@@ -259,7 +261,7 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
       } as const;
 
       const dbPayload: any = {
-        organization_id: organizationId,
+        organizations_id: organizationId,
         company_id: selectedCompany?.id,
         observacao,
         is_default: isDefaultForCompany,
@@ -274,20 +276,41 @@ export function AdicionarImpostoModal({ open, onOpenChange, companies, initialDa
 
       // Se marcado como padrão, desmarcar outros para a mesma empresa (garantindo unicidade)
       if (dbPayload.is_default) {
-        await supabase
+        await (supabase as any)
           .from('company_tax_configs')
           .update({ is_default: false })
           .eq('company_id', dbPayload.company_id);
       }
 
       // Insere novo registro de configuração fiscal da empresa
-      const { data: inserted, error } = await supabase
+      const { data: inserted, error } = await (supabase as any)
         .from('company_tax_configs')
         .insert(dbPayload)
-        .select('id, company_id, organization_id, created_at')
+        .select('id, company_id, organizations_id, created_at')
         .single();
 
       if (error) throw error;
+
+      // Persistir colunas separadas na tabela principal (icms, ipi, pis, cofins, adicionais)
+      try {
+        const separatedCols = {
+          natureza_saida: naturezaSaida || null,
+          natureza_entrada: naturezaEntrada || null,
+          icms,
+          ipi: { pf: ipiPF, pj: ipiPJ },
+          pis: { pf: pisPF, pj: pisPJ },
+          cofins: { pf: cofinsPF, pj: cofinsPJ },
+          adicionais: { infoFisco, infoComplementar },
+        };
+        await (supabase as any)
+          .from('company_tax_configs')
+          .update(separatedCols)
+          .eq('id', inserted.id);
+      } catch (e) {
+        console.error('Falha ao atualizar colunas separadas em company_tax_configs', e);
+      }
+
+      // Dados salvos apenas em company_tax_configs (payload e colunas JSON)
 
       toast.success("Imposto salvo com sucesso no banco de dados");
       const resultRecord = {

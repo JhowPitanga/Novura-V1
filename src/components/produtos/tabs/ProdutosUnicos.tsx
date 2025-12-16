@@ -15,16 +15,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 
 export function ProdutosUnicos() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState("");
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const { products, loading } = useProducts();
-  const { categories, createCategory, updateCategory, deleteCategory } = useCategories();
+  const { categories, createCategory, updateCategory, deleteCategory, linkCategory } = useCategories();
   const { toast } = useToast();
 
   const [list, setList] = useState<any[]>([]);
@@ -36,8 +36,8 @@ export function ProdutosUnicos() {
     setList(products || []);
   }, [products]);
   
-  const handleCategoryChange = (categoryId: string) => {
-    setSelectedCategory(categoryId);
+  const handleCategoriesChange = (categoryIds: string[]) => {
+    setSelectedCategories(Array.isArray(categoryIds) ? categoryIds : []);
   };
 
   const handleAddCategory = async (newCategory: { name: string; parent_id?: string }) => {
@@ -61,6 +61,14 @@ export function ProdutosUnicos() {
       await deleteCategory(categoryId);
     } catch (error) {
       console.error("Error deleting category:", error);
+    }
+  };
+ 
+  const handleLinkCategory = async (categoryId: string, parentId: string | null) => {
+    try {
+      await linkCategory(categoryId, parentId);
+    } catch (error) {
+      console.error("Error linking category:", error);
     }
   };
 
@@ -93,8 +101,8 @@ export function ProdutosUnicos() {
   const filteredProducts = (list || [])
     .filter(product => product.type === 'UNICO')
     .filter(product => {
-      if (!selectedCategory) return true;
-      return product.category_id === selectedCategory;
+      if (!selectedCategories || selectedCategories.length === 0) return true;
+      return selectedCategories.includes(product.category_id);
     })
     .filter(product => {
       if (!searchTerm) return true;
@@ -109,12 +117,13 @@ export function ProdutosUnicos() {
       <ProductFilters
         searchTerm={searchTerm}
         onSearchChange={setSearchTerm}
-        categories={categories.map(cat => ({ id: cat.id, name: cat.name, children: [] }))}
-        selectedCategory={selectedCategory}
-        onCategoryChange={handleCategoryChange}
+        categories={categories.map(cat => ({ id: cat.id, name: cat.name, parent_id: (cat as any).parent_id }))}
+        selectedCategories={selectedCategories}
+        onCategoriesChange={handleCategoriesChange}
         onAddCategory={handleAddCategory}
         onUpdateCategory={handleUpdateCategory}
         onDeleteCategory={handleDeleteCategory}
+        onLinkCategory={handleLinkCategory}
         placeholder="Buscar produtos únicos..."
         selectedCount={selectedIds.length}
         onBulkActionSelect={(action) => {
@@ -187,6 +196,7 @@ export function ProdutosUnicos() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Categorizar selecionados</DialogTitle>
+            <DialogDescription>Escolha uma categoria para aplicar aos itens selecionados.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <Select value={targetCategory} onValueChange={setTargetCategory}>

@@ -114,6 +114,32 @@ export function useCategories() {
       throw err;
     }
   };
+ 
+   const linkCategory = async (categoryId: string, parentId: string | null) => {
+     try {
+       const { error } = await supabase
+         .from('categories')
+         .update({ parent_id: parentId, updated_at: new Date().toISOString() })
+         .eq('id', categoryId);
+ 
+       if (error) throw error;
+ 
+       fetchCategories();
+ 
+       toast({
+         title: "Sucesso",
+         description: "Categorias vinculadas com sucesso",
+       });
+     } catch (err) {
+       const errorMessage = err instanceof Error ? err.message : 'Erro ao vincular categorias';
+       toast({
+         title: "Erro",
+         description: errorMessage,
+         variant: "destructive",
+       });
+       throw err;
+     }
+   };
 
   useEffect(() => {
     fetchCategories();
@@ -125,6 +151,7 @@ export function useCategories() {
     createCategory,
     updateCategory,
     deleteCategory,
+    linkCategory,
     refetch: fetchCategories,
   };
 }
