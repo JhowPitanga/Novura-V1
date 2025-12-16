@@ -8,6 +8,8 @@ import { Paginacao } from "./Paginacao";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSearchParams } from "react-router-dom";
 import { EmissaoNFDrawer } from './EmissaoNFDrawer';
+import { Settings } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 interface OrderItem {
   product_name: string;
@@ -45,29 +47,67 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
   
   const [isEmissaoDrawerOpen, setIsEmissaoDrawerOpen] = useState(false);
   const [pedidoIdParaEmissao, setPedidoIdParaEmissao] = useState<string | null>(null);
+  const [restartNonce, setRestartNonce] = useState(0);
+  const [emitEnvironment, setEmitEnvironment] = useState<'homologacao' | 'producao'>(() => {
+    try {
+      const v = localStorage.getItem('nfe_environment');
+      return v === 'producao' ? 'producao' : 'homologacao';
+    } catch {
+      return 'homologacao';
+    }
+  });
 
   const fetchPedidos = useCallback(async () => {
     setLoading(true);
     try {
-      // Mock data for demonstration since get_orders_for_nfe function doesn't exist
-      const mockData: OrderData[] = [
-        {
-          id: "1",
-          marketplace_order_id: "ML001",
-          customer_name: "João Silva",
-          order_total: 150.00,
-          status: "processando",
-          created_at: new Date().toISOString(),
+      let orgId: string | null = null;
+      {
+        const { data: orgRes } = await supabase.rpc('get_current_user_organization_id');
+        orgId = (Array.isArray(orgRes) ? orgRes?.[0] : orgRes) || null;
+      }
+      let q: any = (supabase as any)
+        .from('marketplace_orders_presented_new')
+        .select(`
+          id,
+          marketplace_order_id,
+          created_at,
+          marketplace,
+          shipping_type,
+          status_interno,
+          first_item_title,
+          first_item_sku,
+          items_total_quantity,
+          first_item_id
+        `, { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+      if (orgId) {
+        q = (q as any).eq('organizations_id', orgId);
+      }
+      const { data, error } = await q;
+      if (error) throw error;
+      const rows: any[] = Array.isArray(data) ? data : [];
+      const parsed: OrderData[] = rows
+        .filter((o: any) => String(o?.status_interno || '') === 'Emissao NF')
+        .map((o: any) => ({
+          id: String(o.id),
+          marketplace_order_id: String(o.marketplace_order_id || o.id),
+          customer_name: '',
+          order_total: 0,
+          status: String(o.status_interno || ''),
+          created_at: String(o.created_at),
           order_items: [
-            { product_name: "Produto A", quantity: 2, sku: "SKU001" }
+            {
+              product_name: String(o.first_item_title || ''),
+              quantity: Number(o.items_total_quantity || 1),
+              sku: String(o.first_item_sku || '')
+            }
           ],
-          marketplace: "Mercado Livre",
-          platform_id: "ML123",
-          shipping_type: "PAC"
-        }
-      ];
-      
-      setPedidos(mockData);
+          marketplace: String(o.marketplace || ''),
+          platform_id: String(o.first_item_id || ''),
+          shipping_type: String(o.shipping_type || '')
+        }));
+      setPedidos(parsed);
     } catch (error: any) {
       console.error("Erro ao buscar pedidos para NF-e:", error);
       toast({
@@ -87,6 +127,7 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
 
   const handleEmitirNfeClick = (pedidoId: string) => {
     setPedidoIdParaEmissao(pedidoId);
+    setRestartNonce((n) => n + 1);
     setIsEmissaoDrawerOpen(true);
   };
 
@@ -104,6 +145,33 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-end space-x-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="icon" aria-label="Configurar ambiente de emissão">
+              <Settings className="w-4 h-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onClick={() => {
+                setEmitEnvironment('homologacao');
+                try { localStorage.setItem('nfe_environment', 'homologacao'); } catch {}
+              }}
+            >
+              Ambiente: Homologação
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                setEmitEnvironment('producao');
+                try { localStorage.setItem('nfe_environment', 'producao'); } catch {}
+              }}
+            >
+              Ambiente: Produção
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
       {loading ? (
         <div className="space-y-4">
           {[...Array(limit)].map((_, index) => (
@@ -183,6 +251,8 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
         onOpenChange={setIsEmissaoDrawerOpen}
         pedidoId={pedidoIdParaEmissao}
         onEmissaoConcluida={handleEmissaoConcluida}
+        restartNonce={restartNonce}
+        environment={emitEnvironment}
       />
     </div>
   );

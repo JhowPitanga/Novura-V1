@@ -1,0 +1,2 @@
+[functions.focus-webhook]
+verify_jwt = false

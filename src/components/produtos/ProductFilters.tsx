@@ -9,11 +9,12 @@ interface ProductFiltersProps {
   searchTerm: string;
   onSearchChange: (value: string) => void;
   categories: any[];
-  selectedCategory: string;
-  onCategoryChange: (categoryId: string) => void;
+  selectedCategories: string[];
+  onCategoriesChange: (categoryIds: string[]) => void;
   onAddCategory: (newCategory: { name: string; parent_id?: string }) => void;
   onUpdateCategory?: (categoryId: string, name: string) => void;
   onDeleteCategory?: (categoryId: string) => void;
+  onLinkCategory?: (categoryId: string, parentId: string | null) => void;
   placeholder?: string;
   selectedCount?: number;
   onBulkActionSelect?: (action: string) => void;
@@ -23,11 +24,12 @@ export function ProductFilters({
   searchTerm,
   onSearchChange,
   categories,
-  selectedCategory,
-  onCategoryChange,
+  selectedCategories,
+  onCategoriesChange,
   onAddCategory,
   onUpdateCategory,
   onDeleteCategory,
+  onLinkCategory,
   placeholder = "Buscar produtos...",
   selectedCount = 0,
   onBulkActionSelect
@@ -47,11 +49,12 @@ export function ProductFilters({
         <div className="min-w-[180px]">
           <CategoryDropdown
             categories={categories}
-            selectedCategory={selectedCategory}
-            onCategoryChange={onCategoryChange}
+            selectedCategories={selectedCategories}
+            onCategoriesChange={onCategoriesChange}
             onAddCategory={onAddCategory}
             onUpdateCategory={onUpdateCategory}
             onDeleteCategory={onDeleteCategory}
+            onLinkCategory={onLinkCategory}
           />
         </div>
         <DropdownMenu>

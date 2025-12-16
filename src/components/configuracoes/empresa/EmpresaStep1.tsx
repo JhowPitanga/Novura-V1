@@ -1,4 +1,5 @@
 import type { ChangeEvent } from "react";
+import { MousePointerClick } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -17,16 +18,18 @@ interface EmpresaData {
   numero: string;
   bairro: string;
   complemento?: string;
- }
+  logo_url?: string;
+}
 
  interface EmpresaStep1Props {
    data: EmpresaData;
    updateData: (data: Partial<EmpresaData>) => void;
    showErrors?: boolean;
    cnpjBlocked?: boolean;
+   onLogoSelected?: (file: File | null) => void;
  }
 
- export function EmpresaStep1({ data, updateData, showErrors, cnpjBlocked }: EmpresaStep1Props) {
+ export function EmpresaStep1({ data, updateData, showErrors, cnpjBlocked, onLogoSelected }: EmpresaStep1Props) {
    const formatCNPJ = (value: string) => {
     const digits = value.replace(/\D/g, "").slice(0, 14);
     const parts = [
@@ -114,7 +117,17 @@ interface EmpresaData {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="inscricao_estadual">Inscrição Estadual (IE)</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="inscricao_estadual">Inscrição Estadual (IE)</Label>
+              <a
+                href="http://www.sintegra.gov.br/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-medium text-purple-600 hover:text-purple-700"
+              >
+                Não sabe? busque aqui
+              </a>
+            </div>
             <Input
               id="inscricao_estadual"
               value={data.inscricao_estadual}
@@ -223,6 +236,44 @@ interface EmpresaData {
               placeholder="Apartamento, Bloco, Referência"
               className="mt-1"
             />
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h4 className="text-md font-medium text-gray-900 mb-4">Logo para DANFE</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <Label htmlFor="logo_file">Logo (PNG até 200x200)</Label>
+            <div className="flex items-center gap-3">
+              <Input
+                id="logo_file"
+                type="file"
+                accept="image/png,image/*"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] || null;
+                  if (onLogoSelected) onLogoSelected(f);
+                }}
+                className="sr-only"
+              />
+              <label
+                htmlFor="logo_file"
+                className="inline-flex items-center gap-2 text-purple-600 hover:text-purple-700 cursor-pointer select-none"
+              >
+                <MousePointerClick className="w-4 h-4" />
+                <span>Escolher arquivo</span>
+              </label>
+            </div>
+            {Boolean(data.logo_url) && (
+              <div className="mt-2">
+                <img
+                  src={data.logo_url}
+                  alt="Pré-visualização do logo"
+                  className="border rounded-md"
+                  style={{ width: 200, height: 200, objectFit: 'contain', backgroundColor: '#fff' }}
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>

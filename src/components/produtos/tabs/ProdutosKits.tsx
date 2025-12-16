@@ -14,7 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -22,8 +22,8 @@ import { supabase } from "@/integrations/supabase/client";
 export function ProdutosKits() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState("");
-  const { categories, createCategory } = useCategories();
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const { categories, createCategory, linkCategory } = useCategories();
   const { kits, loading } = useKits();
   const [list, setList] = useState<any[]>([]);
   const [confirmDeleteOpen1, setConfirmDeleteOpen1] = useState(false);
@@ -35,8 +35,8 @@ export function ProdutosKits() {
     setList(kits || []);
   }, [kits]);
   
-  const handleCategoryChange = (categoryId: string) => {
-    setSelectedCategory(categoryId);
+  const handleCategoriesChange = (categoryIds: string[]) => {
+    setSelectedCategories(Array.isArray(categoryIds) ? categoryIds : []);
   };
 
   const handleAddCategory = async (newCategory: { name: string; parent_id?: string }) => {
@@ -46,12 +46,20 @@ export function ProdutosKits() {
       console.error("Error creating category:", error);
     }
   };
+ 
+  const handleLinkCategory = async (categoryId: string, parentId: string | null) => {
+    try {
+      await linkCategory(categoryId, parentId);
+    } catch (error) {
+      console.error("Error linking category:", error);
+    }
+  };
 
   // Filtrar kits pela categoria selecionada e termo de busca
   const filteredKits = (list || [])
     .filter(kit => {
-      if (!selectedCategory) return true;
-      return kit.category_id === selectedCategory;
+      if (!selectedCategories || selectedCategories.length === 0) return true;
+      return selectedCategories.includes(kit.category_id);
     })
     .filter(kit => {
       if (!searchTerm) return true;
@@ -66,10 +74,11 @@ export function ProdutosKits() {
       <ProductFilters
         searchTerm={searchTerm}
         onSearchChange={setSearchTerm}
-        categories={categories.map(cat => ({ id: cat.id, name: cat.name, children: [] }))}
-        selectedCategory={selectedCategory}
-        onCategoryChange={handleCategoryChange}
+        categories={categories.map(cat => ({ id: cat.id, name: cat.name, parent_id: (cat as any).parent_id }))}
+        selectedCategories={selectedCategories}
+        onCategoriesChange={handleCategoriesChange}
         onAddCategory={handleAddCategory}
+        onLinkCategory={handleLinkCategory}
         placeholder="Buscar kits..."
         selectedCount={selectedIds.length}
         onBulkActionSelect={(action) => {
@@ -146,6 +155,7 @@ export function ProdutosKits() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Categorizar selecionados</DialogTitle>
+            <DialogDescription>Escolha uma categoria para aplicar aos itens selecionados.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <Select value={targetCategory} onValueChange={setTargetCategory}>

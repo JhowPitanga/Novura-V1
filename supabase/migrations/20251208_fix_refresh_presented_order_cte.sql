@@ -144,8 +144,18 @@ BEGIN
       (rec.shipments->0->'shipping_option'->'estimated_delivery_limit'->>'date')::timestamptz,
       (rec.data->'shipping'->'estimated_delivery_limit'->>'date')::timestamptz
     ) AS estimated_delivery_limit_at,
-    COALESCE(rec.shipments->0->'sla'->>'status', rec.shipments->0->>'sla_status') AS shipment_sla_status,
-    COALESCE(rec.shipments->0->'sla'->>'service', rec.shipments->0->>'sla_service') AS shipment_sla_service,
+    (
+      SELECT COALESCE(s->'sla'->>'status', s->>'sla_status')
+      FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s
+      WHERE COALESCE(s->'sla'->>'status', s->>'sla_status') IS NOT NULL AND COALESCE(s->'sla'->>'status', s->>'sla_status') <> ''
+      LIMIT 1
+    ) AS shipment_sla_status,
+    (
+      SELECT COALESCE(s->'sla'->>'service', s->>'sla_service')
+      FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s
+      WHERE COALESCE(s->'sla'->>'service', s->>'sla_service') IS NOT NULL AND COALESCE(s->'sla'->>'service', s->>'sla_service') <> ''
+      LIMIT 1
+    ) AS shipment_sla_service,
     COALESCE(
       (rec.shipments->0->'sla'->>'expected_date')::timestamptz,
       (rec.shipments->0->>'sla_expected_date')::timestamptz,

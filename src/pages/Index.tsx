@@ -76,27 +76,26 @@ const Index = () => {
       setLoadingCerts(true);
       try {
         const { data, error } = await supabase
-          .from('company_certificates')
-          .select('id, company_id, organizations_id, valid_to, file_name, companies:company_id(razao_social)')
-          .eq('active', true)
-          .eq('organizations_id', organizationId)
-          .not('valid_to', 'is', null)
-          .lte('valid_to', toDateStr)
-          .order('valid_to', { ascending: true });
+          .from('companies')
+          .select('id, organization_id, certificado_validade, certificado_a1_url, razao_social')
+          .eq('organization_id', organizationId)
+          .not('certificado_validade', 'is', null)
+          .lte('certificado_validade', toDateStr)
+          .order('certificado_validade', { ascending: true });
 
         if (error) throw error;
 
         const mapped: ExpiringCert[] = (data || []).map((row: any) => {
-          const vt = row.valid_to as string;
+          const vt = row.certificado_validade as string;
           const vtDate = new Date(vt + 'T00:00:00');
           const diffMs = vtDate.getTime() - today.getTime();
           const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
           return {
             id: row.id,
-            company_id: row.company_id,
+            company_id: row.id,
             valid_to: vt,
-            file_name: row.file_name ?? null,
-            company_name: row.companies?.razao_social ?? null,
+            file_name: row.certificado_a1_url ?? null,
+            company_name: row.razao_social ?? null,
             daysLeft,
           };
         });

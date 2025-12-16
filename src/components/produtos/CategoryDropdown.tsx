@@ -3,7 +3,7 @@ import { useState } from "react";
 import { ChevronDown, Plus, Tag, Trash2, Edit, ArrowLeft, Info, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
+import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger, DrawerDescription } from "@/components/ui/drawer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,6 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
 
 interface Category {
   id: string;
@@ -21,23 +23,30 @@ interface Category {
 
 interface CategoryDropdownProps {
   categories: Category[];
-  selectedCategory: string;
-  onCategoryChange: (categoryId: string) => void;
+  selectedCategory?: string;
+  selectedCategories?: string[];
+  onCategoryChange?: (categoryId: string) => void;
+  onCategoriesChange?: (categoryIds: string[]) => void;
   onAddCategory: (category: { name: string; parent_id?: string }) => void;
   onUpdateCategory?: (categoryId: string, name: string) => void;
   onDeleteCategory?: (categoryId: string) => void;
+  onLinkCategory?: (categoryId: string, parentId: string | null) => void;
 }
 
 type DrawerStep = 'filter' | 'create' | 'addChild' | 'edit';
 
-export function CategoryDropdown({ categories, selectedCategory, onCategoryChange, onAddCategory, onUpdateCategory, onDeleteCategory }: CategoryDropdownProps) {
+export function CategoryDropdown({ categories, selectedCategory = "", selectedCategories = [], onCategoryChange, onCategoriesChange, onAddCategory, onUpdateCategory, onDeleteCategory, onLinkCategory }: CategoryDropdownProps) {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isPopoverOpen, setIsPopoverOpen] = useState(false);
+  const [pendingSelectedCategories, setPendingSelectedCategories] = useState<string[]>(selectedCategories.length ? selectedCategories : (selectedCategory ? [selectedCategory] : []));
+  const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
   const [currentStep, setCurrentStep] = useState<DrawerStep>('filter');
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newChildCategoryName, setNewChildCategoryName] = useState("");
   const [selectedParentCategory, setSelectedParentCategory] = useState("");
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [expandedEditParents, setExpandedEditParents] = useState<Record<string, boolean>>({});
 
   // Organizar categorias em estrutura hierárquica
   const organizeCategories = (cats: Category[]) => {
@@ -65,6 +74,25 @@ export function CategoryDropdown({ categories, selectedCategory, onCategoryChang
   };
 
   const organizedCategories = organizeCategories(categories);
+
+  const toggleParentExpand = (parentId: string) => {
+    setExpandedParents(prev => ({ ...prev, [parentId]: !prev[parentId] }));
+  };
+
+  const handleSaveSelection = () => {
+    const unique = Array.from(new Set(pendingSelectedCategories));
+    if (onCategoriesChange) {
+      onCategoriesChange(unique);
+    } else if (onCategoryChange) {
+      onCategoryChange(unique[0] || "");
+    }
+    setIsPopoverOpen(false);
+  };
+
+  const handleCancelSelection = () => {
+    setPendingSelectedCategories(selectedCategories.length ? selectedCategories : (selectedCategory ? [selectedCategory] : []));
+    setIsPopoverOpen(false);
+  };
 
   const handleSaveCategory = () => {
     if (newCategoryName.trim()) {
@@ -222,7 +250,140 @@ export function CategoryDropdown({ categories, selectedCategory, onCategoryChang
     );
   };
 
-  const selectedCategoryName = categories.find(cat => cat.id === selectedCategory)?.name || "Todas as categorias";
+  const selectedLabel = (() => {
+    const current = pendingSelectedCategories.filter(Boolean);
+    if (current.length === 0) return "Todas as categorias";
+    const selectedSet = new Set(current);
+    organizedCategories.forEach(parent => {
+      const childIds = (parent.children || []).map(c => c.id);
+      const allChildrenSelected = childIds.length > 0 && childIds.every(id => selectedSet.has(id));
+      const parentSelected = selectedSet.has(parent.id);
+      if (parentSelected || allChildrenSelected) {
+        childIds.forEach(id => selectedSet.delete(id));
+        selectedSet.add(parent.id);
+      }
+    });
+    const effectiveIds = Array.from(selectedSet);
+    const names = effectiveIds.map(id => categories.find(c => c.id === id)?.name || "").filter(Boolean);
+    if (names.length === 0) return "Categorias selecionadas";
+    const truncate = (s: string, max = 12) => (s.length <= max ? s : s.slice(0, max - 3) + "...");
+    if (names.length === 1) return truncate(names[0]);
+    const first = truncate(names[0]);
+    const extra = names.length - 1;
+    return `${first}, +${extra}`;
+  })();
+
+  const renderPopoverTree = () => {
+    return (
+      <div className="space-y-2">
+        <div className="text-sm font-medium text-gray-700">Categorias</div>
+        <ScrollArea className="max-h-80 pr-1">
+          <div className="space-y-1">
+            {/* Todas as categorias */}
+            <div className="flex items-center justify-between px-2 py-1 rounded hover:bg-gray-50">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  checked={pendingSelectedCategories.length === 0}
+                  onCheckedChange={(checked) => {
+                    if (checked) setPendingSelectedCategories([]);
+                  }}
+                />
+                <span className="text-sm">Todas as categorias</span>
+              </div>
+            </div>
+            {/* Pais e filhos */}
+            {organizedCategories.map((parent) => {
+              const hasChildren = (parent.children || []).length > 0;
+              const expanded = !!expandedParents[parent.id];
+              return (
+                <div key={parent.id} className="px-2 py-1">
+                  <div className="grid grid-cols-[24px_1fr_24px] items-center gap-2 rounded hover:bg-gray-50">
+                    <div className="flex items-center justify-center">
+                      <Checkbox
+                        checked={pendingSelectedCategories.includes(parent.id)}
+                        onCheckedChange={(checked) => {
+                          setPendingSelectedCategories(prev => {
+                            const exists = prev.includes(parent.id);
+                            const childIds = (parent.children || []).map(c => c.id);
+                            if (checked && !exists) {
+                              const withoutAll = prev.filter(id => ![parent.id, ...childIds, ""].includes(id));
+                              return [...withoutAll, parent.id, ...childIds];
+                            }
+                            if (!checked && exists) {
+                              return prev.filter(id => id !== parent.id && !childIds.includes(id));
+                            }
+                            return prev;
+                          });
+                        }}
+                      />
+                    </div>
+                    <div className="text-sm font-medium truncate">{parent.name}</div>
+                    <div className="flex items-center justify-center">
+                      {hasChildren && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-purple-600 hover:text-purple-700 hover:bg-purple-50"
+                          onClick={() => toggleParentExpand(parent.id)}
+                          aria-label="Expandir subcategorias"
+                          title="Expandir subcategorias"
+                        >
+                          <ChevronDown className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  {hasChildren && expanded && (
+                    <div className="mt-1 ml-6 space-y-1">
+                      {parent.children?.map(child => (
+                        <div key={child.id} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50">
+                          <Checkbox
+                            checked={pendingSelectedCategories.includes(child.id)}
+                            onCheckedChange={(checked) => {
+                              setPendingSelectedCategories(prev => {
+                                const exists = prev.includes(child.id);
+                                if (checked && !exists) return [...prev.filter(id => id !== ""), child.id];
+                                if (!checked && exists) return prev.filter(id => id !== child.id);
+                                return prev;
+                              });
+                            }}
+                          />
+                          <span className="text-sm">{child.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </ScrollArea>
+        <div className="flex items-center justify-between pt-2">
+          <Button variant="outline" size="sm" onClick={handleCancelSelection}>
+            Cancelar
+          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                (document.activeElement as HTMLElement | null)?.blur();
+                resetDrawer();
+                setIsPopoverOpen(false);
+                setIsDrawerOpen(true);
+              }}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Adicionar/Editar
+            </Button>
+            <Button size="sm" onClick={handleSaveSelection}>
+              Salvar
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const renderAllCategoriesForEdit = () => {
     const renderCategory = (category: Category, level = 0): JSX.Element[] => {
@@ -230,28 +391,24 @@ export function CategoryDropdown({ categories, selectedCategory, onCategoryChang
       const hasChildren = category.children && category.children.length > 0;
       const parentCategory = category.parent_id ? categories.find(c => c.id === category.parent_id) : null;
       
+      const expanded = !!expandedEditParents[category.id];
       elements.push(
         <div key={category.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
           <div className="flex items-center flex-1">
             {level > 0 && (
               <ChevronDown className="w-4 h-4 mr-2 text-muted-foreground rotate-90" />
             )}
-            
-            {hasChildren && level === 0 && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-6 w-6 p-0 mr-2">
-                    <ChevronDown className="w-4 h-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {category.children?.map((child) => (
-                    <DropdownMenuItem key={child.id}>
-                      {child.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
+            {hasChildren && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 p-0 ml-2 text-purple-600 hover:text-purple-800 hover:bg-purple-50"
+                onClick={() => setExpandedEditParents(prev => ({ ...prev, [category.id]: !prev[category.id] }))}
+                aria-label="Expandir subcategorias"
+                title="Expandir subcategorias"
+              >
+                <ChevronDown className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+              </Button>
             )}
             
             {editingCategoryId === category.id ? (
@@ -305,6 +462,35 @@ export function CategoryDropdown({ categories, selectedCategory, onCategoryChang
               >
                 <Edit className="w-4 h-4" />
               </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button 
+                    variant="ghost" 
+                    size="sm"
+                    className="h-8 w-8 p-0 text-purple-600 hover:text-purple-800 hover:bg-purple-50"
+                  >
+                    <ChevronDown className="w-4 h-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuItem
+                    onClick={() => onLinkCategory?.(category.id, null)}
+                  >
+                    Sem categoria pai
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {categories
+                    .filter(c => !c.parent_id && c.id !== category.id)
+                    .map(c => (
+                      <DropdownMenuItem
+                        key={c.id}
+                        onClick={() => onLinkCategory?.(category.id, c.id)}
+                      >
+                        Vincular a: {c.name}
+                      </DropdownMenuItem>
+                    ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button 
                 variant="ghost" 
                 size="sm"
@@ -319,7 +505,7 @@ export function CategoryDropdown({ categories, selectedCategory, onCategoryChang
       );
 
       // Adicionar filhos se existirem
-      if (hasChildren) {
+      if (hasChildren && expanded) {
         category.children?.forEach(child => {
           elements.push(...renderCategory(child, level + 1));
         });
@@ -574,40 +760,29 @@ export function CategoryDropdown({ categories, selectedCategory, onCategoryChang
 
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm">
-            {selectedCategoryName}
-            <ChevronDown className="w-4 h-4 ml-2" />
+      <Popover open={isPopoverOpen} onOpenChange={(open) => {
+        setIsPopoverOpen(open);
+        if (open) setPendingSelectedCategories(selectedCategories.length ? selectedCategories : (selectedCategory ? [selectedCategory] : []));
+      }}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="sm" className="w-full max-w-[180px] justify-between">
+            <span className="truncate">{selectedLabel}</span>
+            <ChevronDown className="w-4 h-4 ml-2 shrink-0" />
           </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-72">
-          <DropdownMenuItem
-            onClick={() => onCategoryChange("")}
-            className={selectedCategory === "" ? 'bg-muted' : ''}
-          >
-            Todas as categorias
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          {renderAccordionFilter()}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => {
-            resetDrawer();
-            setIsDrawerOpen(true);
-          }}>
-            <Plus className="w-4 h-4 mr-2" />
-            Adicionar/Editar
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+        </PopoverTrigger>
+        <PopoverContent align="start" sideOffset={6} className="w-[420px] p-3">
+          {renderPopoverTree()}
+        </PopoverContent>
+      </Popover>
 
-      <Drawer open={isDrawerOpen} onOpenChange={(open) => {
+      <Drawer direction="right" open={isDrawerOpen} onOpenChange={(open) => {
         setIsDrawerOpen(open);
         if (!open) resetDrawer();
       }}>
-        <DrawerContent className="h-screen">
+        <DrawerContent className="fixed inset-y-0 right-0 h-full w-[35%]">
           <DrawerHeader>
             <DrawerTitle>Gerenciar Categorias</DrawerTitle>
+            <DrawerDescription>Crie, edite e organize categorias e subcategorias.</DrawerDescription>
           </DrawerHeader>
           <div className="flex-1 overflow-hidden">
             {renderDrawerContent()}

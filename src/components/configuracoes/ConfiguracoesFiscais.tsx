@@ -10,6 +10,7 @@ import { CleanNavigation } from "@/components/CleanNavigation";
 import { AdicionarImpostoModal, TaxRecord, CompanyOption } from "@/components/configuracoes/impostos/AdicionarImpostoModal";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { useAuth } from "@/hooks/useAuth";
 
 interface Company {
   id: string;
@@ -30,6 +31,7 @@ export function ConfiguracoesFiscais() {
   const [isTaxModalOpen, setIsTaxModalOpen] = useState(false);
   const [taxes, setTaxes] = useState<TaxRecord[]>([]);
   const [editingTax, setEditingTax] = useState<TaxRecord | null>(null);
+  const { organizationId } = useAuth();
 
   const subNavItems = [
     { title: "Empresas", path: "empresas", description: "Gestão de empresas" },
@@ -38,13 +40,7 @@ export function ConfiguracoesFiscais() {
 
   useEffect(() => {
     loadCompanies();
-    // Carregar impostos salvos (persistência local por enquanto)
-    try {
-      const saved: TaxRecord[] = JSON.parse(localStorage.getItem("impostos") || "[]");
-      setTaxes(Array.isArray(saved) ? saved : []);
-    } catch {
-      setTaxes([]);
-    }
+    loadTaxes();
   }, []);
 
   const loadCompanies = async () => {
@@ -65,6 +61,40 @@ export function ConfiguracoesFiscais() {
     }
   };
 
+  const loadTaxes = async () => {
+    try {
+      if (!organizationId) return;
+      const { data, error } = await (supabase as any)
+        .from('company_tax_configs')
+        .select('id, company_id, observacao, is_default, payload, created_at')
+        .eq('organizations_id', organizationId)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      const rows: any[] = Array.isArray(data) ? data as any[] : [];
+      const mapCompany = (cid: string) => {
+        const c = companies.find(c => c.id === cid);
+        return { companyName: c?.razao_social || "—", cnpj: c?.cnpj || "" };
+      };
+      const mapped: TaxRecord[] = rows.map(r => {
+        const cm = mapCompany(String(r.company_id));
+        return {
+          id: String(r.id),
+          companyId: String(r.company_id),
+          companyName: cm.companyName,
+          cnpj: cm.cnpj,
+          isDefault: !!r.is_default,
+          observacao: r.observacao || "",
+          payload: r.payload,
+          createdAt: r.created_at,
+        };
+      });
+      setTaxes(mapped);
+    } catch (e: any) {
+      console.error('Erro ao carregar impostos:', e);
+      toast.error(e?.message || 'Erro ao carregar impostos');
+    }
+  };
+
   const handleAddCompany = () => {
     navigate('/configuracoes/notas-fiscais/nova-empresa');
   };
@@ -75,35 +105,44 @@ export function ConfiguracoesFiscais() {
   };
 
   const handleSaveTax = (record: TaxRecord) => {
-    setTaxes(prev => {
-      let next = prev.filter(t => t.id !== record.id);
-      // garantir exclusividade de padrão por empresa
-      if (record.isDefault && record.companyId) {
-        next = next.map(t => t.companyId === record.companyId ? { ...t, isDefault: false } : t);
-      }
-      next.push(record);
-      // manter ordenação por data
-      next.sort((a, b) => (a.createdAt > b.createdAt ? -1 : 1));
-      return next;
-    });
+    // Recarrega da base após salvar via modal
+    void loadTaxes();
   };
 
   const handleDefinirPadrao = (tax: TaxRecord) => {
-    setTaxes(prev => {
-      const next = prev.map(t => t.companyId === tax.companyId ? { ...t, isDefault: t.id === tax.id } : t);
-      localStorage.setItem("impostos", JSON.stringify(next));
-      toast.success("Imposto definido como padrão");
-      return next;
-    });
+    const run = async () => {
+      try {
+        await (supabase as any)
+          .from('company_tax_configs')
+          .update({ is_default: false })
+          .eq('company_id', tax.companyId);
+        await (supabase as any)
+          .from('company_tax_configs')
+          .update({ is_default: true })
+          .eq('id', tax.id);
+        toast.success("Imposto definido como padrão");
+        await loadTaxes();
+      } catch (e: any) {
+        toast.error(e?.message || "Falha ao definir padrão");
+      }
+    };
+    void run();
   };
 
   const handleExcluirTax = (tax: TaxRecord) => {
-    setTaxes(prev => {
-      const next = prev.filter(t => t.id !== tax.id);
-      localStorage.setItem("impostos", JSON.stringify(next));
-      toast.success("Imposto excluído");
-      return next;
-    });
+    const run = async () => {
+      try {
+        await (supabase as any)
+          .from('company_tax_configs')
+          .delete()
+          .eq('id', tax.id);
+        toast.success("Imposto excluído");
+        await loadTaxes();
+      } catch (e: any) {
+        toast.error(e?.message || "Falha ao excluir imposto");
+      }
+    };
+    void run();
   };
 
   const handleEditarTax = (tax: TaxRecord) => {

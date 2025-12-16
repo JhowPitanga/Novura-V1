@@ -1,0 +1,2 @@
+[functions.download-nfe-xml]
+verify_jwt = false
