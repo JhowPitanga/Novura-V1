@@ -161,7 +161,7 @@ serve(async (req) => {
     const tokenPath = "/api/v2/auth/token/get"; 
     const timestamp = Math.floor(Date.now() / 1000);
     const baseString = `${partnerIdStr}${tokenPath}${timestamp}`;
-    const sign = (await hmacSha256Hex(partnerKey, baseString)).toUpperCase();
+    const sign = await hmacSha256Hex(partnerKey, baseString);
 
     console.log("[shopee-callback] token_exchange_init", { correlationId, host: sandboxHost, path: tokenPath });
 
@@ -246,7 +246,7 @@ serve(async (req) => {
 
     if (method === "POST") return jsonResponse({ ok: true });
     
-    const siteUrl = Deno.env.get("SITE_URL") || "http://novuraerp.com.br/aplicativos/conectados";
+    const siteUrl = Deno.env.get("SITE_URL") || "https://www.novuraerp.com.br/aplicativos/conectados";
     return htmlPostMessageSuccess(siteUrl, { ok: true });
 
   } catch (e) {

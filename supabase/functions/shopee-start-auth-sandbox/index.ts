@@ -86,7 +86,7 @@ serve(async (req) => {
     
     const SANDBOX_AUTH_HOST = "https://partner.test-stable.shopeemobile.com";
     const fixedAuthPath = "/api/v2/shop/auth_partner";
-    const defaultRedirectUri = "https://novuraerp.com.br/oauth/shopee/callback";
+    const defaultRedirectUri = "https://www.novuraerp.com.br/oauth/shopee/callback";
 
     const cfg = app.config as Record<string, unknown> | undefined;
     const redirectFromConfig = sanitizeRedirect((cfg && typeof cfg["redirect_uri"] === "string") ? String(cfg["redirect_uri"]) : null);
@@ -96,7 +96,7 @@ serve(async (req) => {
 
     const timestamp = Math.floor(Date.now() / 1000);
     const baseString = `${partnerId}${fixedAuthPath}${timestamp}`;
-    const sign = (await hmacSha256Hex(partnerKey, baseString)).toUpperCase();
+    const sign = await hmacSha256Hex(partnerKey, baseString);
 
     const authorizationUrl = new URL(`${SANDBOX_AUTH_HOST}${fixedAuthPath}`);
     authorizationUrl.searchParams.set("partner_id", partnerId);

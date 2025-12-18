@@ -45,6 +45,7 @@ const APPS_API_URL = import.meta.env.VITE_APPS_API_URL || "/api/apps";
 const MELI_REDIRECT_URI = import.meta.env.VITE_MERCADO_LIVRE_REDIRECT_URI as string | undefined;
 // URL de redirect para o callback da Shopee (defina em .env: VITE_SHOPEE_REDIRECT_URI)
 const SHOPEE_REDIRECT_URI = import.meta.env.VITE_SHOPEE_REDIRECT_URI as string | undefined;
+const SHOPEE_REDIRECT_FALLBACK = 'https://www.novuraerp.com.br/oauth/shopee/callback';
 
 interface AppConnection {
   appId: string;
@@ -303,7 +304,7 @@ export default function Aplicativos() {
           organizationId,
           storeName: trimmedStoreName,
           connectedByUserId: user?.id || null,
-          redirectUri: SHOPEE_REDIRECT_URI || undefined,
+          redirectUri: SHOPEE_REDIRECT_URI || SHOPEE_REDIRECT_FALLBACK,
         });
 
         try { localStorage.setItem('shopee_auth_env', 'prod'); } catch (_) {}
@@ -340,7 +341,7 @@ export default function Aplicativos() {
           organizationId,
           storeName: trimmedStoreName,
           connectedByUserId: user?.id || null,
-          redirectUri: SHOPEE_REDIRECT_URI || undefined,
+          redirectUri: SHOPEE_REDIRECT_URI || SHOPEE_REDIRECT_FALLBACK,
         });
 
         try { localStorage.setItem('shopee_auth_env', 'sandbox'); } catch (_) {}
