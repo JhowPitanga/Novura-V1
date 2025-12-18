@@ -64,6 +64,13 @@ DECLARE
   v_err_detail text;
   v_err_hint text;
   v_err_context text;
+  v_items_raw_count integer;
+  v_items_deleted_count integer;
+  v_items_inserted_count integer;
+  v_items_source text;
+  v_presented_exists boolean;
+  v_items_jsonb jsonb;
+  v_pack_id text;
 BEGIN
   IF NEW.marketplace_name = 'Shopee' THEN
     BEGIN
@@ -78,6 +85,13 @@ BEGIN
       IF v_shp_order_status = 'unpaid' THEN
         RETURN NEW;
       END IF;
+
+      v_pack_id := NULLIF(COALESCE(
+        NEW.data->'order_detail'->>'order_sn',
+        NEW.data->'order_list_item'->>'order_sn',
+        NEW.data->'notification'->>'order_sn',
+        NEW.marketplace_order_id
+      ), '');
 
       v_shp_invoice_pending := lower(COALESCE(NEW.data->'order_detail'->'invoice_data'->>'invoice_status', NEW.data->'notification'->'invoice_data'->>'invoice_status','')) = 'pending'
                                OR v_shp_order_status = 'invoice_pending'
@@ -311,13 +325,7 @@ BEGIN
         v_first_item_variation_id, NULL, v_variation_color_names, '{}'::text[], '{}'::text[],
         '{}'::text[], v_has_variations, false, false,
         CASE
-          WHEN NEW.marketplace_name = 'Shopee' THEN
-            NULLIF(COALESCE(
-              NEW.data->'order_detail'->>'order_sn',
-              NEW.data->'order_list_item'->>'order_sn',
-              NEW.data->'notification'->>'order_sn',
-              NEW.marketplace_order_id
-            ), '')
+          WHEN NEW.marketplace_name = 'Shopee' THEN v_pack_id
           ELSE NULL
         END,
         false, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -396,6 +404,76 @@ BEGIN
         last_updated = EXCLUDED.last_updated,
         last_synced_at = EXCLUDED.last_synced_at,
         status_interno = EXCLUDED.status_interno;
+      v_items_jsonb := CASE
+        WHEN jsonb_typeof(NEW.data->'order_detail'->'item_list') = 'array' AND jsonb_array_length(NEW.data->'order_detail'->'item_list') > 0 THEN NEW.data->'order_detail'->'item_list'
+        WHEN jsonb_typeof(NEW.data->'order_list_item'->'item_list') = 'array' AND jsonb_array_length(NEW.data->'order_list_item'->'item_list') > 0 THEN NEW.data->'order_list_item'->'item_list'
+        WHEN jsonb_typeof(NEW.data->'notification'->'item_list') = 'array' AND jsonb_array_length(NEW.data->'notification'->'item_list') > 0 THEN NEW.data->'notification'->'item_list'
+        WHEN jsonb_typeof(NEW.data->'escrow_detail'->'response'->'order_income'->'items') = 'array' AND jsonb_array_length(NEW.data->'escrow_detail'->'response'->'order_income'->'items') > 0 THEN NEW.data->'escrow_detail'->'response'->'order_income'->'items'
+        ELSE '[]'::jsonb
+      END;
+      v_items_source := CASE
+        WHEN v_items_jsonb = NEW.data->'order_detail'->'item_list' THEN 'order_detail'
+        WHEN v_items_jsonb = NEW.data->'order_list_item'->'item_list' THEN 'order_list_item'
+        WHEN v_items_jsonb = NEW.data->'notification'->'item_list' THEN 'notification'
+        WHEN v_items_jsonb = NEW.data->'escrow_detail'->'response'->'order_income'->'items' THEN 'escrow_detail'
+        ELSE 'none'
+      END;
+      v_items_raw_count := jsonb_array_length(v_items_jsonb);
+      RAISE NOTICE 'Shopee items: order_id=%, source=%, raw_count=%, rls=%, role=%',
+        NEW.id, v_items_source, v_items_raw_count,
+        current_setting('row_security'),
+        current_setting('request.jwt.claim.role', true);
+      SELECT EXISTS(SELECT 1 FROM public.marketplace_orders_presented_new WHERE id = NEW.id) INTO v_presented_exists;
+      RAISE NOTICE 'Shopee items fk-check: order_id=%, presented_exists=%', NEW.id, v_presented_exists;
+      PERFORM set_config('request.jwt.claim.role', 'service_role', true);
+      PERFORM set_config('row_security', 'off', true);
+      IF v_items_raw_count > 0 THEN
+        DELETE FROM public.marketplace_order_items WHERE order_id = NEW.id;
+        GET DIAGNOSTICS v_items_deleted_count = ROW_COUNT;
+        RAISE NOTICE 'Shopee items delete: order_id=%, deleted_count=%', NEW.id, v_items_deleted_count;
+        INSERT INTO public.marketplace_order_items (
+          order_id,
+          model_sku_externo,
+          model_id_externo,
+          variation_name,
+          sku,
+          item_name,
+          quantity,
+          unit_price,
+          image_url,
+          stock_status,
+          pack_id
+        )
+        SELECT
+          NEW.id,
+          NULLIF(oi->>'model_sku',''),
+          COALESCE(NULLIF(oi->>'model_id',''), NULLIF(oi->>'item_id',''), NULLIF(oi->>'order_item_id','')),
+          NULLIF(oi->>'model_name',''),
+          COALESCE(NULLIF(oi->>'model_sku',''), NULLIF(oi->>'sku',''), NULLIF(oi->>'item_sku','')),
+          NULLIF(oi->>'item_name',''),
+          COALESCE(
+            NULLIF(oi->>'model_quantity_purchased','')::int,
+            NULLIF(oi->>'quantity','')::int,
+            NULLIF(oi->>'quantity_purchased','')::int,
+            1
+          ),
+          COALESCE(
+            NULLIF(oi->>'model_discounted_price','')::numeric,
+            NULLIF(oi->>'item_price','')::numeric,
+            NULLIF(oi->>'original_price','')::numeric,
+            NULLIF(oi->>'discounted_price','')::numeric,
+            NULLIF(oi->>'selling_price','')::numeric,
+            0
+          ),
+          NULLIF(regexp_replace(oi->'image_info'->>'image_url', '[`\\s]+', '', 'g'),''),
+          NULL,
+          v_pack_id
+        FROM jsonb_array_elements(COALESCE(v_items_jsonb, '[]'::jsonb)) AS oi;
+        GET DIAGNOSTICS v_items_inserted_count = ROW_COUNT;
+        RAISE NOTICE 'Shopee items insert: order_id=%, inserted_count=%', NEW.id, v_items_inserted_count;
+      ELSE
+        RAISE NOTICE 'Shopee items skip: order_id=%, no items in payload (source=%)', NEW.id, v_items_source;
+      END IF;
       PERFORM set_config('row_security', 'on', true);
       RETURN NEW;
     EXCEPTION WHEN OTHERS THEN
@@ -403,6 +481,8 @@ BEGIN
                               v_err_detail  = PG_EXCEPTION_DETAIL,
                               v_err_hint    = PG_EXCEPTION_HINT,
                               v_err_context = PG_EXCEPTION_CONTEXT;
+      RAISE NOTICE 'Shopee items error: order_id=%, message=%, detail=%, hint=%, context=%',
+        NEW.id, v_err_message, v_err_detail, v_err_hint, v_err_context;
       PERFORM set_config('row_security', 'on', true);
       RETURN NEW;
     END;
@@ -481,6 +561,13 @@ DECLARE
   v_first_item_variation_id bigint;
   v_variation_color_names text[];
   v_has_variations boolean;
+  v_items_raw_count integer;
+  v_items_deleted_count integer;
+  v_items_inserted_count integer;
+  v_items_source text;
+  v_presented_exists boolean;
+  v_items_jsonb jsonb;
+  v_pack_id text;
 BEGIN
   SELECT * INTO rec FROM public.marketplace_orders_raw WHERE id = p_order_id LIMIT 1;
   IF NOT FOUND THEN RETURN; END IF;
@@ -492,6 +579,13 @@ BEGIN
       IF v_shp_order_status = 'unpaid' THEN
         RETURN;
       END IF;
+
+      v_pack_id := NULLIF(COALESCE(
+        rec.data->'order_detail'->>'order_sn',
+        rec.data->'order_list_item'->>'order_sn',
+        rec.data->'notification'->>'order_sn',
+        rec.marketplace_order_id
+      ), '');
 
       v_shp_invoice_pending := lower(COALESCE(rec.data->'order_detail'->'invoice_data'->>'invoice_status','')) = 'pending'
                                OR v_shp_order_status = 'invoice_pending'
@@ -709,13 +803,7 @@ BEGIN
         v_first_item_variation_id, NULL, v_variation_color_names, '{}'::text[], '{}'::text[],
         '{}'::text[], v_has_variations, false, false,
         CASE
-          WHEN rec.marketplace_name = 'Shopee' THEN
-            NULLIF(COALESCE(
-              rec.data->'order_detail'->>'order_sn',
-              rec.data->'order_list_item'->>'order_sn',
-              rec.data->'notification'->>'order_sn',
-              rec.marketplace_order_id
-            ), '')
+          WHEN rec.marketplace_name = 'Shopee' THEN v_pack_id
           ELSE
             CASE
               WHEN jsonb_typeof(rec.data->'pack_id') = 'number' THEN rec.data->>'pack_id'
@@ -799,6 +887,76 @@ BEGIN
         last_updated = EXCLUDED.last_updated,
         last_synced_at = EXCLUDED.last_synced_at,
         status_interno = EXCLUDED.status_interno;
+      v_items_jsonb := CASE
+        WHEN jsonb_typeof(rec.data->'order_detail'->'item_list') = 'array' AND jsonb_array_length(rec.data->'order_detail'->'item_list') > 0 THEN rec.data->'order_detail'->'item_list'
+        WHEN jsonb_typeof(rec.data->'order_list_item'->'item_list') = 'array' AND jsonb_array_length(rec.data->'order_list_item'->'item_list') > 0 THEN rec.data->'order_list_item'->'item_list'
+        WHEN jsonb_typeof(rec.data->'notification'->'item_list') = 'array' AND jsonb_array_length(rec.data->'notification'->'item_list') > 0 THEN rec.data->'notification'->'item_list'
+        WHEN jsonb_typeof(rec.data->'escrow_detail'->'response'->'order_income'->'items') = 'array' AND jsonb_array_length(rec.data->'escrow_detail'->'response'->'order_income'->'items') > 0 THEN rec.data->'escrow_detail'->'response'->'order_income'->'items'
+        ELSE '[]'::jsonb
+      END;
+      v_items_source := CASE
+        WHEN v_items_jsonb = rec.data->'order_detail'->'item_list' THEN 'order_detail'
+        WHEN v_items_jsonb = rec.data->'order_list_item'->'item_list' THEN 'order_list_item'
+        WHEN v_items_jsonb = rec.data->'notification'->'item_list' THEN 'notification'
+        WHEN v_items_jsonb = rec.data->'escrow_detail'->'response'->'order_income'->'items' THEN 'escrow_detail'
+        ELSE 'none'
+      END;
+      v_items_raw_count := jsonb_array_length(v_items_jsonb);
+      RAISE NOTICE 'Shopee items: order_id=%, source=%, raw_count=%, rls=%, role=%',
+        rec.id, v_items_source, v_items_raw_count,
+        current_setting('row_security'),
+        current_setting('request.jwt.claim.role', true);
+      SELECT EXISTS(SELECT 1 FROM public.marketplace_orders_presented_new WHERE id = rec.id) INTO v_presented_exists;
+      RAISE NOTICE 'Shopee items fk-check: order_id=%, presented_exists=%', rec.id, v_presented_exists;
+      PERFORM set_config('request.jwt.claim.role', 'service_role', true);
+      PERFORM set_config('row_security', 'off', true);
+      IF v_items_raw_count > 0 THEN
+        DELETE FROM public.marketplace_order_items WHERE order_id = rec.id;
+        GET DIAGNOSTICS v_items_deleted_count = ROW_COUNT;
+        RAISE NOTICE 'Shopee items delete: order_id=%, deleted_count=%', rec.id, v_items_deleted_count;
+        INSERT INTO public.marketplace_order_items (
+          order_id,
+          model_sku_externo,
+          model_id_externo,
+          variation_name,
+          sku,
+          item_name,
+          quantity,
+          unit_price,
+          image_url,
+          stock_status,
+          pack_id
+        )
+        SELECT
+          rec.id,
+          NULLIF(oi->>'model_sku',''),
+          COALESCE(NULLIF(oi->>'model_id',''), NULLIF(oi->>'item_id',''), NULLIF(oi->>'order_item_id','')),
+          NULLIF(oi->>'model_name',''),
+          COALESCE(NULLIF(oi->>'model_sku',''), NULLIF(oi->>'sku',''), NULLIF(oi->>'item_sku','')),
+          NULLIF(oi->>'item_name',''),
+          COALESCE(
+            NULLIF(oi->>'model_quantity_purchased','')::int,
+            NULLIF(oi->>'quantity','')::int,
+            NULLIF(oi->>'quantity_purchased','')::int,
+            1
+          ),
+          COALESCE(
+            NULLIF(oi->>'model_discounted_price','')::numeric,
+            NULLIF(oi->>'item_price','')::numeric,
+            NULLIF(oi->>'original_price','')::numeric,
+            NULLIF(oi->>'discounted_price','')::numeric,
+            NULLIF(oi->>'selling_price','')::numeric,
+            0
+          ),
+          NULLIF(regexp_replace(oi->'image_info'->>'image_url', '[`\\s]+', '', 'g'),''),
+          NULL,
+          v_pack_id
+        FROM jsonb_array_elements(COALESCE(v_items_jsonb, '[]'::jsonb)) AS oi;
+        GET DIAGNOSTICS v_items_inserted_count = ROW_COUNT;
+        RAISE NOTICE 'Shopee items insert: order_id=%, inserted_count=%', rec.id, v_items_inserted_count;
+      ELSE
+        RAISE NOTICE 'Shopee items skip: order_id=%, no items in payload (source=%)', rec.id, v_items_source;
+      END IF;
       PERFORM set_config('row_security', 'on', true);
       RETURN;
     EXCEPTION WHEN OTHERS THEN
@@ -806,6 +964,8 @@ BEGIN
                               v_err_detail  = PG_EXCEPTION_DETAIL,
                               v_err_hint    = PG_EXCEPTION_HINT,
                               v_err_context = PG_EXCEPTION_CONTEXT;
+      RAISE NOTICE 'Shopee items error: order_id=%, message=%, detail=%, hint=%, context=%',
+        rec.id, v_err_message, v_err_detail, v_err_hint, v_err_context;
       PERFORM set_config('row_security', 'on', true);
       RETURN;
     END;

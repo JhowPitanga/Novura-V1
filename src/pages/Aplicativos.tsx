@@ -153,12 +153,14 @@ export default function Aplicativos() {
 
   const connectedApps = apps.filter(app => {
     const conn = appConnections[app.id];
-    const isConnected = !!conn && conn.status !== 'inactive';
-    const matchesFilter = connectedFilter === "all" || 
-                         (connectedFilter === "connected" && isConnected) ||
-                         (connectedFilter === "disconnected" && !isConnected);
+    const hasConnection = !!conn;
+    const isActive = !!conn && conn.status !== 'inactive';
+    const matchesFilter =
+      connectedFilter === "all" ||
+      (connectedFilter === "connected" && isActive) ||
+      (connectedFilter === "disconnected" && !hasConnection);
     const matchesCategory = selectedCategory === "all" || app.category === selectedCategory;
-    return isConnected && matchesFilter && matchesCategory;
+    return hasConnection && matchesFilter && matchesCategory;
   });
 
   const handleConnect = (app: App) => {
@@ -193,7 +195,7 @@ export default function Aplicativos() {
           .join(' ');
       };
 
-      let catalog = apps;
+      let catalog = Array.isArray(apps) ? [...apps] : [];
       if (!catalog || catalog.length === 0) {
         const names = Array.from(new Set(rows.map(r => toDisplayName(r.marketplace_name))));
         if (names.length > 0) {
@@ -211,15 +213,35 @@ export default function Aplicativos() {
             isConnected: false,
             price: (row.price_type === 'free' ? 'free' : 'paid') as App['price'],
           }));
-          setApps(catalog);
         } else {
-          setApps([]);
+          catalog = [];
         }
       }
 
       rows.forEach((row) => {
-        const match = catalog.find(a => normalize(a.name) === normalize(row.marketplace_name));
-        if (!match) return;
+        let match = catalog.find(a => {
+          const an = normalize(a.name);
+          const mn = normalize(row.marketplace_name);
+          if (an === mn) return true;
+          if (an.includes(mn) || mn.includes(an)) return true;
+          return false;
+        });
+        if (!match) {
+          const syntheticId = `integration:${normalize(row.marketplace_name)}`;
+          if (!catalog.find(a => a.id === syntheticId)) {
+            catalog.push({
+              id: syntheticId,
+              name: toDisplayName(row.marketplace_name),
+              description: 'Integração conectada',
+              logo: '',
+              category: 'marketplaces',
+              isConnected: true,
+              price: 'free',
+            });
+          }
+          match = catalog.find(a => a.id === syntheticId) || null;
+          if (!match) return;
+        }
 
         const rawExp = row.expires_in;
         let expiresAtDate: Date;
@@ -239,13 +261,13 @@ export default function Aplicativos() {
           const daysLeft = Math.ceil((expiresAtDate.getTime() - now.getTime()) / 86400000);
           if (daysLeft <= 7) status = 'reconnect';
         }
-        const storeNameCfg = (row as any)?.config?.storeName || 'Minha Loja';
+        const storeNameCfg = (row as any)?.config?.shop_name || (row as any)?.config?.storeName || 'Minha Loja';
 
         const candidate = {
           appId: match.id,
           storeName: storeNameCfg,
           status,
-          authenticatedAt: (row as any)?.config?.connectedAt || new Date().toISOString(),
+          authenticatedAt: (row as any)?.config?.connectedAt || (row as any)?.config?.connected_at || new Date().toISOString(),
           expiresAt: expiresAtDate.toISOString(),
         };
         const existing = nextConnections[match.id];
@@ -255,11 +277,12 @@ export default function Aplicativos() {
       });
 
       setAppConnections(nextConnections);
-      setApps(prev => prev.map(app => {
+      const finalCatalog = catalog.map(app => {
         const conn = nextConnections[app.id];
         const connected = !!conn && conn.status !== 'inactive';
         return { ...app, isConnected: connected };
-      }));
+      });
+      setApps(finalCatalog);
     } catch (e) {
       console.error('Falha ao carregar integrações', e);
     }
@@ -556,9 +579,13 @@ export default function Aplicativos() {
                             <CardHeader className="pb-4">
                               <div className="flex items-start justify-between">
                                 <div className="flex items-center space-x-3">
-                                  <div className="w-12 h-12 bg-gradient-to-br from-novura-primary to-purple-600 rounded-xl flex items-center justify-center">
-                                    <img src={app.logo} alt={app.name} className="w-8 h-8 rounded" />
-                                  </div>
+                                      <div className="w-12 h-12 bg-gradient-to-br from-novura-primary to-purple-600 rounded-xl flex items-center justify-center">
+                                        {app.logo ? (
+                                          <img src={app.logo} alt={app.name} className="w-8 h-8 rounded" />
+                                        ) : (
+                                          <Settings className="w-6 h-6 text-white" />
+                                        )}
+                                      </div>
                                   <div>
                                     <CardTitle className="text-sm font-semibold">{app.name}</CardTitle>
                                     <div className="flex items-center space-x-2 mt-1">
@@ -631,14 +658,18 @@ export default function Aplicativos() {
                                   <div className="flex items-center justify-between">
                                     <div className="flex items-center space-x-3">
                                       <div className="w-10 h-10 bg-gradient-to-br from-novura-primary to-purple-600 rounded-lg flex items-center justify-center">
-                                        <img src={app.logo} alt={app.name} className="w-6 h-6 rounded" />
+                                        {app.logo ? (
+                                          <img src={app.logo} alt={app.name} className="w-6 h-6 rounded" />
+                                        ) : (
+                                          <Settings className="w-5 h-5 text-white" />
+                                        )}
                                       </div>
                                       <div>
                                         <CardTitle className="text-sm">{app.name}</CardTitle>
                                         <div className="flex items-center space-x-2 mt-1">
                                           <span className={`inline-block w-2 h-2 rounded-full ${color}`}></span>
                                           <span className="text-xs text-gray-600">
-                                            {status === 'inactive' ? 'Inativo' : 'Ativo'}
+                                            {status === 'active' ? 'Inativo' : 'Ativo'}
                                           </span>
                                         </div>
                                       </div>

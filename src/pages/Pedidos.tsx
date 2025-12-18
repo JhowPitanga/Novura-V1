@@ -500,7 +500,7 @@ function Pedidos() {
     
 
     // Carregar contagens globais (independente da paginação) aplicando filtros de data e busca
-    const loadGlobalStatusCounts = async () => {
+    const loadGlobalStatusCounts = useCallback(async () => {
         try {
             setStatusCountsGlobal(null);
             setCountsReady(false);
@@ -530,7 +530,7 @@ function Pedidos() {
             setStatusCountsGlobal(null);
             setCountsReady(false);
         }
-    };
+    }, [pedidos, dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
 
     // Atualizar contagens globais quando filtros mudarem, somente após primeira listagem
     useEffect(() => {}, [dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
@@ -679,7 +679,7 @@ function Pedidos() {
                 try { (supabase as any).removeChannel(channel); } catch {}
             };
         } catch {}
-    }, [organizationId, marketplaceFilter, shippingTypeFilter, dateRange, searchTerm]);
+    }, [organizationId, loadGlobalStatusCounts]);
 
     useEffect(() => {}, []);
 
@@ -702,21 +702,19 @@ function Pedidos() {
         };
     }, []);
 
-    const loadPedidos = async (opts?: { background?: boolean }) => {
+    const loadPedidos = useCallback(async (opts?: { background?: boolean }) => {
         const background = Boolean(opts?.background);
         if (!background) setIsLoading(true);
         try {
             if (!user && !organizationId) {
                 setPedidos([]);
+                setListReady(true);
                 return;
             }
 
             
 
-            // Consulta inicial otimizada com paginação no servidor
-            const ascending = sortDir === 'asc';
-            const start = Math.max(0, (currentPage - 1) * pageSize);
-            const end = Math.max(start, start + pageSize - 1);
+            // Consulta inicial
 
             // Resolver organização para escopo da consulta
             let orgIdResolved: string | null = organizationId ?? null;
@@ -791,8 +789,20 @@ function Pedidos() {
                         label_zpl2_base64,
                         printed_label,
                         printed_schedule,
-                        linked_products
-                    `, { count: 'exact' })
+                        linked_products,
+                        marketplace_order_items (
+                            id,
+                            model_sku_externo,
+                            model_id_externo,
+                            variation_name,
+                            sku,
+                            item_name,
+                            quantity,
+                            unit_price,
+                            image_url,
+                            stock_status
+                        )
+                    `)
                 ;
 
             if (orgIdResolved) {
@@ -831,21 +841,38 @@ function Pedidos() {
                 const varLabel = Array.isArray(o?.variation_color_names)
                     ? (o.variation_color_names as any[]).filter(Boolean).join(' • ')
                     : String(o?.variation_color_names || '');
-                const items = [{
-                    id: `${o.marketplace_order_id || o.id}-ITEM-1`,
-                    nome: o.first_item_title || 'Item',
-                    sku: o.first_item_sku || null,
-                    quantidade: qtyAgg,
-                    valor: unitPriceAgg,
-                    bipado: false,
-                    vinculado: !!o.first_item_sku,
-                    imagem: "/placeholder.svg",
-                    marketplace: o.marketplace,
-                    marketplaceItemId: o.first_item_id || null,
-                    variationId: (typeof o?.first_item_variation_id === 'number' || typeof o?.first_item_variation_id === 'string') ? o.first_item_variation_id : '',
-                    permalink: o.first_item_permalink || null,
-                    variationLabel: varLabel,
-                }];
+                const itemsFromDb: any[] = Array.isArray((o as any)?.marketplace_order_items) ? (o as any).marketplace_order_items : [];
+                const items = itemsFromDb.length > 0
+                    ? itemsFromDb.map((it: any, idx: number) => ({
+                        id: `${o.marketplace_order_id || o.id}-ITEM-${idx + 1}`,
+                        nome: it.item_name || 'Item',
+                        sku: it.sku || it.model_sku_externo || null,
+                        quantidade: (typeof it?.quantity === 'number' ? it.quantity : Number(it?.quantity)) || 1,
+                        valor: (typeof it?.unit_price === 'number' ? it.unit_price : Number(it?.unit_price)) || 0,
+                        bipado: false,
+                        vinculado: Boolean(it?.sku),
+                        imagem: it?.image_url || "/placeholder.svg",
+                        marketplace: o.marketplace,
+                        marketplaceItemId: null,
+                        variationId: it?.model_id_externo || '',
+                        permalink: o.first_item_permalink || null,
+                        variationLabel: it?.variation_name || varLabel,
+                    }))
+                    : [{
+                        id: `${o.marketplace_order_id || o.id}-ITEM-1`,
+                        nome: o.first_item_title || 'Item',
+                        sku: o.first_item_sku || null,
+                        quantidade: qtyAgg,
+                        valor: unitPriceAgg,
+                        bipado: false,
+                        vinculado: !!o.first_item_sku,
+                        imagem: "/placeholder.svg",
+                        marketplace: o.marketplace,
+                        marketplaceItemId: o.first_item_id || null,
+                        variationId: (typeof o?.first_item_variation_id === 'number' || typeof o?.first_item_variation_id === 'string') ? o.first_item_variation_id : '',
+                        permalink: o.first_item_permalink || null,
+                        variationLabel: varLabel,
+                    }];
 
                 const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
                 const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
@@ -953,12 +980,13 @@ function Pedidos() {
             if (!isAbortLikeError(err)) {
                 console.error("Erro ao buscar pedidos:", err);
                 setPedidos([]);
+                setListReady(true);
             }
         } finally {
             if (!background) setIsLoading(false);
             try { setTimeout(() => { loadGlobalStatusCounts(); }, 0); } catch {}
         }
-    };
+    }, [organizationId, marketplaceFilter, user, loadGlobalStatusCounts]);
 
     
 
@@ -1011,7 +1039,7 @@ function Pedidos() {
             setNfeAuthorizedByPedidoId(nextMap);
             setNfeFocusStatusByPedidoId(nextStatusMap);
         } catch {}
-    }, [organizationId, pedidos, emitEnvironment, supabase]);
+    }, [organizationId, pedidos, emitEnvironment]);
 
     useEffect(() => {
         if (activeStatus === 'emissao-nf') {
@@ -1608,7 +1636,6 @@ function Pedidos() {
         } catch (e) {
             console.error('Erro ao carregar preferências de colunas do localStorage:', e);
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [organizationId]);
 
     // Salvar preferências sempre que as colunas mudarem
@@ -1991,14 +2018,18 @@ function Pedidos() {
 
     useEffect(() => {}, [searchTerm, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
 
-    // Carregar imediatamente ao entrar no módulo após preparar contagens globais
+    // Carregar imediatamente ao entrar no módulo após preparar contagens globais (evitar múltiplas chamadas)
+    const initialLoadDoneRef = useRef(false);
     useEffect(() => {
-        loadPedidos();
-    }, [organizationId]);
+        if (!initialLoadDoneRef.current) {
+            loadPedidos();
+            initialLoadDoneRef.current = true;
+        }
+    }, [organizationId, loadPedidos]);
 
     useEffect(() => {
         try { loadGlobalStatusCounts(); } catch {}
-    }, [pedidos, dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
+    }, [loadGlobalStatusCounts]);
 
     useLayoutEffect(() => {
         const container = listContainerRef.current;
@@ -2881,7 +2912,7 @@ function Pedidos() {
                                                 if (selectedCountHere > 0) {
                                                     return (
                                                         <tr>
-                                                            <th className="w-16 px-6 py-3 text-left text-xs font-medium tracking-wider bg-purple-600">
+                                                            <th className="w-[2%] px-2 py-3 text-left text-xs font-medium tracking-wider bg-purple-600">
                                                                 {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
                                                                     <CustomCheckbox
                                                                         checked={
@@ -2907,7 +2938,7 @@ function Pedidos() {
                                                 }
                                                 return (
                                                     <tr>
-                                                        <th className="w-[2%] px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                        <th className="w-[2%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
                                                                 <div className="w-5 h-5 flex items-center justify-center">
                                                                 <CustomCheckbox
@@ -2930,7 +2961,7 @@ function Pedidos() {
                                                         {columns.filter(col => col.enabled).map(col => (
                                                                 <th
                                                                     key={col.id}
-                                                                    className={`py-1 text-[clamp(11px,0.9vw,13px)] font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'text-center w-[4%] pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'text-center w-[15%] pr-0' : ''} ${col.id === 'valor' ? 'text-center w-[10%]' : ''} ${col.id === 'tipoEnvio' ? 'text-center w-[10%]' : ''} ${col.id === 'marketplace' ? 'text-center w-[10%]' : ''} ${col.id === 'status' ? 'text-center w-[10%]' : ''} ${col.id === 'margem' ? 'text-center w-[10%]' : ''}`}
+                                                                    className={`py-3 text-[clamp(11px,0.9vw,13px)] font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'text-center w-[4%] pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'text-center w-[15%] pr-0' : ''} ${col.id === 'valor' ? 'text-left w-[10%]' : ''} ${col.id === 'tipoEnvio' ? 'text-center w-[10%]' : ''} ${col.id === 'marketplace' ? 'text-left w-[10%]' : ''} ${col.id === 'status' ? 'text-center w-[10%]' : ''} ${col.id === 'margem' ? 'text-center w-[10%]' : ''}`}
                                                                 >
                                                                     {col.name}
                                                                 </th>
@@ -2940,7 +2971,7 @@ function Pedidos() {
                                                 );
                                             })()}
                                         </thead>
-                                        <tbody className="bg-white divide-y divide-gray-200">
+                                        <tbody className="bg-white divide-y-[2px] divide-gray-200">
                                             {paginatedPedidos.length > 0 ? (
                                                 paginatedPedidos.map((pedido) => {
                                                     const payLower = String(pedido?.payment_status || '').toLowerCase();
@@ -2955,33 +2986,52 @@ function Pedidos() {
                                                             : (isCancelledRow
                                                                 ? 'Pagamento cancelado'
                                                                 : (isRefundedRow ? 'Pagamento reembolsado' : 'Abrir vinculação')));
+                                                    const hasMultipleItems = Array.isArray(pedido.itens) && pedido.itens.length >= 2;
                                                     return (
                                                     <tr key={pedido.id} className="group hover:bg-gray-50 transition-colors">
-                                                        <td className="w-[2%] px-2 py-1 whitespace-nowrap">
+                                                        <td className="w-[2%] px-2 py-1 whitespace-nowrap align-top">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
-                                                                <div className="w-5 h-5 flex items-center justify-center">
-                                                                <CustomCheckbox
-                                                                    checked={
-                                                                        (activeStatus === "todos" && selectedPedidos.includes(pedido.id)) ||
-                                                                        (activeStatus === "emissao-nf" && selectedPedidosEmissao.includes(pedido.id)) ||
-                                                                        (activeStatus === "impressao" && selectedPedidosImpressao.includes(pedido.id)) ||
-                                                                        (activeStatus === "enviado" && selectedPedidosEnviado.includes(pedido.id))
-                                                                    }
-                                                                    onChange={() => {
-                                                                        if (activeStatus === "todos") handleCheckboxChange(pedido.id, selectedPedidos, setSelectedPedidos);
-                                                                        if (activeStatus === "emissao-nf") handleCheckboxChange(pedido.id, selectedPedidosEmissao, setSelectedPedidosEmissao);
-                                                                        if (activeStatus === "impressao") handleCheckboxChange(pedido.id, selectedPedidosImpressao, setSelectedPedidosImpressao);
-                                                                        if (activeStatus === "enviado") handleCheckboxChange(pedido.id, selectedPedidosEnviado, setSelectedPedidosEnviado);
-                                                                    }}
-                                                                    onClick={(e) => e.stopPropagation()}
-                                                                />
+                                                                <div className="flex flex-col items-center gap-1">
+                                                                    <div className="w-5 h-5 flex items-center justify-center">
+                                                                        <CustomCheckbox
+                                                                            className="outline-none focus:outline-none"
+                                                                            checked={
+                                                                                (activeStatus === "todos" && selectedPedidos.includes(pedido.id)) ||
+                                                                                (activeStatus === "emissao-nf" && selectedPedidosEmissao.includes(pedido.id)) ||
+                                                                                (activeStatus === "impressao" && selectedPedidosImpressao.includes(pedido.id)) ||
+                                                                                (activeStatus === "enviado" && selectedPedidosEnviado.includes(pedido.id))
+                                                                            }
+                                                                            onChange={() => {
+                                                                                if (activeStatus === "todos") handleCheckboxChange(pedido.id, selectedPedidos, setSelectedPedidos);
+                                                                                if (activeStatus === "emissao-nf") handleCheckboxChange(pedido.id, selectedPedidosEmissao, setSelectedPedidosEmissao);
+                                                                                if (activeStatus === "impressao") handleCheckboxChange(pedido.id, selectedPedidosImpressao, setSelectedPedidosImpressao);
+                                                                                if (activeStatus === "enviado") handleCheckboxChange(pedido.id, selectedPedidosEnviado, setSelectedPedidosEnviado);
+                                                                            }}
+                                                                            onClick={(e) => e.stopPropagation()}
+                                                                        />
+                                                                    </div>
+                                                                    {hasMultipleItems && (
+                                                                        <TooltipProvider delayDuration={0}>
+                                                                            <Tooltip>
+                                                                                <TooltipTrigger asChild>
+                                                                                    <span className="relative inline-flex items-center justify-center mt-1 cursor-pointer hover:scale-105 transition-transform">
+                                                                                        <span className="absolute inline-flex h-3 w-3 rounded-full bg-purple-600 opacity-75 animate-ping"></span>
+                                                                                        <span className="relative inline-flex rounded-full h-3 w-3 bg-purple-600 ring-2 ring-transparent hover:ring-purple-500"></span>
+                                                                                    </span>
+                                                                                </TooltipTrigger>
+                                                                                <TooltipContent side="right" className="bg-purple-600 text-white border border-purple-600 max-w-[260px] whitespace-normal leading-snug text-center">
+                                                                                    <span>Atenção no preparo, esse pedido contém múltiplos produtos</span>
+                                                                                </TooltipContent>
+                                                                            </Tooltip>
+                                                                        </TooltipProvider>
+                                                                    )}
                                                                 </div>
                                                             )}
                                                         </td>
                                                         {columns.filter(col => col.enabled).map(col => (
                                                             <td
                                                                 key={col.id}
-                                                                className={`py-1 whitespace-nowrap text-sm text-gray-500 min-w-0 ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'w-[4%] text-center pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'w-[15%] text-center pr-0' : ''} ${col.id === 'valor' ? 'w-[10%] text-center' : ''} ${col.id === 'tipoEnvio' ? 'w-[10%] text-center' : ''} ${col.id === 'marketplace' ? 'w-[10%] text-center' : ''} ${col.id === 'status' ? 'w-[10%] text-center' : ''} ${col.id === 'margem' ? 'w-[10%] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
+                                                                className={`py-1 whitespace-nowrap text-sm text-gray-500 min-w-0 ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'w-[4%] text-center pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'w-[15%] text-center pr-0' : ''} ${col.id === 'valor' ? 'w-[10%] text-left' : ''} ${col.id === 'tipoEnvio' ? 'w-[10%] text-center' : ''} ${col.id === 'marketplace' ? 'w-[10%] text-left' : ''} ${col.id === 'status' ? 'w-[10%] text-center' : ''} ${col.id === 'margem' ? 'w-[10%] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
                                                             >
                                                                 {col.render(pedido)}
                                                             </td>
