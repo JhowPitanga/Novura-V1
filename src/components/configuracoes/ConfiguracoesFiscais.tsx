@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { Plus, MoreHorizontal } from "lucide-react";
+import { Plus, MoreHorizontal, Pencil } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { CleanNavigation } from "@/components/CleanNavigation";
@@ -21,6 +22,7 @@ interface Company {
   inscricao_estadual: string | null;
   email: string;
   created_at: string;
+  imposto_pago?: number | null;
 }
 
 export function ConfiguracoesFiscais() {
@@ -32,10 +34,12 @@ export function ConfiguracoesFiscais() {
   const [taxes, setTaxes] = useState<TaxRecord[]>([]);
   const [editingTax, setEditingTax] = useState<TaxRecord | null>(null);
   const { organizationId } = useAuth();
+  const [editingImpostoCompanyId, setEditingImpostoCompanyId] = useState<string | null>(null);
+  const [impostoPagoValue, setImpostoPagoValue] = useState<string>("0");
 
   const subNavItems = [
     { title: "Empresas", path: "empresas", description: "Gestão de empresas" },
-    { title: "Impostos", path: "impostos", description: "Regras, CFOP, CST e alíquotas" },
+    { title: "Classes de impostos", path: "impostos", description: "Regras, CFOP, CST e alíquotas" },
   ];
 
   useEffect(() => {
@@ -150,6 +154,40 @@ export function ConfiguracoesFiscais() {
     setIsTaxModalOpen(true);
   };
 
+  const formatPercent = (v?: number | null) => {
+    const n = typeof v === "number" ? v : 0;
+    const s = Number.isFinite(n) ? n : 0;
+    const rounded = Math.round(s * 100) / 100;
+    return `${rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(2)}%`;
+  };
+
+  const startEditImpostoPago = (company: Company) => {
+    setEditingImpostoCompanyId(company.id);
+    setImpostoPagoValue(String(company.imposto_pago ?? 0));
+  };
+
+  const cancelEditImpostoPago = () => {
+    setEditingImpostoCompanyId(null);
+    setImpostoPagoValue("0");
+  };
+
+  const saveImpostoPago = async (companyId: string) => {
+    try {
+      const num = parseFloat(String(impostoPagoValue).replace(",", "."));
+      const value = isNaN(num) ? 0 : Math.max(0, Math.min(100, num));
+      const { error } = await (supabase as any)
+        .from('companies')
+        .update({ imposto_pago: value })
+        .eq('id', companyId);
+      if (error) throw error;
+      setCompanies(prev => prev.map(c => c.id === companyId ? { ...c, imposto_pago: value } : c));
+      toast.success("Imposto pago atualizado");
+      cancelEditImpostoPago();
+    } catch (e: any) {
+      toast.error(e?.message || "Falha ao atualizar imposto pago");
+    }
+  };
+
   if (loading) {
     return (
       <div className="space-y-4">
@@ -218,6 +256,50 @@ export function ConfiguracoesFiscais() {
                         <p className="text-sm text-gray-500">
                           IE: {company.inscricao_estadual}
                         </p>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-gray-500">Imposto pago:</span>
+                        <Badge variant="outline" className="text-xs">
+                          {formatPercent(company.imposto_pago)}
+                        </Badge>
+                        <button
+                          type="button"
+                          className="inline-flex items-center"
+                          onClick={() => startEditImpostoPago(company)}
+                          aria-label="Editar imposto pago"
+                          title="Editar imposto pago"
+                        >
+                          <Pencil className="w-4 h-4 text-novura-primary" />
+                        </button>
+                      </div>
+                      {editingImpostoCompanyId === company.id && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <Input
+                            value={impostoPagoValue}
+                            onChange={(e) => setImpostoPagoValue(e.target.value)}
+                            type="number"
+                            min={0}
+                            max={100}
+                            step="0.01"
+                            className="w-24"
+                            placeholder="0"
+                          />
+                          <span className="text-sm text-gray-500">% </span>
+                          <Button
+                            size="sm"
+                            className="bg-novura-primary hover:bg-novura-primary/90"
+                            onClick={() => saveImpostoPago(company.id)}
+                          >
+                            Salvar
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={cancelEditImpostoPago}
+                          >
+                            Cancelar
+                          </Button>
+                        </div>
                       )}
                     </div>
                     <div className="text-right">

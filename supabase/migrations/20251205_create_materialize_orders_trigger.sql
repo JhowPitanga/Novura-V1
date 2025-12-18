@@ -390,7 +390,10 @@ BEGIN
         v_status_interno := 'Impressao';
     ELSIF v_shipment_status = 'ready_to_ship' AND v_printed_label THEN
         v_status_interno := 'Aguardando Coleta';
-    ELSIF v_shipment_status IN ('shipped', 'in_transit', 'handed_to_carrier', 'on_route', 'out_for_delivery', 'delivery_in_progress', 'collected', 'delivered') THEN
+    ELSIF v_shipment_status = 'ready_to_ship' AND v_shipment_substatus = 'dropped_off'
+          AND (lower(COALESCE(NEW.status,'')) = 'paid' OR lower(COALESCE(payments_agg.payment_status,'')) = 'paid') THEN
+        v_status_interno := 'Enviado';
+    ELSIF v_shipment_status IN ('shipped', 'dropped_off', 'in_transit', 'handed_to_carrier', 'on_route', 'out_for_delivery', 'delivery_in_progress', 'collected', 'delivered') THEN
         v_status_interno := 'Enviado';
     ELSE
         v_status_interno := 'Pendente';
@@ -474,6 +477,15 @@ BEGIN
       NULL
     );
 
+    RAISE NOTICE 'Materialize insert: id=%, marketplace=%, sale_fee=%',
+      NEW.id,
+      NEW.marketplace_name,
+      CASE
+        WHEN NEW.marketplace_name = 'Shopee' THEN
+          COALESCE(NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'commission_fee','')::numeric, 0)
+          + COALESCE(NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'service_fee','')::numeric, 0)
+        ELSE COALESCE(items_agg.items_total_sale_fee, 0)
+      END;
     INSERT INTO public.marketplace_orders_presented_new (
         id, organizations_id, company_id, marketplace, marketplace_order_id, status, status_detail, order_total,
         shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer, shipping_city_name,
@@ -492,21 +504,68 @@ BEGIN
         billing_name, billing_state_registration, billing_taxpayer_type, billing_cust_type, billing_is_normalized, billing_address
     )
     VALUES (
-        NEW.id, NEW.organizations_id, NEW.company_id, NEW.marketplace_name, NEW.marketplace_order_id, NEW.status, NEW.status_detail::text, (NEW.data->>'total_amount')::numeric,
+        NEW.id, NEW.organizations_id, NEW.company_id, NEW.marketplace_name, NEW.marketplace_order_id, NEW.status, NEW.status_detail::text,
+        CASE
+          WHEN NEW.marketplace_name = 'Shopee' THEN COALESCE(
+            NULLIF(NEW.data->'order_detail'->>'order_selling_price','')::numeric,
+            NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'order_selling_price','')::numeric,
+            NULLIF(NEW.data->'order_list_item'->>'order_selling_price','')::numeric,
+            NULLIF(NEW.data->'notification'->>'order_selling_price','')::numeric,
+            NULLIF(NEW.data->'order_detail'->>'total_amount','')::numeric,
+            NULLIF(NEW.data->'order_list_item'->>'total_amount','')::numeric,
+            NULLIF(NEW.data->'notification'->>'total_amount','')::numeric
+          )
+          ELSE (NEW.data->>'total_amount')::numeric
+        END,
         v_shipping_type, buyer_agg.customer_name, buyer_agg.id_buyer, buyer_agg.first_name, buyer_agg.last_name, shipping_address_agg.city,
         shipping_address_agg.state_name, shipping_address_agg.state_uf, shipping_address_agg.street_name, shipping_address_agg.street_number, shipping_address_agg.neighborhood_name, shipping_address_agg.zip_code, shipping_address_agg.comment, shipping_address_agg.address_line,
-        v_shipment_status, v_shipment_substatus, shipments_agg.shipping_method_name,
+        CASE
+          WHEN NEW.marketplace_name = 'Shopee' THEN COALESCE(
+            CASE
+              WHEN jsonb_typeof(NEW.data->'order_detail'->'package_list') = 'array' THEN NEW.data->'order_detail'->'package_list'->0->>'logistics_status'
+              WHEN jsonb_typeof(NEW.data->'order_detail'->'package_list') = 'object' THEN NEW.data->'order_detail'->'package_list'->>'logistics_status'
+              ELSE NULL
+            END,
+            CASE
+              WHEN jsonb_typeof(NEW.data->'order_list_item'->'package_list') = 'array' THEN NEW.data->'order_list_item'->'package_list'->0->>'logistics_status'
+              WHEN jsonb_typeof(NEW.data->'order_list_item'->'package_list') = 'object' THEN NEW.data->'order_list_item'->'package_list'->>'logistics_status'
+              ELSE NULL
+            END,
+            CASE
+              WHEN jsonb_typeof(NEW.data->'notification'->'package_list') = 'array' THEN NEW.data->'notification'->'package_list'->0->>'logistics_status'
+              WHEN jsonb_typeof(NEW.data->'notification'->'package_list') = 'object' THEN NEW.data->'notification'->'package_list'->>'logistics_status'
+              ELSE NULL
+            END
+          )
+          ELSE v_shipment_status
+        END,
+        v_shipment_substatus, shipments_agg.shipping_method_name,
         shipments_agg.estimated_delivery_limit_at, shipments_agg.shipment_sla_status, shipments_agg.shipment_sla_service, shipments_agg.shipment_sla_expected_date,
         shipments_agg.shipment_sla_last_updated, shipments_agg.shipment_delays, v_printed_label, v_printed_schedule, payments_agg.payment_status, payments_agg.total_paid_amount,
         payments_agg.marketplace_fee, payments_agg.shipping_cost, payments_agg.date_created, payments_agg.date_approved,
         payments_agg.refunded_amount, items_agg.items_count, items_agg.items_total_quantity, items_agg.items_total_amount, items_agg.items_total_full_amount,
-        items_agg.items_total_sale_fee, items_agg.currency_id, items_agg.first_item_id, items_agg.first_item_title, items_agg.first_item_sku,
+        CASE
+          WHEN NEW.marketplace_name = 'Shopee' THEN
+            COALESCE(NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'commission_fee','')::numeric, 0)
+            + COALESCE(NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'service_fee','')::numeric, 0)
+          ELSE items_agg.items_total_sale_fee
+        END, items_agg.currency_id, items_agg.first_item_id, items_agg.first_item_title, items_agg.first_item_sku,
         items_agg.first_item_variation_id, items_agg.first_item_permalink, items_agg.variation_color_names, items_agg.category_ids, items_agg.listing_type_ids,
         items_agg.stock_node_ids, items_agg.has_variations, items_agg.has_bundle, items_agg.has_kit,
         CASE
-            WHEN jsonb_typeof(NEW.data->'pack_id') = 'number' THEN (NEW.data->>'pack_id')::bigint
-            WHEN jsonb_typeof(NEW.data->'pack_id') = 'string' THEN CASE WHEN (NEW.data->>'pack_id') ~ '^\d+$' THEN (NEW.data->>'pack_id')::bigint ELSE NULL END
-            ELSE NULL
+          WHEN NEW.marketplace_name = 'Shopee' THEN
+            NULLIF(COALESCE(
+              NEW.data->'order_detail'->>'order_sn',
+              NEW.data->'order_list_item'->>'order_sn',
+              NEW.data->'notification'->>'order_sn',
+              NEW.marketplace_order_id
+            ), '')
+          ELSE
+            CASE
+              WHEN jsonb_typeof(NEW.data->'pack_id') = 'number' THEN NEW.data->>'pack_id'
+              WHEN jsonb_typeof(NEW.data->'pack_id') = 'string' THEN CASE WHEN (NEW.data->>'pack_id') ~ '^\d+$' THEN NEW.data->>'pack_id' ELSE NULL END
+              ELSE NULL
+            END
         END,
         v_label_cached, v_label_response_type, v_label_fetched_at, v_label_size_bytes, v_label_content_base64, v_label_content_type, v_label_pdf_base64, v_label_zpl2_base64,
         v_unlinked_items_count, v_has_unlinked_items, v_linked_products,
@@ -1012,8 +1071,19 @@ BEGIN
   ELSIF v_shipment_status = 'ready_to_ship' AND v_shipment_substatus = 'invoice_pending' THEN v_status_interno := 'Emissao NF';
   ELSIF v_shipment_status = 'ready_to_ship' AND v_shipment_substatus = 'ready_to_print' THEN v_status_interno := 'Impressao';
   ELSIF v_shipment_status = 'ready_to_ship' AND v_printed_label THEN v_status_interno := 'Aguardando Coleta';
-  ELSIF v_shipment_status IN ('shipped','in_transit','handed_to_carrier','on_route','out_for_delivery','delivery_in_progress','collected','delivered') THEN v_status_interno := 'Enviado';
+  ELSIF v_shipment_status = 'ready_to_ship' AND v_shipment_substatus = 'dropped_off'
+        AND (lower(COALESCE(rec.status,'')) = 'paid' OR lower(COALESCE(payments_agg.payment_status,'')) = 'paid') THEN v_status_interno := 'Enviado';
+  ELSIF v_shipment_status IN ('shipped','dropped_off','in_transit','handed_to_carrier','on_route','out_for_delivery','delivery_in_progress','collected','delivered') THEN v_status_interno := 'Enviado';
   ELSE v_status_interno := 'Pendente'; END IF;
+  RAISE NOTICE 'Materialize refresh: id=%, marketplace=%, sale_fee=%',
+    rec.id,
+    rec.marketplace_name,
+    CASE
+      WHEN rec.marketplace_name = 'Shopee' THEN
+        COALESCE(NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'commission_fee','')::numeric, 0)
+        + COALESCE(NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'service_fee','')::numeric, 0)
+      ELSE COALESCE(items_agg.items_total_sale_fee, 0)
+    END;
   INSERT INTO public.marketplace_orders_presented_new (
     id, organizations_id, company_id, marketplace, marketplace_order_id, status, status_detail, order_total,
     shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer, shipping_city_name,
@@ -1031,20 +1101,61 @@ BEGIN
     billing_name, billing_state_registration, billing_taxpayer_type, billing_cust_type, billing_is_normalized, billing_address
   )
   VALUES (
-    rec.id, rec.organizations_id, rec.company_id, rec.marketplace_name, rec.marketplace_order_id, rec.status, rec.status_detail::text, (rec.data->>'total_amount')::numeric,
+    rec.id, rec.organizations_id, rec.company_id, rec.marketplace_name, rec.marketplace_order_id, rec.status, rec.status_detail::text,
+    CASE
+      WHEN rec.marketplace_name = 'Shopee' THEN COALESCE(
+        NULLIF(rec.data->'order_detail'->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->'order_list_item'->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->'notification'->>'order_selling_price','')::numeric
+      )
+      ELSE (rec.data->>'total_amount')::numeric
+    END,
     v_shipping_type, buyer_agg.customer_name, buyer_agg.id_buyer, buyer_agg.first_name, buyer_agg.last_name, shipping_address_agg.city,
     shipping_address_agg.state_name, shipping_address_agg.state_uf, shipping_address_agg.street_name, shipping_address_agg.street_number, shipping_address_agg.neighborhood_name, shipping_address_agg.zip_code, shipping_address_agg.comment, shipping_address_agg.address_line,
-    v_shipment_status, v_shipment_substatus, shipments_agg.shipping_method_name,
+    CASE
+      WHEN rec.marketplace_name = 'Shopee' THEN COALESCE(
+        CASE
+          WHEN jsonb_typeof(rec.data->'order_detail'->'package_list') = 'array' THEN rec.data->'order_detail'->'package_list'->0->>'logistics_status'
+          WHEN jsonb_typeof(rec.data->'order_detail'->'package_list') = 'object' THEN rec.data->'order_detail'->'package_list'->>'logistics_status'
+          ELSE NULL
+        END,
+        CASE
+          WHEN jsonb_typeof(rec.data->'order_list_item'->'package_list') = 'array' THEN rec.data->'order_list_item'->'package_list'->0->>'logistics_status'
+          WHEN jsonb_typeof(rec.data->'order_list_item'->'package_list') = 'object' THEN rec.data->'order_list_item'->'package_list'->>'logistics_status'
+          ELSE NULL
+        END
+      )
+      ELSE v_shipment_status
+    END,
+    v_shipment_substatus, shipments_agg.shipping_method_name,
     shipments_agg.estimated_delivery_limit_at, shipments_agg.shipment_sla_status, shipments_agg.shipment_sla_service, shipments_agg.shipment_sla_expected_date,
     shipments_agg.shipment_sla_last_updated, shipments_agg.shipment_delays, v_printed_label, v_printed_schedule, payments_agg.payment_status, payments_agg.total_paid_amount,
     payments_agg.marketplace_fee, payments_agg.shipping_cost, payments_agg.date_created, payments_agg.date_approved,
     payments_agg.refunded_amount, items_agg.items_count, items_agg.items_total_quantity, items_agg.items_total_amount, items_agg.items_total_full_amount,
-    items_agg.items_total_sale_fee, items_agg.currency_id, items_agg.first_item_id, items_agg.first_item_title, items_agg.first_item_sku,
+    CASE
+      WHEN rec.marketplace_name = 'Shopee' THEN
+        COALESCE(NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'commission_fee','')::numeric, 0)
+        + COALESCE(NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'service_fee','')::numeric, 0)
+      ELSE items_agg.items_total_sale_fee
+    END, items_agg.currency_id, items_agg.first_item_id, items_agg.first_item_title, items_agg.first_item_sku,
     items_agg.first_item_variation_id, items_agg.first_item_permalink, items_agg.variation_color_names, items_agg.category_ids, items_agg.listing_type_ids,
     items_agg.stock_node_ids, items_agg.has_variations, items_agg.has_bundle, items_agg.has_kit,
-    CASE WHEN jsonb_typeof(rec.data->'pack_id') = 'number' THEN (rec.data->>'pack_id')::bigint
-         WHEN jsonb_typeof(rec.data->'pack_id') = 'string' THEN CASE WHEN (rec.data->>'pack_id') ~ '^\d+$' THEN (rec.data->>'pack_id')::bigint ELSE NULL END
-         ELSE NULL END,
+    CASE
+      WHEN rec.marketplace_name = 'Shopee' THEN
+        NULLIF(COALESCE(
+          rec.data->'order_detail'->>'order_sn',
+          rec.data->'order_list_item'->>'order_sn',
+          rec.data->'notification'->>'order_sn',
+          rec.marketplace_order_id
+        ), '')
+      ELSE
+        CASE
+          WHEN jsonb_typeof(rec.data->'pack_id') = 'number' THEN rec.data->>'pack_id'
+          WHEN jsonb_typeof(rec.data->'pack_id') = 'string' THEN CASE WHEN (rec.data->>'pack_id') ~ '^\d+$' THEN rec.data->>'pack_id' ELSE NULL END
+          ELSE NULL
+        END
+    END,
     v_unlinked_items_count, v_has_unlinked_items, v_linked_products,
     rec.date_created, rec.last_updated, rec.last_synced_at, v_status_interno,
     v_billing_doc_number, v_billing_doc_type, v_billing_email, v_billing_phone,

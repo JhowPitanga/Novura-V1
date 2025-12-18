@@ -131,11 +131,9 @@ serve(async (req) => {
 
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
   const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ENC_KEY_B64) return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
+  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
-  const aesKey = await importAesGcmKey(ENC_KEY_B64);
 
   try {
     const bodyText = await req.text();
@@ -149,33 +147,7 @@ serve(async (req) => {
 
     const notifPayload = (getField(body, "notification") ?? body) as unknown;
 
-    const { data: appRow, error: appErr } = await admin
-      .from("apps")
-      .select("client_id, client_secret, auth_url, config")
-      .eq("name", "Shopee")
-      .single();
-    if (appErr || !appRow) return jsonResponse({ ok: false, error: appErr?.message || "App not found", correlationId }, 200);
-    const partnerId = String(getField(appRow, "client_id") || "");
-    const partnerKey = String(getField(appRow, "client_secret") || "");
-    const cfg = getField(appRow, "config") as Record<string, unknown> | undefined;
-    const envName = (Deno.env.get("SHOPEE_ENV") || (typeof cfg?.["env"] === "string" ? String(cfg?.["env"]) : "")).toLowerCase();
-
-    let explicitHost: string | null = null;
-    try {
-      const au = getField(appRow, "auth_url") as string | null | undefined;
-      if (au && typeof au === "string" && au.trim()) {
-        const u = new URL(au);
-        if (u.hostname.includes("shopee")) explicitHost = u.origin;
-      }
-    } catch (_) { explicitHost = null; }
     const hosts: string[] = [];
-    if (explicitHost) hosts.push(explicitHost);
-    if (envName === "sandbox" || envName === "test") {
-      hosts.push("https://partner.test-stable.shopeemobile.com");
-    } else {
-      hosts.push("https://partner.shopeemobile.com");
-    }
-    if (!hosts.includes("https://partner.shopeemobile.com")) hosts.push("https://partner.shopeemobile.com");
 
     let integration: any = null;
     let integErr: any = null;
@@ -202,109 +174,15 @@ serve(async (req) => {
     }
     if (!integration) return jsonResponse({ ok: false, error: "Integration not found", correlationId }, 200);
 
-    let accessToken = await aesGcmDecryptFromString(aesKey, String(getField(integration, "access_token")));
-    let refreshTokenPlain = await aesGcmDecryptFromString(aesKey, String(getField(integration, "refresh_token")));
-
-    const orderPath = "/api/v2/order/get_order_detail";
-    const fetchOrder = async (): Promise<unknown | null> => {
-      const timestamp = Math.floor(Date.now() / 1000);
-      const baseString = `${partnerId}${orderPath}${timestamp}${accessToken}${shopId ?? ""}`;
-      const sign = await hmacSha256Hex(partnerKey, baseString);
-      for (const host of hosts) {
-        const url = `${host}${orderPath}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&access_token=${encodeURIComponent(accessToken)}&shop_id=${encodeURIComponent(String(shopId ?? ""))}&sign=${sign}`;
-        try {
-          const resp = await fetch(url, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ order_sn_list: [orderSn] }),
-          });
-          const json = await resp.json();
-          if (resp.status === 401 || resp.status === 403) return null;
-          if (resp.ok) return json;
-        } catch (_) { continue; }
-      }
-      return null;
-    };
-
-    let orderJson = await fetchOrder();
-    if (!orderJson) {
-      const refreshPath = "/api/v2/auth/access_token/get";
-      const timestamp = Math.floor(Date.now() / 1000);
-      const baseString = `${partnerId}${refreshPath}${timestamp}`;
-      const sign = await hmacSha256Hex(partnerKey, baseString);
-      for (const host of hosts) {
-        const tokenUrl = `${host}${refreshPath}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&sign=${sign}`;
-        try {
-          const resp = await fetch(tokenUrl, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ shop_id: Number(shopId), refresh_token: refreshTokenPlain, partner_id: Number(partnerId) }),
-          });
-          const json = await resp.json();
-          if (resp.ok && json && json.access_token) {
-            accessToken = String(json.access_token);
-            refreshTokenPlain = String(json.refresh_token || refreshTokenPlain);
-            const encKey = await importAesGcmKey(ENC_KEY_B64);
-            const iv = crypto.getRandomValues(new Uint8Array(12));
-            const ctA = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, encKey, new TextEncoder().encode(accessToken));
-            const ctB = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, encKey, new TextEncoder().encode(refreshTokenPlain));
-            const accEnc = `enc:gcm:${btoa(String.fromCharCode(...iv))}:${btoa(String.fromCharCode(...new Uint8Array(ctA)))}`;
-            const refEnc = `enc:gcm:${btoa(String.fromCharCode(...iv))}:${btoa(String.fromCharCode(...new Uint8Array(ctB)))}`;
-            const expiresAtIso = new Date(Date.now() + (Number(json.expire_in) || 14400) * 1000).toISOString();
-      await admin
-        .from("marketplace_integrations")
-        .update({ access_token: accEnc, refresh_token: refEnc, expires_in: expiresAtIso })
-        .eq("id", String(getField(integration, "id")));
-            break;
-          }
-        } catch (_) { continue; }
-      }
-      orderJson = await fetchOrder();
-    }
-
-    if (!orderJson) return jsonResponse({ ok: false, error: "Failed to fetch order detail", correlationId }, 200);
-
+    const combinedData = { notification: notifPayload } as const;
     const nowIso = new Date().toISOString();
-    const statusFromOrder = getStr(orderJson, ["order_status"]) || getStr(orderJson, ["data","order_status"]) || getStr(orderJson, ["data","status"]) || null;
-    const statusFromNotif = detectOrderStatus(notifPayload);
-    const status = statusFromOrder || statusFromNotif || null;
-    const statusDetailFromNotif = getStr(notifPayload, ["completed_scenario"]) || getStr(notifPayload, ["data","completed_scenario"]) || null;
-    const dateCreatedTs = getStr(orderJson, ["create_time"]) || getStr(orderJson, ["data","create_time"]) || getStr(notifPayload, ["create_time"]) || getStr(notifPayload, ["data","create_time"]) || null;
-    const lastUpdatedTs = getStr(orderJson, ["update_time"]) || getStr(orderJson, ["data","update_time"]) || getStr(notifPayload, ["update_time"]) || getStr(notifPayload, ["data","update_time"]) || null;
-    const toIso = (ts: string | null) => {
-      const n = ts ? Number(ts) : NaN;
-      if (!Number.isFinite(n)) return null;
-      return new Date(n * 1000).toISOString();
-    };
-    let orderItems: unknown = [];
-    const orderList = getField(orderJson, "order_list");
-    if (Array.isArray(orderList) && orderList.length > 0) {
-      const first = orderList[0] as Record<string, unknown>;
-      const il = first ? first["item_list"] : undefined;
-      if (Array.isArray(il)) orderItems = il;
-    }
 
-    const combinedData = { notification: notifPayload, order_detail: orderJson } as const;
-
-    const { data: upId, error: upErr } = await admin.rpc('upsert_marketplace_order_raw', {
+    const { data: upId, error: upErr } = await admin.rpc('upsert_marketplace_order_raw_shopee', {
       p_organizations_id: String(getField(integration, "organizations_id")),
       p_company_id: String(getField(integration, "company_id")),
       p_marketplace_name: "Shopee",
       p_marketplace_order_id: String(orderSn),
-      p_status: status,
-      p_status_detail: statusDetailFromNotif,
-      p_order_items: Array.isArray(orderItems) ? orderItems : [],
-      p_buyer: null,
-      p_seller: null,
-      p_payments: [],
-      p_shipments: [],
-      p_feedback: null,
-      p_tags: [],
       p_data: combinedData,
-      p_date_created: toIso(dateCreatedTs),
-      p_date_closed: null,
-      p_last_updated: toIso(lastUpdatedTs),
-      p_last_synced_at: nowIso,
     });
 
     if (upErr) {
@@ -314,19 +192,7 @@ serve(async (req) => {
           company_id: String(getField(integration, "company_id")),
           marketplace_name: "Shopee",
           marketplace_order_id: String(orderSn),
-          status: status,
-          status_detail: statusDetailFromNotif,
-          order_items: Array.isArray(orderItems) ? orderItems : [],
-          buyer: null,
-          seller: null,
-          payments: [],
-          shipments: [],
-          feedback: null,
-          tags: [],
           data: combinedData,
-          date_created: toIso(dateCreatedTs),
-          date_closed: null,
-          last_updated: toIso(lastUpdatedTs),
           last_synced_at: nowIso,
           updated_at: nowIso,
         } as const;

@@ -23,7 +23,7 @@ export function useVariations() {
   const [variationGroups, setVariationGroups] = useState<VariationGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { user, organizationId } = useAuth();
 
   const fetchVariations = async () => {
     if (!user) {
@@ -34,8 +34,19 @@ export function useVariations() {
     try {
       setLoading(true);
       
-      // Buscar produtos pai de variações
-      const { data: parentProducts, error: parentError } = await supabase
+      let companyId: string | null = null;
+      if (organizationId) {
+        const { data: companiesForOrg } = await supabase
+          .from('companies')
+          .select('id')
+          .eq('organization_id', organizationId)
+          .order('is_active', { ascending: false })
+          .order('created_at', { ascending: true })
+          .limit(1);
+        companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+      }
+
+      let parentQuery = supabase
         .from('products')
         .select(`
           id,
@@ -51,13 +62,14 @@ export function useVariations() {
         `)
         .eq('type', 'VARIACAO_PAI')
         .order('created_at', { ascending: false });
+      parentQuery = companyId ? parentQuery.eq('company_id', companyId) : parentQuery.eq('user_id', user.id);
+      const { data: parentProducts, error: parentError } = await parentQuery;
 
       if (parentError) throw parentError;
 
-      // Para cada produto pai, buscar suas variações
       const variationGroupsWithVariations = await Promise.all(
         (parentProducts || []).map(async (parent) => {
-          const { data: variations, error: variationsError } = await supabase
+          let childQuery = supabase
             .from('products')
             .select(`
               id,
@@ -82,6 +94,8 @@ export function useVariations() {
             `)
             .eq('type', 'VARIACAO_ITEM')
             .eq('parent_id', parent.id);
+          childQuery = companyId ? childQuery.eq('company_id', companyId) : childQuery.eq('user_id', user.id);
+          const { data: variations, error: variationsError } = await childQuery;
 
           if (variationsError) {
             console.error('Error fetching variations for parent:', parent.id, variationsError);
@@ -175,7 +189,7 @@ export function useVariations() {
 
   useEffect(() => {
     fetchVariations();
-  }, [user]);
+  }, [user, organizationId]);
 
   return {
     variationGroups,

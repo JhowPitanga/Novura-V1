@@ -57,7 +57,7 @@ create table if not exists public.marketplace_orders_presented_new (
   has_variations boolean null,
   has_bundle boolean null,
   has_kit boolean null,
-  pack_id bigint null,
+  pack_id text null,
   label_cached boolean null,
   label_response_type text null,
   label_fetched_at timestamp with time zone null,

@@ -1,0 +1,3 @@
+[functions.shopee-orders-sandbox]
+verify_jwt = false
+

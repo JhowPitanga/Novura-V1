@@ -15,12 +15,10 @@ function jsonResponse(body: unknown, status = 200) {
 
 function sanitizeRedirect(raw: string | null): string | null {
   if (!raw) return null;
-  // Remove espaços em branco e backticks indesejados
   const s = String(raw).trim().replace(/^`+|`+$/g, "");
   return s;
 }
 
-// Assinatura HMAC-SHA256 (Retorna minúsculas conforme doc Shopee)
 async function hmacSha256Hex(key: string, message: string): Promise<string> {
   const enc = new TextEncoder();
   const rawKey = enc.encode(key);
@@ -29,61 +27,7 @@ async function hmacSha256Hex(key: string, message: string): Promise<string> {
   const bytes = new Uint8Array(sig);
   let hex = "";
   for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex; // Retorna em minúsculas
-}
-
-function getField(obj: unknown, key: string): unknown {
-  if (obj && typeof obj === "object" && key in (obj as Record<string, unknown>)) {
-    return (obj as Record<string, unknown>)[key];
-  }
-  return undefined;
-}
-
-function getStr(obj: unknown, path: string[]): string | null {
-  let cur: unknown = obj;
-  for (const k of path) {
-    if (!cur || typeof cur !== "object" || !(k in (cur as Record<string, unknown>))) return null;
-    cur = (cur as Record<string, unknown>)[k];
-  }
-  const v = cur as unknown;
-  if (typeof v === "string" && v.trim()) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return null;
-}
-
-function detectOrderSn(payload: unknown): string | null {
-  const cand = [
-    ["order_sn"],
-    ["ordersn"],
-    ["ordersn_list","0"],
-    ["order_sn_list","0"],
-    ["data","order_sn"],
-    ["msg","order_sn"],
-    ["message","order_sn"],
-    ["order","order_sn"],
-    ["orders","0","order_sn"],
-  ];
-  for (const p of cand) { const v = getStr(payload, p); if (v) return v; }
-  const tryNested = (key: string): string | null => {
-    const raw = getStr(payload, [key]);
-    if (raw && (raw.trim().startsWith("{") || raw.trim().startsWith("["))) {
-      try {
-        const nested = JSON.parse(raw);
-        for (const p of cand) {
-          const v = getStr(nested, p);
-          if (v) return v;
-        }
-      } catch (_) {}
-    }
-    return null;
-  };
-  return tryNested("data") || tryNested("msg") || tryNested("message");
-}
-
-function detectShopId(payload: unknown): string | null {
-  const cand = [["shop_id"],["data","shop_id"],["msg","shop_id"],["merchant_id"],["shopid"]];
-  for (const p of cand) { const v = getStr(payload, p); if (v) return v; }
-  return null;
+  return hex;
 }
 
 serve(async (req) => {
@@ -104,7 +48,6 @@ serve(async (req) => {
     type StartBody = { organizationId?: string; storeName?: string; connectedByUserId?: string; redirect_uri?: string };
     const body = method === "GET" ? null : (await req.json() as StartBody);
     
-    // Dados para o STATE (passados para o callback)
     const organizationId = body?.organizationId || null;
     const storeName = body?.storeName || null;
     const connectedByUserId = body?.connectedByUserId || null;
@@ -114,30 +57,25 @@ serve(async (req) => {
     const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-    if (method === "POST") {
-      const isOrderPush = Boolean(detectOrderSn(body || {}));
-      if (isOrderPush) {
-        const { data: forwardData, error: forwardErr } = await (admin as any).functions.invoke("shopee-webhook-orders", {
-          body: body || {},
-          headers: { "x-request-id": correlationId, "x-correlation-id": correlationId },
-        });
-        if (forwardErr) return jsonResponse({ error: (forwardErr as any)?.message || "Forward failed", correlationId }, 500);
-        return jsonResponse({ ok: true, forwarded_to: "shopee-webhook-orders", result: forwardData, correlationId }, 200);
+
+    let appRow: Record<string, unknown> | null = null;
+    const candidateNames = ["sandbox_shopee", "sanbox_shopee", "Shopee Sandbox", "Shopee"];
+    for (const nm of candidateNames) {
+      const { data, error } = await admin
+        .from("apps")
+        .select("client_id, client_secret, config")
+        .eq("name", nm)
+        .limit(1);
+      if (!error && Array.isArray(data) && data.length > 0) {
+        appRow = data[0] as Record<string, unknown>;
+        break;
       }
     }
-
-    // Busca Credenciais do App Shopee (Tabela APPS)
-    const { data: appRow, error: appErr } = await admin
-      .from("apps")
-      .select("client_id, client_secret, config") // Removido auth_url, pois será fixo para produção
-      .eq("name", "Shopee")
-      .single();
-    if (appErr || !appRow) return jsonResponse({ error: appErr?.message || "App not found" }, 404);
+    if (!appRow) return jsonResponse({ error: "App not found (expected one of sandbox_shopee/sanbox_shopee/Shopee Sandbox/Shopee)" }, 404);
 
     type AppRow = { client_id?: string; client_secret?: string; config?: Record<string, unknown> };
     const app = appRow as AppRow;
     
-    // --- OTIMIZAÇÃO: Recuperação segura e validação do Partner ID ---
     const partnerId = String(app.client_id || "").trim();
     const partnerKey = String(app.client_secret || "").trim();
     
@@ -146,33 +84,25 @@ serve(async (req) => {
       return jsonResponse({ error: "Missing or invalid Partner ID (client_id) or Partner Key (client_secret)" }, 400);
     }
     
-    // --- CONFIGURAÇÃO ESTRITAMENTE DE PRODUÇÃO ---
-    const PROD_AUTH_HOST = "https://partner.shopeemobile.com";
+    const SANDBOX_AUTH_HOST = "https://partner.test-stable.shopeemobile.com";
     const fixedAuthPath = "/api/v2/shop/auth_partner";
-    const defaultRedirectUri = "https://novuraerp.com.br/oauth/shopee/callback"; // Default de fallback
+    const defaultRedirectUri = "https://novuraerp.com.br/oauth/shopee/callback";
 
-    // Lógica de REDIRECT URI
     const cfg = app.config as Record<string, unknown> | undefined;
     const redirectFromConfig = sanitizeRedirect((cfg && typeof cfg["redirect_uri"] === "string") ? String(cfg["redirect_uri"]) : null);
     const redirectEnv = sanitizeRedirect(Deno.env.get("SHOPEE_REDIRECT_URI") || null);
     
     const redirectUri = redirectOverride || redirectFromConfig || redirectEnv || defaultRedirectUri;
 
-    // Assinatura (HMAC)
     const timestamp = Math.floor(Date.now() / 1000);
-    // BaseString: partner_id + path + timestamp
     const baseString = `${partnerId}${fixedAuthPath}${timestamp}`;
-    
-    // CORREÇÃO: Assinatura deve ser minúscula (lowercase)
-    const sign = await hmacSha256Hex(partnerKey, baseString);
+    const sign = (await hmacSha256Hex(partnerKey, baseString)).toUpperCase();
 
-    // Montagem da URL de Autorização
-    const authorizationUrl = new URL(`${PROD_AUTH_HOST}${fixedAuthPath}`);
+    const authorizationUrl = new URL(`${SANDBOX_AUTH_HOST}${fixedAuthPath}`);
     authorizationUrl.searchParams.set("partner_id", partnerId);
     authorizationUrl.searchParams.set("timestamp", String(timestamp));
     authorizationUrl.searchParams.set("sign", sign);
     
-    // Montagem do STATE e inserção na URL de Redirect
     const statePayload = { organizationId, storeName, connectedByUserId, redirect_uri: redirectUri };
     const state = btoa(JSON.stringify(statePayload));
     
@@ -186,7 +116,6 @@ serve(async (req) => {
       redirectWithState = redirectUri;
     }
     
-  
     authorizationUrl.searchParams.set("redirect", redirectWithState);
     
     console.log("[shopee-start] success", { correlationId, authUrl: authorizationUrl.toString() });

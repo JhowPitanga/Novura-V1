@@ -15,8 +15,7 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 function tryParseJson(text: string): unknown {
-  try { return JSON.parse(text); } catch (_) { return null;
-}
+  try { return JSON.parse(text); } catch (_) { return null; }
 }
 
 function b64ToUint8(b64: string): Uint8Array {
@@ -62,7 +61,7 @@ async function hmacSha256Hex(key: string, message: string): Promise<string> {
   const bytes = new Uint8Array(sig);
   let hex = "";
   for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex.toUpperCase(); // Retorna em MAIÚSCULAS (correto para orders API)
+  return hex.toUpperCase();
 }
 
 function getField(obj: unknown, key: string): unknown {
@@ -84,7 +83,6 @@ function getStr(obj: unknown, path: string[]): string | null {
   return null;
 }
 
-// Funções de detecção (mantidas por serem utilitários)
 function detectOrderSn(payload: unknown): string | null {
   const cand = [
     ["order_sn"],
@@ -97,18 +95,14 @@ function detectOrderSn(payload: unknown): string | null {
     ["order","order_sn"],
     ["orders","0","order_sn"],
   ];
-  for (const p of cand) { const v = getStr(payload, p); if (v) return v;
-  }
+  for (const p of cand) { const v = getStr(payload, p); if (v) return v; }
   const tryNested = (key: string): string | null => {
     const raw = getStr(payload, [key]);
     if (raw && (raw.trim().startsWith("{") || raw.trim().startsWith("["))) {
       try {
         const nested = JSON.parse(raw);
-        for (const p of cand) {
-          const v = getStr(nested, p);
-          if (v) return v;
-        }
-      } catch (_) { /* ignore */ }
+        for (const p of cand) { const v = getStr(nested, p); if (v) return v; }
+      } catch (_) {}
     }
     return null;
   };
@@ -123,17 +117,13 @@ function detectShopId(payload: unknown): string | null {
 
 function detectOrderStatus(payload: unknown): string | null {
   const cand = [["order_status"],["status"],["data","order_status"],["data","status"],["msg","order_status"],["msg","status"],["message","order_status"],["message","status"],["current_state"],["new_status"]];
-  for (const p of cand) { const v = getStr(payload, p); if (v) return v;
-  }
+  for (const p of cand) { const v = getStr(payload, p); if (v) return v; }
   const tryNested = (key: string): string | null => {
     const raw = getStr(payload, [key]);
     if (raw && (raw.trim().startsWith("{") || raw.trim().startsWith("["))) {
       try {
         const nested = JSON.parse(raw);
-        for (const p of cand) {
-          const v = getStr(nested, p);
-          if (v) return v;
-        }
+        for (const p of cand) { const v = getStr(nested, p); if (v) return v; }
       } catch (_) {}
     }
     return null;
@@ -156,7 +146,6 @@ serve(async (req) => {
   try {
     const correlationId = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || crypto.randomUUID();
     const bodyText = await req.text();
- 
     const body = tryParseJson(bodyText) ?? {};
     console.log("shopee-sync-orders inbound", { correlationId, method: req.method, url: req.url, bodyPreview: bodyText.slice(0, 500) });
 
@@ -190,15 +179,23 @@ serve(async (req) => {
       }
     }
     
-    // Busca Credenciais do App Shopee (Tabela APPS)
-    const { data: appRow, error: appErr } = await admin
-      .from("apps")
-      .select("client_id, client_secret") // Seleciona apenas o necessário
-      .eq("name", "Shopee")
-      .single();
-    if (appErr || !appRow) return jsonResponse({ ok: false, error: appErr?.message || "App not found", correlationId }, 200);
+    let appRow: Record<string, unknown> | null = null;
+    {
+      const candidateNames = ["sandbox_shopee", "sanbox_shopee", "Shopee Sandbox", "Shopee"];
+      for (const nm of candidateNames) {
+        const { data, error } = await admin
+          .from("apps")
+          .select("client_id, client_secret")
+          .eq("name", nm)
+          .limit(1);
+        if (!error && Array.isArray(data) && data.length > 0) {
+          appRow = data[0] as Record<string, unknown>;
+          break;
+        }
+      }
+    }
+    if (!appRow) return jsonResponse({ ok: false, error: "App not found (expected one of sandbox_shopee/sanbox_shopee/Shopee Sandbox/Shopee)", correlationId }, 200);
     
-    // --- OTIMIZAÇÃO: Configuração estritamente para Produção (Remoção de lógica de teste) ---
     const partnerId = String(getField(appRow, "client_id") || "").trim();
     const partnerKey = String(getField(appRow, "client_secret") || "").trim();
 
@@ -210,14 +207,13 @@ serve(async (req) => {
     const listPath = "/api/v2/order/get_order_list";
     const detailPath = "/api/v2/order/get_order_detail";
     
-    const prodHosts = [
-      "https://openplatform.shopee.com.br",
+    const sandboxHosts = [
+      "https://partner.test-stable.shopeemobile.com",
     ];
 
-    const listHosts = prodHosts;
-    const detailHosts = prodHosts;
-    console.log("shopee-sync-orders api_host_selection_prod", { correlationId, partnerId, listHosts, detailHosts });
-    // --- Fim da Otimização de Configuração ---
+    const listHosts = sandboxHosts;
+    const detailHosts = sandboxHosts;
+    console.log("shopee-sync-orders api_host_selection_sandbox", { correlationId, partnerId, listHosts, detailHosts });
 
     let integrations: any[] = [];
     if (shopId) {
@@ -264,9 +260,6 @@ serve(async (req) => {
       const encAccess = accRaw.startsWith("enc:gcm:");
       const encRefresh = refRaw.startsWith("enc:gcm:");
       console.log("shopee-sync-orders token_state", { correlationId, integration_id: integrationId, enc_access: encAccess, enc_refresh: encRefresh, access_len: accessToken.length, refresh_len: refreshTokenPlain.length });
-      if (!accessToken && refreshTokenPlain) {
-        await tryRefreshAccessToken();
-      }
       console.log("shopee-sync-orders params_summary", { correlationId, integration_id: integrationId, shop_id: shopIdCandidate, time_range_field: timeRangeFieldInput, time_from: timeFrom, time_to: timeTo, page_size: pageSize, window_sec: (timeTo - timeFrom) });
 
       const tryRefreshAccessToken = async (): Promise<boolean> => {
@@ -289,8 +282,7 @@ serve(async (req) => {
             });
             const text = await resp.text();
             let json: any = {};
-            try { json = JSON.parse(text);
-            } catch (_) { json = {}; }
+            try { json = JSON.parse(text); } catch (_) { json = {}; }
             console.log("shopee-sync-orders token_refresh_response", { correlationId, integration_id: integrationId, status: resp.status, ok: resp.ok, body_preview: String(text).slice(0, 200) });
             if (resp.ok && json && json.access_token) {
               accessToken = String(json.access_token);
@@ -321,6 +313,10 @@ serve(async (req) => {
         return false;
       };
 
+      if (!accessToken && refreshTokenPlain) {
+        await tryRefreshAccessToken();
+      }
+
       const escrowPath = "/api/v2/payment/get_escrow_detail";
       const fetchEscrowDetail = async (orderSn: string, allowRefresh = true): Promise<any | null> => {
         const timestamp = Math.floor(Date.now() / 1000);
@@ -337,8 +333,7 @@ serve(async (req) => {
             const resp = await fetch(url, { method: "GET", headers: { "content-type": "application/json" } });
             const text = await resp.text();
             let json: any = null;
-            try { json = JSON.parse(text);
-            } catch (_) { json = null; }
+            try { json = JSON.parse(text); } catch (_) { json = null; }
             try {
               console.log("shopee-sync-orders escrow_api_raw", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, ok: resp.ok, body: text });
             } catch (_) {}
@@ -367,14 +362,10 @@ serve(async (req) => {
         const rf = rangeField || timeRangeFieldInput;
         const f = typeof fromTs === "number" ? fromTs : timeFrom;
         const t = typeof toTs === "number" ? toTs : timeTo;
-        
-        // BaseString APENAS com parâmetros comuns (sem corpo JSON)
         const baseString = `${partnerId}${listPath}${timestamp}${accessToken}${shopIdCandidate}`;
         let sign = await hmacSha256Hex(partnerKey, baseString);
         const signPreview = sign.slice(0, 8);
         const tsDiff = Math.abs(Math.floor(Date.now() / 1000) - timestamp);
-        
-        // Construção dos parâmetros de Query String
         const queryParams = new URLSearchParams({
           partner_id: partnerId,
           timestamp: String(timestamp),
@@ -382,7 +373,6 @@ serve(async (req) => {
           shop_id: String(shopIdCandidate),
           sign: sign,
           time_range_field: rf,
-          
           time_from: String(f),
           time_to: String(t),
           page_size: String(pageSize),
@@ -412,12 +402,10 @@ serve(async (req) => {
           try {
             console.log("shopee-sync-orders list_sign_inputs", { correlationId, integration_id: integrationId, path: listPath, timestamp, partner_id: partnerId, shop_id: shopIdCandidate, access_len: accessToken.length, sign_preview: signPreview });
             console.log("shopee-sync-orders list_api_request", { correlationId, integration_id: integrationId, host, url: urlMasked, time_range_field: rf, time_from: f, time_to: t, page_size: pageSize, cursor: cursor || null, ts_diff: tsDiff, has_order_status: orderStatusValid, has_resp_opt: (respOptFieldsRaw || "").trim().toLowerCase() === "order_status", pending_flag: Boolean(reqPendingStr), logistics_channel_id: lcidNum });
-            // Requisição GET
             const resp = await fetch(url, { method: "GET", headers: { "content-type": "application/json" } });
             const text = await resp.text();
             let json: any = null;
-            try { json = JSON.parse(text);
-            } catch (_) { json = null; }
+            try { json = JSON.parse(text); } catch (_) { json = null; }
             try {
               console.log("shopee-sync-orders list_api_raw", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, ok: resp.ok, body: text });
             } catch (_) {}
@@ -432,10 +420,8 @@ serve(async (req) => {
             } catch (_) {}
             if (!resp.ok) {
               try {
-                const errCode = (json as any)?.code ??
-                (json as any)?.error ?? (json as any)?.data?.code ?? null;
-                const errMsg = (typeof (json as any)?.message === "string" ? (json as any)?.message : (typeof (json as any)?.msg === "string" ? (json as any)?.msg : "")) ||
-                null;
+                const errCode = (json as any)?.code ?? (json as any)?.error ?? (json as any)?.data?.code ?? null;
+                const errMsg = (typeof (json as any)?.message === "string" ? (json as any)?.message : (typeof (json as any)?.msg === "string" ? (json as any)?.msg : "")) || null;
                 console.warn("shopee-sync-orders list_api_err", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, code: errCode, message: errMsg });
                 if ((resp.status === 401 || resp.status === 403 || String(errCode).includes("invalid_access_token") || String(errCode).includes("invalid_acceess_token")) && allowRefresh) {
                   const refreshed = await tryRefreshAccessToken();
@@ -454,30 +440,23 @@ serve(async (req) => {
 
       const fetchDetailBatch = async (orderSns: string[], allowRefresh = true): Promise<any | null> => {
         const timestamp = Math.floor(Date.now() / 1000);
-        // 1. Prepare parameters for URL Query String (GET method)
         const orderSnListParam = orderSns.join(",");
         const responseOptionalFieldsParam = "buyer_user_id,buyer_username,estimated_shipping_fee,recipient_address,actual_shipping_fee,goods_to_declare,note,note_update_time,item_list,pay_time,dropshipper,dropshipper_phone,split_up,buyer_cancel_reason,cancel_by,cancel_reason,actual_shipping_fee_confirmed,buyer_cpf_id,fulfillment_flag,pickup_done_time,package_list,shipping_carrier,payment_method,total_amount,invoice_data,order_chargeable_weight_gram,return_request_due_date,edt,payment_info";
-
-        // 2. CONSTRUCT BASE STRING FOR V2 GET/URL-PARAM REQUEST (NO JSON Body)
-        // BaseString = partner_id + API_PATH + timestamp + access_token + shop_id
         const baseString = `${partnerId}${detailPath}${timestamp}${accessToken}${shopIdCandidate}`;
         let sign = await hmacSha256Hex(partnerKey, baseString);
         const signPreview = sign.slice(0, 8);
         const tsDiff = Math.abs(Math.floor(Date.now() / 1000) - timestamp);
         
         for (const host of detailHosts) {
-          // 3. Construct URL with all V2 parameters and the specific GET parameters in Query String
           const url = `${host}${detailPath}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&access_token=${encodeURIComponent(accessToken)}&shop_id=${encodeURIComponent(String(shopIdCandidate))}&sign=${sign}&order_sn_list=${encodeURIComponent(orderSnListParam)}&request_order_status_pending=true&response_optional_fields=${encodeURIComponent(responseOptionalFieldsParam)}`;
           const urlMasked = url.replace(/access_token=[^&]*/i, "access_token=***").replace(/sign=[^&]*/i, "sign=***");
           try {
             console.log("shopee-sync-orders detail_sign_inputs", { correlationId, integration_id: integrationId, path: detailPath, timestamp, partner_id: partnerId, shop_id: shopIdCandidate, access_len: accessToken.length, sign_preview: signPreview });
             console.log("shopee-sync-orders detail_api_request", { correlationId, integration_id: integrationId, host, url: urlMasked, batch_size: orderSns.length, ts_diff: tsDiff });
-            // 4. CALL FETCH with GET method and NO BODY
             const resp = await fetch(url, { method: "GET", headers: { "content-type": "application/json" } });
             const text = await resp.text();
             let json: any = null;
-            try { json = JSON.parse(text);
-            } catch (_) { json = null; }
+            try { json = JSON.parse(text); } catch (_) { json = null; }
             try {
               console.log("shopee-sync-orders detail_api_raw", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, ok: resp.ok, body: text });
             } catch (_) {}
@@ -563,7 +542,6 @@ serve(async (req) => {
           }
       }
 
-
       for (const b of batches) {
         const detailJson = await fetchDetailBatch(b);
         const orderList = readOrderList(detailJson);
@@ -576,8 +554,7 @@ serve(async (req) => {
           const createTs = getStr(ord, ["create_time"]) || null;
           const orderItems = Array.isArray(ord?.item_list) ? ord.item_list : [];
           const toIso = (ts: string | null) => {
-            const n = ts ?
-            Number(ts) : NaN;
+            const n = ts ? Number(ts) : NaN;
             if (!Number.isFinite(n)) return null;
             return new Date(n * 1000).toISOString();
           };
@@ -617,9 +594,7 @@ serve(async (req) => {
                   .select("id")
                   .eq("organizations_id", organizationsId)
                   .eq("marketplace_name", "Shopee")
-                  .eq("marketplace_order_id", 
-                  
-                  ordSn)
+                  .eq("marketplace_order_id", ordSn)
                   .limit(1)
                   .single();
                 rawId = row?.id || null;
@@ -628,8 +603,7 @@ serve(async (req) => {
                 console.warn("shopee-sync-orders upsert_failed", { integration_id: integrationId, order_sn: ordSn, message: upErr.message });
               }
             }
-            if (rawId) { try { await admin.rpc('refresh_presented_order', { p_order_id: rawId });
-            } catch (_) {} }
+            if (rawId) { try { await admin.rpc('refresh_presented_order', { p_order_id: rawId }); } catch (_) {} }
           } catch (_) {}
         }
       }
