@@ -34,7 +34,7 @@ export function useKits() {
   const [kits, setKits] = useState<KitProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { user, organizationId } = useAuth();
 
   const fetchKits = async () => {
     if (!user) {
@@ -44,9 +44,19 @@ export function useKits() {
 
     try {
       setLoading(true);
-      
-      // Buscar produtos do tipo kit
-      const { data: kitProducts, error: kitError } = await supabase
+      let companyId: string | null = null;
+      if (organizationId) {
+        const { data: companiesForOrg } = await supabase
+          .from('companies')
+          .select('id')
+          .eq('organization_id', organizationId)
+          .order('is_active', { ascending: false })
+          .order('created_at', { ascending: true })
+          .limit(1);
+        companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+      }
+
+      let kitQuery = supabase
         .from('products')
         .select(`
           id,
@@ -64,13 +74,14 @@ export function useKits() {
         `)
         .eq('type', 'ITEM')
         .order('created_at', { ascending: false });
+      kitQuery = companyId ? kitQuery.eq('company_id', companyId) : kitQuery.eq('user_id', user.id);
+      const { data: kitProducts, error: kitError } = await kitQuery;
 
       if (kitError) throw kitError;
 
-      // Para cada kit, buscar seus itens e calcular estoque disponível
       const kitsWithItems = await Promise.all(
         (kitProducts || []).map(async (kit) => {
-          const { data: kitData, error: kitDataError } = await supabase
+          let kitItemsQuery = supabase
             .from('product_kits')
             .select(`
               id,
@@ -90,6 +101,9 @@ export function useKits() {
             `)
             .eq('product_id', kit.id)
             .single();
+          const { data: kitData, error: kitDataError } = companyId
+            ? await (kitItemsQuery as any).eq('product_kit_items.products.company_id', companyId)
+            : await (kitItemsQuery as any).eq('product_kit_items.products.user_id', user.id);
 
           let kitItems: any[] = [];
           if (!kitDataError && kitData) {
@@ -106,7 +120,7 @@ export function useKits() {
               }
             }));
           } else {
-            const { data: fallbackItems } = await supabase
+            let fallbackQuery = supabase
               .from('product_kit_items')
               .select(`
                 id,
@@ -122,6 +136,9 @@ export function useKits() {
                 )
               `)
               .eq('kit_id', kit.id);
+            const { data: fallbackItems } = companyId
+              ? await (fallbackQuery as any).eq('products.company_id', companyId)
+              : await (fallbackQuery as any).eq('products.user_id', user.id);
             kitItems = (fallbackItems || []).map((item: any) => ({
               id: item.id,
               quantity: item.quantity,
@@ -225,7 +242,7 @@ export function useKits() {
 
   useEffect(() => {
     fetchKits();
-  }, [user]);
+  }, [user, organizationId]);
 
   return {
     kits,

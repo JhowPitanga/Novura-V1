@@ -317,6 +317,7 @@ export type Database = {
           inscricao_estadual: string | null
           is_active: boolean
           lojas_associadas: Json | null
+          imposto_pago: number | null
           numero: string
           numero_serie: string | null
           organization_id: string
@@ -342,6 +343,7 @@ export type Database = {
           inscricao_estadual?: string | null
           is_active?: boolean
           lojas_associadas?: Json | null
+          imposto_pago?: number | null
           numero: string
           numero_serie?: string | null
           organization_id: string
@@ -367,6 +369,7 @@ export type Database = {
           inscricao_estadual?: string | null
           is_active?: boolean
           lojas_associadas?: Json | null
+          imposto_pago?: number | null
           numero?: string
           numero_serie?: string | null
           organization_id?: string

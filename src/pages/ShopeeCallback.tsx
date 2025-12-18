@@ -23,12 +23,15 @@ export default function ShopeeCallback() {
 
     const run = async () => {
       try {
+        let envFlag: string | null = null;
+        try { envFlag = localStorage.getItem('shopee_auth_env'); } catch (_) {}
+        const cbFunc = envFlag === 'sandbox' ? 'shopee-callback-sandbox' : 'shopee-callback';
         if (code) {
           const { data: sessionRes } = await supabase.auth.getSession();
           const token: string | undefined = sessionRes?.session?.access_token;
           const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY };
           if (token) headers.Authorization = `Bearer ${token}`;
-          const { data, error } = await supabase.functions.invoke<{ ok?: boolean; error?: string }>("shopee-callback", {
+          const { data, error } = await supabase.functions.invoke<{ ok?: boolean; error?: string }>(cbFunc, {
             body: { code, state: state || undefined, shop_id: shopId },
             headers,
           });
@@ -68,6 +71,9 @@ export default function ShopeeCallback() {
         const msg = err instanceof Error ? err.message : "Erro desconhecido";
         setStatus("error");
         setErrorMsg(msg);
+      }
+      finally {
+        try { localStorage.removeItem('shopee_auth_env'); } catch (_) {}
       }
     };
 

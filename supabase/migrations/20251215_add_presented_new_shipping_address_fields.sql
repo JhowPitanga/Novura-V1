@@ -11,139 +11,760 @@ ALTER TABLE public.marketplace_orders_presented_new
 CREATE OR REPLACE FUNCTION public.process_marketplace_order_presented_new()
 RETURNS TRIGGER AS $$
 DECLARE
-    items_agg record;
-    payments_agg record;
-    shipments_agg record;
-    buyer_agg record;
-    shipping_address_agg record;
-
-    v_status_interno text;
-    v_has_unlinked_items boolean;
-    v_unlinked_items_count integer;
-    v_shipping_type text;
-    v_shipment_status text;
-    v_shipment_substatus text;
-    v_is_full boolean;
-    v_is_cancelled boolean;
-    v_is_refunded boolean;
-    v_is_returned boolean;
-    v_printed_label boolean;
-    v_linked_products jsonb;
-    v_printed_schedule timestamp with time zone;
-    v_label_cached boolean;
-    v_label_response_type text;
-    v_label_fetched_at timestamp with time zone;
-    v_label_size_bytes integer;
-    v_label_content_base64 text;
-    v_label_content_type text;
-    v_label_pdf_base64 text;
-    v_label_zpl2_base64 text;
+  v_shp_order_status text;
+  v_shp_order_status_raw text;
+  v_shp_invoice_pending boolean;
+  v_shp_fulfillment_ready boolean;
+  v_shp_pickup_done boolean;
+  v_shp_shipping_carrier text;
+  v_created_at timestamptz;
+  v_last_updated timestamptz;
+  v_payment_total numeric;
+  v_order_total numeric;
+  v_customer_name text;
+  v_buyer_id bigint;
+  v_city text;
+  v_town text;
+  v_region text;
+  v_state text;
+  v_state_key text;
+  v_state_uf text;
+  v_zip text;
+  v_address_line text;
+  v_logistics_status text;
+  v_logistics_status_raw text;
+  v_items_count integer;
+  v_items_total_quantity integer;
+  v_items_total_amount numeric;
+  v_items_total_full_amount numeric;
+  v_items_total_sale_fee numeric;
+  v_commission_fee numeric;
+  v_service_fee numeric;
+  v_items_currency_id text;
+  v_first_item_id text;
+  v_first_item_title text;
+  v_first_item_sku text;
+  v_first_item_variation_id bigint;
+  v_variation_color_names text[];
+  v_has_variations boolean;
+  v_status_interno text;
+  v_has_unlinked_items boolean;
+  v_unlinked_items_count integer;
+  v_shipping_type text;
+  v_shipment_status text;
+  v_shipment_substatus text;
+  v_is_full boolean;
+  v_is_cancelled boolean;
+  v_is_refunded boolean;
+  v_is_returned boolean;
+  v_printed_label boolean;
+  v_linked_products jsonb;
+  v_printed_schedule timestamp with time zone;
+  v_label_cached boolean;
+  v_label_response_type text;
+  v_label_fetched_at timestamp with time zone;
+  v_label_size_bytes integer;
+  v_label_content_base64 text;
+  v_label_content_type text;
+  v_label_pdf_base64 text;
+  v_label_zpl2_base64 text;
+  v_err_message text;
+  v_err_detail text;
+  v_err_hint text;
+  v_err_context text;
 BEGIN
+  IF NEW.marketplace_name = 'Shopee' THEN
+    BEGIN
+      v_shp_order_status_raw := COALESCE(
+        NEW.data->'order_detail'->>'order_status',
+        NEW.data->'order_list_item'->>'order_status',
+        NEW.data->'notification'->>'order_status',
+        NEW.data->'notification'->>'status',
+        ''
+      );
+      v_shp_order_status := lower(COALESCE(v_shp_order_status_raw,''));
+      IF v_shp_order_status = 'unpaid' THEN
+        RETURN NEW;
+      END IF;
+
+      v_shp_invoice_pending := lower(COALESCE(NEW.data->'order_detail'->'invoice_data'->>'invoice_status', NEW.data->'notification'->'invoice_data'->>'invoice_status','')) = 'pending'
+                               OR v_shp_order_status = 'invoice_pending'
+                               OR (NEW.data->'order_detail'->'invoice_data'->>'invoice_number') IS NULL;
+      v_shp_fulfillment_ready := lower(COALESCE(
+        NEW.data->'order_detail'->>'logistics_status',
+        NEW.data->'order_list_item'->>'logistics_status',
+        NEW.data->'notification'->>'logistics_status',
+        ''
+      )) IN ('logistics_ready','logistics_request_created');
+      v_shp_pickup_done := (NEW.data->'order_detail'->>'pickup_done_time') IS NOT NULL;
+      v_shp_shipping_carrier := COALESCE(NEW.data->'order_detail'->>'shipping_carrier', NEW.data->'order_list_item'->>'shipping_carrier', NEW.data->'notification'->>'shipping_carrier', '');
+
+      v_order_total := COALESCE(
+        NULLIF(NEW.data->'order_detail'->>'order_selling_price','')::numeric,
+        NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'order_selling_price','')::numeric,
+        NULLIF(NEW.data->'order_list_item'->>'order_selling_price','')::numeric,
+        NULLIF(NEW.data->'notification'->>'order_selling_price','')::numeric
+      );
+      v_payment_total := COALESCE(
+        NULLIF(NEW.data->'order_detail'->>'total_amount','')::numeric,
+        NULLIF(NEW.data->'order_list_item'->>'total_amount','')::numeric,
+        NULLIF(NEW.data->'notification'->>'total_amount','')::numeric,
+        v_order_total
+      );
+
+      v_customer_name := COALESCE(NEW.data->'order_detail'->>'buyer_username', NEW.data->'order_list_item'->>'buyer_username', NEW.data->'notification'->>'buyer_username','');
+      v_buyer_id := CASE
+        WHEN NULLIF(NEW.data->'order_detail'->>'buyer_user_id','') IS NOT NULL THEN (NEW.data->'order_detail'->>'buyer_user_id')::bigint
+        WHEN NULLIF(NEW.data->'order_list_item'->>'buyer_user_id','') IS NOT NULL THEN (NEW.data->'order_list_item'->>'buyer_user_id')::bigint
+        WHEN NULLIF(NEW.data->'notification'->>'buyer_user_id','') IS NOT NULL THEN (NEW.data->'notification'->>'buyer_user_id')::bigint
+        ELSE NULL
+      END;
+
+      v_city := COALESCE(NEW.data->'order_detail'->'recipient_address'->>'city', NEW.data->'order_list_item'->'recipient_address'->>'city', NEW.data->'notification'->'recipient_address'->>'city');
+      v_town := COALESCE(NEW.data->'order_detail'->'recipient_address'->>'town', NEW.data->'order_list_item'->'recipient_address'->>'town', NEW.data->'notification'->'recipient_address'->>'town');
+      v_region := COALESCE(NEW.data->'order_detail'->'recipient_address'->>'region', NEW.data->'order_list_item'->'recipient_address'->>'region', NEW.data->'notification'->'recipient_address'->>'region');
+      v_state := v_region;
+      v_state_uf := NULL;
+      v_zip := COALESCE(NEW.data->'order_detail'->'recipient_address'->>'zipcode', NEW.data->'order_list_item'->'recipient_address'->>'zipcode', NEW.data->'notification'->'recipient_address'->>'zipcode');
+      v_address_line := COALESCE(NEW.data->'order_detail'->'recipient_address'->>'full_address', NEW.data->'order_list_item'->'recipient_address'->>'full_address', NEW.data->'notification'->'recipient_address'->>'full_address');
+
+      v_logistics_status := lower(COALESCE(NEW.data->'order_detail'->>'logistics_status', NEW.data->'order_list_item'->>'logistics_status', NEW.data->'notification'->>'logistics_status',''));
+      v_logistics_status_raw := COALESCE(
+        CASE
+          WHEN jsonb_typeof(NEW.data->'order_detail'->'package_list') = 'array' THEN NEW.data->'order_detail'->'package_list'->0->>'logistics_status'
+          WHEN jsonb_typeof(NEW.data->'order_detail'->'package_list') = 'object' THEN NEW.data->'order_detail'->'package_list'->>'logistics_status'
+          ELSE NULL
+        END,
+        CASE
+          WHEN jsonb_typeof(NEW.data->'order_list_item'->'package_list') = 'array' THEN NEW.data->'order_list_item'->'package_list'->0->>'logistics_status'
+          WHEN jsonb_typeof(NEW.data->'order_list_item'->'package_list') = 'object' THEN NEW.data->'order_list_item'->'package_list'->>'logistics_status'
+          ELSE NULL
+        END,
+        CASE
+          WHEN jsonb_typeof(NEW.data->'notification'->'package_list') = 'array' THEN NEW.data->'notification'->'package_list'->0->>'logistics_status'
+          WHEN jsonb_typeof(NEW.data->'notification'->'package_list') = 'object' THEN NEW.data->'notification'->'package_list'->>'logistics_status'
+          ELSE NULL
+        END
+      );
+
+      v_created_at := CASE
+        WHEN NULLIF(NEW.data->'order_detail'->>'create_time','') IS NOT NULL THEN to_timestamp((NEW.data->'order_detail'->>'create_time')::bigint)
+        WHEN NULLIF(NEW.data->'order_list_item'->>'create_time','') IS NOT NULL THEN to_timestamp((NEW.data->'order_list_item'->>'create_time')::bigint)
+        WHEN NULLIF(NEW.data->'notification'->>'create_time','') IS NOT NULL THEN to_timestamp((NEW.data->'notification'->>'create_time')::bigint)
+        ELSE NEW.date_created
+      END;
+
+      v_last_updated := CASE
+        WHEN NULLIF(NEW.data->'order_detail'->>'update_time','') IS NOT NULL THEN to_timestamp((NEW.data->'order_detail'->>'update_time')::bigint)
+        WHEN NULLIF(NEW.data->'order_list_item'->>'update_time','') IS NOT NULL THEN to_timestamp((NEW.data->'order_list_item'->>'update_time')::bigint)
+        WHEN NULLIF(NEW.data->'notification'->>'update_time','') IS NOT NULL THEN to_timestamp((NEW.data->'notification'->>'update_time')::bigint)
+        ELSE NEW.last_updated
+      END;
+
+      v_items_count := COALESCE(jsonb_array_length(COALESCE(NEW.data->'order_detail'->'item_list','[]'::jsonb)), 0);
+      SELECT
+        COALESCE(SUM(COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0),
+        COALESCE(SUM(COALESCE(NULLIF(oi->>'item_price','')::numeric, NULLIF(oi->>'original_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
+        COALESCE(SUM(COALESCE(NULLIF(oi->>'original_price','')::numeric, NULLIF(oi->>'item_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
+        COALESCE(BOOL_OR(NULLIF(oi->>'model_id','') IS NOT NULL), false)
+      INTO v_items_total_quantity, v_items_total_amount, v_items_total_full_amount, v_has_variations
+      FROM jsonb_array_elements(COALESCE(NEW.data->'order_detail'->'item_list','[]'::jsonb)) oi;
+
+      v_commission_fee := COALESCE(
+        NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'commission_fee','')::numeric,
+        NULLIF(((NEW.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'commission_fee'),'')::numeric,
+        0
+      );
+      v_service_fee := COALESCE(
+        NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'service_fee','')::numeric,
+        NULLIF(((NEW.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'service_fee'),'')::numeric,
+        0
+      );
+      v_items_total_sale_fee := COALESCE(v_commission_fee, 0) + COALESCE(v_service_fee, 0);
+      v_items_currency_id := COALESCE(NEW.data->'order_detail'->>'currency', NEW.data->'escrow_detail'->>'currency', NEW.data->'order_list_item'->>'currency');
+
+      v_first_item_id := NULLIF(COALESCE(NEW.data->'order_detail'->'item_list'->0->>'item_id', NEW.data->'order_list_item'->'item_list'->0->>'item_id'), '');
+      v_first_item_title := NULLIF(COALESCE(NEW.data->'order_detail'->'item_list'->0->>'item_name', NEW.data->'order_list_item'->'item_list'->0->>'item_name'), '');
+      v_first_item_sku := COALESCE(NULLIF(NEW.data->'order_detail'->'item_list'->0->>'model_sku',''), NULLIF(NEW.data->'order_detail'->'item_list'->0->>'sku',''), NULLIF(NEW.data->'order_list_item'->'item_list'->0->>'model_sku',''), NULLIF(NEW.data->'order_list_item'->'item_list'->0->>'sku',''));
+      v_first_item_variation_id := CASE
+        WHEN NULLIF(COALESCE(NEW.data->'order_detail'->'item_list'->0->>'model_id', NEW.data->'order_list_item'->'item_list'->0->>'model_id'), '') IS NOT NULL
+        THEN COALESCE(NEW.data->'order_detail'->'item_list'->0->>'model_id', NEW.data->'order_list_item'->'item_list'->0->>'model_id')::bigint
+        ELSE NULL
+      END;
+
+      v_variation_color_names := COALESCE(
+        ARRAY(
+          SELECT DISTINCT NULLIF(oi->>'model_name','')
+          FROM jsonb_array_elements(COALESCE(NEW.data->'order_detail'->'item_list','[]'::jsonb)) oi
+          WHERE NULLIF(oi->>'model_name','') IS NOT NULL
+        ),
+        '{}'::text[]
+      );
+
+      v_status_interno := CASE
+        WHEN v_shp_order_status IN ('cancelled','in_cancel') THEN 'Cancelado'
+        WHEN v_shp_order_status = 'to_return' THEN 'Devolução'
+        WHEN v_shp_order_status = 'ready_to_ship' AND v_shp_invoice_pending THEN 'Emissao NF'
+        WHEN v_shp_order_status IN ('ready_to_ship','processed') OR v_shp_fulfillment_ready THEN 'Impressao'
+        WHEN v_shp_order_status = 'retry_ship' THEN 'Aguardando Coleta'
+        WHEN v_shp_order_status IN ('shipped','to_confirm_receive','completed') OR v_shp_pickup_done THEN 'Enviado'
+        ELSE 'Pendente'
+      END;
+
+      PERFORM set_config('row_security', 'off', true);
+      INSERT INTO public.marketplace_orders_presented_new (
+        id, organizations_id, company_id, marketplace, marketplace_order_id, status, status_detail, order_total,
+        shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer,
+        shipping_city_name, shipping_state_name, shipping_state_uf,
+        shipping_street_name, shipping_street_number, shipping_neighborhood_name, shipping_zip_code, shipping_comment, shipping_address_line,
+        shipment_status, shipment_substatus, shipping_method_name,
+        estimated_delivery_limit_at, shipment_sla_status, shipment_sla_service, shipment_sla_expected_date,
+        shipment_sla_last_updated, shipment_delays, printed_label, printed_schedule, payment_status, payment_total_paid_amount,
+        payment_marketplace_fee, payment_shipping_cost, payment_date_created, payment_date_approved,
+        payment_refunded_amount, items_count, items_total_quantity, items_total_amount, items_total_full_amount,
+        items_total_sale_fee, items_currency_id, first_item_id, first_item_title, first_item_sku,
+        first_item_variation_id, first_item_permalink, variation_color_names, category_ids, listing_type_ids,
+        stock_node_ids, has_variations, has_bundle, has_kit, pack_id,
+        label_cached, label_response_type, label_fetched_at, label_size_bytes, label_content_base64, label_content_type, label_pdf_base64, label_zpl2_base64,
+        unlinked_items_count, has_unlinked_items, linked_products, created_at, last_updated, last_synced_at, status_interno
+      )
+      VALUES (
+        NEW.id, NEW.organizations_id, NEW.company_id, NEW.marketplace_name, NEW.marketplace_order_id, COALESCE(NEW.status, v_shp_order_status), NEW.status_detail::text, v_order_total,
+        v_shp_shipping_carrier, v_customer_name, v_buyer_id, NULL, NULL,
+        v_city, v_state, v_state_uf,
+        NULL, NULL, NULL, v_zip, NULL, v_address_line,
+        v_logistics_status_raw, NULL, v_shp_shipping_carrier,
+        NULL, NULL, NULL, NULL,
+        v_last_updated, '[]'::jsonb, false, NULL, NULL, v_payment_total,
+        NULL, NULL, NULL, NULL,
+        NULL, v_items_count, v_items_total_quantity, v_items_total_amount, v_items_total_full_amount,
+        v_items_total_sale_fee, v_items_currency_id, v_first_item_id, v_first_item_title, v_first_item_sku,
+        v_first_item_variation_id, NULL, v_variation_color_names, '{}'::text[], '{}'::text[],
+        '{}'::text[], v_has_variations, false, false,
+        CASE
+          WHEN NEW.marketplace_name = 'Shopee' THEN
+            NULLIF(COALESCE(
+              NEW.data->'order_detail'->>'order_sn',
+              NEW.data->'order_list_item'->>'order_sn',
+              NEW.data->'notification'->>'order_sn',
+              NEW.marketplace_order_id
+            ), '')
+          ELSE NULL
+        END,
+        false, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        0, false, '[]'::jsonb, COALESCE(NEW.date_created, v_created_at), COALESCE(NEW.last_updated, v_last_updated), NEW.last_synced_at, v_status_interno
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        organizations_id = EXCLUDED.organizations_id,
+        company_id = EXCLUDED.company_id,
+        marketplace = EXCLUDED.marketplace,
+        marketplace_order_id = EXCLUDED.marketplace_order_id,
+        status = EXCLUDED.status,
+        status_detail = EXCLUDED.status_detail,
+        order_total = EXCLUDED.order_total,
+        shipping_type = EXCLUDED.shipping_type,
+        customer_name = EXCLUDED.customer_name,
+        id_buyer = EXCLUDED.id_buyer,
+        first_name_buyer = EXCLUDED.first_name_buyer,
+        last_name_buyer = EXCLUDED.last_name_buyer,
+        shipping_city_name = EXCLUDED.shipping_city_name,
+        shipping_state_name = EXCLUDED.shipping_state_name,
+        shipping_state_uf = EXCLUDED.shipping_state_uf,
+        shipping_street_name = EXCLUDED.shipping_street_name,
+        shipping_street_number = EXCLUDED.shipping_street_number,
+        shipping_neighborhood_name = EXCLUDED.shipping_neighborhood_name,
+        shipping_zip_code = EXCLUDED.shipping_zip_code,
+        shipping_comment = EXCLUDED.shipping_comment,
+        shipping_address_line = EXCLUDED.shipping_address_line,
+        shipment_status = EXCLUDED.shipment_status,
+        shipment_substatus = EXCLUDED.shipment_substatus,
+        shipping_method_name = EXCLUDED.shipping_method_name,
+        estimated_delivery_limit_at = EXCLUDED.estimated_delivery_limit_at,
+        shipment_sla_status = EXCLUDED.shipment_sla_status,
+        shipment_sla_service = EXCLUDED.shipment_sla_service,
+        shipment_sla_expected_date = EXCLUDED.shipment_sla_expected_date,
+        shipment_sla_last_updated = EXCLUDED.shipment_sla_last_updated,
+        shipment_delays = EXCLUDED.shipment_delays,
+        printed_label = EXCLUDED.printed_label,
+        printed_schedule = EXCLUDED.printed_schedule,
+        payment_status = EXCLUDED.payment_status,
+        payment_total_paid_amount = EXCLUDED.payment_total_paid_amount,
+        payment_marketplace_fee = EXCLUDED.payment_marketplace_fee,
+        payment_shipping_cost = EXCLUDED.payment_shipping_cost,
+        payment_date_created = EXCLUDED.payment_date_created,
+        payment_date_approved = EXCLUDED.payment_date_approved,
+        payment_refunded_amount = EXCLUDED.payment_refunded_amount,
+        items_count = EXCLUDED.items_count,
+        items_total_quantity = EXCLUDED.items_total_quantity,
+        items_total_amount = EXCLUDED.items_total_amount,
+        items_total_full_amount = EXCLUDED.items_total_full_amount,
+        items_total_sale_fee = EXCLUDED.items_total_sale_fee,
+        items_currency_id = EXCLUDED.items_currency_id,
+        first_item_id = EXCLUDED.first_item_id,
+        first_item_title = EXCLUDED.first_item_title,
+        first_item_sku = EXCLUDED.first_item_sku,
+        first_item_variation_id = EXCLUDED.first_item_variation_id,
+        first_item_permalink = EXCLUDED.first_item_permalink,
+        variation_color_names = EXCLUDED.variation_color_names,
+        category_ids = EXCLUDED.category_ids,
+        listing_type_ids = EXCLUDED.listing_type_ids,
+        stock_node_ids = EXCLUDED.stock_node_ids,
+        has_variations = EXCLUDED.has_variations,
+        has_bundle = EXCLUDED.has_bundle,
+        has_kit = EXCLUDED.has_kit,
+        pack_id = EXCLUDED.pack_id,
+        label_cached = EXCLUDED.label_cached,
+        label_response_type = EXCLUDED.label_response_type,
+        label_fetched_at = EXCLUDED.label_fetched_at,
+        label_size_bytes = EXCLUDED.label_size_bytes,
+        label_content_base64 = EXCLUDED.label_content_base64,
+        label_content_type = EXCLUDED.label_content_type,
+        label_pdf_base64 = EXCLUDED.label_pdf_base64,
+        label_zpl2_base64 = EXCLUDED.label_zpl2_base64,
+        unlinked_items_count = EXCLUDED.unlinked_items_count,
+        has_unlinked_items = EXCLUDED.has_unlinked_items,
+        linked_products = EXCLUDED.linked_products,
+        last_updated = EXCLUDED.last_updated,
+        last_synced_at = EXCLUDED.last_synced_at,
+        status_interno = EXCLUDED.status_interno;
+      PERFORM set_config('row_security', 'on', true);
+      RETURN NEW;
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err_message = MESSAGE_TEXT,
+                              v_err_detail  = PG_EXCEPTION_DETAIL,
+                              v_err_hint    = PG_EXCEPTION_HINT,
+                              v_err_context = PG_EXCEPTION_CONTEXT;
+      PERFORM set_config('row_security', 'on', true);
+      RETURN NEW;
+    END;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.refresh_presented_order(p_order_id uuid)
+RETURNS void AS $$
+DECLARE
+  rec RECORD;
+  v_err_message text;
+  v_err_detail text;
+  v_err_hint text;
+  v_err_context text;
+  items_agg record;
+  payments_agg record;
+  shipments_agg record; 
+  buyer_agg record;
+  shipping_address_agg record;
+  v_status_interno text;
+  v_has_unlinked_items boolean;
+  v_unlinked_items_count integer;
+  v_shipping_type text;
+  v_shipment_status text;
+  v_shipment_substatus text;
+  v_is_full boolean;
+  v_is_cancelled boolean;
+  v_is_refunded boolean;
+  v_is_returned boolean;
+  v_printed_label boolean;
+  v_linked_products jsonb;
+  v_printed_schedule timestamp with time zone;
+  v_label_cached boolean;
+  v_label_response_type text;
+  v_label_fetched_at timestamp with time zone;
+  v_label_size_bytes integer;
+  v_label_content_base64 text;
+  v_label_content_type text;
+  v_label_pdf_base64 text;
+  v_label_zpl2_base64 text;
+  v_shp_order_status text;
+  v_shp_order_status_raw text;
+  v_shp_invoice_pending boolean;
+  v_shp_fulfillment_ready boolean;
+  v_shp_pickup_done boolean;
+  v_shp_shipping_carrier text;
+  v_created_at timestamptz;
+  v_last_updated timestamptz;
+  v_payment_total numeric;
+  v_order_total numeric;
+  v_customer_name text;
+  v_buyer_id bigint;
+  v_city text;
+  v_town text;
+  v_region text;
+  v_state text;
+  v_state_key text;
+  v_state_uf text;
+  v_zip text;
+  v_address_line text;
+  v_logistics_status text;
+  v_logistics_status_raw text;
+  v_items_count integer;
+  v_items_total_quantity integer;
+  v_items_total_amount numeric;
+  v_items_total_full_amount numeric;
+  v_items_total_sale_fee numeric;
+  v_commission_fee numeric;
+  v_service_fee numeric;
+  v_items_currency_id text;
+  v_first_item_id text;
+  v_first_item_title text;
+  v_first_item_sku text;
+  v_first_item_variation_id bigint;
+  v_variation_color_names text[];
+  v_has_variations boolean;
+BEGIN
+  SELECT * INTO rec FROM public.marketplace_orders_raw WHERE id = p_order_id LIMIT 1;
+  IF NOT FOUND THEN RETURN; END IF;
+
+  IF rec.marketplace_name = 'Shopee' THEN
+    BEGIN
+      v_shp_order_status_raw := COALESCE(rec.data->'order_detail'->>'order_status', rec.data->'order_list_item'->>'order_status', '');
+      v_shp_order_status := lower(COALESCE(v_shp_order_status_raw,''));
+      IF v_shp_order_status = 'unpaid' THEN
+        RETURN;
+      END IF;
+
+      v_shp_invoice_pending := lower(COALESCE(rec.data->'order_detail'->'invoice_data'->>'invoice_status','')) = 'pending'
+                               OR v_shp_order_status = 'invoice_pending'
+                               OR (rec.data->'order_detail'->'invoice_data'->>'invoice_number') IS NULL;
+      v_shp_fulfillment_ready := lower(COALESCE(rec.data->'order_detail'->>'logistics_status', rec.data->'order_list_item'->>'logistics_status','')) IN ('logistics_ready','logistics_request_created');
+      v_shp_pickup_done := (rec.data->'order_detail'->>'pickup_done_time') IS NOT NULL;
+      v_shp_shipping_carrier := COALESCE(rec.data->'order_detail'->>'shipping_carrier', rec.data->'order_list_item'->>'shipping_carrier', rec.data->'notification'->>'shipping_carrier', '');
+
+      v_order_total := COALESCE(
+        NULLIF(rec.data->'order_detail'->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->'order_list_item'->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->'notification'->>'order_selling_price','')::numeric
+      );
+      v_payment_total := v_order_total;
+
+      v_customer_name := COALESCE(rec.data->'order_detail'->>'buyer_username', rec.data->'order_list_item'->>'buyer_username', rec.data->'notification'->>'buyer_username','');
+      v_buyer_id := CASE
+        WHEN NULLIF(rec.data->'order_detail'->>'buyer_user_id','') IS NOT NULL THEN (rec.data->'order_detail'->>'buyer_user_id')::bigint
+        WHEN NULLIF(rec.data->'order_list_item'->>'buyer_user_id','') IS NOT NULL THEN (rec.data->'order_list_item'->>'buyer_user_id')::bigint
+        ELSE NULL
+      END;
+
+      v_city := COALESCE(rec.data->'order_detail'->'recipient_address'->>'city', rec.data->'order_list_item'->'recipient_address'->>'city');
+      v_town := COALESCE(rec.data->'order_detail'->'recipient_address'->>'town', rec.data->'order_list_item'->'recipient_address'->>'town');
+      v_region := COALESCE(rec.data->'order_detail'->'recipient_address'->>'region', rec.data->'order_list_item'->'recipient_address'->>'region');
+      v_state := v_region;
+      v_state_uf := NULL;
+      v_zip := COALESCE(rec.data->'order_detail'->'recipient_address'->>'zipcode', rec.data->'order_list_item'->'recipient_address'->>'zipcode');
+      v_address_line := COALESCE(rec.data->'order_detail'->'recipient_address'->>'full_address', rec.data->'order_list_item'->'recipient_address'->>'full_address');
+
+      v_logistics_status := lower(COALESCE(rec.data->'order_detail'->>'logistics_status', rec.data->'order_list_item'->>'logistics_status',''));
+      v_logistics_status_raw := COALESCE(
+        CASE
+          WHEN jsonb_typeof(rec.data->'order_detail'->'package_list') = 'array' THEN rec.data->'order_detail'->'package_list'->0->>'logistics_status'
+          WHEN jsonb_typeof(rec.data->'order_detail'->'package_list') = 'object' THEN rec.data->'order_detail'->'package_list'->>'logistics_status'
+          ELSE NULL
+        END,
+        CASE
+          WHEN jsonb_typeof(rec.data->'order_list_item'->'package_list') = 'array' THEN rec.data->'order_list_item'->'package_list'->0->>'logistics_status'
+          WHEN jsonb_typeof(rec.data->'order_list_item'->'package_list') = 'object' THEN rec.data->'order_list_item'->'package_list'->>'logistics_status'
+          ELSE NULL
+        END
+      );
+
+      v_created_at := CASE
+        WHEN NULLIF(rec.data->'order_detail'->>'create_time','') IS NOT NULL THEN to_timestamp((rec.data->'order_detail'->>'create_time')::bigint)
+        WHEN NULLIF(rec.data->'order_list_item'->>'create_time','') IS NOT NULL THEN to_timestamp((rec.data->'order_list_item'->>'create_time')::bigint)
+        ELSE rec.date_created
+      END;
+
+      v_last_updated := CASE
+        WHEN NULLIF(rec.data->'order_detail'->>'update_time','') IS NOT NULL THEN to_timestamp((rec.data->'order_detail'->>'update_time')::bigint)
+        WHEN NULLIF(rec.data->'order_list_item'->>'update_time','') IS NOT NULL THEN to_timestamp((rec.data->'order_list_item'->>'update_time')::bigint)
+        ELSE rec.last_updated
+      END;
+
+      v_items_count := COALESCE(jsonb_array_length(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)), 0);
+      SELECT
+        COALESCE(SUM(COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0),
+        COALESCE(SUM(COALESCE(NULLIF(oi->>'item_price','')::numeric, NULLIF(oi->>'original_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
+        COALESCE(SUM(COALESCE(NULLIF(oi->>'original_price','')::numeric, NULLIF(oi->>'item_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
+        COALESCE(BOOL_OR(NULLIF(oi->>'model_id','') IS NOT NULL), false)
+      INTO v_items_total_quantity, v_items_total_amount, v_items_total_full_amount, v_has_variations
+      FROM jsonb_array_elements(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)) oi;
+
+      v_commission_fee := COALESCE(
+        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'commission_fee','')::numeric,
+        NULLIF(((rec.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'commission_fee'),'')::numeric,
+        0
+      );
+      v_service_fee := COALESCE(
+        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'service_fee','')::numeric,
+        NULLIF(((rec.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'service_fee'),'')::numeric,
+        0
+      );
+      v_items_total_sale_fee := COALESCE(v_commission_fee, 0) + COALESCE(v_service_fee, 0);
+      v_items_currency_id := COALESCE(rec.data->'order_detail'->>'currency', rec.data->'escrow_detail'->>'currency', rec.data->'order_list_item'->>'currency');
+
+      v_first_item_id := NULLIF(COALESCE(rec.data->'order_detail'->'item_list'->0->>'item_id', rec.data->'order_list_item'->'item_list'->0->>'item_id'), '');
+      v_first_item_title := NULLIF(COALESCE(rec.data->'order_detail'->'item_list'->0->>'item_name', rec.data->'order_list_item'->'item_list'->0->>'item_name'), '');
+      v_first_item_sku := COALESCE(NULLIF(rec.data->'order_detail'->'item_list'->0->>'model_sku',''), NULLIF(rec.data->'order_detail'->'item_list'->0->>'sku',''), NULLIF(rec.data->'order_list_item'->'item_list'->0->>'model_sku',''), NULLIF(rec.data->'order_list_item'->'item_list'->0->>'sku',''));
+      v_first_item_variation_id := CASE
+        WHEN NULLIF(COALESCE(rec.data->'order_detail'->'item_list'->0->>'model_id', rec.data->'order_list_item'->'item_list'->0->>'model_id'), '') IS NOT NULL
+        THEN COALESCE(rec.data->'order_detail'->'item_list'->0->>'model_id', rec.data->'order_list_item'->'item_list'->0->>'model_id')::bigint
+        ELSE NULL
+      END;
+
+      v_variation_color_names := COALESCE(
+        ARRAY(
+          SELECT DISTINCT NULLIF(oi->>'model_name','')
+          FROM jsonb_array_elements(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)) oi
+          WHERE NULLIF(oi->>'model_name','') IS NOT NULL
+        ),
+        '{}'::text[]
+      );
+
+      v_status_interno := CASE
+        WHEN v_shp_order_status IN ('cancelled','in_cancel') THEN 'Cancelado'
+        WHEN v_shp_order_status = 'to_return' THEN 'Devolução'
+        WHEN v_shp_order_status = 'ready_to_ship' AND v_shp_invoice_pending THEN 'Emissao NF'
+        WHEN v_shp_order_status IN ('ready_to_ship','processed') OR v_shp_fulfillment_ready THEN 'Impressao'
+        WHEN v_shp_order_status = 'retry_ship' THEN 'Aguardando Coleta'
+        WHEN v_shp_order_status IN ('shipped','to_confirm_receive','completed') OR v_shp_pickup_done THEN 'Enviado'
+        ELSE 'Pendente'
+      END;
+
+      PERFORM set_config('row_security', 'off', true);
+      INSERT INTO public.marketplace_orders_presented_new (
+        id, organizations_id, company_id, marketplace, marketplace_order_id, status, status_detail, order_total,
+        shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer,
+        shipping_city_name, shipping_state_name, shipping_state_uf,
+        shipping_street_name, shipping_street_number, shipping_neighborhood_name, shipping_zip_code, shipping_comment, shipping_address_line,
+        shipment_status, shipment_substatus, shipping_method_name,
+        estimated_delivery_limit_at, shipment_sla_status, shipment_sla_service, shipment_sla_expected_date,
+        shipment_sla_last_updated, shipment_delays, printed_label, printed_schedule, payment_status, payment_total_paid_amount,
+        payment_marketplace_fee, payment_shipping_cost, payment_date_created, payment_date_approved,
+        payment_refunded_amount, items_count, items_total_quantity, items_total_amount, items_total_full_amount,
+        items_total_sale_fee, items_currency_id, first_item_id, first_item_title, first_item_sku,
+        first_item_variation_id, first_item_permalink, variation_color_names, category_ids, listing_type_ids,
+        stock_node_ids, has_variations, has_bundle, has_kit, pack_id,
+        label_cached, label_response_type, label_fetched_at, label_size_bytes, label_content_base64, label_content_type, label_pdf_base64, label_zpl2_base64,
+        unlinked_items_count, has_unlinked_items, linked_products, created_at, last_updated, last_synced_at, status_interno
+      )
+      VALUES (
+        rec.id, rec.organizations_id, rec.company_id, rec.marketplace_name, rec.marketplace_order_id, COALESCE(rec.status, v_shp_order_status), rec.status_detail::text, v_order_total,
+        v_shp_shipping_carrier, v_customer_name, v_buyer_id, NULL, NULL,
+        v_city, v_state, v_state_uf,
+        NULL, NULL, NULL, v_zip, NULL, v_address_line,
+        v_logistics_status_raw, NULL, v_shp_shipping_carrier,
+        NULL, NULL, NULL, NULL,
+        v_last_updated, '[]'::jsonb, false, NULL, NULL, v_payment_total,
+        NULL, NULL, NULL, NULL,
+        NULL, v_items_count, v_items_total_quantity, v_items_total_amount, v_items_total_full_amount,
+        v_items_total_sale_fee, v_items_currency_id, v_first_item_id, v_first_item_title, v_first_item_sku,
+        v_first_item_variation_id, NULL, v_variation_color_names, '{}'::text[], '{}'::text[],
+        '{}'::text[], v_has_variations, false, false,
+        CASE
+          WHEN rec.marketplace_name = 'Shopee' THEN
+            NULLIF(COALESCE(
+              rec.data->'order_detail'->>'order_sn',
+              rec.data->'order_list_item'->>'order_sn',
+              rec.data->'notification'->>'order_sn',
+              rec.marketplace_order_id
+            ), '')
+          ELSE NULL
+        END,
+        false, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        0, false, '[]'::jsonb, COALESCE(rec.date_created, v_created_at), COALESCE(rec.last_updated, v_last_updated), rec.last_synced_at, v_status_interno
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        organizations_id = EXCLUDED.organizations_id,
+        company_id = EXCLUDED.company_id,
+        marketplace = EXCLUDED.marketplace,
+        marketplace_order_id = EXCLUDED.marketplace_order_id,
+        status = EXCLUDED.status,
+        status_detail = EXCLUDED.status_detail,
+        order_total = EXCLUDED.order_total,
+        shipping_type = EXCLUDED.shipping_type,
+        customer_name = EXCLUDED.customer_name,
+        id_buyer = EXCLUDED.id_buyer,
+        first_name_buyer = EXCLUDED.first_name_buyer,
+        last_name_buyer = EXCLUDED.last_name_buyer,
+        shipping_city_name = EXCLUDED.shipping_city_name,
+        shipping_state_name = EXCLUDED.shipping_state_name,
+        shipping_state_uf = EXCLUDED.shipping_state_uf,
+        shipping_street_name = EXCLUDED.shipping_street_name,
+        shipping_street_number = EXCLUDED.shipping_street_number,
+        shipping_neighborhood_name = EXCLUDED.shipping_neighborhood_name,
+        shipping_zip_code = EXCLUDED.shipping_zip_code,
+        shipping_comment = EXCLUDED.shipping_comment,
+        shipping_address_line = EXCLUDED.shipping_address_line,
+        shipment_status = EXCLUDED.shipment_status,
+        shipment_substatus = EXCLUDED.shipment_substatus,
+        shipping_method_name = EXCLUDED.shipping_method_name,
+        estimated_delivery_limit_at = EXCLUDED.estimated_delivery_limit_at,
+        shipment_sla_status = EXCLUDED.shipment_sla_status,
+        shipment_sla_service = EXCLUDED.shipment_sla_service,
+        shipment_sla_expected_date = EXCLUDED.shipment_sla_expected_date,
+        shipment_sla_last_updated = EXCLUDED.shipment_sla_last_updated,
+        shipment_delays = EXCLUDED.shipment_delays,
+        printed_label = EXCLUDED.printed_label,
+        printed_schedule = EXCLUDED.printed_schedule,
+        payment_status = EXCLUDED.payment_status,
+        payment_total_paid_amount = EXCLUDED.payment_total_paid_amount,
+        payment_marketplace_fee = EXCLUDED.payment_marketplace_fee,
+        payment_shipping_cost = EXCLUDED.payment_shipping_cost,
+        payment_date_created = EXCLUDED.payment_date_created,
+        payment_date_approved = EXCLUDED.payment_date_approved,
+        payment_refunded_amount = EXCLUDED.payment_refunded_amount,
+        items_count = EXCLUDED.items_count,
+        items_total_quantity = EXCLUDED.items_total_quantity,
+        items_total_amount = EXCLUDED.items_total_amount,
+        items_total_full_amount = EXCLUDED.items_total_full_amount,
+        items_total_sale_fee = EXCLUDED.items_total_sale_fee,
+        items_currency_id = EXCLUDED.items_currency_id,
+        first_item_id = EXCLUDED.first_item_id,
+        first_item_title = EXCLUDED.first_item_title,
+        first_item_sku = EXCLUDED.first_item_sku,
+        first_item_variation_id = EXCLUDED.first_item_variation_id,
+        first_item_permalink = EXCLUDED.first_item_permalink,
+        variation_color_names = EXCLUDED.variation_color_names,
+        category_ids = EXCLUDED.category_ids,
+        listing_type_ids = EXCLUDED.listing_type_ids,
+        stock_node_ids = EXCLUDED.stock_node_ids,
+        has_variations = EXCLUDED.has_variations,
+        has_bundle = EXCLUDED.has_bundle,
+        has_kit = EXCLUDED.has_kit,
+        pack_id = EXCLUDED.pack_id,
+        label_cached = EXCLUDED.label_cached,
+        label_response_type = EXCLUDED.label_response_type,
+        label_fetched_at = EXCLUDED.label_fetched_at,
+        label_size_bytes = EXCLUDED.label_size_bytes,
+        label_content_base64 = EXCLUDED.label_content_base64,
+        label_content_type = EXCLUDED.label_content_type,
+        label_pdf_base64 = EXCLUDED.label_pdf_base64,
+        label_zpl2_base64 = EXCLUDED.label_zpl2_base64,
+        unlinked_items_count = EXCLUDED.unlinked_items_count,
+        has_unlinked_items = EXCLUDED.has_unlinked_items,
+        linked_products = EXCLUDED.linked_products,
+        last_updated = EXCLUDED.last_updated,
+        last_synced_at = EXCLUDED.last_synced_at,
+        status_interno = EXCLUDED.status_interno;
+      PERFORM set_config('row_security', 'on', true);
+      RETURN;
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err_message = MESSAGE_TEXT,
+                              v_err_detail  = PG_EXCEPTION_DETAIL,
+                              v_err_hint    = PG_EXCEPTION_HINT,
+                              v_err_context = PG_EXCEPTION_CONTEXT;
+      PERFORM set_config('row_security', 'on', true);
+      RETURN;
+    END;
+  END IF;
+  IF rec.marketplace_name <> 'Mercado Livre' THEN
+    RETURN;
+  END IF;
   BEGIN
     SELECT
       CASE
-        WHEN jsonb_typeof(NEW.buyer->'id') = 'number' THEN (NEW.buyer->>'id')::bigint
-        WHEN jsonb_typeof(NEW.buyer->'id') = 'string' THEN CASE WHEN (NEW.buyer->>'id') ~ '^\d+$' THEN (NEW.buyer->>'id')::bigint ELSE NULL END
+        WHEN jsonb_typeof(rec.buyer->'id') = 'number' THEN (rec.buyer->>'id')::bigint
+        WHEN jsonb_typeof(rec.buyer->'id') = 'string' THEN CASE WHEN (rec.buyer->>'id') ~ '^\\d+$' THEN (rec.buyer->>'id')::bigint ELSE NULL END
         ELSE NULL
       END as id_buyer,
-      NEW.buyer->>'first_name' as first_name,
-      NEW.buyer->>'last_name' as last_name,
-      COALESCE(NEW.buyer->>'nickname', (NEW.buyer->>'first_name') || ' ' || (NEW.buyer->>'last_name')) as customer_name
+      rec.buyer->>'first_name' as first_name,
+      rec.buyer->>'last_name' as last_name,
+      COALESCE(rec.buyer->>'nickname', (rec.buyer->>'first_name') || ' ' || (rec.buyer->>'last_name')) as customer_name
     INTO buyer_agg;
 
     SELECT
       COALESCE(
-        NEW.shipments->0->'destination'->'shipping_address'->'city'->>'name',
-        NEW.shipments->0->'receiver_address'->'city'->>'name',
-        NEW.data->'shipping'->'receiver_address'->'city'->>'name',
-        NEW.data->'shipping'->'shipping_address'->'city'->>'name'
+        rec.shipments->0->'destination'->'shipping_address'->'city'->>'name',
+        rec.shipments->0->'receiver_address'->'city'->>'name',
+        rec.data->'shipping'->'receiver_address'->'city'->>'name',
+        rec.data->'shipping'->'shipping_address'->'city'->>'name'
       ) AS city,
       COALESCE(
-        NEW.shipments->0->'destination'->'shipping_address'->'state'->>'name',
-        NEW.shipments->0->'receiver_address'->'state'->>'name',
-        NEW.data->'shipping'->'receiver_address'->'state'->>'name',
-        NEW.data->'shipping'->'shipping_address'->'state'->>'name'
+        rec.shipments->0->'destination'->'shipping_address'->'state'->>'name',
+        rec.shipments->0->'receiver_address'->'state'->>'name',
+        rec.data->'shipping'->'receiver_address'->'state'->>'name',
+        rec.data->'shipping'->'shipping_address'->'state'->>'name'
       ) AS state_name,
       COALESCE(
-        NULLIF(split_part(NEW.shipments->0->'destination'->'shipping_address'->'state'->>'id','-',2), ''),
-        NULLIF(split_part(NEW.shipments->0->'receiver_address'->'state'->>'id','-',2), ''),
-        NULLIF(split_part(NEW.data->'shipping'->'shipping_address'->'state'->>'id','-',2), '')
+        NULLIF(split_part(rec.shipments->0->'destination'->'shipping_address'->'state'->>'id','-',2), ''),
+        NULLIF(split_part(rec.shipments->0->'receiver_address'->'state'->>'id','-',2), ''),
+        NULLIF(split_part(rec.data->'shipping'->'shipping_address'->'state'->>'id','-',2), '')
       ) AS state_uf,
       COALESCE(
-        NEW.shipments->0->'destination'->'shipping_address'->>'street_name',
-        NEW.shipments->0->'receiver_address'->>'street_name',
-        NEW.data->'shipping'->'receiver_address'->>'street_name',
-        NEW.data->'shipping'->'shipping_address'->>'street_name'
+        rec.shipments->0->'destination'->'shipping_address'->>'street_name',
+        rec.shipments->0->'receiver_address'->>'street_name',
+        rec.data->'shipping'->'receiver_address'->>'street_name',
+        rec.data->'shipping'->'shipping_address'->>'street_name'
       ) AS street_name,
       COALESCE(
-        NEW.shipments->0->'destination'->'shipping_address'->>'street_number',
-        NEW.shipments->0->'receiver_address'->>'street_number',
-        NEW.data->'shipping'->'receiver_address'->>'street_number',
-        NEW.data->'shipping'->'shipping_address'->>'street_number'
+        rec.shipments->0->'destination'->'shipping_address'->>'street_number',
+        rec.shipments->0->'receiver_address'->>'street_number',
+        rec.data->'shipping'->'receiver_address'->>'street_number',
+        rec.data->'shipping'->'shipping_address'->>'street_number'
       ) AS street_number,
       COALESCE(
-        NEW.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'name',
-        NEW.shipments->0->'receiver_address'->'neighborhood'->>'name',
-        NEW.data->'shipping'->'receiver_address'->'neighborhood'->>'name',
-        NEW.data->'shipping'->'shipping_address'->'neighborhood'->>'name',
-        NEW.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'id',
-        NEW.shipments->0->'receiver_address'->'neighborhood'->>'id'
+        rec.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'name',
+        rec.shipments->0->'receiver_address'->'neighborhood'->>'name',
+        rec.data->'shipping'->'receiver_address'->'neighborhood'->>'name',
+        rec.data->'shipping'->'shipping_address'->'neighborhood'->>'name',
+        rec.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'id',
+        rec.shipments->0->'receiver_address'->'neighborhood'->>'id'
       ) AS neighborhood_name,
       COALESCE(
-        NEW.shipments->0->'destination'->'shipping_address'->>'zip_code',
-        NEW.shipments->0->'receiver_address'->>'zip_code',
-        NEW.data->'shipping'->'receiver_address'->>'zip_code',
-        NEW.data->'shipping'->'shipping_address'->>'zip_code'
+        rec.shipments->0->'destination'->'shipping_address'->>'zip_code',
+        rec.shipments->0->'receiver_address'->>'zip_code',
+        rec.data->'shipping'->'receiver_address'->>'zip_code',
+        rec.data->'shipping'->'shipping_address'->>'zip_code'
       ) AS zip_code,
       COALESCE(
-        NEW.shipments->0->'destination'->'shipping_address'->>'comment',
-        NEW.shipments->0->'receiver_address'->>'comment',
-        NEW.data->'shipping'->'receiver_address'->>'comment',
-        NEW.data->'shipping'->'shipping_address'->>'comment'
+        rec.shipments->0->'destination'->'shipping_address'->>'comment',
+        rec.shipments->0->'receiver_address'->>'comment',
+        rec.data->'shipping'->'receiver_address'->>'comment',
+        rec.data->'shipping'->'shipping_address'->>'comment'
       ) AS comment,
       COALESCE(
-        NEW.shipments->0->'destination'->'shipping_address'->>'address_line',
-        NEW.shipments->0->'receiver_address'->>'address_line',
-        NEW.data->'shipping'->'receiver_address'->>'address_line',
-        NEW.data->'shipping'->'shipping_address'->>'address_line'
+        rec.shipments->0->'destination'->'shipping_address'->>'address_line',
+        rec.shipments->0->'receiver_address'->>'address_line',
+        rec.data->'shipping'->'receiver_address'->>'address_line',
+        rec.data->'shipping'->'shipping_address'->>'address_line'
       ) AS address_line
     INTO shipping_address_agg;
 
     SELECT
-      jsonb_array_length(NEW.order_items) AS items_count,
+      jsonb_array_length(rec.order_items) AS items_count,
       COALESCE(SUM(COALESCE((oi->>'quantity')::int, 1)), 0) AS items_total_quantity,
       COALESCE(SUM(COALESCE((oi->>'unit_price')::numeric, 0) * COALESCE((oi->>'quantity')::int, 1)), 0) AS items_total_amount,
       COALESCE(SUM(COALESCE((oi->>'full_unit_price')::numeric, 0) * COALESCE((oi->>'quantity')::int, 1)), 0) AS items_total_full_amount,
       COALESCE(SUM(COALESCE((oi->>'sale_fee')::numeric, 0)), 0) AS items_total_sale_fee,
-      NEW.order_items->0->>'currency_id' as currency_id,
-      NEW.order_items->0->>'id' as first_item_id,
-      NEW.order_items->0->'item'->>'title' as first_item_title,
-      NEW.order_items->0->'item'->>'seller_sku' as first_item_sku,
+      rec.order_items->0->>'currency_id' as currency_id,
+      rec.order_items->0->>'id' as first_item_id,
+      rec.order_items->0->'item'->>'title' as first_item_title,
+      rec.order_items->0->'item'->>'seller_sku' as first_item_sku,
       CASE
-        WHEN jsonb_typeof(NEW.order_items->0->'item'->'variation_id') = 'number' THEN (NEW.order_items->0->'item'->>'variation_id')::bigint
-        WHEN jsonb_typeof(NEW.order_items->0->'item'->'variation_id') = 'string' THEN CASE WHEN (NEW.order_items->0->'item'->>'variation_id') ~ '^\d+$' THEN (NEW.order_items->0->'item'->>'variation_id')::bigint ELSE 0 END
+        WHEN jsonb_typeof(rec.order_items->0->'item'->'variation_id') = 'number' THEN (rec.order_items->0->'item'->>'variation_id')::bigint
+        WHEN jsonb_typeof(rec.order_items->0->'item'->'variation_id') = 'string' THEN CASE WHEN (rec.order_items->0->'item'->>'variation_id') ~ '^\d+$' THEN (rec.order_items->0->'item'->>'variation_id')::bigint ELSE 0 END
         ELSE 0
       END as first_item_variation_id,
       CASE
-        WHEN NULLIF(COALESCE(NEW.order_items->0->'item'->>'id', NEW.order_items->0->>'item_id', NEW.order_items->0->>'id'), '') IS NOT NULL
-         AND NULLIF(COALESCE(NEW.order_items->0->'item'->>'title', NEW.order_items->0->>'title'), '') IS NOT NULL
+        WHEN NULLIF(COALESCE(rec.order_items->0->'item'->>'id', rec.order_items->0->>'item_id', rec.order_items->0->>'id'), '') IS NOT NULL
+         AND NULLIF(COALESCE(rec.order_items->0->'item'->>'title', rec.order_items->0->>'title'), '') IS NOT NULL
         THEN (
           'https://produto.mercadolivre.com.br/' ||
-          regexp_replace(upper(COALESCE(NEW.order_items->0->'item'->>'id', NEW.order_items->0->>'item_id', NEW.order_items->0->>'id')),
+          regexp_replace(upper(COALESCE(rec.order_items->0->'item'->>'id', rec.order_items->0->>'item_id', rec.order_items->0->>'id')),
                          '^([A-Z]+)(\\-)?(\\d+)$', '\\1-\\3') ||
           '-' ||
           regexp_replace(
-            regexp_replace(lower(unaccent(COALESCE(NEW.order_items->0->'item'->>'title', NEW.order_items->0->>'title'))), '[^a-z0-9]+', '-', 'g'),
+            regexp_replace(lower(unaccent(COALESCE(rec.order_items->0->'item'->>'title', rec.order_items->0->>'title'))), '[^a-z0-9]+', '-', 'g'),
             '(^-+|-+$)', '', 'g'
           ) ||
           '_JM'
         )
-        ELSE COALESCE(NEW.order_items->0->'item'->>'permalink', NEW.order_items->0->>'permalink')
+        ELSE COALESCE(rec.order_items->0->'item'->>'permalink', rec.order_items->0->>'permalink')
       END as first_item_permalink,
       ARRAY(
         SELECT jsonb_array_elements_text(
           jsonb_path_query_array(
-            NEW.order_items,
+            rec.order_items,
             '$[*].item.variation_attributes[*] ? (@.name == "Cor").value_name'
           )
         )
@@ -155,7 +776,7 @@ BEGIN
       COALESCE(BOOL_OR((oi->>'bundle') IS NOT NULL), false) AS has_bundle,
       COALESCE(BOOL_OR((oi->>'kit_instance_id') IS NOT NULL), false) AS has_kit
     INTO items_agg
-    FROM jsonb_array_elements(COALESCE(NEW.order_items, '[]'::jsonb)) oi;
+    FROM jsonb_array_elements(COALESCE(rec.order_items, '[]'::jsonb)) oi;
 
     SELECT
       p->>'status' as payment_status,
@@ -166,62 +787,62 @@ BEGIN
       (p->>'date_approved')::timestamp with time zone as date_approved,
       COALESCE(BOOL_OR(lower(p->>'status') = 'cancelled'), false) AS is_cancelled,
       COALESCE(BOOL_OR(lower(p->>'status') = 'refunded'), false) AS is_refunded,
-      (jsonb_path_query_first(NEW.data, '$.refunds[*].amount')->>0)::numeric as refunded_amount
+      (jsonb_path_query_first(rec.data, '$.refunds[*].amount')->>0)::numeric as refunded_amount
     INTO payments_agg
-    FROM jsonb_array_elements(COALESCE(NEW.payments, '[]'::jsonb)) p
+    FROM jsonb_array_elements(COALESCE(rec.payments, '[]'::jsonb)) p
     GROUP BY p;
 
     SELECT
       COALESCE(
-        NEW.data->'shipping'->>'logistic_type',
-        NEW.shipments->0->'logistic'->>'type',
-        NEW.data->'shipping'->'logistic'->>'type'
+        rec.data->'shipping'->>'logistic_type',
+        rec.shipments->0->'logistic'->>'type',
+        rec.data->'shipping'->'logistic'->>'type'
       ) AS shipping_type,
-      lower(COALESCE(NEW.shipments->0->>'status', '')) AS shipment_status,
-      lower(COALESCE(NEW.shipments->0->>'substatus', '')) AS shipment_substatus,
+      lower(COALESCE(rec.shipments->0->>'status', '')) AS shipment_status,
+      lower(COALESCE(rec.shipments->0->>'substatus', '')) AS shipment_substatus,
       COALESCE(
-        NEW.shipments->0->'lead_time'->'shipping_method'->>'name',
-        NEW.shipments->0->'shipping_method'->>'name',
-        NEW.data->'shipping'->'shipping_method'->>'name',
-        NEW.data->'shipping'->'shipping_option'->>'name'
+        rec.shipments->0->'lead_time'->'shipping_method'->>'name',
+        rec.shipments->0->'shipping_method'->>'name',
+        rec.data->'shipping'->'shipping_method'->>'name',
+        rec.data->'shipping'->'shipping_option'->>'name'
       ) AS shipping_method_name,
       COALESCE(
-        (NEW.shipments->0->'lead_time'->'estimated_delivery_limit'->>'date')::timestamptz,
-        (NEW.shipments->0->'lead_time'->'estimated_delivery_final'->>'date')::timestamptz,
-        (NEW.shipments->0->'shipping_option'->'estimated_delivery_limit'->>'date')::timestamptz,
-        (NEW.data->'shipping'->'estimated_delivery_limit'->>'date')::timestamptz
+        (rec.shipments->0->'lead_time'->'estimated_delivery_limit'->>'date')::timestamptz,
+        (rec.shipments->0->'lead_time'->'estimated_delivery_final'->>'date')::timestamptz,
+        (rec.shipments->0->'shipping_option'->'estimated_delivery_limit'->>'date')::timestamptz,
+        (rec.data->'shipping'->'estimated_delivery_limit'->>'date')::timestamptz
       ) AS estimated_delivery_limit_at,
-      COALESCE(NEW.shipments->0->'sla'->>'status', NEW.shipments->0->>'sla_status') AS shipment_sla_status,
-      COALESCE(NEW.shipments->0->'sla'->>'service', NEW.shipments->0->>'sla_service') AS shipment_sla_service,
+      COALESCE(rec.shipments->0->'sla'->>'status', rec.shipments->0->>'sla_status') AS shipment_sla_status,
+      COALESCE(rec.shipments->0->'sla'->>'service', rec.shipments->0->>'sla_service') AS shipment_sla_service,
       COALESCE(
-        (NEW.shipments->0->'sla'->>'expected_date')::timestamptz,
-        (NEW.shipments->0->>'sla_expected_date')::timestamptz,
-        (NEW.shipments->0->'lead_time'->'estimated_delivery_limit'->>'date')::timestamptz
+        (rec.shipments->0->'sla'->>'expected_date')::timestamptz,
+        (rec.shipments->0->>'sla_expected_date')::timestamptz,
+        (rec.shipments->0->'lead_time'->'estimated_delivery_limit'->>'date')::timestamptz
       ) AS shipment_sla_expected_date,
       COALESCE(
-        (NEW.shipments->0->'sla'->>'last_updated')::timestamptz,
-        (NEW.shipments->0->>'sla_last_updated')::timestamptz,
-        NEW.last_updated
+        (rec.shipments->0->'sla'->>'last_updated')::timestamptz,
+        (rec.shipments->0->>'sla_last_updated')::timestamptz,
+        rec.last_updated
       ) AS shipment_sla_last_updated,
-      COALESCE(NEW.shipments->0->'delays', '[]'::jsonb) AS shipment_delays
+      COALESCE(rec.shipments->0->'delays', '[]'::jsonb) AS shipment_delays
     INTO shipments_agg;
 
     v_printed_label := EXISTS (
-      SELECT 1 FROM jsonb_array_elements(COALESCE(NEW.shipments, '[]'::jsonb)) s
+      SELECT 1 FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s
       WHERE lower(COALESCE(s->>'substatus','')) = 'printed' OR (s->>'date_first_printed') IS NOT NULL
     );
 
     v_printed_schedule := COALESCE(
-      (SELECT MAX((s->>'date_first_printed')::timestamptz) FROM jsonb_array_elements(COALESCE(NEW.shipments, '[]'::jsonb)) s),
+      (SELECT MAX((s->>'date_first_printed')::timestamptz) FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s),
       (SELECT MAX((s->'sla'->>'expected_date')::timestamptz)
-       FROM jsonb_array_elements(COALESCE(NEW.shipments, '[]'::jsonb)) s
+       FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s
        WHERE lower(COALESCE(s->>'substatus','')) = 'buffered'),
       shipments_agg.shipment_sla_expected_date,
       shipments_agg.estimated_delivery_limit_at
     );
 
     v_is_returned := EXISTS (
-      SELECT 1 FROM jsonb_array_elements(COALESCE(NEW.shipments, '[]'::jsonb)) s
+      SELECT 1 FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s
       WHERE lower(COALESCE(s->>'status','')) = 'not_delivered' AND lower(COALESCE(s->>'substatus','')) = 'returned_to_warehouse'
     );
 
@@ -232,14 +853,14 @@ BEGIN
           COALESCE(oi->'item'->>'id', oi->>'item_id', oi->>'id') AS item_id_text,
           COALESCE(NULLIF(oi->'item'->>'variation_id',''), NULLIF(oi->>'variation_id',''), '') AS variation_id_text,
           COALESCE(oi->'item'->>'seller_sku', oi->>'seller_sku', '') AS seller_sku_text
-        FROM jsonb_array_elements(COALESCE(NEW.order_items, '[]'::jsonb)) AS oi
+        FROM jsonb_array_elements(COALESCE(rec.order_items, '[]'::jsonb)) AS oi
       ), ephemeral_links AS (
         SELECT
           COALESCE(e->>'marketplace_item_id','') AS marketplace_item_id,
           COALESCE(e->>'variation_id','') AS variation_id,
           NULLIF(e->>'product_id','')::uuid AS product_id
         FROM jsonb_array_elements(
-          COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = NEW.id),'[]'::jsonb)
+          COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = rec.id),'[]'::jsonb)
         ) e
       )
       SELECT
@@ -249,8 +870,8 @@ BEGIN
         COALESCE(mipl.product_id, eph.product_id) AS product_id
       FROM order_items_parsed oip
       LEFT JOIN public.marketplace_item_product_links mipl
-        ON mipl.organizations_id = NEW.organizations_id
-       AND mipl.marketplace_name = NEW.marketplace_name
+        ON mipl.organizations_id = rec.organizations_id
+       AND mipl.marketplace_name = rec.marketplace_name
        AND mipl.marketplace_item_id = oip.item_id_text
        AND mipl.variation_id = oip.variation_id_text
       LEFT JOIN ephemeral_links eph
@@ -271,13 +892,13 @@ BEGIN
       WITH order_items_parsed AS (
         SELECT COALESCE(oi->'item'->>'id', oi->>'item_id', oi->>'id') AS item_id_text,
                COALESCE(NULLIF(oi->'item'->>'variation_id',''), NULLIF(oi->>'variation_id',''), '') AS variation_id_text
-        FROM jsonb_array_elements(COALESCE(NEW.order_items, '[]'::jsonb)) AS oi
+        FROM jsonb_array_elements(COALESCE(rec.order_items, '[]'::jsonb)) AS oi
       ), ephemeral_links AS (
         SELECT COALESCE(e->>'marketplace_item_id','') AS marketplace_item_id,
                COALESCE(e->>'variation_id','') AS variation_id,
                NULLIF(e->>'product_id','')::uuid AS product_id
         FROM jsonb_array_elements(
-          COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = NEW.id),'[]'::jsonb)
+          COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = rec.id),'[]'::jsonb)
         ) e
       )
       SELECT
@@ -290,8 +911,8 @@ BEGIN
              ELSE NULL END AS source
       FROM order_items_parsed oip
       LEFT JOIN public.marketplace_item_product_links mipl
-        ON mipl.organizations_id = NEW.organizations_id
-       AND mipl.marketplace_name = NEW.marketplace_name
+        ON mipl.organizations_id = rec.organizations_id
+       AND mipl.marketplace_name = rec.marketplace_name
        AND mipl.marketplace_item_id = oip.item_id_text
        AND mipl.variation_id = oip.variation_id_text
       LEFT JOIN ephemeral_links eph
@@ -303,10 +924,10 @@ BEGIN
 
     v_has_unlinked_items := v_unlinked_items_count > 0;
     v_shipping_type := shipments_agg.shipping_type;
-    v_shipment_status := lower(COALESCE(NULLIF(shipments_agg.shipment_status, ''), NEW.data->'shipping'->>'status'));
-    v_shipment_substatus := lower(COALESCE(NULLIF(shipments_agg.shipment_substatus, ''), NEW.data->'shipping'->>'substatus'));
+    v_shipment_status := lower(COALESCE(NULLIF(shipments_agg.shipment_status, ''), rec.data->'shipping'->>'status'));
+    v_shipment_substatus := lower(COALESCE(NULLIF(shipments_agg.shipment_substatus, ''), rec.data->'shipping'->>'substatus'));
     v_is_full := lower(v_shipping_type) = 'fulfillment';
-    v_is_cancelled := lower(NEW.status) = 'cancelled' OR payments_agg.is_cancelled OR v_shipment_status = 'cancelled';
+    v_is_cancelled := lower(rec.status) = 'cancelled' OR payments_agg.is_cancelled OR v_shipment_status = 'cancelled';
     v_is_refunded := payments_agg.is_refunded;
     v_printed_label := v_printed_label;
 
@@ -326,22 +947,23 @@ BEGIN
       v_status_interno := 'Impressao';
     ELSIF v_shipment_status = 'ready_to_ship' AND v_printed_label THEN
       v_status_interno := 'Aguardando Coleta';
-    ELSIF v_shipment_status IN ('shipped','in_transit','handed_to_carrier','on_route','out_for_delivery','delivery_in_progress','collected','delivered') THEN
+    ELSIF v_shipment_status IN ('shipped','dropped_off','in_transit','handed_to_carrier','on_route','out_for_delivery','delivery_in_progress','collected','delivered') THEN
       v_status_interno := 'Enviado';
     ELSE
       v_status_interno := 'Pendente';
     END IF;
 
-    v_label_cached := COALESCE((NEW.labels ? 'content_base64'), false)
+    v_label_cached := COALESCE((rec.labels ? 'content_base64'), false)
                       OR (v_shipment_status = 'pending' AND v_shipment_substatus = 'buffered');
-    v_label_response_type := NEW.labels->>'response_type';
-    v_label_fetched_at := (NEW.labels->>'fetched_at')::timestamptz;
-    v_label_size_bytes := (NEW.labels->>'size_bytes')::int;
-    v_label_content_base64 := NEW.labels->>'content_base64';
-    v_label_content_type := NEW.labels->>'content_type';
-    v_label_pdf_base64 := NEW.labels->>'pdf_base64';
-    v_label_zpl2_base64 := NEW.labels->>'zpl2_base64';
+    v_label_response_type := rec.labels->>'response_type';
+    v_label_fetched_at := (rec.labels->>'fetched_at')::timestamptz;
+    v_label_size_bytes := (rec.labels->>'size_bytes')::int;
+    v_label_content_base64 := rec.labels->>'content_base64';
+    v_label_content_type := rec.labels->>'content_type';
+    v_label_pdf_base64 := rec.labels->>'pdf_base64';
+    v_label_zpl2_base64 := rec.labels->>'zpl2_base64';
 
+    PERFORM set_config('row_security', 'off', true);
     INSERT INTO public.marketplace_orders_presented_new (
       id, organizations_id, company_id, marketplace, marketplace_order_id, status, status_detail, order_total,
       shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer,
@@ -359,7 +981,7 @@ BEGIN
       unlinked_items_count, has_unlinked_items, linked_products, created_at, last_updated, last_synced_at, status_interno
     )
     VALUES (
-      NEW.id, NEW.organizations_id, NEW.company_id, NEW.marketplace_name, NEW.marketplace_order_id, NEW.status, NEW.status_detail::text, (NEW.data->>'total_amount')::numeric,
+      rec.id, rec.organizations_id, rec.company_id, rec.marketplace_name, rec.marketplace_order_id, rec.status, rec.status_detail::text, (rec.data->>'total_amount')::numeric,
       v_shipping_type, buyer_agg.customer_name, buyer_agg.id_buyer, buyer_agg.first_name, buyer_agg.last_name,
       shipping_address_agg.city, shipping_address_agg.state_name, shipping_address_agg.state_uf,
       shipping_address_agg.street_name, shipping_address_agg.street_number, shipping_address_agg.neighborhood_name, shipping_address_agg.zip_code, shipping_address_agg.comment, shipping_address_agg.address_line,
@@ -372,13 +994,13 @@ BEGIN
       items_agg.first_item_variation_id, items_agg.first_item_permalink, items_agg.variation_color_names, items_agg.category_ids, items_agg.listing_type_ids,
       items_agg.stock_node_ids, items_agg.has_variations, items_agg.has_bundle, items_agg.has_kit,
       CASE
-        WHEN jsonb_typeof(NEW.data->'pack_id') = 'number' THEN (NEW.data->>'pack_id')::bigint
-        WHEN jsonb_typeof(NEW.data->'pack_id') = 'string' THEN CASE WHEN (NEW.data->>'pack_id') ~ '^\\d+$' THEN (NEW.data->>'pack_id')::bigint ELSE NULL END
+        WHEN jsonb_typeof(rec.data->'pack_id') = 'number' THEN rec.data->>'pack_id'
+        WHEN jsonb_typeof(rec.data->'pack_id') = 'string' THEN CASE WHEN (rec.data->>'pack_id') ~ '^\d+$' THEN rec.data->>'pack_id' ELSE NULL END
         ELSE NULL
       END,
       v_label_cached, v_label_response_type, v_label_fetched_at, v_label_size_bytes, v_label_content_base64, v_label_content_type, v_label_pdf_base64, v_label_zpl2_base64,
       v_unlinked_items_count, v_has_unlinked_items, v_linked_products,
-      NEW.date_created, NEW.last_updated, NEW.last_synced_at, v_status_interno
+      rec.date_created, rec.last_updated, rec.last_synced_at, v_status_interno
     )
     ON CONFLICT (id) DO UPDATE SET
       organizations_id = EXCLUDED.organizations_id,
@@ -454,12 +1076,13 @@ BEGIN
       last_synced_at = EXCLUDED.last_synced_at,
       status_interno = EXCLUDED.status_interno;
 
-    RETURN NEW;
+    PERFORM set_config('row_security', 'on', true);
+    RETURN;
   EXCEPTION WHEN OTHERS THEN
-    RETURN NEW;
+    RETURN;
   END;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 CREATE OR REPLACE FUNCTION public.refresh_presented_order(p_order_id uuid)
 RETURNS void AS $$
@@ -490,11 +1113,329 @@ DECLARE v_label_content_base64 text;
 DECLARE v_label_content_type text;
 DECLARE v_label_pdf_base64 text;
 DECLARE v_label_zpl2_base64 text;
+DECLARE v_err_message text;
+DECLARE v_err_detail text;
+DECLARE v_err_hint text;
+DECLARE v_err_context text;
 BEGIN
   PERFORM set_config('row_security', 'off', true);
   CREATE EXTENSION IF NOT EXISTS unaccent;
   SELECT * INTO rec FROM public.marketplace_orders_raw WHERE id = p_order_id LIMIT 1;
   IF NOT FOUND THEN RETURN; END IF;
+  IF rec.marketplace_name = 'Shopee' THEN
+    DECLARE
+      v_shp_order_status text;
+      v_shp_order_status_raw text;
+      v_shp_invoice_pending boolean;
+      v_shp_fulfillment_ready boolean;
+      v_shp_pickup_done boolean;
+      v_shp_shipping_carrier text;
+      v_created_at timestamptz;
+      v_last_updated timestamptz;
+      v_payment_total numeric;
+      v_order_total numeric;
+      v_customer_name text;
+      v_buyer_id bigint;
+      v_city text;
+      v_town text;
+      v_region text;
+      v_state text;
+      v_state_key text;
+      v_state_uf text;
+      v_zip text;
+      v_address_line text;
+      v_logistics_status text;
+      v_logistics_status_raw text;
+      v_items_count integer;
+      v_items_total_quantity integer;
+      v_items_total_amount numeric;
+      v_items_total_full_amount numeric;
+      v_items_total_sale_fee numeric;
+      v_commission_fee numeric;
+      v_service_fee numeric;
+      v_items_currency_id text;
+      v_first_item_id text;
+      v_first_item_title text;
+      v_first_item_sku text;
+      v_first_item_variation_id bigint;
+      v_variation_color_names text[];
+      v_has_variations boolean;
+      target_columns text[];
+      value_list text[];
+    BEGIN
+      v_shp_order_status_raw := COALESCE(rec.data->'order_detail'->>'order_status', rec.data->'order_list_item'->>'order_status', '');
+      v_shp_order_status := lower(COALESCE(v_shp_order_status_raw,''));
+      IF v_shp_order_status = 'unpaid' THEN
+        RETURN;
+      END IF;
+      v_shp_invoice_pending := lower(COALESCE(rec.data->'order_detail'->'invoice_data'->>'invoice_status','')) = 'pending'
+                               OR v_shp_order_status = 'invoice_pending'
+                               OR (rec.data->'order_detail'->'invoice_data'->>'invoice_number') IS NULL;
+      v_shp_fulfillment_ready := lower(COALESCE(rec.data->'order_detail'->>'logistics_status', rec.data->'order_list_item'->>'logistics_status','')) IN ('logistics_ready','logistics_request_created');
+      v_shp_pickup_done := (rec.data->'order_detail'->>'pickup_done_time') IS NOT NULL;
+      v_shp_shipping_carrier := COALESCE(rec.data->'order_detail'->>'shipping_carrier', rec.data->'order_list_item'->>'shipping_carrier', rec.data->'notification'->>'shipping_carrier', '');
+      v_order_total := COALESCE(
+        NULLIF(rec.data->'order_detail'->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->'order_list_item'->>'order_selling_price','')::numeric,
+        NULLIF(rec.data->'notification'->>'order_selling_price','')::numeric
+      );
+      v_payment_total := v_order_total;
+      v_customer_name := COALESCE(rec.data->'order_detail'->>'buyer_username', rec.data->'order_list_item'->>'buyer_username', rec.data->'notification'->>'buyer_username','');
+      v_buyer_id := CASE
+        WHEN NULLIF(rec.data->'order_detail'->>'buyer_user_id','') IS NOT NULL THEN (rec.data->'order_detail'->>'buyer_user_id')::bigint
+        WHEN NULLIF(rec.data->'order_list_item'->>'buyer_user_id','') IS NOT NULL THEN (rec.data->'order_list_item'->>'buyer_user_id')::bigint
+        ELSE NULL
+      END;
+      v_city := COALESCE(rec.data->'order_detail'->'recipient_address'->>'city', rec.data->'order_list_item'->'recipient_address'->>'city');
+      v_town := COALESCE(rec.data->'order_detail'->'recipient_address'->>'town', rec.data->'order_list_item'->'recipient_address'->>'town');
+      v_region := COALESCE(rec.data->'order_detail'->'recipient_address'->>'region', rec.data->'order_list_item'->'recipient_address'->>'region');
+      v_zip := COALESCE(rec.data->'order_detail'->'recipient_address'->>'zipcode', rec.data->'order_list_item'->'recipient_address'->>'zipcode');
+      v_address_line := COALESCE(rec.data->'order_detail'->'recipient_address'->>'full_address', rec.data->'order_list_item'->'recipient_address'->>'full_address');
+      v_logistics_status := lower(COALESCE(rec.data->'order_detail'->>'logistics_status', rec.data->'order_list_item'->>'logistics_status',''));
+      v_logistics_status_raw := COALESCE(
+        CASE
+          WHEN jsonb_typeof(rec.data->'order_detail'->'package_list') = 'array' THEN rec.data->'order_detail'->'package_list'->0->>'logistics_status'
+          WHEN jsonb_typeof(rec.data->'order_detail'->'package_list') = 'object' THEN rec.data->'order_detail'->'package_list'->>'logistics_status'
+          ELSE NULL
+        END,
+        CASE
+          WHEN jsonb_typeof(rec.data->'order_list_item'->'package_list') = 'array' THEN rec.data->'order_list_item'->'package_list'->0->>'logistics_status'
+          WHEN jsonb_typeof(rec.data->'order_list_item'->'package_list') = 'object' THEN rec.data->'order_list_item'->'package_list'->>'logistics_status'
+          ELSE NULL
+        END
+      );
+      v_created_at := CASE
+        WHEN NULLIF(rec.data->'order_detail'->>'create_time','') IS NOT NULL THEN to_timestamp((rec.data->'order_detail'->>'create_time')::bigint)
+        WHEN NULLIF(rec.data->'order_list_item'->>'create_time','') IS NOT NULL THEN to_timestamp((rec.data->'order_list_item'->>'create_time')::bigint)
+        ELSE rec.date_created
+      END;
+      v_last_updated := CASE
+        WHEN NULLIF(rec.data->'order_detail'->>'update_time','') IS NOT NULL THEN to_timestamp((rec.data->'order_detail'->>'update_time')::bigint)
+        WHEN NULLIF(rec.data->'order_list_item'->>'update_time','') IS NOT NULL THEN to_timestamp((rec.data->'order_list_item'->>'update_time')::bigint)
+        ELSE rec.last_updated
+      END;
+      v_items_count := COALESCE(jsonb_array_length(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)), 0);
+      SELECT
+        COALESCE(SUM(COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0),
+        COALESCE(SUM(COALESCE(NULLIF(oi->>'item_price','')::numeric, NULLIF(oi->>'original_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
+        COALESCE(SUM(COALESCE(NULLIF(oi->>'original_price','')::numeric, NULLIF(oi->>'item_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
+        COALESCE(BOOL_OR(NULLIF(oi->>'model_id','') IS NOT NULL), false)
+      INTO v_items_total_quantity, v_items_total_amount, v_items_total_full_amount, v_has_variations
+      FROM jsonb_array_elements(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)) oi;
+      v_commission_fee := COALESCE(
+        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'commission_fee','')::numeric,
+        NULLIF(((rec.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'commission_fee'),'')::numeric,
+        0
+      );
+      v_service_fee := COALESCE(
+        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'service_fee','')::numeric,
+        NULLIF(((rec.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'service_fee'),'')::numeric,
+        0
+      );
+      v_items_total_sale_fee := COALESCE(v_commission_fee, 0) + COALESCE(v_service_fee, 0);
+      v_items_currency_id := COALESCE(rec.data->'order_detail'->>'currency', rec.data->'escrow_detail'->>'currency', rec.data->'order_list_item'->>'currency');
+      v_first_item_id := NULLIF(COALESCE(rec.data->'order_detail'->'item_list'->0->>'item_id', rec.data->'order_list_item'->'item_list'->0->>'item_id'), '');
+      v_first_item_title := NULLIF(COALESCE(rec.data->'order_detail'->'item_list'->0->>'item_name', rec.data->'order_list_item'->'item_list'->0->>'item_name'), '');
+      v_first_item_sku := COALESCE(NULLIF(rec.data->'order_detail'->'item_list'->0->>'model_sku',''), NULLIF(rec.data->'order_detail'->'item_list'->0->>'sku',''), NULLIF(rec.data->'order_list_item'->'item_list'->0->>'model_sku',''), NULLIF(rec.data->'order_list_item'->'item_list'->0->>'sku',''));
+      v_first_item_variation_id := CASE
+        WHEN NULLIF(COALESCE(rec.data->'order_detail'->'item_list'->0->>'model_id', rec.data->'order_list_item'->'item_list'->0->>'model_id'), '') IS NOT NULL
+        THEN COALESCE(rec.data->'order_detail'->'item_list'->0->>'model_id', rec.data->'order_list_item'->'item_list'->0->>'model_id')::bigint
+        ELSE NULL
+      END;
+      v_variation_color_names := COALESCE(
+        ARRAY(
+          SELECT DISTINCT NULLIF(oi->>'model_name','')
+          FROM jsonb_array_elements(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)) oi
+          WHERE NULLIF(oi->>'model_name','') IS NOT NULL
+        ),
+        '{}'::text[]
+      );
+      IF v_shp_order_status IN ('cancelled','in_cancel') THEN
+        v_status_interno := 'Cancelado';
+      ELSIF v_shp_order_status = 'to_return' THEN
+        v_status_interno := 'Devolução';
+      ELSIF v_shp_order_status = 'ready_to_ship' AND v_shp_invoice_pending THEN
+        v_status_interno := 'Emissao NF';
+      ELSIF v_shp_order_status IN ('ready_to_ship','processed') OR v_shp_fulfillment_ready THEN
+        v_status_interno := 'Impressao';
+      ELSIF v_shp_order_status = 'retry_ship' THEN
+        v_status_interno := 'Aguardando Coleta';
+      ELSIF v_shp_order_status IN ('shipped','to_confirm_receive','completed') OR v_shp_pickup_done THEN
+        v_status_interno := 'Enviado';
+      ELSE
+        v_status_interno := 'Pendente';
+      END IF;
+      target_columns := ARRAY[
+        'id','organizations_id','company_id','marketplace','marketplace_order_id','status','status_detail','order_total',
+        'shipping_type','customer_name','id_buyer','first_name_buyer','last_name_buyer',
+        'shipping_city_name','shipping_state_name','shipping_state_uf',
+        'shipping_street_name','shipping_street_number','shipping_neighborhood_name','shipping_zip_code','shipping_comment','shipping_address_line',
+        'shipment_status','shipment_substatus','shipping_method_name',
+        'estimated_delivery_limit_at','shipment_sla_status','shipment_sla_service','shipment_sla_expected_date',
+        'shipment_sla_last_updated','shipment_delays','printed_label','printed_schedule','payment_status','payment_total_paid_amount',
+        'payment_marketplace_fee','payment_shipping_cost','payment_date_created','payment_date_approved',
+        'payment_refunded_amount','items_count','items_total_quantity','items_total_amount','items_total_full_amount',
+        'items_total_sale_fee','items_currency_id','first_item_id','first_item_title','first_item_sku',
+        'first_item_variation_id','first_item_permalink','variation_color_names','category_ids','listing_type_ids',
+        'stock_node_ids','has_variations','has_bundle','has_kit','pack_id',
+        'label_cached','label_response_type','label_fetched_at','label_size_bytes','label_content_base64','label_content_type','label_pdf_base64','label_zpl2_base64',
+        'unlinked_items_count','has_unlinked_items','linked_products','created_at','last_updated','last_synced_at','status_interno'
+      ];
+      value_list := ARRAY[
+        'rec.id','rec.organizations_id','rec.company_id','rec.marketplace_name','rec.marketplace_order_id','COALESCE(rec.status, v_shp_order_status)','rec.status_detail::text','v_order_total',
+        'v_shp_shipping_carrier','v_customer_name','v_buyer_id','NULL','NULL',
+        'v_city','v_state','v_state_uf',
+        'NULL','NULL','NULL','v_zip','NULL','v_address_line',
+        'v_logistics_status','NULL','v_shp_shipping_carrier',
+        'NULL','NULL','NULL','NULL',
+        'v_last_updated','''[]''::jsonb','false','NULL','NULL','v_payment_total',
+        'NULL','NULL','NULL','NULL',
+        'NULL','v_items_count','v_items_total_quantity','v_items_total_amount','v_items_total_full_amount',
+        'v_items_total_sale_fee','v_items_currency_id','v_first_item_id','v_first_item_title','v_first_item_sku',
+        'v_first_item_variation_id','NULL','v_variation_color_names','''{}''::text[]','''{}''::text[]',
+        '''{}''::text[]','v_has_variations','false','false','NULL',
+        'false','NULL','NULL','NULL','NULL','NULL','NULL','NULL',
+        '0','false','''[]''::jsonb','COALESCE(rec.date_created, v_created_at)','COALESCE(rec.last_updated, v_last_updated)','rec.last_synced_at','v_status_interno'
+      ];
+      RAISE NOTICE 'Shopee presented refresh: order_id=%, marketplace=%, order_sn=%', rec.id, rec.marketplace_name, rec.marketplace_order_id;
+      RAISE NOTICE 'Shopee computed status: raw=%, interno=%', v_shp_order_status, v_status_interno;
+      RAISE NOTICE 'Shopee refresh columns count=% values count=%', array_length(target_columns,1), array_length(value_list,1);
+      RAISE NOTICE 'Shopee refresh columns=%', array_to_string(target_columns, ',');
+      RAISE NOTICE 'Shopee refresh values=%', array_to_string(value_list, ',');
+      INSERT INTO public.marketplace_orders_presented_new (
+        id, organizations_id, company_id, marketplace, marketplace_order_id, status, status_detail, order_total,
+        shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer,
+        shipping_city_name, shipping_state_name, shipping_state_uf,
+        shipping_street_name, shipping_street_number, shipping_neighborhood_name, shipping_zip_code, shipping_comment, shipping_address_line,
+        shipment_status, shipment_substatus, shipping_method_name,
+        estimated_delivery_limit_at, shipment_sla_status, shipment_sla_service, shipment_sla_expected_date,
+        shipment_sla_last_updated, shipment_delays, printed_label, printed_schedule, payment_status, payment_total_paid_amount,
+        payment_marketplace_fee, payment_shipping_cost, payment_date_created, payment_date_approved,
+        payment_refunded_amount, items_count, items_total_quantity, items_total_amount, items_total_full_amount,
+        items_total_sale_fee, items_currency_id, first_item_id, first_item_title, first_item_sku,
+        first_item_variation_id, first_item_permalink, variation_color_names, category_ids, listing_type_ids,
+        stock_node_ids, has_variations, has_bundle, has_kit, pack_id,
+        label_cached, label_response_type, label_fetched_at, label_size_bytes, label_content_base64, label_content_type, label_pdf_base64, label_zpl2_base64,
+        unlinked_items_count, has_unlinked_items, linked_products, created_at, last_updated, last_synced_at, status_interno
+      )
+      VALUES (
+        rec.id, rec.organizations_id, rec.company_id, rec.marketplace_name, rec.marketplace_order_id, COALESCE(rec.status, v_shp_order_status), rec.status_detail::text, v_order_total,
+        v_shp_shipping_carrier, v_customer_name, v_buyer_id, NULL, NULL,
+        v_city, v_town, v_region,
+        NULL, NULL, NULL, v_zip, NULL, v_address_line,
+        v_logistics_status_raw, NULL, v_shp_shipping_carrier,
+        NULL, NULL, NULL, NULL,
+        v_last_updated, '[]'::jsonb, false, NULL, NULL, v_payment_total,
+        NULL, NULL, NULL, NULL,
+        v_items_total_sale_fee, v_items_count, v_items_total_quantity, v_items_total_amount, v_items_total_full_amount,
+        NULL, v_items_currency_id, v_first_item_id, v_first_item_title, v_first_item_sku,
+        v_first_item_variation_id, NULL, v_variation_color_names, '{}'::text[], '{}'::text[],
+        '{}'::text[], v_has_variations, false, false,
+        CASE
+          WHEN rec.marketplace_name = 'Shopee' THEN
+            NULLIF(COALESCE(
+              rec.data->'order_detail'->>'order_sn',
+              rec.data->'order_list_item'->>'order_sn',
+              rec.data->'notification'->>'order_sn',
+              rec.marketplace_order_id
+            ), '')
+          ELSE
+            CASE
+              WHEN jsonb_typeof(rec.data->'pack_id') = 'number' THEN rec.data->>'pack_id'
+              WHEN jsonb_typeof(rec.data->'pack_id') = 'string' THEN CASE WHEN (rec.data->>'pack_id') ~ '^\d+$' THEN rec.data->>'pack_id' ELSE NULL END
+              ELSE NULL
+            END
+        END,
+        false, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        0, false, '[]'::jsonb, COALESCE(rec.date_created, v_created_at), COALESCE(rec.last_updated, v_last_updated), rec.last_synced_at, v_status_interno
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        organizations_id = EXCLUDED.organizations_id,
+        company_id = EXCLUDED.company_id,
+        marketplace = EXCLUDED.marketplace,
+        marketplace_order_id = EXCLUDED.marketplace_order_id,
+        status = EXCLUDED.status,
+        status_detail = EXCLUDED.status_detail,
+        order_total = EXCLUDED.order_total,
+        shipping_type = EXCLUDED.shipping_type,
+        customer_name = EXCLUDED.customer_name,
+        id_buyer = EXCLUDED.id_buyer,
+        first_name_buyer = EXCLUDED.first_name_buyer,
+        last_name_buyer = EXCLUDED.last_name_buyer,
+        shipping_city_name = EXCLUDED.shipping_city_name,
+        shipping_state_name = EXCLUDED.shipping_state_name,
+        shipping_state_uf = EXCLUDED.shipping_state_uf,
+        shipping_street_name = EXCLUDED.shipping_street_name,
+        shipping_street_number = EXCLUDED.shipping_street_number,
+        shipping_neighborhood_name = EXCLUDED.shipping_neighborhood_name,
+        shipping_zip_code = EXCLUDED.shipping_zip_code,
+        shipping_comment = EXCLUDED.shipping_comment,
+        shipping_address_line = EXCLUDED.shipping_address_line,
+        shipment_status = EXCLUDED.shipment_status,
+        shipment_substatus = EXCLUDED.shipment_substatus,
+        shipping_method_name = EXCLUDED.shipping_method_name,
+        estimated_delivery_limit_at = EXCLUDED.estimated_delivery_limit_at,
+        shipment_sla_status = EXCLUDED.shipment_sla_status,
+        shipment_sla_service = EXCLUDED.shipment_sla_service,
+        shipment_sla_expected_date = EXCLUDED.shipment_sla_expected_date,
+        shipment_sla_last_updated = EXCLUDED.shipment_sla_last_updated,
+        shipment_delays = EXCLUDED.shipment_delays,
+        printed_label = EXCLUDED.printed_label,
+        printed_schedule = EXCLUDED.printed_schedule,
+        payment_status = EXCLUDED.payment_status,
+        payment_total_paid_amount = EXCLUDED.payment_total_paid_amount,
+        payment_marketplace_fee = EXCLUDED.payment_marketplace_fee,
+        payment_shipping_cost = EXCLUDED.payment_shipping_cost,
+        payment_date_created = EXCLUDED.payment_date_created,
+        payment_date_approved = EXCLUDED.payment_date_approved,
+        payment_refunded_amount = EXCLUDED.payment_refunded_amount,
+        items_count = EXCLUDED.items_count,
+        items_total_quantity = EXCLUDED.items_total_quantity,
+        items_total_amount = EXCLUDED.items_total_amount,
+        items_total_full_amount = EXCLUDED.items_total_full_amount,
+        items_total_sale_fee = EXCLUDED.items_total_sale_fee,
+        items_currency_id = EXCLUDED.items_currency_id,
+        first_item_id = EXCLUDED.first_item_id,
+        first_item_title = EXCLUDED.first_item_title,
+        first_item_sku = EXCLUDED.first_item_sku,
+        first_item_variation_id = EXCLUDED.first_item_variation_id,
+        first_item_permalink = EXCLUDED.first_item_permalink,
+        variation_color_names = EXCLUDED.variation_color_names,
+        category_ids = EXCLUDED.category_ids,
+        listing_type_ids = EXCLUDED.listing_type_ids,
+        stock_node_ids = EXCLUDED.stock_node_ids,
+        has_variations = EXCLUDED.has_variations,
+        has_bundle = EXCLUDED.has_bundle,
+        has_kit = EXCLUDED.has_kit,
+        pack_id = EXCLUDED.pack_id,
+        label_cached = EXCLUDED.label_cached,
+        label_response_type = EXCLUDED.label_response_type,
+        label_fetched_at = EXCLUDED.label_fetched_at,
+        label_size_bytes = EXCLUDED.label_size_bytes,
+        label_content_base64 = EXCLUDED.label_content_base64,
+        label_content_type = EXCLUDED.label_content_type,
+        label_pdf_base64 = EXCLUDED.label_pdf_base64,
+        label_zpl2_base64 = EXCLUDED.label_zpl2_base64,
+        unlinked_items_count = EXCLUDED.unlinked_items_count,
+        has_unlinked_items = EXCLUDED.has_unlinked_items,
+        linked_products = EXCLUDED.linked_products,
+        last_updated = EXCLUDED.last_updated,
+        last_synced_at = EXCLUDED.last_synced_at,
+        status_interno = EXCLUDED.status_interno;
+      PERFORM set_config('row_security', 'on', true);
+      RETURN;
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err_message = MESSAGE_TEXT,
+                              v_err_detail  = PG_EXCEPTION_DETAIL,
+                              v_err_hint    = PG_EXCEPTION_HINT,
+                              v_err_context = PG_EXCEPTION_CONTEXT;
+      RAISE WARNING 'Shopee presented refresh failed: order_sn=% msg=% detail=% hint=% ctx=%', rec.marketplace_order_id, v_err_message, v_err_detail, v_err_hint, v_err_context;
+      PERFORM set_config('row_security', 'on', true);
+      RETURN;
+    END;
+  END IF;
 
   SELECT
     CASE WHEN jsonb_typeof(rec.buyer->'id') = 'number' THEN (rec.buyer->>'id')::bigint
@@ -770,7 +1711,7 @@ BEGIN
   ELSIF v_shipment_status = 'ready_to_ship' AND v_shipment_substatus = 'invoice_pending' THEN v_status_interno := 'Emissao NF';
   ELSIF v_shipment_status = 'ready_to_ship' AND v_shipment_substatus = 'ready_to_print' THEN v_status_interno := 'Impressao';
   ELSIF v_shipment_status = 'ready_to_ship' AND v_printed_label THEN v_status_interno := 'Aguardando Coleta';
-  ELSIF v_shipment_status IN ('shipped','in_transit','handed_to_carrier','on_route','out_for_delivery','delivery_in_progress','collected','delivered') THEN v_status_interno := 'Enviado';
+  ELSIF v_shipment_status IN ('shipped','dropped_off','in_transit','handed_to_carrier','on_route','out_for_delivery','delivery_in_progress','collected','delivered') THEN v_status_interno := 'Enviado';
   ELSE v_status_interno := 'Pendente'; END IF;
 
   v_label_cached := COALESCE((rec.labels ? 'content_base64'), false)

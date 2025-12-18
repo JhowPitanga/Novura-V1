@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { VincularPedidoModal } from "@/components/pedidos/VincularPedidoModal";
+import { Textarea } from "@/components/ui/textarea";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -378,6 +379,9 @@ function Pedidos() {
     const [syncMarketplace, setSyncMarketplace] = useState<'mercado_livre' | 'shopee'>('mercado_livre');
     const [shopeeShopOptions, setShopeeShopOptions] = useState<Array<{ id: string; shop_id: number; label: string }>>([]);
     const [selectedShopeeShopId, setSelectedShopeeShopId] = useState<number | null>(null);
+    const [shopeeOrderSnInput, setShopeeOrderSnInput] = useState<string>("");
+    const [shopeeDateFrom, setShopeeDateFrom] = useState<string>("");
+    const [shopeeDateTo, setShopeeDateTo] = useState<string>("");
     const [emissionProgress, setEmissionProgress] = useState(0);
     const [emittedCount, setEmittedCount] = useState(0);
     const [failedCount, setFailedCount] = useState(0);
@@ -593,7 +597,7 @@ function Pedidos() {
                         produto: items[0]?.nome || "",
                         sku: items[0]?.sku || null,
                         permalink: o.first_item_permalink || null,
-                        cliente: o.first_name_buyer || o.customer_name || '',
+                        cliente: (o as any)?.billing_name || o.first_name_buyer || o.customer_name || '',
                         valor: orderTotal,
                         data: o.created_at,
                         status: (String(o?.shipment_status || '').toLowerCase() === 'delivered' ? 'Entregue' : (o.status_interno ?? o.status ?? 'Pendente')),
@@ -605,14 +609,14 @@ function Pedidos() {
                             service: o?.shipment_sla_service ?? null,
                             expected_date: o?.estimated_delivery_limit_at ?? o?.shipment_sla_expected_date ?? null,
                             last_updated: o?.shipment_sla_last_updated ?? null,
-                        },
-                        variationColorNames: varLabel,
-                        atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : null,
-                        dataPagamento: o?.payment_date_approved || o?.payment_date_created || o?.created_at || null,
-                        payment_status: o?.payment_status || null,
-                        payment_date_approved: o?.payment_date_approved || null,
-                        tipoEnvio: normalizeShippingType(o?.shipping_type),
-                        idPlataforma: (o as any)?.pack_id || o.pack_id || "",
+                    },
+                    variationColorNames: varLabel,
+                    atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : null,
+                    dataPagamento: o?.payment_date_approved || o?.payment_date_created || o?.created_at || null,
+                    payment_status: o?.payment_status || null,
+                    payment_date_approved: o?.payment_date_approved || null,
+                    tipoEnvio: normalizeShippingType(o?.shipping_type),
+                    idPlataforma: (o as any)?.pack_id || o.pack_id || "",
                         shippingCity: o?.shipping_city_name || null,
                         shippingState: o?.shipping_state_name || null,
                         shippingUF: o?.shipping_state_uf || null,
@@ -747,6 +751,7 @@ function Pedidos() {
                         pack_id,
                         marketplace_order_id,
                         customer_name,
+                        billing_name,
                         first_name_buyer,
                         order_total,
                         status,
@@ -773,7 +778,6 @@ function Pedidos() {
                         shipping_method_name,
                         shipment_sla_status,
                         shipment_sla_service,
-                        estimated_delivery_limit_at,
                         shipment_sla_expected_date,
                         shipment_sla_last_updated,
                         shipment_delays,
@@ -886,7 +890,7 @@ function Pedidos() {
                     produto: items[0]?.nome || "",
                     sku: items[0]?.sku || null,
                     permalink: o.first_item_permalink || null,
-                    cliente: o.first_name_buyer || o.customer_name || '',
+                    cliente: (o as any)?.billing_name || o.first_name_buyer || o.customer_name || '',
                     valor: orderTotal,
                     data: o.created_at,
                     status: statusUI,
@@ -1105,14 +1109,14 @@ function Pedidos() {
                 apikey: SUPABASE_PUBLISHABLE_KEY,
                 Authorization: `Bearer ${token}`,
             };
-            const { data, error } = await (supabase as any).functions.invoke<any>('mercado-livre-submit-xml', {
+            const { data, error } = await (supabase as any).functions.invoke('mercado-livre-submit-xml', {
                 body: {
                     organizationId,
                     companyId,
                     notaFiscalId: (nfSel as any)?.id,
                 },
                 headers,
-            } as any);
+            });
             if (error || (data && data.error)) {
                 throw new Error(error?.message || data?.error || "Falha ao enviar XML");
             }
@@ -1185,6 +1189,20 @@ function Pedidos() {
             const token: string | undefined = sessionRes?.session?.access_token;
             if (!token) throw new Error('Sessão expirada ou ausente. Faça login novamente.');
             const orgId = organizationId;
+            const payload: any = { organizationId: orgId, shop_id: selectedShopeeShopId };
+            const orderSnText = String(shopeeOrderSnInput || "").trim();
+            if (orderSnText) {
+                const orderSnList = orderSnText.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+                if (orderSnList.length > 0) payload.order_sn_list = orderSnList;
+            }
+            if (shopeeDateFrom) {
+                const fromMs = calendarStartOfDaySPEpochMs(new Date(shopeeDateFrom));
+                payload.time_from = Math.floor(fromMs / 1000);
+            }
+            if (shopeeDateTo) {
+                const toMs = calendarEndOfDaySPEpochMs(new Date(shopeeDateTo));
+                payload.time_to = Math.floor(toMs / 1000);
+            }
             const resp = await fetch(`${SUPABASE_URL}/functions/v1/shopee-sync-orders`, {
                 method: 'POST',
                 headers: {
@@ -1192,7 +1210,7 @@ function Pedidos() {
                     'apikey': SUPABASE_PUBLISHABLE_KEY,
                     'Authorization': `Bearer ${token}`,
                 },
-                body: JSON.stringify({ organizationId: orgId, shop_id: selectedShopeeShopId }),
+                body: JSON.stringify(payload),
             });
             const json = await resp.json().catch(() => ({}));
             if (!resp.ok) {
@@ -1393,7 +1411,7 @@ function Pedidos() {
         )},
         { id: "tipoEnvio", name: "Tipo de Envio", enabled: true, alwaysVisible: true, render: (pedido) => {
             const shipmentStatus = String(pedido?.shipment_status || '').toLowerCase();
-            const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup'];
+            const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
             const isOrderCancelledOrReturned = (
                 pedido?.status_interno === 'Cancelado' ||
                 pedido?.status_interno === 'Devolução'
@@ -1402,7 +1420,7 @@ function Pedidos() {
             const allowedLabels = new Set(['A vincular','Emissao NF','Impressao','Aguardando Coleta']);
             const computedLabel = String(pedido?.status_interno || 'Pendente');
             const isAllowedByBoard = allowedBoards.includes(activeStatus) || (activeStatus === 'todos' && allowedLabels.has(computedLabel));
-            const showSLA = isAllowedByBoard && !deliveredStatuses.includes(shipmentStatus) && !isOrderCancelledOrReturned && pedido?.slaDespacho?.expected_date;
+            const showSLA = isAllowedByBoard && !deliveredStatuses.includes(shipmentStatus) && !isOrderCancelledOrReturned && computedLabel !== 'Enviado' && pedido?.slaDespacho?.expected_date;
             let countdown: JSX.Element | null = null;
             if (showSLA) {
                 const expected = new Date(pedido.slaDespacho.expected_date);
@@ -1413,7 +1431,8 @@ function Pedidos() {
                 const days = Math.floor(totalMinutes / (60 * 24));
                 const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
                 const minutes = totalMinutes % 60;
-                const color = expired ? 'text-red-600' : 'text-purple-600';
+                const slaStatusLower = String(pedido?.slaDespacho?.status || '').toLowerCase();
+                const color = (expired || slaStatusLower === 'delayed') ? 'text-red-600' : 'text-purple-600';
                 const cdText = `ENVIE EM: ${days}d ${hours}h ${minutes}m`;
                 const cdLen = cdText.length;
                 const cdSize = cdLen > 30 ? 'text-[10px]': (cdLen > 15 ? 'text-[9px]' : 'text-[10px]');
@@ -1451,11 +1470,27 @@ function Pedidos() {
             const boardLabel = String(pedido?.status || 'Pendente');
             const displayLabel = boardLabel === 'Aguardando Coleta' ? 'Coleta' : boardLabel;
             const badgeClass = getStatusColor(boardLabel);
+            const shipmentStatusLower = String(pedido?.shipment_status || '').toLowerCase();
+            const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
+            const isOrderCancelledOrReturned = (
+                pedido?.status_interno === 'Cancelado' ||
+                pedido?.status_interno === 'Devolução'
+            );
+            const slaStatusLower = String(pedido?.slaDespacho?.status || '').toLowerCase();
+            const ed = pedido?.slaDespacho?.expected_date;
+            const expired = ed ? (new Date(ed).getTime() - new Date().getTime() <= 0) : false;
+            const showDelayedBadge = (slaStatusLower === 'delayed' || expired) && !deliveredStatuses.includes(shipmentStatusLower) && !isOrderCancelledOrReturned && String(pedido?.status_interno || '') !== 'Enviado';
             return (
                 <div className="flex flex-col items-center space-y-2 text-center">
-                    <Badge className={`uppercase ${badgeClass} h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
-                        {displayLabel}
-                    </Badge>
+                    {showDelayedBadge ? (
+                        <Badge className={`uppercase bg-red-600 hover:bg-red-700 text-white h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
+                            Atrasado
+                        </Badge>
+                    ) : (
+                        <Badge className={`uppercase ${badgeClass} h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
+                            {displayLabel}
+                        </Badge>
+                    )}
                     {activeStatus === 'enviado' && String(pedido?.shipment_status || '').toLowerCase() === 'delivered' && (
                         <Badge className={`uppercase bg-green-600 hover:bg-green-700 text-white h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
                             Entregue
@@ -1491,6 +1526,39 @@ function Pedidos() {
                         ) : null;
                     })()}
                 </div>
+            );
+        }},
+        { id: "margem", name: "Margem %", enabled: true, alwaysVisible: true, render: (pedido) => {
+            const tn = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
+            const isZeroed = String(pedido?.status || '').toLowerCase() === 'cancelado' || String(pedido?.status || '').toLowerCase() === 'devolução';
+            const zeroIfNeeded = (n: number) => (isZeroed ? 0 : n);
+            const valorBrutoItens = (pedido?.itens || []).reduce((sum: number, it: any) => sum + (tn(it?.valor) * (tn(it?.quantidade) || 0)), 0) || tn((pedido as any)?.financeiro?.valorPedido) || tn(pedido?.valor);
+            const f: any = (pedido as any)?.financeiro || {};
+            const comissaoMarketplace = tn(f?.taxaMarketplace);
+            const impostosCalculados = tn(f?.impostos);
+            const custoProdutosFixo = tn(f?.custoProdutos);
+            const custosExtras = tn(f?.custosExtras);
+            const cupomFixo = tn(f?.cupom);
+            const freteCusto = tn(f?.taxaFrete);
+            const freteRecebidoLiquido = tn(f?.freteRecebidoLiquido ?? (tn(f?.freteRecebido) - tn(f?.shippingFeeBuyer)));
+            const custosVariaveisTotal =
+                zeroIfNeeded(comissaoMarketplace) +
+                zeroIfNeeded(impostosCalculados) +
+                zeroIfNeeded(custoProdutosFixo) +
+                zeroIfNeeded(custosExtras) +
+                zeroIfNeeded(cupomFixo) +
+                zeroIfNeeded(freteCusto);
+            const despesasVariaveisTotal = zeroIfNeeded(freteRecebidoLiquido);
+            const mcValor =
+                zeroIfNeeded(valorBrutoItens) -
+                custosVariaveisTotal +
+                despesasVariaveisTotal;
+            const mcPercent = isZeroed ? 0 : (valorBrutoItens > 0 ? (mcValor / valorBrutoItens) * 100 : 0);
+            const badgeClass = mcPercent < 0 ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-purple-600 hover:bg-purple-700 text-white';
+            return (
+                <Badge className={`uppercase ${badgeClass} h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
+                    {mcPercent.toFixed(1)}%
+                </Badge>
             );
         }},
         
@@ -2039,6 +2107,22 @@ function Pedidos() {
     const shippingOkLocal = (p: any) => (shippingTypeFilter === 'all' ? true : normalizeShippingType(String(p?.tipoEnvio ?? '')) === shippingTypeFilter);
     const baseForCounts = baseFiltered.filter(p => marketplaceOkLocal(p) && shippingOkLocal(p));
 
+    const isPedidoAtrasado = (p: any) => {
+        const shipmentStatusLower = String(p?.shipment_status || '').toLowerCase();
+        const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
+        const isOrderCancelledOrReturned = (p?.status_interno === 'Cancelado' || p?.status_interno === 'Devolução');
+        if (deliveredStatuses.includes(shipmentStatusLower) || isOrderCancelledOrReturned || String(p?.status_interno || '') === 'Enviado') return false;
+        const slaStatusLower = String(p?.slaDespacho?.status || '').toLowerCase();
+        const ed = p?.slaDespacho?.expected_date;
+        const expired = ed ? (new Date(ed).getTime() - new Date().getTime() <= 0) : false;
+        return slaStatusLower === 'delayed' || expired;
+    };
+    const allowedTooltipBlocks = new Set(['a-vincular','emissao-nf','impressao','aguardando-coleta']);
+    const hasDelayedByBlock = (blockId: string) => {
+        if (!allowedTooltipBlocks.has(blockId)) return false;
+        return listReady ? baseForCounts.some(p => matchStatus(p, blockId) && isPedidoAtrasado(p)) : false;
+    };
+
     const statusBlocks = [
         { id: 'todos', title: 'Todos os Pedidos', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['todos'] === 'number') ? statusCountsGlobal['todos'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'todos')).length : 0)), description: 'Sincronizados com marketplaces' },
         { id: 'a-vincular', title: 'A Vincular', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['a-vincular'] === 'number') ? statusCountsGlobal['a-vincular'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'a-vincular')).length : 0)), description: 'Pedidos sem vínculo de SKU' },
@@ -2148,7 +2232,25 @@ function Pedidos() {
                                         onClick={() => setActiveStatus(block.id)}
                                     >
                                         <CardContent className="p-4 text-center relative z-10">
-                                            <div className="text-3xl font-bold mb-2">{block.count}</div>
+                                            <div className="text-3xl font-bold mb-2 relative inline-block">
+                                                {block.count}
+                                                {hasDelayedByBlock(block.id) && (
+                                                    <Tooltip>
+                                                        <TooltipTrigger asChild>
+                                                            <span className="absolute top-0 left-full ml-5 z-20">
+                                                                <span className="relative flex h-3 w-3">
+                                                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75"></span>
+                                                                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-600 shadow-lg"></span>
+                                                                </span>
+                                                            </span>
+                                                        </TooltipTrigger>
+                                                        <TooltipContent side="top" className="max-w-[260px] whitespace-normal leading-snug text-center">
+                                                            <span className="block">Você tem pedidos em atraso!</span>
+                                                            <span className="block">Envie o mais rápido possível para evitar problemas na reputação.😟</span>
+                                                        </TooltipContent>
+                                                    </Tooltip>
+                                                )}
+                                            </div>
                                             <div className="text-sm font-medium">{block.title}</div>
                                             <div className="text-xs opacity-80 mt-1">{block.description}</div>
                                         </CardContent>
@@ -2326,6 +2428,22 @@ function Pedidos() {
                                                         ))}
                                                     </SelectContent>
                                                 </Select>
+                                                <div className="space-y-2">
+                                                    <div className="text-sm font-medium">order_sn_list (opcional)</div>
+                                                    <Textarea
+                                                        value={shopeeOrderSnInput}
+                                                        onChange={(e) => setShopeeOrderSnInput(e.target.value)}
+                                                        placeholder="Ex.: 250730FC87B0Q5, 1234ABC, 5678DEF"
+                                                        className="min-h-[80px]"
+                                                    />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <div className="text-sm font-medium">Período opcional (até 15 dias)</div>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <Input type="date" value={shopeeDateFrom} onChange={(e) => setShopeeDateFrom(e.target.value)} />
+                                                        <Input type="date" value={shopeeDateTo} onChange={(e) => setShopeeDateTo(e.target.value)} />
+                                                    </div>
+                                                </div>
                                                 <Button className="w-full" disabled={isSyncing || !selectedShopeeShopId} onClick={handleSyncShopeeOrders}>Sincronizar Shopee</Button>
                                             </div>
                                         )}
@@ -2812,7 +2930,7 @@ function Pedidos() {
                                                         {columns.filter(col => col.enabled).map(col => (
                                                                 <th
                                                                     key={col.id}
-                                                                    className={`py-1 text-[clamp(11px,0.9vw,13px)] font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'text-center w-[4%] pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'text-center w-[15%] pr-0' : ''} ${col.id === 'valor' ? 'text-center w-[10%]' : ''} ${col.id === 'tipoEnvio' ? 'text-center w-[10%]' : ''} ${col.id === 'marketplace' ? 'text-center w-[10%]' : ''} ${col.id === 'status' ? 'text-center w-[10%]' : ''}`}
+                                                                    className={`py-1 text-[clamp(11px,0.9vw,13px)] font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'text-center w-[4%] pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'text-center w-[15%] pr-0' : ''} ${col.id === 'valor' ? 'text-center w-[10%]' : ''} ${col.id === 'tipoEnvio' ? 'text-center w-[10%]' : ''} ${col.id === 'marketplace' ? 'text-center w-[10%]' : ''} ${col.id === 'status' ? 'text-center w-[10%]' : ''} ${col.id === 'margem' ? 'text-center w-[10%]' : ''}`}
                                                                 >
                                                                     {col.name}
                                                                 </th>
@@ -2863,7 +2981,7 @@ function Pedidos() {
                                                         {columns.filter(col => col.enabled).map(col => (
                                                             <td
                                                                 key={col.id}
-                                                                className={`py-1 whitespace-nowrap text-sm text-gray-500 min-w-0 ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'w-[4%] text-center pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'w-[15%] text-center pr-0' : ''} ${col.id === 'valor' ? 'w-[10%] text-center' : ''} ${col.id === 'tipoEnvio' ? 'w-[10%] text-center' : ''} ${col.id === 'marketplace' ? 'w-[10%] text-center' : ''} ${col.id === 'status' ? 'w-[10%] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
+                                                                className={`py-1 whitespace-nowrap text-sm text-gray-500 min-w-0 ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'w-[4%] text-center pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'w-[15%] text-center pr-0' : ''} ${col.id === 'valor' ? 'w-[10%] text-center' : ''} ${col.id === 'tipoEnvio' ? 'w-[10%] text-center' : ''} ${col.id === 'marketplace' ? 'w-[10%] text-center' : ''} ${col.id === 'status' ? 'w-[10%] text-center' : ''} ${col.id === 'margem' ? 'w-[10%] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
                                                             >
                                                                 {col.render(pedido)}
                                                             </td>

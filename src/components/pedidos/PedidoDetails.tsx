@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ChevronDown, ChevronUp, User, Package, CreditCard, Clock, TrendingUp, Wallet, Percent, Truck, Receipt, Ticket, MinusCircle, ShoppingCart, DollarSign, Zap, Copy } from "lucide-react";
 import { formatDateTimeSP } from "@/lib/datetime";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { supabase } from "@/integrations/supabase/client";
 
 // --- TIPOS MOCKADOS PARA COMPILAÇÃO ---
 // Em um projeto real, estes viriam de "@/types/pedidos"
@@ -28,7 +29,6 @@ interface Pedido {
     shippingState?: string | null;
     shippingUF?: string | null;
     valor: number; // Valor total dos itens
-    margem: number; // Margem percentual mockada ou calculada
     itens: Item[];
 }
 
@@ -149,6 +149,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
     const [historicoExpanded, setHistoricoExpanded] = useState(false);
     const [financeiroExpanded, setFinanceiroExpanded] = useState(true);
     const [copiadoPlataforma, setCopiadoPlataforma] = useState(false);
+    const [cmvLinked, setCmvLinked] = useState<number | null>(null);
 
     // Historico steps: manter a estrutura para o timeline
     const historicoSteps = [
@@ -174,7 +175,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
     const shippingFeeBuyer = toNum((pedido as any)?.financeiro?.shippingFeeBuyer);
     const freteRecebidoLiquido = toNum((pedido as any)?.financeiro?.freteRecebidoLiquido ?? (valorRecebidoFrete - shippingFeeBuyer));
     const impostosCalculados = toNum((pedido as any)?.financeiro?.impostos); // preparado p/ regime tributário
-    const custoProdutosFixo = toNum((pedido as any)?.financeiro?.custoProdutos); // virá após vínculo de produto
+    const custoProdutosFixo = toNum(cmvLinked ?? (pedido as any)?.financeiro?.custoProdutos);
     const custosExtras = toNum((pedido as any)?.financeiro?.custosExtras); // ex: embalagem, mão de obra
     const cupomFixo = toNum((pedido as any)?.financeiro?.cupom);
 
@@ -201,15 +202,25 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
         zeroIfNeeded(cupomFixo);
         
     // 2. Lucro Total do Pedido (Após todos os custos internos)
-    // Repasse Liquido - Custos Internos - Custo Liquido do Frete (o frete recebido já foi contado acima)
     const lucroPedido =
         valorLiquidoReceber -
         zeroIfNeeded(custoProdutosFixo) -
         zeroIfNeeded(custosExtras) -
-        (zeroIfNeeded(freteCusto) - zeroIfNeeded(valorRecebidoFrete)); 
+        zeroIfNeeded(custoLiquidoFrete);
         
-    // 3. Margem Final (usando o lucro e o valor bruto dos itens)
-    const margemCalculada = isZeroed ? 0 : (valorBrutoItens > 0 ? (lucroPedido / valorBrutoItens) * 100 : 0);
+    const custosVariaveisTotal =
+        zeroIfNeeded(comissaoMarketplace) +
+        zeroIfNeeded(impostosCalculados) +
+        zeroIfNeeded(custoProdutosFixo) +
+        zeroIfNeeded(custosExtras) +
+        zeroIfNeeded(cupomFixo) +
+        zeroIfNeeded(freteCusto);
+    const despesasVariaveisTotal = zeroIfNeeded(freteRecebidoLiquido);
+    const mcValor =
+        zeroIfNeeded(valorBrutoItens) -
+        custosVariaveisTotal +
+        despesasVariaveisTotal;
+    const mcPercent = isZeroed ? 0 : (valorBrutoItens > 0 ? (mcValor / valorBrutoItens) * 100 : 0);
 
     
 
@@ -217,6 +228,53 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
     const dataBase = (pedido as any)?.dataPagamento || pedido.data;
     const dataFormatada = formatDateTimeSP(dataBase);
 
+    useEffect(() => {
+        let cancelled = false;
+        const load = async () => {
+            try {
+                let links: any[] = [];
+                const raw = (pedido as any)?.linked_products;
+                if (Array.isArray(raw)) {
+                    links = raw;
+                } else if (raw) {
+                    try {
+                        const parsed = JSON.parse(raw);
+                        if (Array.isArray(parsed)) links = parsed;
+                    } catch {}
+                }
+                const ids = Array.from(new Set(links.map((e: any) => String(e?.product_id || "")).filter((x: string) => !!x)));
+                const skus = Array.from(new Set(links.map((e: any) => String(e?.sku || "")).filter((x: string) => !!x)));
+                let products: any[] = [];
+                if (ids.length > 0) {
+                    const { data } = await (supabase as any)
+                        .from("products")
+                        .select("id, cost_price")
+                        .in("id", ids);
+                    if (Array.isArray(data)) products = data;
+                }
+                if (!products.length && skus.length > 0) {
+                    const { data } = await (supabase as any)
+                        .from("products")
+                        .select("id, cost_price, sku")
+                        .in("sku", skus);
+                    if (Array.isArray(data)) products = data;
+                }
+                if (products.length) {
+                    const costs = products.map((p: any) => (typeof p?.cost_price === 'number' ? p.cost_price : Number(p?.cost_price) || 0)).filter((n: number) => Number.isFinite(n));
+                    const avg = costs.length ? (costs.reduce((a: number, b: number) => a + b, 0) / costs.length) : 0;
+                    const qty = Number((pedido as any)?.quantidadeTotal) || (Array.isArray(pedido.itens) ? pedido.itens.reduce((s: number, it: any) => s + (Number(it?.quantidade) || 0), 0) : 1);
+                    const cmv = avg * qty;
+                    if (!cancelled) setCmvLinked(cmv);
+                } else {
+                    if (!cancelled) setCmvLinked(null);
+                }
+            } catch {
+                if (!cancelled) setCmvLinked(null);
+            }
+        };
+        load();
+        return () => { cancelled = true; };
+    }, [pedido]);
 
     return (
         <div className="space-y-6 max-w-full overflow-x-hidden">
@@ -289,7 +347,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                                     <div className="flex justify-between items-center">
                                         <span className="text-gray-600 text-sm">Cliente:</span>
                                         <span className="text-gray-900 font-medium flex items-center">
-                                            <User className="w-4 h-4 mr-1 text-gray-400" /> {pedido.cliente}
+                                            <User className="w-4 h-4 mr-1 text-gray-400" /> {(pedido as any)?.billing_name || pedido.cliente}
                                         </span>
                                     </div>
                                     <div className="flex justify-between items-center">
@@ -342,14 +400,15 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                                 {/* >>> Mapeamento dos itens do objeto pedido */}
                                 {pedido.itens.map((item: Item) => (
                                     <div key={item.id} className="grid grid-cols-4 sm:grid-cols-5 gap-4 items-center py-3 hover:bg-gray-50 rounded-lg px-3 transition-colors">
-                                        <div className="col-span-2">
-                                            <span className="text-gray-900 font-medium">{item.nome}</span>
-                                            <p className="text-xs text-gray-500 mt-0.5">SKU: {item.sku || "N/A"}</p>
-                                        </div>
-                                        {/* Cor ajustada para roxo */}
-                                        <div className={`text-center font-medium ${item.quantidade > 1 ? 'text-purple-600 bg-purple-100 rounded-lg py-1 px-2' : 'text-gray-900'}`}>
-                                            {item.quantidade}
-                                        </div>
+                                    <div className="col-span-2">
+                                        <span className="text-gray-900 font-medium">{item.nome}</span>
+                                        <p className="text-xs text-gray-500 mt-0.5">SKU: {item.sku || "N/A"}</p>
+                                        <p className="text-xs text-gray-500 mt-0.5">SKU Vinculado: {(pedido as any)?.linkedSku || "N/A"}</p>
+                                    </div>
+                                    {/* Cor ajustada para roxo */}
+                                    <div className={`text-center font-medium ${item.quantidade > 1 ? 'text-purple-600 bg-purple-100 rounded-lg py-1 px-2' : 'text-gray-900'}`}>
+                                        {item.quantidade}
+                                    </div>
                                         <div className="text-right text-gray-900 hidden sm:inline">
                                             {formatCurrency(item.valor)}
                                         </div>
@@ -403,14 +462,6 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                                 value={zeroIfNeeded(valorBrutoItens)} 
                                 isNegative={false} 
                             />
-
-                            {/* Valor Frete Recebido da Plataforma */}
-                            <FinancialDetailRow 
-                                icon={Truck} 
-                                label="Valor Recebido Frete da Plataforma" 
-                                value={zeroIfNeeded(valorRecebidoFrete)} 
-                                isNegative={false} 
-                            />
                         </div>
 
                         <Separator className="my-6 bg-gray-100" />
@@ -425,16 +476,8 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                         {/* Frete Custo (Custo de Envio) */}
                         <FinancialDetailRow 
                             icon={Truck} 
-                            label="Valor Pago Frete (Custo Real)" 
+                            label="Valor Pago Frete" 
                             value={zeroIfNeeded(freteCusto)} // Custo total é uma despesa
-                            isNegative={true} 
-                        />
-
-                        {/* Tarifa do Mercado Envios (pagador: comprador) - entra e sai, não afeta líquido se frete recebido existir */}
-                        <FinancialDetailRow 
-                            icon={Truck} 
-                            label="Tarifa Mercado Envios (pagador: comprador)" 
-                            value={zeroIfNeeded(shippingFeeBuyer)} 
                             isNegative={true} 
                         />
 
@@ -445,7 +488,6 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                                 label="Comissão do Marketplace (Efetiva)" 
                                 value={zeroIfNeeded(comissaoMarketplace)} 
                                 isNegative={true} 
-                                percent={isZeroed ? 0 : (comissaoPercentual * 100)}
                             />
 
                             {/* Comissão (sale_fee reportado): visível quando difere da efetiva */}
@@ -455,7 +497,6 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                                     label="Comissão (sale_fee do Pedido)" 
                                     value={zeroIfNeeded(saleFeeReportado)} 
                                     isNegative={true} 
-                                    percent={isZeroed ? 0 : (saleFeePercentual * 100)}
                                 />
                             )}
                             
@@ -471,7 +512,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             {/* Custo dos Produtos (CMV) */}
                             <FinancialDetailRow 
                                 icon={Wallet} 
-                                label="Custo dos Produtos (CMV)" 
+                                label="Custo dos Produtos" 
                                 value={zeroIfNeeded(custoProdutosFixo)} 
                                 isNegative={true} 
                             />
@@ -479,7 +520,7 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             {/* Custos Extras */}
                             <FinancialDetailRow 
                                 icon={Zap} 
-                                label="Custos Extras (Embalagem, Mão de Obra)" 
+                                label="Custos Extras (embalagens, etc)" 
                                 value={zeroIfNeeded(custosExtras)} 
                                 isNegative={true} 
                             />
@@ -500,30 +541,33 @@ export function PedidoDetails({ pedido }: PedidoDetailsProps) {
                             Resultados Finais
                         </h4>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {/* Card: Líquido a Receber (Repasse) */}
-                            <div className="bg-purple-50 rounded-3xl p-6 border-2 border-purple-200/60 transition-all">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-purple-800 font-semibold flex items-center text-sm uppercase">
+                            {/* Card: A Receber (Lucro do Pedido) */}
+                            <div className="bg-purple-50 rounded-3xl p-4 border-2 border-purple-200/60 transition-all text-center">
+                                <div className="flex items-center justify-center">
+                                    <span className="text-purple-800 font-semibold flex items-center justify-center text-sm uppercase">
                                         <CreditCard className="w-5 h-5 mr-2 text-purple-600" />
-                                        Líquido a Receber (Repasse)
+                                        A receber
                                     </span>
                                 </div>
-                                <span className="text-purple-800 font-extrabold text-3xl mt-2 block">
-                                    {formatCurrency(isZeroed ? 0 : valorLiquidoReceber)}
-                                </span>
-                                <p className="text-xs text-purple-600 mt-2">Valor creditado pelo Marketplace (inclui frete recebido, menos comissões, impostos e descontos).</p>
+                                <div className="mt-2 flex justify-center items-center min-h-[56px] w-full">
+                                    <span className="text-purple-800 font-extrabold text-2xl leading-none text-center">
+                                        {formatCurrency(isZeroed ? 0 : lucroPedido)}
+                                    </span>
+                                </div>
                             </div>
-                            {/* Card: Margem em % */}
-                            <div className={`bg-purple-50 border-purple-200/60 rounded-3xl p-6 border-2 transition-all`}>
-                                <div className="flex items-center justify-between">
-                                    <span className={`text-purple-800 font-semibold flex items-center text-sm uppercase`}>
-                                        <TrendingUp className="w-5 h-5 mr-2 text-purple-600" />
+                            {/* Card: Margem de Contribuição em % */}
+                            <div className={`${mcPercent < 0 ? 'bg-red-50 border-red-200/60' : 'bg-purple-50 border-purple-200/60'} rounded-3xl p-4 border-2 transition-all text-center`}>
+                                <div className="flex items-center justify-center">
+                                    <span className={`${mcPercent < 0 ? 'text-red-800' : 'text-purple-800'} font-semibold flex items-center justify-center text-sm uppercase`}>
+                                        <TrendingUp className={`w-5 h-5 mr-2 ${mcPercent < 0 ? 'text-red-600' : 'text-purple-600'}`} />
                                         Margem em %
                                     </span>
                                 </div>
-                                <span className={`text-purple-800 font-extrabold text-3xl mt-2 block`}>
-                                    {margemCalculada.toFixed(2)}%
-                                </span>
+                                <div className="mt-2 flex justify-center items-center min-h-[56px] w-full">
+                                    <span className={`${mcPercent < 0 ? 'text-red-800' : 'text-purple-800'} font-extrabold text-2xl leading-none text-center`}>
+                                        {mcPercent.toFixed(2)}%
+                                    </span>
+                                </div>
                             </div>
                         </div>
                     </div>

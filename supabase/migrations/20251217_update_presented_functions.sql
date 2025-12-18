@@ -3,50 +3,69 @@ BEGIN;
 CREATE OR REPLACE FUNCTION public.process_marketplace_order_presented_new()
 RETURNS TRIGGER AS $$
 DECLARE
+  v_shp_order_status text;
+  v_shp_order_status_raw text;
+  v_shp_invoice_pending boolean;
+  v_shp_fulfillment_ready boolean;
+  v_shp_pickup_done boolean;
+  v_shp_shipping_carrier text;
+  v_created_at timestamptz;
+  v_last_updated timestamptz;
+  v_payment_total numeric;
+  v_order_total numeric;
+  v_customer_name text;
+  v_buyer_id bigint;
+  v_city text;
+  v_town text;
+  v_region text;
+  v_state text;
+  v_state_key text;
+  v_state_uf text;
+  v_zip text;
+  v_address_line text;
+  v_logistics_status text;
+  v_logistics_status_raw text;
+  v_items_count integer;
+  v_items_total_quantity integer;
+  v_items_total_amount numeric;
+  v_items_total_full_amount numeric;
+  v_items_total_sale_fee numeric;
+  v_commission_fee numeric;
+  v_service_fee numeric;
+  v_items_currency_id text;
+  v_first_item_id text;
+  v_first_item_title text;
+  v_first_item_sku text;
+  v_first_item_variation_id bigint;
+  v_variation_color_names text[];
+  v_has_variations boolean;
   v_status_interno text;
+  v_has_unlinked_items boolean;
+  v_unlinked_items_count integer;
+  v_shipping_type text;
+  v_shipment_status text;
+  v_shipment_substatus text;
+  v_is_full boolean;
+  v_is_cancelled boolean;
+  v_is_refunded boolean;
+  v_is_returned boolean;
+  v_printed_label boolean;
+  v_linked_products jsonb;
+  v_printed_schedule timestamp with time zone;
+  v_label_cached boolean;
+  v_label_response_type text;
+  v_label_fetched_at timestamp with time zone;
+  v_label_size_bytes integer;
+  v_label_content_base64 text;
+  v_label_content_type text;
+  v_label_pdf_base64 text;
+  v_label_zpl2_base64 text;
   v_err_message text;
   v_err_detail text;
   v_err_hint text;
   v_err_context text;
 BEGIN
   IF NEW.marketplace_name = 'Shopee' THEN
-    DECLARE
-      v_shp_order_status text;
-      v_shp_order_status_raw text;
-      v_shp_invoice_pending boolean;
-      v_shp_fulfillment_ready boolean;
-      v_shp_pickup_done boolean;
-      v_shp_shipping_carrier text;
-      v_created_at timestamptz;
-      v_last_updated timestamptz;
-      v_payment_total numeric;
-      v_order_total numeric;
-      v_customer_name text;
-      v_buyer_id bigint;
-      v_city text;
-      v_town text;
-      v_region text;
-      v_state text;
-      v_state_key text;
-      v_state_uf text;
-      v_zip text;
-      v_address_line text;
-      v_logistics_status text;
-      v_logistics_status_raw text;
-      v_items_count integer;
-      v_items_total_quantity integer;
-      v_items_total_amount numeric;
-      v_items_total_full_amount numeric;
-      v_items_total_sale_fee numeric;
-      v_commission_fee numeric;
-      v_service_fee numeric;
-      v_items_currency_id text;
-      v_first_item_id text;
-      v_first_item_title text;
-      v_first_item_sku text;
-      v_first_item_variation_id bigint;
-      v_variation_color_names text[];
-      v_has_variations boolean;
     BEGIN
       v_shp_order_status_raw := COALESCE(
         NEW.data->'order_detail'->>'order_status',
@@ -174,9 +193,86 @@ BEGIN
         '{}'::text[]
       );
 
+      SELECT COUNT(*) INTO v_unlinked_items_count
+      FROM (
+        WITH order_items_parsed AS (
+          SELECT
+            COALESCE(oi->>'item_id','') AS item_id_text,
+            COALESCE(NULLIF(oi->>'model_id',''), '') AS variation_id_text,
+            COALESCE(oi->>'model_sku', oi->>'sku', '') AS seller_sku_text
+          FROM jsonb_array_elements(COALESCE(NEW.data->'order_detail'->'item_list','[]'::jsonb)) AS oi
+        ), ephemeral_links AS (
+          SELECT
+            COALESCE(e->>'marketplace_item_id','') AS marketplace_item_id,
+            COALESCE(e->>'variation_id','') AS variation_id,
+            NULLIF(e->>'product_id','')::uuid AS product_id
+          FROM jsonb_array_elements(
+            COALESCE(NEW.linked_products, '[]'::jsonb)
+          ) e
+        )
+        SELECT
+          oip.item_id_text,
+          oip.variation_id_text,
+          oip.seller_sku_text,
+          COALESCE(mipl.product_id, eph.product_id) AS product_id
+        FROM order_items_parsed oip
+        LEFT JOIN public.marketplace_item_product_links mipl
+          ON mipl.organizations_id = NEW.organizations_id
+         AND mipl.marketplace_name = NEW.marketplace_name
+         AND mipl.marketplace_item_id = oip.item_id_text
+         AND mipl.variation_id = oip.variation_id_text
+        LEFT JOIN ephemeral_links eph
+          ON eph.marketplace_item_id = oip.item_id_text
+         AND eph.variation_id = oip.variation_id_text
+      ) o
+      WHERE (o.product_id IS NULL AND COALESCE(o.seller_sku_text, '') = '')
+        AND COALESCE(o.item_id_text, '') <> '';
+
+      SELECT jsonb_agg(jsonb_build_object(
+        'marketplace_item_id', o.item_id_text,
+        'variation_id', o.variation_id_text,
+        'product_id', o.product_id,
+        'sku', o.product_sku,
+        'source', o.source
+      )) INTO v_linked_products
+      FROM (
+        WITH order_items_parsed AS (
+          SELECT COALESCE(oi->>'item_id','') AS item_id_text,
+                 COALESCE(NULLIF(oi->>'model_id',''), '') AS variation_id_text
+          FROM jsonb_array_elements(COALESCE(NEW.data->'order_detail'->'item_list','[]'::jsonb)) AS oi
+        ), ephemeral_links AS (
+          SELECT COALESCE(e->>'marketplace_item_id','') AS marketplace_item_id,
+                 COALESCE(e->>'variation_id','') AS variation_id,
+                 NULLIF(e->>'product_id','')::uuid AS product_id
+          FROM jsonb_array_elements(COALESCE(NEW.linked_products, '[]'::jsonb)) e
+        )
+        SELECT oip.item_id_text,
+               oip.variation_id_text,
+               COALESCE(mipl.product_id, eph.product_id) AS product_id,
+               COALESCE(p.sku, '') AS product_sku,
+               CASE WHEN mipl.product_id IS NOT NULL THEN 'permanent'
+                    WHEN eph.product_id IS NOT NULL THEN 'ephemeral'
+                    ELSE NULL END AS source
+        FROM order_items_parsed oip
+        LEFT JOIN public.marketplace_item_product_links mipl
+          ON mipl.organizations_id = NEW.organizations_id
+         AND mipl.marketplace_name = NEW.marketplace_name
+         AND mipl.marketplace_item_id = oip.item_id_text
+         AND mipl.variation_id = oip.variation_id_text
+        LEFT JOIN ephemeral_links eph
+          ON eph.marketplace_item_id = oip.item_id_text
+         AND eph.variation_id = oip.variation_id_text
+        LEFT JOIN public.products p
+          ON p.id = COALESCE(mipl.product_id, eph.product_id)
+      ) o
+      WHERE o.product_id IS NOT NULL;
+
+      v_has_unlinked_items := COALESCE(v_unlinked_items_count, 0) > 0;
+
       v_status_interno := CASE
         WHEN v_shp_order_status IN ('cancelled','in_cancel') THEN 'Cancelado'
         WHEN v_shp_order_status = 'to_return' THEN 'Devolução'
+        WHEN (v_shp_order_status = 'ready_to_ship' OR v_shp_fulfillment_ready) AND v_has_unlinked_items THEN 'A vincular'
         WHEN v_shp_order_status = 'ready_to_ship' AND v_shp_invoice_pending THEN 'Emissao NF'
         WHEN v_shp_order_status IN ('ready_to_ship','processed') OR v_shp_fulfillment_ready THEN 'Impressao'
         WHEN v_shp_order_status = 'retry_ship' THEN 'Aguardando Coleta'
@@ -225,7 +321,7 @@ BEGIN
           ELSE NULL
         END,
         false, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-        0, false, '[]'::jsonb, COALESCE(NEW.date_created, v_created_at), COALESCE(NEW.last_updated, v_last_updated), NEW.last_synced_at, v_status_interno
+        COALESCE(v_unlinked_items_count, 0), COALESCE(v_has_unlinked_items, false), COALESCE(v_linked_products, '[]'::jsonb), COALESCE(NEW.date_created, v_created_at), COALESCE(NEW.last_updated, v_last_updated), NEW.last_synced_at, v_status_interno
       )
       ON CONFLICT (id) DO UPDATE SET
         organizations_id = EXCLUDED.organizations_id,
@@ -323,47 +419,73 @@ DECLARE
   v_err_detail text;
   v_err_hint text;
   v_err_context text;
+  items_agg record;
+  payments_agg record;
+  shipments_agg record; 
+  buyer_agg record;
+  shipping_address_agg record;
+  v_status_interno text;
+  v_has_unlinked_items boolean;
+  v_unlinked_items_count integer;
+  v_shipping_type text;
+  v_shipment_status text;
+  v_shipment_substatus text;
+  v_is_full boolean;
+  v_is_cancelled boolean;
+  v_is_refunded boolean;
+  v_is_returned boolean;
+  v_printed_label boolean;
+  v_linked_products jsonb;
+  v_printed_schedule timestamp with time zone;
+  v_label_cached boolean;
+  v_label_response_type text;
+  v_label_fetched_at timestamp with time zone;
+  v_label_size_bytes integer;
+  v_label_content_base64 text;
+  v_label_content_type text;
+  v_label_pdf_base64 text;
+  v_label_zpl2_base64 text;
+  v_shp_order_status text;
+  v_shp_order_status_raw text;
+  v_shp_invoice_pending boolean;
+  v_shp_fulfillment_ready boolean;
+  v_shp_pickup_done boolean;
+  v_shp_shipping_carrier text;
+  v_created_at timestamptz;
+  v_last_updated timestamptz;
+  v_payment_total numeric;
+  v_order_total numeric;
+  v_customer_name text;
+  v_buyer_id bigint;
+  v_city text;
+  v_town text;
+  v_region text;
+  v_state text;
+  v_state_key text;
+  v_state_uf text;
+  v_zip text;
+  v_address_line text;
+  v_logistics_status text;
+  v_logistics_status_raw text;
+  v_items_count integer;
+  v_items_total_quantity integer;
+  v_items_total_amount numeric;
+  v_items_total_full_amount numeric;
+  v_items_total_sale_fee numeric;
+  v_commission_fee numeric;
+  v_service_fee numeric;
+  v_items_currency_id text;
+  v_first_item_id text;
+  v_first_item_title text;
+  v_first_item_sku text;
+  v_first_item_variation_id bigint;
+  v_variation_color_names text[];
+  v_has_variations boolean;
 BEGIN
   SELECT * INTO rec FROM public.marketplace_orders_raw WHERE id = p_order_id LIMIT 1;
   IF NOT FOUND THEN RETURN; END IF;
 
   IF rec.marketplace_name = 'Shopee' THEN
-    DECLARE
-      v_shp_order_status text;
-      v_shp_order_status_raw text;
-      v_shp_invoice_pending boolean;
-      v_shp_fulfillment_ready boolean;
-      v_shp_pickup_done boolean;
-      v_shp_shipping_carrier text;
-      v_created_at timestamptz;
-      v_last_updated timestamptz;
-      v_payment_total numeric;
-      v_order_total numeric;
-      v_customer_name text;
-      v_buyer_id bigint;
-      v_city text;
-      v_town text;
-      v_region text;
-      v_state text;
-      v_state_key text;
-      v_state_uf text;
-      v_zip text;
-      v_address_line text;
-      v_logistics_status text;
-      v_logistics_status_raw text;
-      v_items_count integer;
-      v_items_total_quantity integer;
-      v_items_total_amount numeric;
-      v_items_total_full_amount numeric;
-      v_items_total_sale_fee numeric;
-      v_items_currency_id text;
-      v_first_item_id text;
-      v_first_item_title text;
-      v_first_item_sku text;
-      v_first_item_variation_id bigint;
-      v_variation_color_names text[];
-      v_has_variations boolean;
-      v_status_interno text;
     BEGIN
       v_shp_order_status_raw := COALESCE(rec.data->'order_detail'->>'order_status', rec.data->'order_list_item'->>'order_status', '');
       v_shp_order_status := lower(COALESCE(v_shp_order_status_raw,''));
@@ -467,9 +589,88 @@ BEGIN
         '{}'::text[]
       );
 
+      SELECT COUNT(*) INTO v_unlinked_items_count
+      FROM (
+        WITH order_items_parsed AS (
+          SELECT
+            COALESCE(oi->>'item_id','') AS item_id_text,
+            COALESCE(NULLIF(oi->>'model_id',''), '') AS variation_id_text,
+            COALESCE(oi->>'model_sku', oi->>'sku', '') AS seller_sku_text
+          FROM jsonb_array_elements(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)) AS oi
+        ), ephemeral_links AS (
+          SELECT
+            COALESCE(e->>'marketplace_item_id','') AS marketplace_item_id,
+            COALESCE(e->>'variation_id','') AS variation_id,
+            NULLIF(e->>'product_id','')::uuid AS product_id
+          FROM jsonb_array_elements(
+            COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = rec.id),'[]'::jsonb)
+          ) e
+        )
+        SELECT
+          oip.item_id_text,
+          oip.variation_id_text,
+          oip.seller_sku_text,
+          COALESCE(mipl.product_id, eph.product_id) AS product_id
+        FROM order_items_parsed oip
+        LEFT JOIN public.marketplace_item_product_links mipl
+          ON mipl.organizations_id = rec.organizations_id
+         AND mipl.marketplace_name = rec.marketplace_name
+         AND mipl.marketplace_item_id = oip.item_id_text
+         AND mipl.variation_id = oip.variation_id_text
+        LEFT JOIN ephemeral_links eph
+          ON eph.marketplace_item_id = oip.item_id_text
+         AND eph.variation_id = oip.variation_id_text
+      ) o
+      WHERE (o.product_id IS NULL AND COALESCE(o.seller_sku_text, '') = '')
+        AND COALESCE(o.item_id_text, '') <> '';
+
+      SELECT jsonb_agg(jsonb_build_object(
+        'marketplace_item_id', o.item_id_text,
+        'variation_id', o.variation_id_text,
+        'product_id', o.product_id,
+        'sku', o.product_sku,
+        'source', o.source
+      )) INTO v_linked_products
+      FROM (
+        WITH order_items_parsed AS (
+          SELECT COALESCE(oi->>'item_id','') AS item_id_text,
+                 COALESCE(NULLIF(oi->>'model_id',''), '') AS variation_id_text
+          FROM jsonb_array_elements(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)) AS oi
+        ), ephemeral_links AS (
+          SELECT COALESCE(e->>'marketplace_item_id','') AS marketplace_item_id,
+                 COALESCE(e->>'variation_id','') AS variation_id,
+                 NULLIF(e->>'product_id','')::uuid AS product_id
+          FROM jsonb_array_elements(
+            COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = rec.id),'[]'::jsonb)
+          ) e
+        )
+        SELECT oip.item_id_text,
+               oip.variation_id_text,
+               COALESCE(mipl.product_id, eph.product_id) AS product_id,
+               COALESCE(p.sku, '') AS product_sku,
+               CASE WHEN mipl.product_id IS NOT NULL THEN 'permanent'
+                    WHEN eph.product_id IS NOT NULL THEN 'ephemeral'
+                    ELSE NULL END AS source
+        FROM order_items_parsed oip
+        LEFT JOIN public.marketplace_item_product_links mipl
+          ON mipl.organizations_id = rec.organizations_id
+         AND mipl.marketplace_name = rec.marketplace_name
+         AND mipl.marketplace_item_id = oip.item_id_text
+         AND mipl.variation_id = oip.variation_id_text
+        LEFT JOIN ephemeral_links eph
+          ON eph.marketplace_item_id = oip.item_id_text
+         AND eph.variation_id = oip.variation_id_text
+        LEFT JOIN public.products p
+          ON p.id = COALESCE(mipl.product_id, eph.product_id)
+      ) o
+      WHERE o.product_id IS NOT NULL;
+
+      v_has_unlinked_items := COALESCE(v_unlinked_items_count, 0) > 0;
+
       v_status_interno := CASE
         WHEN v_shp_order_status IN ('cancelled','in_cancel') THEN 'Cancelado'
         WHEN v_shp_order_status = 'to_return' THEN 'Devolução'
+        WHEN (v_shp_order_status = 'ready_to_ship' OR v_shp_fulfillment_ready) AND v_has_unlinked_items THEN 'A vincular'
         WHEN v_shp_order_status = 'ready_to_ship' AND v_shp_invoice_pending THEN 'Emissao NF'
         WHEN v_shp_order_status IN ('ready_to_ship','processed') OR v_shp_fulfillment_ready THEN 'Impressao'
         WHEN v_shp_order_status = 'retry_ship' THEN 'Aguardando Coleta'
@@ -515,10 +716,15 @@ BEGIN
               rec.data->'notification'->>'order_sn',
               rec.marketplace_order_id
             ), '')
-          ELSE NULL
+          ELSE
+            CASE
+              WHEN jsonb_typeof(rec.data->'pack_id') = 'number' THEN rec.data->>'pack_id'
+              WHEN jsonb_typeof(rec.data->'pack_id') = 'string' THEN CASE WHEN (rec.data->>'pack_id') ~ '^\\d+$' THEN rec.data->>'pack_id' ELSE NULL END
+              ELSE NULL
+            END
         END,
         false, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-        0, false, '[]'::jsonb, COALESCE(rec.date_created, v_created_at), COALESCE(rec.last_updated, v_last_updated), rec.last_synced_at, v_status_interno
+        COALESCE(v_unlinked_items_count, 0), COALESCE(v_has_unlinked_items, false), COALESCE(v_linked_products, '[]'::jsonb), COALESCE(rec.date_created, v_created_at), COALESCE(rec.last_updated, v_last_updated), rec.last_synced_at, v_status_interno
       )
       ON CONFLICT (id) DO UPDATE SET
         organizations_id = EXCLUDED.organizations_id,
@@ -604,15 +810,15 @@ BEGIN
       RETURN;
     END;
   END IF;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
 
-COMMIT;
-*** End Patch*** }```) to=functions.apply_patch  అన Assistant不中返assistant텐츠assistantоверassistant to=functions.apply_patchივადassistant.FILLERassistant_REALassistant to=functions.apply_patch JSON is invalid. It must be a plain string that follows the grammar. The current input looks like it's been wrapped in markdown code fences or contains invalid characters. Please provide a valid input. ***!
+  SELECT
+    CASE WHEN jsonb_typeof(rec.buyer->'id') = 'number' THEN (rec.buyer->>'id')::bigint
+         WHEN jsonb_typeof(rec.buyer->'id') = 'string' THEN CASE WHEN (rec.buyer->>'id') ~ '^\\d+$' THEN (rec.buyer->>'id')::bigint ELSE NULL END
+         ELSE NULL END as id_buyer,
+    rec.buyer->>'first_name' as first_name,
     rec.buyer->>'last_name' as last_name,
     COALESCE(rec.buyer->>'nickname', (rec.buyer->>'first_name') || ' ' || (rec.buyer->>'last_name')) as customer_name
   INTO buyer_agg;
-  RAISE NOTICE 'Buyer: id_buyer=% customer_name=%', buyer_agg.id_buyer, buyer_agg.customer_name;
 
   SELECT
     COALESCE(
@@ -631,9 +837,46 @@ COMMIT;
       NULLIF(split_part(rec.shipments->0->'destination'->'shipping_address'->'state'->>'id','-',2), ''),
       NULLIF(split_part(rec.shipments->0->'receiver_address'->'state'->>'id','-',2), ''),
       NULLIF(split_part(rec.data->'shipping'->'shipping_address'->'state'->>'id','-',2), '')
-    ) AS state_uf
+    ) AS state_uf,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'street_name',
+      rec.shipments->0->'receiver_address'->>'street_name',
+      rec.data->'shipping'->'receiver_address'->>'street_name',
+      rec.data->'shipping'->'shipping_address'->>'street_name'
+    ) AS street_name,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'street_number',
+      rec.shipments->0->'receiver_address'->>'street_number',
+      rec.data->'shipping'->'receiver_address'->>'street_number',
+      rec.data->'shipping'->'shipping_address'->>'street_number'
+    ) AS street_number,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'name',
+      rec.shipments->0->'receiver_address'->'neighborhood'->>'name',
+      rec.data->'shipping'->'receiver_address'->'neighborhood'->>'name',
+      rec.data->'shipping'->'shipping_address'->'neighborhood'->>'name',
+      rec.shipments->0->'destination'->'shipping_address'->'neighborhood'->>'id',
+      rec.shipments->0->'receiver_address'->'neighborhood'->>'id'
+    ) AS neighborhood_name,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'zip_code',
+      rec.shipments->0->'receiver_address'->>'zip_code',
+      rec.data->'shipping'->'receiver_address'->>'zip_code',
+      rec.data->'shipping'->'shipping_address'->>'zip_code'
+    ) AS zip_code,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'comment',
+      rec.shipments->0->'receiver_address'->>'comment',
+      rec.data->'shipping'->'receiver_address'->>'comment',
+      rec.data->'shipping'->'shipping_address'->>'comment'
+    ) AS comment,
+    COALESCE(
+      rec.shipments->0->'destination'->'shipping_address'->>'address_line',
+      rec.shipments->0->'receiver_address'->>'address_line',
+      rec.data->'shipping'->'receiver_address'->>'address_line',
+      rec.data->'shipping'->'shipping_address'->>'address_line'
+    ) AS address_line
   INTO shipping_address_agg;
-  RAISE NOTICE 'Shipping: city=% state_uf=%', shipping_address_agg.city, shipping_address_agg.state_uf;
 
   SELECT
     jsonb_array_length(rec.order_items) AS items_count,
@@ -645,16 +888,18 @@ COMMIT;
     rec.order_items->0->>'id' as first_item_id,
     rec.order_items->0->'item'->>'title' as first_item_title,
     rec.order_items->0->'item'->>'seller_sku' as first_item_sku,
-    CASE WHEN jsonb_typeof(rec.order_items->0->'item'->'variation_id') = 'number' THEN (rec.order_items->0->'item'->>'variation_id')::bigint
-         WHEN jsonb_typeof(rec.order_items->0->'item'->'variation_id') = 'string' THEN CASE WHEN (rec.order_items->0->'item'->>'variation_id') ~ '^\\d+$' THEN (rec.order_items->0->'item'->>'variation_id')::bigint ELSE 0 END
-         ELSE 0 END as first_item_variation_id,
+    CASE
+      WHEN jsonb_typeof(rec.order_items->0->'item'->'variation_id') = 'number' THEN (rec.order_items->0->'item'->>'variation_id')::bigint
+      WHEN jsonb_typeof(rec.order_items->0->'item'->'variation_id') = 'string' THEN CASE WHEN (rec.order_items->0->'item'->>'variation_id') ~ '^\d+$' THEN (rec.order_items->0->'item'->>'variation_id')::bigint ELSE 0 END
+      ELSE 0
+    END as first_item_variation_id,
     CASE
       WHEN NULLIF(COALESCE(rec.order_items->0->'item'->>'id', rec.order_items->0->>'item_id', rec.order_items->0->>'id'), '') IS NOT NULL
        AND NULLIF(COALESCE(rec.order_items->0->'item'->>'title', rec.order_items->0->>'title'), '') IS NOT NULL
       THEN (
         'https://produto.mercadolivre.com.br/' ||
         regexp_replace(upper(COALESCE(rec.order_items->0->'item'->>'id', rec.order_items->0->>'item_id', rec.order_items->0->>'id')),
-                       '^([A-Z]+)(\-)?(\d+)$', '\1-\3') ||
+                       '^([A-Z]+)(\\-)?(\\d+)$', '\\1-\\3') ||
         '-' ||
         regexp_replace(
           regexp_replace(lower(unaccent(COALESCE(rec.order_items->0->'item'->>'title', rec.order_items->0->>'title'))), '[^a-z0-9]+', '-', 'g'),
@@ -680,7 +925,6 @@ COMMIT;
     COALESCE(BOOL_OR((oi->>'kit_instance_id') IS NOT NULL), false) AS has_kit
   INTO items_agg
   FROM jsonb_array_elements(COALESCE(rec.order_items, '[]'::jsonb)) oi;
-  RAISE NOTICE 'Items agg: count=% total_amount=% sale_fee=% currency=%', items_agg.items_count, items_agg.items_total_amount, items_agg.items_total_sale_fee, items_agg.currency_id;
 
   SELECT
     p->>'status' as payment_status,
@@ -695,8 +939,6 @@ COMMIT;
   INTO payments_agg
   FROM jsonb_array_elements(COALESCE(rec.payments, '[]'::jsonb)) p
   GROUP BY p;
-  RAISE NOTICE 'Payments agg: status=% total_paid=% marketplace_fee=% shipping_cost=% cancelled=% refunded=%',
-    payments_agg.payment_status, payments_agg.total_paid_amount, payments_agg.marketplace_fee, payments_agg.shipping_cost, payments_agg.is_cancelled, payments_agg.is_refunded;
 
   SELECT
     COALESCE(
@@ -713,37 +955,25 @@ COMMIT;
       rec.data->'shipping'->'shipping_option'->>'name'
     ) AS shipping_method_name,
     COALESCE(
-      (rec.shipments->0->'lead_time'->'estimated_delivery_limit'->>'date')::timestamptz,
-      (rec.shipments->0->'lead_time'->'estimated_delivery_final'->>'date')::timestamptz,
-      (rec.shipments->0->'shipping_option'->'estimated_delivery_limit'->>'date')::timestamptz,
-      (rec.data->'shipping'->'estimated_delivery_limit'->>'date')::timestamptz
+      rec.shipments->0->'lead_time'->'estimated_delivery_limit'->>'date'::timestamptz,
+      rec.shipments->0->'lead_time'->'estimated_delivery_final'->>'date'::timestamptz,
+      rec.shipments->0->'shipping_option'->'estimated_delivery_limit'->>'date'::timestamptz,
+      rec.data->'shipping'->'estimated_delivery_limit'->>'date'::timestamptz
     ) AS estimated_delivery_limit_at,
-    (
-      SELECT COALESCE(s->'sla'->>'status', s->>'sla_status')
-      FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s
-      WHERE COALESCE(s->'sla'->>'status', s->>'sla_status') IS NOT NULL AND COALESCE(s->'sla'->>'status', s->>'sla_status') <> ''
-      LIMIT 1
-    ) AS shipment_sla_status,
-    (
-      SELECT COALESCE(s->'sla'->>'service', s->>'sla_service')
-      FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s
-      WHERE COALESCE(s->'sla'->>'service', s->>'sla_service') IS NOT NULL AND COALESCE(s->'sla'->>'service', s->>'sla_service') <> ''
-      LIMIT 1
-    ) AS shipment_sla_service,
+    COALESCE(rec.shipments->0->'sla'->>'status', rec.shipments->0->>'sla_status') AS shipment_sla_status,
+    COALESCE(rec.shipments->0->'sla'->>'service', rec.shipments->0->>'sla_service') AS shipment_sla_service,
     COALESCE(
-      (rec.shipments->0->'sla'->>'expected_date')::timestamptz,
-      (rec.shipments->0->>'sla_expected_date')::timestamptz,
-      (rec.shipments->0->'lead_time'->'estimated_delivery_limit'->>'date')::timestamptz
+      rec.shipments->0->'sla'->>'expected_date'::timestamptz,
+      rec.shipments->0->>'sla_expected_date'::timestamptz,
+      rec.shipments->0->'lead_time'->'estimated_delivery_limit'->>'date'::timestamptz
     ) AS shipment_sla_expected_date,
     COALESCE(
-      (rec.shipments->0->'sla'->>'last_updated')::timestamptz,
-      (rec.shipments->0->>'sla_last_updated')::timestamptz,
+      rec.shipments->0->'sla'->>'last_updated'::timestamptz,
+      rec.shipments->0->>'sla_last_updated'::timestamptz,
       rec.last_updated
     ) AS shipment_sla_last_updated,
     COALESCE(rec.shipments->0->'delays', '[]'::jsonb) AS shipment_delays
   INTO shipments_agg;
-  RAISE NOTICE 'Shipments agg: status=% substatus=% method=% expected=%',
-    shipments_agg.shipment_status, shipments_agg.shipment_substatus, shipments_agg.shipping_method_name, shipments_agg.shipment_sla_expected_date;
 
   v_printed_label := EXISTS (
     SELECT 1 FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s
@@ -751,8 +981,7 @@ COMMIT;
   );
 
   v_printed_schedule := COALESCE(
-    (SELECT MAX((s->>'date_first_printed')::timestamptz)
-     FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s),
+    (SELECT MAX((s->>'date_first_printed')::timestamptz) FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s),
     (SELECT MAX((s->'sla'->>'expected_date')::timestamptz)
      FROM jsonb_array_elements(COALESCE(rec.shipments, '[]'::jsonb)) s
      WHERE lower(COALESCE(s->>'substatus','')) = 'buffered'),
@@ -779,7 +1008,7 @@ COMMIT;
         COALESCE(e->>'variation_id','') AS variation_id,
         NULLIF(e->>'product_id','')::uuid AS product_id
       FROM jsonb_array_elements(
-        COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = rec.id), '[]'::jsonb)
+        COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = rec.id),'[]'::jsonb)
       ) e
     )
     SELECT
@@ -817,7 +1046,7 @@ COMMIT;
              COALESCE(e->>'variation_id','') AS variation_id,
              NULLIF(e->>'product_id','')::uuid AS product_id
       FROM jsonb_array_elements(
-        COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = rec.id), '[]'::jsonb)
+        COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = rec.id),'[]'::jsonb)
       ) e
     )
     SELECT oip.item_id_text,
@@ -871,12 +1100,12 @@ COMMIT;
   v_label_pdf_base64 := rec.labels->>'pdf_base64';
   v_label_zpl2_base64 := rec.labels->>'zpl2_base64';
 
-  RAISE NOTICE 'General insert: id=% marketplace=%', rec.id, rec.marketplace_name;
-  BEGIN
   INSERT INTO public.marketplace_orders_presented_new (
     id, organizations_id, company_id, marketplace, marketplace_order_id, status, status_detail, order_total,
-    shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer, shipping_city_name,
-    shipping_state_name, shipping_state_uf, shipment_status, shipment_substatus, shipping_method_name,
+    shipping_type, customer_name, id_buyer, first_name_buyer, last_name_buyer,
+    shipping_city_name, shipping_state_name, shipping_state_uf,
+    shipping_street_name, shipping_street_number, shipping_neighborhood_name, shipping_zip_code, shipping_comment, shipping_address_line,
+    shipment_status, shipment_substatus, shipping_method_name,
     estimated_delivery_limit_at, shipment_sla_status, shipment_sla_service, shipment_sla_expected_date,
     shipment_sla_last_updated, shipment_delays, printed_label, printed_schedule, payment_status, payment_total_paid_amount,
     payment_marketplace_fee, payment_shipping_cost, payment_date_created, payment_date_approved,
@@ -889,8 +1118,10 @@ COMMIT;
   )
   VALUES (
     rec.id, rec.organizations_id, rec.company_id, rec.marketplace_name, rec.marketplace_order_id, rec.status, rec.status_detail::text, (rec.data->>'total_amount')::numeric,
-    v_shipping_type, buyer_agg.customer_name, buyer_agg.id_buyer, buyer_agg.first_name, buyer_agg.last_name, shipping_address_agg.city,
-    shipping_address_agg.state_name, shipping_address_agg.state_uf, v_shipment_status, v_shipment_substatus, shipments_agg.shipping_method_name,
+    v_shipping_type, buyer_agg.customer_name, buyer_agg.id_buyer, buyer_agg.first_name, buyer_agg.last_name,
+    shipping_address_agg.city, shipping_address_agg.state_name, shipping_address_agg.state_uf,
+    shipping_address_agg.street_name, shipping_address_agg.street_number, shipping_address_agg.neighborhood_name, shipping_address_agg.zip_code, shipping_address_agg.comment, shipping_address_agg.address_line,
+    v_shipment_status, v_shipment_substatus, shipments_agg.shipping_method_name,
     shipments_agg.estimated_delivery_limit_at, shipments_agg.shipment_sla_status, shipments_agg.shipment_sla_service, shipments_agg.shipment_sla_expected_date,
     shipments_agg.shipment_sla_last_updated, shipments_agg.shipment_delays, v_printed_label, v_printed_schedule, payments_agg.payment_status, payments_agg.total_paid_amount,
     payments_agg.marketplace_fee, payments_agg.shipping_cost, payments_agg.date_created, payments_agg.date_approved,
@@ -898,8 +1129,8 @@ COMMIT;
     items_agg.items_total_sale_fee, items_agg.currency_id, items_agg.first_item_id, items_agg.first_item_title, items_agg.first_item_sku,
     items_agg.first_item_variation_id, items_agg.first_item_permalink, items_agg.variation_color_names, items_agg.category_ids, items_agg.listing_type_ids,
     items_agg.stock_node_ids, items_agg.has_variations, items_agg.has_bundle, items_agg.has_kit,
-    CASE WHEN jsonb_typeof(rec.data->'pack_id') = 'number' THEN (rec.data->>'pack_id')::bigint
-         WHEN jsonb_typeof(rec.data->'pack_id') = 'string' THEN CASE WHEN (rec.data->>'pack_id') ~ '^\d+$' THEN (rec.data->>'pack_id')::bigint ELSE NULL END
+    CASE WHEN jsonb_typeof(rec.data->'pack_id') = 'number' THEN rec.data->>'pack_id'
+         WHEN jsonb_typeof(rec.data->'pack_id') = 'string' THEN CASE WHEN (rec.data->>'pack_id') ~ '^\\d+$' THEN rec.data->>'pack_id' ELSE NULL END
          ELSE NULL END,
     v_label_cached, v_label_response_type, v_label_fetched_at, v_label_size_bytes, v_label_content_base64, v_label_content_type, v_label_pdf_base64, v_label_zpl2_base64,
     v_unlinked_items_count, v_has_unlinked_items, v_linked_products,
@@ -921,6 +1152,12 @@ COMMIT;
     shipping_city_name = EXCLUDED.shipping_city_name,
     shipping_state_name = EXCLUDED.shipping_state_name,
     shipping_state_uf = EXCLUDED.shipping_state_uf,
+    shipping_street_name = EXCLUDED.shipping_street_name,
+    shipping_street_number = EXCLUDED.shipping_street_number,
+    shipping_neighborhood_name = EXCLUDED.shipping_neighborhood_name,
+    shipping_zip_code = EXCLUDED.shipping_zip_code,
+    shipping_comment = EXCLUDED.shipping_comment,
+    shipping_address_line = EXCLUDED.shipping_address_line,
     shipment_status = EXCLUDED.shipment_status,
     shipment_substatus = EXCLUDED.shipment_substatus,
     shipping_method_name = EXCLUDED.shipping_method_name,
@@ -972,14 +1209,6 @@ COMMIT;
     last_updated = EXCLUDED.last_updated,
     last_synced_at = EXCLUDED.last_synced_at,
     status_interno = EXCLUDED.status_interno;
-  EXCEPTION WHEN OTHERS THEN
-    GET STACKED DIAGNOSTICS v_err_message = MESSAGE_TEXT,
-                            v_err_detail  = PG_EXCEPTION_DETAIL,
-                            v_err_hint    = PG_EXCEPTION_HINT,
-                            v_err_context = PG_EXCEPTION_CONTEXT;
-    RAISE WARNING 'General insert error: msg=%, detail=%, hint=%, ctx=%', v_err_message, v_err_detail, v_err_hint, v_err_context;
-  END;
-  PERFORM set_config('row_security', 'on', true);
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 

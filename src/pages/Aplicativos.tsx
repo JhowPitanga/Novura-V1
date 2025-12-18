@@ -25,7 +25,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { startMercadoLivreAuth, listenForMeliOAuthSuccess } from '@/WebhooksAPI/marketplace/mercado-livre';
-import { startShopeeAuth, listenForShopeeOAuthSuccess } from '@/WebhooksAPI/marketplace/shopee';
+import { startShopeeAuth, startShopeeAuthSandbox, listenForShopeeOAuthSuccess } from '@/WebhooksAPI/marketplace/shopee';
 
 interface App {
   id: string;
@@ -296,8 +296,9 @@ export default function Aplicativos() {
       }
 
       const appNameLower = selectedApp.name.toLowerCase();
+      const appNameCanon = appNameLower.replace(/[_\s-]+/g, '');
 
-      if (appNameLower === 'shopee') {
+      if (appNameCanon === 'shopee') {
         const { authorization_url } = await startShopeeAuth(supabase, {
           organizationId,
           storeName: trimmedStoreName,
@@ -305,6 +306,7 @@ export default function Aplicativos() {
           redirectUri: SHOPEE_REDIRECT_URI || undefined,
         });
 
+        try { localStorage.setItem('shopee_auth_env', 'prod'); } catch (_) {}
         const popup = window.open(authorization_url, 'shopee_auth', 'width=960,height=800,menubar=no,toolbar=no');
         if (!popup) {
           toast({ title: 'Janela bloqueada', description: 'Permita pop-ups no navegador para continuar.' });
@@ -331,6 +333,44 @@ export default function Aplicativos() {
           } finally {
             unsubscribe();
           popup.close?.();
+          }
+        });
+      } else if (appNameCanon.includes('shopee') && (appNameCanon.includes('sandbox') || appNameCanon.includes('sanbox'))) {
+        const { authorization_url } = await startShopeeAuthSandbox(supabase, {
+          organizationId,
+          storeName: trimmedStoreName,
+          connectedByUserId: user?.id || null,
+          redirectUri: SHOPEE_REDIRECT_URI || undefined,
+        });
+
+        try { localStorage.setItem('shopee_auth_env', 'sandbox'); } catch (_) {}
+        const popup = window.open(authorization_url, 'shopee_auth', 'width=960,height=800,menubar=no,toolbar=no');
+        if (!popup) {
+          toast({ title: 'Janela bloqueada', description: 'Permita pop-ups no navegador para continuar.' });
+          return;
+        }
+
+        const unsubscribe = listenForShopeeOAuthSuccess((_payload) => {
+          try {
+            setIsDialogOpen(false);
+            setStoreName('');
+            setAppConnections(prev => ({
+              ...prev,
+              [selectedApp.id]: {
+                appId: selectedApp.id,
+                storeName: trimmedStoreName,
+                status: 'active',
+                authenticatedAt: new Date().toISOString(),
+                expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+              },
+            }));
+            setApps(prev => prev.map(a => a.id === selectedApp.id ? { ...a, isConnected: true } : a));
+            toast({ title: 'Conexão concluída', description: `${selectedApp.name} foi conectado com sucesso.` });
+            navigate('/aplicativos/conectados');
+          } finally {
+            unsubscribe();
+            try { localStorage.removeItem('shopee_auth_env'); } catch (_) {}
+            popup.close?.();
           }
         });
       } else {
