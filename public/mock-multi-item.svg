@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="140" viewBox="0 0 600 140">
+  <rect x="10" y="10" width="580" height="120" rx="12" fill="#F4F5F7" stroke="#D1D5DB"/>
+  <g transform="translate(24,24)">
+    <rect width="92" height="92" rx="8" fill="#C7D2FE"/>
+    <text x="10" y="20" font-size="12" fill="#1F2937">Produto A</text>
+  </g>
+  <g transform="translate(140,24)">
+    <rect width="92" height="92" rx="8" fill="#FECACA"/>
+    <text x="10" y="20" font-size="12" fill="#1F2937">Produto B</text>
+  </g>
+  <g transform="translate(256,24)">
+    <rect width="92" height="92" rx="8" fill="#D1FAE5"/>
+    <text x="10" y="20" font-size="12" fill="#1F2937">Produto C</text>
+  </g>
+  <text x="370" y="40" font-size="14" fill="#4B5563">Pedido com múltiplos itens</text>
+  <text x="370" y="64" font-size="12" fill="#6B7280">Mostra itens empilhados no mesmo card</text>
+</svg>

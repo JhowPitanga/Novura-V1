@@ -1,0 +1,3 @@
+[functions.shopee-update-stock]
+verify_jwt = false
+

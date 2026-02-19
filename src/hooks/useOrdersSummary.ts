@@ -33,9 +33,9 @@ export function useOrdersSummary(range?: DateRange, marketplace?: string) {
         const fromISO = new Date(calendarStartOfDaySPEpochMs(from)).toISOString();
         const toISO = new Date(calendarEndOfDaySPEpochMs(to)).toISOString();
 
-        // Consultar resumo a partir da view apresentada
+        // Consultar resumo a partir da view apresentada (new)
         let query = supabase
-          .from("marketplace_orders_presented")
+          .from("marketplace_orders_presented_new")
           .select("marketplace, order_total, created_at")
           .gte("created_at", fromISO)
           .lte("created_at", toISO);

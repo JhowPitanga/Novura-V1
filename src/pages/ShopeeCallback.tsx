@@ -25,7 +25,14 @@ export default function ShopeeCallback() {
       try {
         let envFlag: string | null = null;
         try { envFlag = localStorage.getItem('shopee_auth_env'); } catch (_) {}
-        const cbFunc = envFlag === 'sandbox' ? 'shopee-callback-sandbox' : 'shopee-callback';
+        let cbFunc = envFlag === 'sandbox' ? 'shopee-callback-sandbox' : 'shopee-callback';
+        if (state) {
+          try {
+            const parsed = JSON.parse(atob(state)) as { env?: string | null };
+            if (parsed?.env === 'sandbox') cbFunc = 'shopee-callback-sandbox';
+            if (parsed?.env === 'prod') cbFunc = 'shopee-callback';
+          } catch (_) {}
+        }
         if (code) {
           const { data: sessionRes } = await supabase.auth.getSession();
           const token: string | undefined = sessionRes?.session?.access_token;

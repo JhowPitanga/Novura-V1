@@ -2,14 +2,14 @@ import { useState, useEffect, useCallback } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { supabase } from '@/integrations/supabase/client';
+import { supabase, SUPABASE_PUBLISHABLE_KEY } from '@/integrations/supabase/client';
 import { useToast } from "@/hooks/use-toast";
 import { Paginacao } from "./Paginacao";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useSearchParams } from "react-router-dom";
-import { EmissaoNFDrawer } from './EmissaoNFDrawer';
-import { Settings } from "lucide-react";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import { Settings, Loader2 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Card, CardContent } from "@/components/ui/card";
 
 interface OrderItem {
   product_name: string;
@@ -40,14 +40,15 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
   const [loading, setLoading] = useState(true);
   const [searchParams] = useSearchParams();
   const { toast } = useToast();
+  const [drawerMode] = useState<'emit' | 'preview' | 'edit'>('emit');
+  const navigate = useNavigate();
   
   const page = parseInt(searchParams.get('page') || '1');
   const limit = 10;
   const offset = (page - 1) * limit;
   
-  const [isEmissaoDrawerOpen, setIsEmissaoDrawerOpen] = useState(false);
-  const [pedidoIdParaEmissao, setPedidoIdParaEmissao] = useState<string | null>(null);
-  const [restartNonce, setRestartNonce] = useState(0);
+  const [processingById, setProcessingById] = useState<Record<string, boolean>>({});
+  const [nfeStatusById, setNfeStatusById] = useState<Record<string, string>>({});
   const [emitEnvironment, setEmitEnvironment] = useState<'homologacao' | 'producao'>(() => {
     try {
       const v = localStorage.getItem('nfe_environment');
@@ -60,6 +61,45 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
   const fetchPedidos = useCallback(async () => {
     setLoading(true);
     try {
+      const useMock = (searchParams.get('mock') === '1');
+      if (useMock) {
+        const mocks: OrderData[] = [
+          {
+            id: 'MOCK-1001',
+            marketplace_order_id: 'MLB123456',
+            customer_name: 'Cliente Exemplo',
+            order_total: 249.9,
+            status: 'Emissao NF',
+            created_at: new Date().toISOString(),
+            order_items: [
+              { product_name: 'Teclado Mecânico', quantity: 1, sku: 'TECL-MECH-01' },
+            ],
+            marketplace: 'Mercado Livre',
+            platform_id: 'ITEM-001',
+            shipping_type: 'envios',
+          },
+          {
+            id: 'MOCK-1002',
+            marketplace_order_id: 'SHP987654',
+            customer_name: 'Outro Cliente',
+            order_total: 99.9,
+            status: 'Falha na emissao',
+            created_at: new Date().toISOString(),
+            order_items: [
+              { product_name: 'Mouse Óptico', quantity: 2, sku: 'MOUSE-OPT-02' },
+            ],
+            marketplace: 'Shopee',
+            platform_id: 'ITEM-002',
+            shipping_type: 'envios',
+          },
+        ];
+        setPedidos(mocks);
+        setNfeStatusById({
+          [mocks[0].id]: mocks[0].status,
+          [mocks[1].id]: mocks[1].status,
+        });
+        return;
+      }
       let orgId: string | null = null;
       {
         const { data: orgRes } = await supabase.rpc('get_current_user_organization_id');
@@ -108,6 +148,11 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
           shipping_type: String(o.shipping_type || '')
         }));
       setPedidos(parsed);
+      const initialStatus: Record<string, string> = {};
+      for (const p of parsed) {
+        initialStatus[p.id] = p.status;
+      }
+      setNfeStatusById(initialStatus);
     } catch (error: any) {
       console.error("Erro ao buscar pedidos para NF-e:", error);
       toast({
@@ -119,32 +164,104 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
     } finally {
       setLoading(false);
     }
-  }, [limit, offset, toast]);
+  }, [limit, offset, toast, searchParams]);
 
   useEffect(() => {
     fetchPedidos();
   }, [fetchPedidos, onRefreshPedidos]);
 
-  const handleEmitirNfeClick = (pedidoId: string) => {
-    setPedidoIdParaEmissao(pedidoId);
-    setRestartNonce((n) => n + 1);
-    setIsEmissaoDrawerOpen(true);
+  const handleEmitirNfeClick = async (pedidoId: string) => {
+    setProcessingById(prev => ({ ...prev, [pedidoId]: true }));
+    setNfeStatusById(prev => ({ ...prev, [pedidoId]: 'Processando' }));
+    try {
+      const { data: sessionRes } = await (supabase as any).auth.getSession();
+      const token: string | undefined = sessionRes?.session?.access_token;
+      if (!token) throw new Error('Sessão expirada');
+      let orgId: string | null = null;
+      {
+        const { data: orgRes } = await (supabase as any).rpc('get_current_user_organization_id');
+        orgId = (Array.isArray(orgRes) ? orgRes?.[0] : orgRes) || null;
+      }
+      if (!orgId) throw new Error('Organização não encontrada');
+      let companyId: string | null = null;
+      {
+        const { data: companiesForOrg } = await (supabase as any)
+          .from('companies')
+          .select('id')
+          .eq('organization_id', orgId)
+          .order('is_active', { ascending: false })
+          .order('created_at', { ascending: true })
+          .limit(1);
+        companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+      }
+      if (!companyId) throw new Error('Nenhuma empresa ativa encontrada');
+      const envSel = emitEnvironment;
+      const { error: sendErr } = await (supabase as any).rpc('rpc_queues_emit', {
+        p_message: {
+          organizations_id: orgId,
+          company_id: companyId,
+          environment: envSel,
+          orderIds: [String(pedidoId)],
+        }
+      } as any);
+      if (sendErr) throw sendErr;
+      navigate('/pedidos/emissao_nfe/processando');
+    } catch (e) {
+      setProcessingById(prev => ({ ...prev, [pedidoId]: false }));
+      setNfeStatusById(prev => ({ ...prev, [pedidoId]: 'Falha na emissao' }));
+      console.error('Falha ao enfileirar emissão:', e);
+      toast({ title: 'Falha ao enfileirar emissão', description: (e as any)?.message || String(e), variant: 'destructive' });
+    }
   };
 
-  const handleEmissaoDrawerClose = () => {
-    setIsEmissaoDrawerOpen(false);
-    setPedidoIdParaEmissao(null);
-  };
+  const handleVerNotaClick = (pedidoId: string) => {};
 
-  const handleEmissaoConcluida = (pedidoId: string) => {
-    handleEmissaoDrawerClose();
-    onRefreshPedidos();
-  };
+  const handleEmissaoDrawerClose = () => {};
+
+  const handleEmissaoConcluida = (pedidoId: string) => { try { onRefreshPedidos(); } catch {} };
 
   const totalPedidos = 12; // Valor mockado.
+  const counts = (() => {
+    const statusOf = (p: OrderData) => nfeStatusById[p.id] || p.status || '';
+    const emitCount = pedidos.filter(p => String(statusOf(p)).toLowerCase() === 'emissao nf').length;
+    const failCount = pedidos.filter(p => String(statusOf(p)).toLowerCase() === 'falha na emissao').length;
+    const subirXmlCount = pedidos.filter(p => String(statusOf(p)).toLowerCase() === 'subir xml').length;
+    return { emitCount, failCount, subirXmlCount };
+  })();
+  const handleCreateHomologationMocks = async () => {
+    try { localStorage.setItem('nfe_environment', 'homologacao'); } catch {}
+    try {
+      const { error } = await (supabase as any).rpc('rpc_create_mock_orders_emissao_nf');
+      if (error) throw error;
+      toast({ title: 'Pedido de teste criado', description: '1 pedido adicionado para homologação.' });
+      await fetchPedidos();
+    } catch (e: any) {
+      toast({
+        title: 'Erro',
+        description: `Falha ao criar pedidos de teste: ${e?.message || 'Erro desconhecido'}`,
+        variant: 'destructive'
+      });
+    }
+  };
 
   return (
     <div className="space-y-4">
+      <Card>
+        <CardContent className="p-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">Emissão de NFe</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary">Emitir ({counts.emitCount})</Badge>
+            <Badge className="bg-blue-500 text-white">Processando ({Object.values(processingById).filter(Boolean).length})</Badge>
+            <Badge className="bg-red-500 text-white">Falha ({counts.failCount})</Badge>
+            <Badge variant="outline">Subir XML ({counts.subirXmlCount})</Badge>
+            <Button variant="outline" onClick={handleCreateHomologationMocks}>
+              Criar pedidos de teste (Homologação)
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
       <div className="flex justify-end space-x-2">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -197,6 +314,7 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
               <TableHead>Valor do Pedido</TableHead>
               <TableHead>Marketplace</TableHead>
               <TableHead>ID Plataforma</TableHead>
+              <TableHead>NF-e</TableHead>
               <TableHead>Ações</TableHead>
             </TableRow>
           </TableHeader>
@@ -222,6 +340,26 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
                 </TableCell>
                 <TableCell>{pedido.platform_id}</TableCell>
                 <TableCell>
+                  {(() => {
+                    const st = (nfeStatusById[pedido.id] || pedido.status || '').toLowerCase();
+                    if (st === 'processando') {
+                      return (
+                        <Badge className="bg-white text-purple-700 border border-purple-300 h-6 px-2 inline-flex items-center gap-2 rounded-md">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          Processando
+                        </Badge>
+                      );
+                    }
+                    if (st === 'falha na emissao') {
+                      return <Badge className="bg-red-600 text-white h-6 px-2 inline-flex items-center rounded-md">Falha na emissão</Badge>;
+                    }
+                    if (st === 'subir xml') {
+                      return <Badge className="bg-blue-500 text-white h-6 px-2 inline-flex items-center rounded-md">Subir XML</Badge>;
+                    }
+                    return <Badge variant="outline" className="h-6 px-2 inline-flex items-center rounded-md">Emissão NF</Badge>;
+                  })()}
+                </TableCell>
+                <TableCell>
                   <div className="flex space-x-2">
                     <Button
                       variant="outline"
@@ -230,9 +368,16 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
                     >
                       Detalhes
                     </Button>
-                    <Button size="sm" onClick={() => handleEmitirNfeClick(pedido.id)}>
-                      Emitir NF
-                    </Button>
+                    {processingById[pedido.id] ? (
+                      <Button variant="outline" size="sm" disabled className="inline-flex items-center gap-2">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Processando
+                      </Button>
+                    ) : (
+                      <Button size="sm" onClick={() => handleEmitirNfeClick(pedido.id)}>
+                        Emitir
+                      </Button>
+                    )}
                   </div>
                 </TableCell>
               </TableRow>
@@ -244,15 +389,6 @@ export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEm
         totalItems={totalPedidos}
         limit={limit}
         currentPage={page}
-      />
-
-      <EmissaoNFDrawer
-        open={isEmissaoDrawerOpen}
-        onOpenChange={setIsEmissaoDrawerOpen}
-        pedidoId={pedidoIdParaEmissao}
-        onEmissaoConcluida={handleEmissaoConcluida}
-        restartNonce={restartNonce}
-        environment={emitEnvironment}
       />
     </div>
   );

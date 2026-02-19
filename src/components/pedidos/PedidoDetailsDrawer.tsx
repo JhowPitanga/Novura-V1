@@ -10,9 +10,10 @@ export interface PedidoDetailsDrawerProps {
     pedido: Pedido | null;
     onOpenChange: (open: boolean) => void;
     open: boolean;
+    onArrangeShipment?: (pedido: Pedido) => void;
 }
 
-export function PedidoDetailsDrawer({ pedido, onOpenChange, open }: PedidoDetailsDrawerProps) {
+export function PedidoDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipment }: PedidoDetailsDrawerProps) {
     if (!pedido) return null;
 
     const contentRef = useRef<HTMLDivElement | null>(null);
@@ -109,6 +110,14 @@ export function PedidoDetailsDrawer({ pedido, onOpenChange, open }: PedidoDetail
                         <PedidoDetails pedido={pedido} />
                     </div>
                     <DrawerFooter>
+                        {String(pedido.marketplace || '').toLowerCase().includes('shopee') && (
+                            <Button
+                                onClick={() => { if (onArrangeShipment) onArrangeShipment(pedido); }}
+                                className="bg-novura-primary"
+                            >
+                                Organizar Envio (Shopee)
+                            </Button>
+                        )}
                         <DrawerClose asChild>
                             <Button variant="outline">
                                 Fechar

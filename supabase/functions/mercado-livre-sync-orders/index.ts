@@ -44,9 +44,10 @@ serve(async (req) => {
   if (req.method !== "POST" && req.method !== "GET") return jsonResponse({ error: "Method not allowed" }, 405);
 
   // Enhanced logging for debugging
-  console.log(`[SYNC-ORDERS] Received ${req.method} for ${req.url}`);
+  const correlationId = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
+  console.log(`[SYNC-ORDERS] Received ${req.method} for ${req.url} (cid=${correlationId})`);
   const headersObject = Object.fromEntries(req.headers.entries());
-  console.log(`[SYNC-ORDERS] Headers: ${JSON.stringify(headersObject, null, 2)}`);
+  console.log(`[SYNC-ORDERS] Headers: ${JSON.stringify(headersObject, null, 2)} (cid=${correlationId})`);
 
   try {
     let body: any = {};
@@ -240,6 +241,15 @@ serve(async (req) => {
     if (forceUpdate) {
       for (const id of forcedOrderIds) orders.push({ id });
     } else {
+      const nowIsoBound = new Date().toISOString();
+      const thirtyDaysAgoIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const effectiveFromIso = (() => {
+        if (!safeFromIso) return thirtyDaysAgoIso;
+        const a = Date.parse(safeFromIso);
+        const b = Date.parse(thirtyDaysAgoIso);
+        if (Number.isNaN(a)) return thirtyDaysAgoIso;
+        return new Date(Math.max(a, b)).toISOString();
+      })();
       let offset = 0;
       const limit = 50;
       for (let page = 0; page < 200; page++) {
@@ -251,7 +261,8 @@ serve(async (req) => {
         // Optionally filter by date/status with extra params if passed
         if (body?.status) listUrl.searchParams.set("order.status", String(body.status));
         // Try to filter by last updated when available in API; safe to ignore if not supported
-        if (safeFromIso) listUrl.searchParams.set("order.last_updated.from", safeFromIso);
+        listUrl.searchParams.set("order.last_updated.from", effectiveFromIso);
+        listUrl.searchParams.set("order.last_updated.to", nowIsoBound);
 
         let resp = await fetch(listUrl.toString(), { headers });
         let json: any = null; try { json = await resp.json(); } catch { json = {}; }
@@ -306,13 +317,12 @@ serve(async (req) => {
         offset += batch.length;
         // Early stop: if batch is empty or we already went past our window
         if (batch.length === 0) break;
-        if (safeFromIso) {
-          // If the last item in this batch is older than our safeFrom, we can stop
+        {
           const last = batch[batch.length - 1];
           const lastUpdatedStr = String(last?.last_updated || last?.date_last_updated || last?.date_created || "");
           if (lastUpdatedStr) {
             const lastUpdatedTs = Date.parse(lastUpdatedStr);
-            const safeFromTs = Date.parse(safeFromIso);
+            const safeFromTs = Date.parse(effectiveFromIso);
             if (!Number.isNaN(lastUpdatedTs) && lastUpdatedTs < safeFromTs) {
               break;
             }
@@ -766,6 +776,23 @@ serve(async (req) => {
           }
           // Determina se é criação ou atualização no raw
           const isNewRaw = !existingMap.has(marketplaceOrderId);
+          const dataClean = (() => {
+            const d = JSON.parse(JSON.stringify(orderData));
+            let pid: string | null = null;
+            const candidates: any[] = [
+              d?.pack_id,
+              d?.packId,
+              d?.shipping?.pack_id,
+              d?.shipping?.packId
+            ];
+            for (const c of candidates) {
+              if (typeof c === "number" && Number.isFinite(c)) { pid = String(c); break; }
+              if (typeof c === "string" && /^\d+$/.test(c)) { pid = c; break; }
+            }
+            if (!pid && orderData?.id != null) pid = String(orderData.id);
+            if (pid) (d as any).pack_id = pid;
+            return d;
+          })();
           const upsertData = {
             organizations_id: organizationId,
             company_id: finalCompanyId,
@@ -782,7 +809,7 @@ serve(async (req) => {
             labels: labelsObj,
             feedback: orderData.feedback || null,
             tags: Array.isArray(orderData.tags) ? orderData.tags : [],
-            data: orderData,
+            data: dataClean,
             date_created: orderData.date_created || null,
             date_closed: orderData.date_closed || null,
             last_updated: orderData.last_updated || null,
@@ -796,6 +823,30 @@ serve(async (req) => {
             console.warn("[SYNC-ORDERS] upsert error", { marketplace_order_id: marketplaceOrderId, message: upErr.message });
           } else {
             if (isNewRaw) created++; else updated++;
+            try {
+              const { data: row } = await admin
+                .from("marketplace_orders_raw")
+                .select("id")
+                .eq("organizations_id", organizationId as string)
+                .eq("marketplace_name", "Mercado Livre")
+                .eq("marketplace_order_id", String(orderData.id))
+                .limit(1)
+                .single();
+              const rawId = row?.id || null;
+              if (rawId) {
+                await (admin as any).functions.invoke("mercado-livre-process-presented", {
+                  body: { raw_id: rawId },
+                  headers: { "x-request-id": correlationId, "x-correlation-id": correlationId, "x-origin": "mercado-livre-sync-orders", "x-internal-call": "true" },
+                });
+              } else {
+                await (admin as any).functions.invoke("mercado-livre-process-presented", {
+                  body: { order_id: String(orderData.id) },
+                  headers: { "x-request-id": correlationId, "x-correlation-id": correlationId, "x-origin": "mercado-livre-sync-orders", "x-internal-call": "true" },
+                });
+              }
+            } catch (_) {
+              console.warn(`[SYNC-ORDERS] process-presented invocation failed (cid=${correlationId})`, { marketplace_order_id: marketplaceOrderId });
+            }
           }
         }
       } catch (_) { /* ignore */ }

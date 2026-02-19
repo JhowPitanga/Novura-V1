@@ -3,12 +3,11 @@ import { Button } from "@/components/ui/button";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Bell, Users, BookOpen, MessageSquare, Hash, Image as ImageIcon, Paperclip, ArrowRight, Settings, LogOut, ChevronDown } from "lucide-react";
+import { Bell, BookOpen, MessageSquare, Hash, Image as ImageIcon, Paperclip, ArrowRight, Settings, LogOut, ChevronDown } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Link, useNavigate } from "react-router-dom";
-import { ChatTab } from "@/components/equipe/ChatTab";
-import { useChatChannels } from "@/hooks/useChat";
+
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { useAuth } from "@/hooks/useAuth";
@@ -16,10 +15,7 @@ import { supabase } from "@/integrations/supabase/client";
 
 export function GlobalHeader() {
   const [notifOpen, setNotifOpen] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
   const [notifTab, setNotifTab] = useState("novidades");
-  const { channels = [], directChannels = [], teamChannels = [] } = useChatChannels(chatOpen);
-  const [quickChannelId, setQuickChannelId] = useState<string | null>(null);
   const { user } = useAuth();
   const navigate = useNavigate();
   const displayName = String((user as any)?.user_metadata?.full_name || (user as any)?.user_metadata?.name || (user as any)?.email?.split("@")[0] || "Usuário");
@@ -31,25 +27,7 @@ export function GlobalHeader() {
     navigate("/auth");
   };
 
-  useEffect(() => {
-    if (!chatOpen) return;
-    if (!quickChannelId) {
-      const first = (directChannels[0]?.id) || (teamChannels[0]?.id) || (channels[0]?.id) || null;
-      if (first) setQuickChannelId(first);
-    }
-  }, [chatOpen, channels, directChannels, teamChannels, quickChannelId]);
 
-  // Abrir drawer rápido ao receber evento do AppSidebar
-  useEffect(() => {
-    const handler = (e: any) => {
-      const chId = e?.detail?.channelId as string | undefined;
-      const fallback = (directChannels[0]?.id) || (teamChannels[0]?.id) || (channels[0]?.id) || null;
-      setQuickChannelId(chId || fallback);
-      setChatOpen(true);
-    };
-    window.addEventListener('chat:open-quick-drawer', handler);
-    return () => window.removeEventListener('chat:open-quick-drawer', handler);
-  }, [channels, directChannels, teamChannels]);
 
   return (
     <>
@@ -76,11 +54,6 @@ export function GlobalHeader() {
             <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full"></span>
           </Button>
 
-          {/* Equipe / Chat Rápido */}
-          <Button variant="ghost" size="sm" className="text-gray-700" onClick={() => setChatOpen(true)} aria-label="Abrir chat rápido">
-            <Users className="w-5 h-5 mr-1" />
-            <span className="hidden sm:inline">Equipe</span>
-          </Button>
 
           {/* Livro - Academy / Suporte */}
           <DropdownMenu>
@@ -198,64 +171,7 @@ export function GlobalHeader() {
         </DrawerContent>
       </Drawer>
 
-      {/* Drawer: Chat Rápido da Equipe */}
-      <Drawer open={chatOpen} onOpenChange={setChatOpen} direction="right">
-        <DrawerContent className="h-full w-[480px] fixed right-0">
-          <DrawerHeader className="border-b">
-            <DrawerTitle className="flex items-center gap-2">
-              <MessageSquare className="w-5 h-5" />
-              Chat Rápido da Equipe
-            </DrawerTitle>
-          </DrawerHeader>
-          <div className="h-full flex flex-col">
-            {/* Topbar: Busca e CTA */}
-            <div className="p-4 border-b flex items-center gap-3">
-              <div className="flex-1">
-                <Input placeholder="Pesquisar contatos" className="rounded-xl" />
-              </div>
-              <Button asChild className="bg-gradient-to-r from-novura-primary to-purple-600 text-white rounded-xl">
-                <Link to="/equipe" className="flex items-center">
-                  Ir para Equipe
-                  <ArrowRight className="w-4 h-4 ml-2" />
-                </Link>
-              </Button>
-            </div>
 
-            {/* Lista rápida de canais */}
-            <div className="px-4 py-3 border-b bg-gradient-to-r from-gray-50 to-purple-50/30">
-              <div className="flex items-center gap-2 text-sm text-gray-700">
-                <Hash className="w-4 h-4" />
-                <span className="mr-2">Canais:</span>
-                <div className="flex flex-wrap gap-2">
-                  {[...directChannels, ...teamChannels].slice(0, 6).map((ch) => (
-                    <button
-                      key={ch.id}
-                      className={`px-2 py-1 rounded-lg text-xs ${quickChannelId === ch.id ? 'bg-purple-600 text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-100'}`}
-                      onClick={() => setQuickChannelId(ch.id)}
-                    >
-                      {(ch.type === 'team' ? '#' : '@')}{ch.name || 'Direta'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Chat Component real */}
-            <div className="flex-1 overflow-y-auto">
-              {quickChannelId ? (
-                <ChatTab channelId={quickChannelId} />
-              ) : (
-                <div className="p-6 text-sm text-gray-600">Selecione um canal acima para conversar rapidamente.</div>
-              )}
-            </div>
-
-            {/* Dicas de comandos */}
-            <div className="p-3 border-t bg-white text-xs text-gray-500">
-              Dicas: use <Badge variant="outline" className="text-[10px]">#</Badge> para módulos e <Badge variant="outline" className="text-[10px]">@</Badge> para pessoas.
-            </div>
-          </div>
-        </DrawerContent>
-      </Drawer>
     </header>
     {/* Spacer para empurrar conteúdo abaixo do header fixo */}
     <div className="h-[65px]" />

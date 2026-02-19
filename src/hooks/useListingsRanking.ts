@@ -1,6 +1,6 @@
 import type { DateRange } from "react-day-picker";
 import { supabase } from "@/integrations/supabase/client";
-import { calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs, eventToSPEpochMs } from "@/lib/datetime";
+import { calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs } from "@/lib/datetime";
 
 export type ListingRankingItem = {
   marketplace_item_id: string;
@@ -9,7 +9,7 @@ export type ListingRankingItem = {
   pedidos: number;
   unidades: number;
   valor: number;
-  margem: number; // percentual 0..1
+  margem: number;
 };
 
 function computePaymentDateISO(mq: any): string | null {
@@ -62,10 +62,12 @@ export async function getListingsRanking(
   const to = dateRange?.to || dateRange?.from;
   const fromMs = from ? calendarStartOfDaySPEpochMs(from) : undefined;
   const toMs = to ? calendarEndOfDaySPEpochMs(to) : undefined;
+  const fromISO = fromMs !== undefined ? new Date(fromMs).toISOString() : undefined;
+  const toISO = toMs !== undefined ? new Date(toMs).toISOString() : undefined;
 
-  // Fetch orders (aggregated fields only; item details will come from RAW)
+  // Fetch orders within date range from presented_new
   let q: any = supabase
-    .from('marketplace_orders_presented')
+    .from('marketplace_orders_presented_new')
     .select(`
       id,
       marketplace_order_id,
@@ -74,124 +76,58 @@ export async function getListingsRanking(
       items_total_quantity,
       items_total_amount,
       first_item_title,
-      first_item_sku
+      first_item_sku,
+      created_at
     `);
   if (selectedMarketplaceDisplay && selectedMarketplaceDisplay !== 'todos') {
     q = q.eq('marketplace', selectedMarketplaceDisplay);
   }
+  if (organizationId) {
+    q = q.eq('organizations_id', organizationId);
+  }
+  if (fromISO) q = q.gte('created_at', fromISO);
+  if (toISO) q = q.lte('created_at', toISO);
   const { data: orders, error: ordersErr } = await q;
   if (ordersErr) throw ordersErr;
 
   const orderList = Array.isArray(orders) ? orders : [];
-  const marketplaceOrderIds = Array.from(new Set(orderList.map((o: any) => o.marketplace_order_id).filter(Boolean)));
-
-  // Raw marketplace orders for payment date + costs and listing ids
-  let mqq: any = supabase
-    .from('marketplace_orders_raw')
-    .select('marketplace_order_id, payments, shipments, date_created, marketplace_name, data')
-    .in('marketplace_order_id', marketplaceOrderIds);
-  if (organizationId) mqq = mqq.eq('organizations_id', organizationId);
-  const { data: mqRows, error: mqErr } = await mqq;
-  if (mqErr) throw mqErr;
-  const mqById: Record<string, any> = Object.fromEntries((mqRows || []).map((r: any) => [r.marketplace_order_id, r]));
-
-  // Build per-listing aggregates
-  type Agg = { pedidosSet: Set<string>; unidades: number; valor: number; lucro: number; valorBruto: number; marketplace: string; };
-  const byListing: Record<string, Agg> = {};
-
+  const presentedNewIds = Array.from(new Set(orderList.map((o: any) => o.id).filter(Boolean)));
+  const marketplaceByOrderId: Record<string, string> = {};
   for (const o of orderList) {
-    const mq = o?.marketplace_order_id ? mqById[o.marketplace_order_id] : null;
-    const paymentISO = computePaymentDateISO(mq);
-    const evtMs = paymentISO ? eventToSPEpochMs(paymentISO) : null;
-    const inRange = fromMs === undefined || (evtMs !== null && toMs !== undefined
-      ? (evtMs >= fromMs && evtMs <= toMs)
-      : (evtMs !== null && evtMs >= fromMs));
-    if (!inRange) continue;
+    const id = String(o.id || '');
+    if (id) marketplaceByOrderId[id] = o.marketplace || 'Outros';
+  }
 
-    const mkDisplay = (o?.marketplace || mq?.marketplace_name || 'Outros') as string;
+  if (presentedNewIds.length === 0) {
+    return [];
+  }
 
-    // Get listing ids for each item from raw data
-    const rawItems = Array.isArray(mq?.data?.order_items) ? mq.data.order_items : [];
-    const itemsBySku: Record<string, any> = {};
-    for (const it of rawItems) {
-      const sku = String(it?.item?.seller_sku || it?.item?.variation_attributes?.find?.((a: any) => a?.id === 'SELLER_SKU')?.value_name || it?.item?.id || '').trim();
-      if (sku) itemsBySku[sku] = it;
-    }
-    // Derive items from RAW; fallback to aggregated single item from view
-    let items: any[] = [];
-    if (rawItems.length > 0) {
-      items = rawItems.map((rit: any) => ({
-        sku: String(rit?.item?.seller_sku || rit?.seller_sku || '').trim(),
-        quantity: Number(rit?.quantity || 0),
-        price_per_unit: Number(rit?.unit_price || rit?.full_unit_price || rit?.price || 0),
-      }));
-    } else {
-      const qtyAgg = Number(o?.items_total_quantity || 0) || 1;
-      const amtAgg = Number(o?.items_total_amount || 0) || 0;
-      const unitPriceAgg = qtyAgg > 0 ? amtAgg / qtyAgg : amtAgg;
-      items = [{
-        sku: o?.first_item_sku || '',
-        quantity: qtyAgg,
-        price_per_unit: unitPriceAgg,
-      }];
-    }
-    if (items.length === 0) continue;
-
-    // Financials per order (same basis as drawer):
-    const valorBrutoItens = Number(o?.order_total || 0) || 0; // fallback; precise split below by item
-    const freteRecebido = calcFreteRecebido(mq);
-    const taxaMarketplace = calcTaxaMarketplace(mq);
-    const freteCusto = calcFreteCusto(mq);
-    const valorLiquidoReceber = sumPaymentsNet(mq?.payments);
-
-    // Lucro do pedido ~ líquido + frete recebido - taxa - frete custo
-    const lucroPedido = valorLiquidoReceber + freteRecebido - taxaMarketplace - freteCusto;
-
-    // Ratear por item pelo valor de linha (ou proporção de quantidade)
-    let somaLinhas = 0;
-    const lineValues: number[] = [];
-    for (const it of items) {
-      const q = Number(it?.quantity || 0);
-      const p = Number(it?.price_per_unit || 0);
-      const line = q * p;
-      lineValues.push(line);
-      somaLinhas += line;
-    }
-    const ratioOr = (i: number) => (somaLinhas > 0 ? (lineValues[i] / somaLinhas) : (items.length > 0 ? 1 / items.length : 0));
-
-    items.forEach((it: any, idx: number) => {
-      const sku = String(it?.sku || '').trim();
-      // Tentar achar marketplace_item_id no raw item correspondente
-      const raw = itemsBySku[sku] || rawItems[idx] || null;
-      const listingId = raw?.item?.id || raw?.item?.variation_parent_id || raw?.item_id || raw?.id;
-      const marketplace_item_id = listingId ? String(listingId) : `sku:${sku || 'desconhecido'}`;
-
-      const q = Number(it?.quantity || 0);
-      const p = Number(it?.price_per_unit || 0);
-      const valorLinha = q * p;
-
-      const part = ratioOr(idx);
-      const lucroLinha = lucroPedido * part;
-
-      if (!byListing[marketplace_item_id]) {
-        byListing[marketplace_item_id] = {
-          pedidosSet: new Set<string>(),
-          unidades: 0,
-          valor: 0,
-          lucro: 0,
-          valorBruto: 0,
-          marketplace: mkDisplay,
-        };
+  // Fetch items for these orders and aggregate by model_id_externo
+  const byListing: Record<string, { pedidosSet: Set<string>; unidades: number; valor: number; marketplace: string }> = {};
+  const chunkSize = 200;
+  for (let i = 0; i < presentedNewIds.length; i += chunkSize) {
+    const chunk = presentedNewIds.slice(i, i + chunkSize);
+    const iq: any = supabase
+      .from('marketplace_order_items')
+      .select('id, model_id_externo, quantity, unit_price')
+      .in('id', chunk);
+    const { data: itemRows, error: itemErr } = await iq;
+    if (itemErr) throw itemErr;
+    for (const it of (itemRows || [])) {
+      const orderId = String(it?.id || '');
+      const listingId = String(it?.model_id_externo || '').trim();
+      if (!listingId || !orderId) continue;
+      const qn = Number(it?.quantity || 0) || 0;
+      const up = Number(it?.unit_price || 0) || 0;
+      if (!byListing[listingId]) {
+        byListing[listingId] = { pedidosSet: new Set<string>(), unidades: 0, valor: 0, marketplace: marketplaceByOrderId[orderId] || 'Outros' };
       }
-      const agg = byListing[marketplace_item_id];
-      if (o?.id) agg.pedidosSet.add(String(o.id));
-      agg.unidades += q;
-      agg.valor += valorLinha;
-      agg.valorBruto += valorLinha;
-      agg.lucro += lucroLinha;
-      // Keep marketplace last seen
-      agg.marketplace = mkDisplay;
-    });
+      const agg = byListing[listingId];
+      agg.pedidosSet.add(orderId);
+      agg.unidades += qn;
+      agg.valor += qn * up;
+      if (!agg.marketplace) agg.marketplace = marketplaceByOrderId[orderId] || 'Outros';
+    }
   }
 
   const listingIds = Object.keys(byListing);
@@ -215,7 +151,7 @@ export async function getListingsRanking(
     const pedidos = agg.pedidosSet.size;
     const title = itemTitleById[id]?.title || `Anúncio ${id}`;
     const mk = itemTitleById[id]?.marketplace_name || agg.marketplace || 'Outros';
-    const margem = agg.valorBruto > 0 ? (agg.lucro / agg.valorBruto) : 0;
+    const margem = 0;
     return {
       marketplace_item_id: id,
       marketplace: mk,

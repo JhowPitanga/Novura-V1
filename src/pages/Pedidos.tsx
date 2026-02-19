@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect, useLayoutEffect, startTransition, useCallback } from "react";
-import { Search, Filter, Settings, FileText, Printer, Bot, TrendingUp, Zap, QrCode, Check, Calendar, Download, X, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Package, Truck, MinusCircle, CheckCircle2, Box, Scan, FileBadge, StickyNote, AudioWaveform, TextSelect, ListChecks, Table } from "lucide-react";
+import { useState, useRef, useEffect, useLayoutEffect, startTransition, useCallback, useMemo } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Search, Filter, Settings, FileText, Printer, Bot, TrendingUp, Zap, QrCode, Check, Calendar, Download, X, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Package, Truck, MinusCircle, CheckCircle2, Box, Scan, FileBadge, StickyNote, TextSelect, ListChecks, Table, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -43,7 +44,6 @@ import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { DateRange } from "react-day-picker";
 import LoadingOverlay from "@/components/LoadingOverlay";
 import { PedidoDetailsDrawer } from "@/components/pedidos/PedidoDetailsDrawer";
-import { EmissaoNFDrawer } from "@/components/pedidos/EmissaoNFDrawer";
 import { supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "@/components/ui/use-toast";
@@ -83,6 +83,19 @@ function ensureHttpUrl(url?: string | null): string | null {
     return `https://${s}`;
 }
 
+function normalizeMarketplaceId(v?: string | null): string {
+    const s = String(v || "")
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase().trim();
+    if (!s) return "";
+    return s.replace(/[_\s]+/g, "-");
+}
+
+function formatMarketplaceLabel(id: string): string {
+    const s = String(id || "").toLowerCase().trim();
+    if (!s) return "Marketplace";
+    return s.split("-").map(w => w ? w[0].toUpperCase() + w.slice(1) : "").join(" ");
+}
 
 
 // --- Mockup de PDF de Lista de Separação (Novo Componente) ---
@@ -373,7 +386,7 @@ function Pedidos() {
     const [isPickingListModalOpen, setIsPickingListModalOpen] = useState(false);
     const [searchTerm, setSearchTerm] = useState("");
     const [pedidos, setPedidos] = useState<any[]>([]);
-    const [isEmitting, setIsEmitting] = useState(false);
+    
     const [isSyncing, setIsSyncing] = useState(false);
     const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
     const [syncMarketplace, setSyncMarketplace] = useState<'mercado_livre' | 'shopee'>('mercado_livre');
@@ -382,18 +395,44 @@ function Pedidos() {
     const [shopeeOrderSnInput, setShopeeOrderSnInput] = useState<string>("");
     const [shopeeDateFrom, setShopeeDateFrom] = useState<string>("");
     const [shopeeDateTo, setShopeeDateTo] = useState<string>("");
-    const [emissionProgress, setEmissionProgress] = useState(0);
-    const [emittedCount, setEmittedCount] = useState(0);
-    const [failedCount, setFailedCount] = useState(0);
-    const [isEmissaoDrawerOpen, setIsEmissaoDrawerOpen] = useState(false);
-    const [pedidoIdParaEmissao, setPedidoIdParaEmissao] = useState<string | null>(null);
-    const [bulkIdsQueue, setBulkIdsQueue] = useState<string[]>([]);
-    const [emissaoRestartNonce, setEmissaoRestartNonce] = useState<number>(0);
-    const [quickFilter, setQuickFilter] = useState("Todos");
+    
+    const [nfBadgeFilter, setNfBadgeFilter] = useState<'emitir' | 'processando' | 'falha' | 'subir_xml'>('emitir');
+    const [vincularBadgeFilter, setVincularBadgeFilter] = useState<'para_vincular' | 'sem_estoque'>('para_vincular');
+
+    const location = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    const path = String(location?.pathname || '');
+    if (path.startsWith('/pedidos/emissao_nfe')) {
+      if (activeStatus !== 'emissao-nf') setActiveStatus('emissao-nf');
+            if (path.endsWith('/emitir')) {
+                if (nfBadgeFilter !== 'emitir') setNfBadgeFilter('emitir');
+            } else if (path.endsWith('/processando')) {
+                if (nfBadgeFilter !== 'processando') setNfBadgeFilter('processando');
+            } else if (path.endsWith('/falha_emissao')) {
+                if (nfBadgeFilter !== 'falha') setNfBadgeFilter('falha');
+            } else if (path.endsWith('/subir_xml')) {
+                if (nfBadgeFilter !== 'subir_xml') setNfBadgeFilter('subir_xml');
+            } else {
+                if (nfBadgeFilter !== 'emitir') setNfBadgeFilter('emitir');
+      }
+    }
+  }, [location.pathname, activeStatus, nfBadgeFilter]);
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    const statusParam = sp.get('status') || '';
+    const allowed = new Set(['todos','a-vincular','emissao-nf','impressao','aguardando-coleta','enviado']);
+    if (allowed.has(statusParam) && activeStatus !== statusParam) {
+      setActiveStatus(statusParam);
+    }
+  }, [location.search, activeStatus]);
+    const [processingIdsLocal, setProcessingIdsLocal] = useState<string[]>([]);
     const [scannerTab, setScannerTab] = useState("nao-impressos");
     const [scannedSku, setScannedSku] = useState("");
     const [nfeAuthorizedByPedidoId, setNfeAuthorizedByPedidoId] = useState<Record<string, boolean>>({});
     const [nfeFocusStatusByPedidoId, setNfeFocusStatusByPedidoId] = useState<Record<string, string>>({});
+    const [nfeXmlPendingByPedidoId, setNfeXmlPendingByPedidoId] = useState<Record<string, boolean>>({});
+    const [nfeErrorMessageByPedidoId, setNfeErrorMessageByPedidoId] = useState<Record<string, string>>({});
     const [scannedPedido, setScannedPedido] = useState<any>(null);
     const [isCompleteModalOpen, setIsCompleteModalOpen] = useState(false);
     const [activePrintTab, setActivePrintTab] = useState("label");
@@ -409,8 +448,8 @@ function Pedidos() {
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
     const [totalPedidosCount, setTotalPedidosCount] = useState<number | null>(null);
     const [statusCountsGlobal, setStatusCountsGlobal] = useState<Record<string, number> | null>(null);
-    const [marketplaceFilter, setMarketplaceFilter] = useState<'all' | 'mercado-livre'>('all');
-    const [shippingTypeFilter, setShippingTypeFilter] = useState<'all' | 'full' | 'flex' | 'envios' | 'correios' | 'no_shipping'>('all');
+    const [marketplaceFilters, setMarketplaceFilters] = useState<Record<string, string>>({ impressao: 'all', enviado: 'all', cancelado: 'all' });
+    const [shippingTypeFilters, setShippingTypeFilters] = useState<Record<string, 'all' | 'full' | 'flex' | 'envios' | 'correios' | 'no_shipping'>>({ impressao: 'all', enviado: 'all' });
     const columnsDrawerRef = useRef<HTMLDivElement | null>(null);
     const listContainerRef = useRef<HTMLDivElement | null>(null);
     const orgIdRef = useRef<string | null>(null);
@@ -444,6 +483,25 @@ function Pedidos() {
             return 'homologacao';
         }
     });
+    const [xmlLoadingIds, setXmlLoadingIds] = useState<string[]>([]);
+    const [arrangeLoadingIds, setArrangeLoadingIds] = useState<string[]>([]);
+    const xmlLoadingSet = useMemo(() => new Set(xmlLoadingIds), [xmlLoadingIds]);
+    const arrangeLoadingSet = useMemo(() => new Set(arrangeLoadingIds), [arrangeLoadingIds]);
+    const companyIdRef = useRef<string | null>(null);
+    useEffect(() => { companyIdRef.current = null; }, [organizationId]);
+    const getCompanyId = useCallback(async (): Promise<string | null> => {
+        if (companyIdRef.current) return companyIdRef.current;
+        if (!organizationId) return null;
+        const { data: companiesForOrg } = await (supabase as any)
+            .from('companies')
+            .select('id')
+            .eq('organization_id', organizationId)
+            .order('is_active', { ascending: false })
+            .order('created_at', { ascending: true })
+            .limit(1);
+        companyIdRef.current = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+        return companyIdRef.current;
+    }, [organizationId]);
 
     useEffect(() => {
         if (isColumnsDrawerOpen) {
@@ -500,7 +558,7 @@ function Pedidos() {
     
 
     // Carregar contagens globais (independente da paginação) aplicando filtros de data e busca
-    const loadGlobalStatusCounts = async () => {
+    const loadGlobalStatusCounts = useCallback(async () => {
         try {
             setStatusCountsGlobal(null);
             setCountsReady(false);
@@ -513,27 +571,26 @@ function Pedidos() {
                 return effectiveFromMs === undefined ? true : (eventMs !== null && eventMs >= effectiveFromMs && (effectiveToMs === undefined || eventMs <= effectiveToMs));
             };
             const matchesSearch = (p: any) => term === "" || p.id?.toLowerCase?.().includes(term) || p.cliente?.toLowerCase?.().includes(term) || (p.sku && p.sku.toLowerCase().includes(term)) || (Array.isArray(p.itens) && p.itens.some((it: any) => (it?.nome && String(it.nome).toLowerCase().includes(term)) || (it?.product_name && String(it.product_name).toLowerCase().includes(term))));
-            const marketplaceOk = (p: any) => marketplaceFilter === 'all' ? true : String(p.marketplace || '').toLowerCase().includes('mercado');
-            const shippingOk = (p: any) => shippingTypeFilter === 'all' ? true : normalizeShippingType(String(p.tipoEnvio ?? '')) === shippingTypeFilter;
-            const base = pedidos.filter(p => inDate(p) && matchesSearch(p) && marketplaceOk(p) && shippingOk(p));
+            const base = pedidos.filter(p => inDate(p) && matchesSearch(p));
             const hasStatus = (p: any, arr: string[]) => arr.includes(String(p.status_interno || ''));
             const cancelado = base.filter(p => hasStatus(p, ['Cancelado', 'Devolução', 'Devolucao'])).length;
             const enviado = base.filter(p => hasStatus(p, ['Enviado'])).length;
-            const aVincular = base.filter(p => hasStatus(p, ['A vincular', 'A Vincular', 'A VINCULAR']) || Boolean(p.has_unlinked_items)).length;
-            const emissao = base.filter(p => hasStatus(p, ['Emissao NF', 'Emissão NF', 'EMISSÃO NF'])).length;
+            const aVincular = base.filter(p => hasStatus(p, ['A vincular', 'A Vincular', 'A VINCULAR'])).length;
+            const emissao = base.filter(p => hasStatus(p, ['Emissao NF', 'Emissão NF', 'EMISSÃO NF', 'Subir xml', 'subir xml'])).length;
             const impressao = base.filter(p => hasStatus(p, ['Impressao', 'Impressão', 'IMPRESSÃO'])).length;
             const aguardando = base.filter(p => hasStatus(p, ['Aguardando Coleta', 'Aguardando coleta', 'AGUARDANDO COLETA'])).length;
+            const semEstoque = base.filter(p => String(p.status_interno || '') === 'Sem estoque').length;
             const todos = base.length;
-            setStatusCountsGlobal({ cancelado, enviado, 'a-vincular': aVincular, 'emissao-nf': emissao, impressao, 'aguardando-coleta': aguardando, todos });
+            setStatusCountsGlobal({ cancelado, enviado, 'a-vincular': aVincular, 'emissao-nf': emissao, impressao, 'aguardando-coleta': aguardando, 'sem-estoque': semEstoque, todos });
             setCountsReady(true);
         } catch (_) {
             setStatusCountsGlobal(null);
             setCountsReady(false);
         }
-    };
+    }, [pedidos, dateRange, searchTerm]);
 
     // Atualizar contagens globais quando filtros mudarem, somente após primeira listagem
-    useEffect(() => {}, [dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
+    useEffect(() => {}, [dateRange, searchTerm]);
 
     useEffect(() => {}, [activeStatus]);
 
@@ -616,7 +673,7 @@ function Pedidos() {
                     payment_status: o?.payment_status || null,
                     payment_date_approved: o?.payment_date_approved || null,
                     tipoEnvio: normalizeShippingType(o?.shipping_type),
-                    idPlataforma: (o as any)?.pack_id || o.pack_id || "",
+                    idPlataforma: (o as any)?.pack_id || o.pack_id || o.marketplace_order_id || "",
                         shippingCity: o?.shipping_city_name || null,
                         shippingState: o?.shipping_state_name || null,
                         shippingUF: o?.shipping_state_uf || null,
@@ -663,23 +720,13 @@ function Pedidos() {
                     const packId = (payload && payload.new && (payload.new as any).pack_id) ?? null;
                     const orderId = (payload && payload.new && (payload.new as any).id) ?? null;
                     if (ensureDebounceRef.current) { clearTimeout(ensureDebounceRef.current); ensureDebounceRef.current = null; }
-                    ensureDebounceRef.current = window.setTimeout(async () => {
-                        try {
-                            if (packId !== null && (typeof packId === 'number' || typeof packId === 'string')) {
-                                await (supabase as any).rpc('ensure_inventory_by_pack_id', { p_pack_id: Number(packId) });
-                            } else if (orderId) {
-                                await (supabase as any).rpc('ensure_inventory_for_order', { p_order_id: orderId });
-                            }
-                        } catch {}
-                        ensureDebounceRef.current = null;
-                    }, 500);
                 })
                 .subscribe();
             return () => {
                 try { (supabase as any).removeChannel(channel); } catch {}
             };
         } catch {}
-    }, [organizationId, marketplaceFilter, shippingTypeFilter, dateRange, searchTerm]);
+    }, [organizationId, loadGlobalStatusCounts]);
 
     useEffect(() => {}, []);
 
@@ -702,21 +749,19 @@ function Pedidos() {
         };
     }, []);
 
-    const loadPedidos = async (opts?: { background?: boolean }) => {
+    const loadPedidos = useCallback(async (opts?: { background?: boolean }) => {
         const background = Boolean(opts?.background);
         if (!background) setIsLoading(true);
         try {
             if (!user && !organizationId) {
                 setPedidos([]);
+                setListReady(true);
                 return;
             }
 
             
 
-            // Consulta inicial otimizada com paginação no servidor
-            const ascending = sortDir === 'asc';
-            const start = Math.max(0, (currentPage - 1) * pageSize);
-            const end = Math.max(start, start + pageSize - 1);
+            // Consulta inicial
 
             // Resolver organização para escopo da consulta
             let orgIdResolved: string | null = organizationId ?? null;
@@ -791,17 +836,30 @@ function Pedidos() {
                         label_zpl2_base64,
                         printed_label,
                         printed_schedule,
-                        linked_products
-                    `, { count: 'exact' })
+                        pack_id,
+                        linked_products,
+                        marketplace_order_items:marketplace_order_items!fk_moi_presented_new_id(
+                            row_id,
+                            model_sku_externo,
+                            model_id_externo,
+                            variation_name,
+                            pack_id,
+                            item_name,
+                            quantity,
+                            unit_price,
+                            image_url
+                        )
+                    `)
                 ;
 
             if (orgIdResolved) {
                 q = (q as any).eq('organizations_id', orgIdResolved);
             }
 
-            // Marketplace (por padrão 'Todos')
-            if (marketplaceFilter === 'mercado-livre') {
-                q = (q as any).ilike('marketplace', '%Mercado%');
+            // Marketplace filtering removido para independência por quadro
+
+            if (activeStatus === 'a-vincular') {
+                q = (q as any).eq('status_interno', 'A vincular');
             }
 
             if (false) {}
@@ -828,24 +886,30 @@ function Pedidos() {
                 const qtyAgg = (typeof o?.items_total_quantity === 'number' ? o.items_total_quantity : Number(o?.items_total_quantity)) || 1;
                 const amtAgg = (typeof o?.items_total_amount === 'number' ? o.items_total_amount : Number(o?.items_total_amount)) || 0;
                 const unitPriceAgg = qtyAgg > 0 ? amtAgg / qtyAgg : amtAgg;
-                const varLabel = Array.isArray(o?.variation_color_names)
-                    ? (o.variation_color_names as any[]).filter(Boolean).join(' • ')
-                    : String(o?.variation_color_names || '');
-                const items = [{
-                    id: `${o.marketplace_order_id || o.id}-ITEM-1`,
-                    nome: o.first_item_title || 'Item',
-                    sku: o.first_item_sku || null,
-                    quantidade: qtyAgg,
-                    valor: unitPriceAgg,
+                const varLabelAgg = '';
+                const itemsFromDb: any[] = Array.isArray((o as any)?.marketplace_order_items) ? (o as any).marketplace_order_items : [];
+                const varLabelFromItems = itemsFromDb
+                    .map((it: any) => String(it?.variation_name || '').trim())
+                    .filter(Boolean)
+                    .filter((v, i, a) => a.indexOf(v) === i)
+                    .join(' • ');
+                const varLabel = varLabelFromItems;
+                const items = itemsFromDb.map((it: any, idx: number) => ({
+                    id: `${o.marketplace_order_id || o.id}-ITEM-${idx + 1}`,
+                    rowId: it?.row_id || null,
+                    nome: it.item_name || 'Item',
+                    sku: it.sku || it.model_sku_externo || null,
+                    quantidade: (typeof it?.quantity === 'number' ? it.quantity : Number(it?.quantity)) || 1,
+                    valor: (typeof it?.unit_price === 'number' ? it.unit_price : Number(it?.unit_price)) || 0,
                     bipado: false,
-                    vinculado: !!o.first_item_sku,
-                    imagem: "/placeholder.svg",
+                    vinculado: Boolean(it?.sku),
+                    imagem: ensureHttpUrl(it?.image_url) || "/placeholder.svg",
                     marketplace: o.marketplace,
-                    marketplaceItemId: o.first_item_id || null,
-                    variationId: (typeof o?.first_item_variation_id === 'number' || typeof o?.first_item_variation_id === 'string') ? o.first_item_variation_id : '',
+                    marketplaceItemId: null,
+                    variationId: it?.model_id_externo || '',
                     permalink: o.first_item_permalink || null,
-                    variationLabel: varLabel,
-                }];
+                    variationLabel: it?.variation_name || varLabel,
+                }));
 
                 const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
                 const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
@@ -909,7 +973,7 @@ function Pedidos() {
                     payment_status: o?.payment_status || null,
                     payment_date_approved: o?.payment_date_approved || null,
                     tipoEnvio: normalizeShippingType(o?.shipping_type),
-                    idPlataforma: (o as any)?.pack_id || o.pack_id || "",
+                    idPlataforma: (o as any)?.pack_id || o.pack_id || o.marketplace_order_id || "",
                     shippingCity: o?.shipping_city_name || null,
                     shippingState: o?.shipping_state_name || null,
                     shippingUF: o?.shipping_state_uf || null,
@@ -953,12 +1017,13 @@ function Pedidos() {
             if (!isAbortLikeError(err)) {
                 console.error("Erro ao buscar pedidos:", err);
                 setPedidos([]);
+                setListReady(true);
             }
         } finally {
             if (!background) setIsLoading(false);
             try { setTimeout(() => { loadGlobalStatusCounts(); }, 0); } catch {}
         }
-    };
+    }, [organizationId, user, loadGlobalStatusCounts]);
 
     
 
@@ -969,55 +1034,121 @@ function Pedidos() {
     const refreshNfeAuthorizedMapForList = useCallback(async () => {
         try {
             if (!organizationId) return;
-            const pedidosAtivos = pedidos.filter(p => p && p.status_interno === 'Emissao NF' && p.marketplace_order_id);
-            if (pedidosAtivos.length === 0) { setNfeAuthorizedByPedidoId({}); setNfeFocusStatusByPedidoId({}); return; }
-            const idsToCheck = pedidosAtivos.map(p => String(p.marketplace_order_id));
-            let companyId: string | null = null;
-            {
-                const { data: companiesForOrg } = await (supabase as any)
-                    .from('companies')
-                    .select('id')
-                    .eq('organization_id', organizationId)
-                    .order('is_active', { ascending: false })
-                    .order('created_at', { ascending: true })
-                    .limit(1);
-                companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
+                    const pedidosAtivos = pedidos.filter(p => {
+                        const si = String(p?.status_interno || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+                        return si === 'emissao nf' || si === 'subir xml' || si === 'falha na emissao';
+                    });
+            if (pedidosAtivos.length === 0) { setNfeAuthorizedByPedidoId({}); setNfeFocusStatusByPedidoId({}); setNfeXmlPendingByPedidoId({}); setNfeErrorMessageByPedidoId({}); return; }
+            const idsToCheck = pedidosAtivos.map(p => String(p.id));
+            const mkIdsToCheck = pedidosAtivos
+                .map(p => String((p as any)?.marketplace_order_id || (p as any)?.idPlataforma || ''))
+                .filter((v) => !!v);
+            const idByOrderId = new Map<string, string>();
+            const idByMarketplaceId = new Map<string, string>();
+            for (const p of pedidosAtivos) {
+                const pid = String(p.id);
+                idByOrderId.set(pid, pid);
+                const mk = String((p as any)?.marketplace_order_id || (p as any)?.idPlataforma || '');
+                if (mk) idByMarketplaceId.set(mk, pid);
             }
+            const companyId = await getCompanyId();
             if (!companyId) return;
-            const { data: nfRows } = await (supabase as any)
+            let qnf: any = (supabase as any)
                 .from('notas_fiscais')
-                .select('marketplace_order_id, status_focus, emissao_ambiente')
-                .eq('company_id', companyId)
-                .in('marketplace_order_id', idsToCheck);
+                .select('order_id, marketplace_order_id, status_focus, emissao_ambiente, marketplace, xml_base64, xml_url, marketplace_submission_status, error_details')
+                .eq('company_id', companyId);
+            if (idsToCheck.length > 0 && mkIdsToCheck.length > 0) {
+                const a = idsToCheck.map(v => String(v)).join(',');
+                const b = mkIdsToCheck.map(v => String(v)).join(',');
+                qnf = (qnf as any).or(`order_id.in.(${a}),marketplace_order_id.in.(${b})`);
+            } else if (idsToCheck.length > 0) {
+                qnf = (qnf as any).in('order_id', idsToCheck);
+            } else if (mkIdsToCheck.length > 0) {
+                qnf = (qnf as any).in('marketplace_order_id', mkIdsToCheck);
+            }
+            const { data: nfRowsData } = await qnf;
+            const nfRows: any[] = Array.isArray(nfRowsData) ? nfRowsData : [];
             const envSel = emitEnvironment;
             const byMarketId: Record<string, boolean> = {};
             const byMarketStatus: Record<string, string> = {};
+            const byXmlPending: Record<string, boolean> = {};
+            const byErrorMessage: Record<string, string> = {};
             (Array.isArray(nfRows) ? nfRows : []).forEach((r: any) => {
-                const mk = String(r?.marketplace_order_id || '');
+                const orderIdRaw = String(r?.order_id || '');
+                const mkIdRaw = String(r?.marketplace_order_id || '');
+                let pid: string | undefined = undefined;
+                if (orderIdRaw && idByOrderId.has(orderIdRaw)) {
+                    pid = idByOrderId.get(orderIdRaw);
+                } else if (mkIdRaw && idByMarketplaceId.has(mkIdRaw)) {
+                    pid = idByMarketplaceId.get(mkIdRaw);
+                }
+                const mk = String(pid || orderIdRaw || mkIdRaw || '');
                 const st = String(r?.status_focus || '').toLowerCase();
                 const amb = String(r?.emissao_ambiente || '').toLowerCase();
+                const xmlHas = !!(r?.xml_base64 || r?.xml_url);
+                const marketplace = String(r?.marketplace || '');
+                const mlSub = String(r?.marketplace_submission_status || '').toLowerCase();
                 if (!mk) return;
                 const okAmb = amb ? (envSel === 'producao' ? amb === 'producao' : amb === 'homologacao') : true;
                 if (st === 'autorizado' && okAmb) byMarketId[mk] = true;
                 if (okAmb) byMarketStatus[mk] = st;
+                if (okAmb) byXmlPending[mk] = (st === 'autorizado') && marketplace.toLowerCase().includes('mercado') && xmlHas && mlSub !== 'sent';
+                if (r?.error_details) {
+                    try {
+                        let rawStr: string | null = null;
+                        if (typeof r.error_details === 'string') {
+                            const s = r.error_details as string;
+                            const si = s.indexOf('{');
+                            const sj = s.lastIndexOf('}');
+                            if (si !== -1 && sj !== -1 && sj > si) {
+                                const slice = s.slice(si, sj + 1);
+                                rawStr = slice;
+                            } else {
+                                rawStr = s;
+                            }
+                        }
+                        const ed = rawStr ? JSON.parse(rawStr) : r.error_details;
+                        const raw = String(ed?.mensagem_sefaz || '');
+                        const msg = raw ? raw.replace(/\s*\[.*$/s, '').trim() : '';
+                        if (msg) byErrorMessage[mk] = msg;
+                    } catch {
+                        const s = String(r.error_details || '');
+                        let extracted = '';
+                        const m = s.match(/"mensagem_sefaz"\s*:\s*"([^"]+)"/);
+                        if (m && m[1]) extracted = m[1];
+                        const msg = extracted ? extracted.replace(/\s*\[.*$/s, '').trim() : '';
+                        if (msg) byErrorMessage[mk] = msg;
+                    }
+                }
             });
             const nextMap: Record<string, boolean> = {};
             const nextStatusMap: Record<string, string> = {};
+            const nextXmlMap: Record<string, boolean> = {};
+            const nextErrMap: Record<string, string> = {};
             for (const p of pedidosAtivos) {
-                const mk = String(p.marketplace_order_id);
-                nextMap[String(p.id)] = byMarketId[mk] === true;
-                nextStatusMap[String(p.id)] = byMarketStatus[mk] || '';
+                const mk = String(p.id);
+                nextMap[mk] = byMarketId[mk] === true;
+                nextStatusMap[mk] = byMarketStatus[mk] || '';
+                nextXmlMap[mk] = byXmlPending[mk] === true;
+                if (byErrorMessage[mk]) nextErrMap[mk] = byErrorMessage[mk];
             }
             setNfeAuthorizedByPedidoId(nextMap);
             setNfeFocusStatusByPedidoId(nextStatusMap);
+            setNfeXmlPendingByPedidoId(nextXmlMap);
+            setNfeErrorMessageByPedidoId(nextErrMap);
         } catch {}
-    }, [organizationId, pedidos, emitEnvironment, supabase]);
+    }, [organizationId, pedidos, emitEnvironment]);
 
     useEffect(() => {
         if (activeStatus === 'emissao-nf') {
             refreshNfeAuthorizedMapForList();
         }
     }, [activeStatus, refreshNfeAuthorizedMapForList]);
+    useEffect(() => {
+        if (activeStatus === 'emissao-nf' && nfBadgeFilter === 'falha') {
+            refreshNfeAuthorizedMapForList();
+        }
+    }, [nfBadgeFilter, activeStatus, refreshNfeAuthorizedMapForList]);
 
     
 
@@ -1027,6 +1158,8 @@ function Pedidos() {
             case 'autorizado':
             case 'autorizada':
                 return { label: 'Autorizada', className: 'bg-green-600 text-white' };
+            case 'processando_autorizacao':
+                return { label: 'Processando', className: 'bg-blue-100 text-blue-800 border border-blue-200' };
             case 'pendente':
                 return { label: 'Pendente', className: 'bg-yellow-100 text-yellow-800 border border-yellow-200' };
             case 'cancelado':
@@ -1046,23 +1179,15 @@ function Pedidos() {
         }
     };
 
+    // Removido: verificação fixa de NF-e por número (2833)
+
     const handleSyncNfeForPedido = async (pedido: any) => {
         try {
             const { data: sessionRes } = await (supabase as any).auth.getSession();
             const token: string | undefined = sessionRes?.session?.access_token;
             if (!token) return;
             if (!organizationId) return;
-            let companyId: string | null = null;
-            {
-                const { data: companiesForOrg } = await (supabase as any)
-                    .from('companies')
-                    .select('id')
-                    .eq('organization_id', organizationId)
-                    .order('is_active', { ascending: false })
-                    .order('created_at', { ascending: true })
-                    .limit(1);
-                companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
-            }
+            const companyId: string | null = await getCompanyId();
             if (!companyId) return;
             const envSel = emitEnvironment;
             const headers: Record<string, string> = {
@@ -1080,50 +1205,101 @@ function Pedidos() {
 
     const handleEnviarNfeForPedido = async (pedido: any) => {
         try {
+            setXmlLoadingIds(prev => Array.from(new Set([...prev, String(pedido.id)])));
             const { data: sessionRes } = await (supabase as any).auth.getSession();
             const token: string | undefined = sessionRes?.session?.access_token;
             if (!token) throw new Error('Sessão inválida ou expirada.');
             if (!organizationId) throw new Error('Organização não encontrada.');
-            let companyId: string | null = null;
-            {
-                const { data: companiesForOrg } = await (supabase as any)
-                    .from('companies')
-                    .select('id')
-                    .eq('organization_id', organizationId)
-                    .order('is_active', { ascending: false })
-                    .order('created_at', { ascending: true })
-                    .limit(1);
-                companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
-            }
+            const companyId: string | null = await getCompanyId();
             if (!companyId) throw new Error('Nenhuma empresa ativa encontrada.');
             const { data: nfSel, error: nfErr } = await (supabase as any)
                 .from('notas_fiscais')
-                .select('id, nfe_key')
+                .select('id, nfe_key, marketplace, marketplace_order_id')
                 .eq('company_id', companyId)
                 .eq('marketplace_order_id', String(pedido.marketplace_order_id || ''))
                 .order('created_at', { ascending: false })
                 .limit(1)
                 .maybeSingle();
             if (nfErr || !nfSel) throw new Error(nfErr?.message || 'Nota fiscal não encontrada para este pedido.');
+            const marketplace = String((nfSel as any)?.marketplace || pedido?.marketplace || '');
+            const queueMessage: any = {
+                organizations_id: organizationId,
+                company_id: companyId,
+                nota_fiscal_id: String((nfSel as any)?.id || ''),
+                nfe_key: String((nfSel as any)?.nfe_key || ''),
+                marketplace,
+            };
+            const { error: sendErr } = await (supabase as any).rpc('q_submit_xml_send', {
+                p_message: queueMessage,
+            } as any);
+            if (sendErr) throw sendErr;
+            toast({ title: "XML enfileirado", description: "Envio agendado para processamento." });
+        } catch (e: any) {
+            toast({ title: "Erro no envio", description: e?.message || String(e), variant: "destructive" });
+        } finally {
+            setXmlLoadingIds(prev => prev.filter(id => id !== String(pedido.id)));
+        }
+    };
+
+    const handleArrangeShipmentForPedido = async (pedido: any) => {
+        try {
+            setArrangeLoadingIds(prev => Array.from(new Set([...prev, String(pedido.id)])));
+            const { data: sessionRes } = await (supabase as any).auth.getSession();
+            const token: string | undefined = sessionRes?.session?.access_token;
+            if (!token) throw new Error('Sessão inválida ou expirada.');
+            if (!organizationId) throw new Error('Organização não encontrada.');
+            const companyId: string | null = await getCompanyId();
+            if (!companyId) throw new Error('Nenhuma empresa ativa encontrada.');
+            const mk = String(pedido?.marketplace || '').toLowerCase();
+            if (!mk.includes('shopee')) throw new Error('Apenas pedidos Shopee suportados.');
             const headers: Record<string, string> = {
                 apikey: SUPABASE_PUBLISHABLE_KEY,
                 Authorization: `Bearer ${token}`,
             };
-            const { data, error } = await (supabase as any).functions.invoke('mercado-livre-submit-xml', {
-                body: {
-                    organizationId,
-                    companyId,
-                    notaFiscalId: (nfSel as any)?.id,
-                },
+            const orderSn = String(pedido?.marketplace_order_id || pedido?.idPlataforma || '');
+            if (!orderSn) throw new Error('order_sn ausente.');
+            const { data, error } = await (supabase as any).functions.invoke('shopee-arrange-shipment', {
+                body: { organizationId, companyId, orderSn },
                 headers,
             });
             if (error || (data && data.error)) {
-                throw new Error(error?.message || data?.error || "Falha ao enviar XML");
+                throw new Error(error?.message || data?.error || "Falha ao organizar envio");
             }
-            const status = String(data?.status || 'sent');
-            toast({ title: "Envio de XML", description: `XML enviado ao Mercado Livre (${status}).` });
+            toast({ title: "Organização de envio", description: "Planejamento de coleta/dropoff registrado." });
         } catch (e: any) {
-            toast({ title: "Erro no envio", description: e?.message || String(e), variant: "destructive" });
+            toast({ title: "Erro ao organizar envio", description: e?.message || String(e), variant: "destructive" });
+        } finally {
+            setArrangeLoadingIds(prev => prev.filter(id => id !== String(pedido.id)));
+        }
+    };
+
+    const handleGerarNovaNfeForPedido = async (pedido: any) => {
+        try {
+            const { data: sessionRes } = await (supabase as any).auth.getSession();
+            const token: string | undefined = sessionRes?.session?.access_token;
+            if (!token) throw new Error('Sessão inválida ou expirada.');
+            if (!organizationId) throw new Error('Organização não encontrada.');
+            const companyId: string | null = await getCompanyId();
+            if (!companyId) throw new Error('Nenhuma empresa ativa encontrada.');
+            const headers: Record<string, string> = {
+                apikey: SUPABASE_PUBLISHABLE_KEY,
+                Authorization: `Bearer ${token}`,
+            };
+            const envSel = emitEnvironment;
+            const { error: sendErr } = await (supabase as any).rpc('rpc_queues_emit', {
+                p_message: {
+                    organizations_id: organizationId,
+                    company_id: companyId,
+                    environment: envSel,
+                    orderIds: [String(pedido.id)],
+                    forceNewNumber: true,
+                    forceNewRef: true,
+                },
+            } as any);
+            if (sendErr) throw sendErr;
+            navigate('/pedidos/emissao_nfe/processando');
+        } catch {
+            // noop
         }
     };
 
@@ -1336,7 +1512,7 @@ function Pedidos() {
         { id: "produto", name: "Produto", enabled: true, alwaysVisible: true, render: (pedido: any) => (
             <div className="flex flex-col space-y-1">
                 {pedido.itens?.map((it: any, idx: number) => (
-                    <div key={idx} className="flex items-center space-x-1 min-h-8 py-0.5">
+                    <div key={idx} className="flex items-center space-x-1 min-h-[15px] py-0.9">
                         <img
                             src={((idx === 0 ? (pedido.imagem || it?.imagem) : it?.imagem) || '/placeholder.svg')}
                             alt={(idx === 0 ? (pedido.produto || it?.nome || 'Produto') : (it?.nome || 'Produto'))}
@@ -1385,6 +1561,14 @@ function Pedidos() {
                         </div>
                     </div>
                 ))}
+                {activeStatus === 'emissao-nf' && nfBadgeFilter === 'falha' && (() => {
+                    const msg = nfeErrorMessageByPedidoId[String(pedido.id)];
+                    return msg ? (
+                        <div className="mt-2 rounded-md border border-red-200 bg-red-50 text-red-700 text-xs p-2 leading-snug whitespace-normal break-words relative z-[10]">
+                            {msg}
+                        </div>
+                    ) : null;
+                })()}
             </div>
         )},
         { id: "itens", name: "Itens", enabled: true, alwaysVisible: true, render: (pedido) => (
@@ -1480,10 +1664,16 @@ function Pedidos() {
             const ed = pedido?.slaDespacho?.expected_date;
             const expired = ed ? (new Date(ed).getTime() - new Date().getTime() <= 0) : false;
             const showDelayedBadge = (slaStatusLower === 'delayed' || expired) && !deliveredStatuses.includes(shipmentStatusLower) && !isOrderCancelledOrReturned && String(pedido?.status_interno || '') !== 'Enviado';
+            const isProcessing = processingIdsSet.has(pedido.id);
             return (
                 <div className="flex flex-col items-center space-y-2 text-center">
-                    {showDelayedBadge ? (
-                        <Badge className={`uppercase bg-red-600 hover:bg-red-700 text-white h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
+                    {isProcessing ? (
+                        <Badge className="uppercase bg-white text-purple-700 border border-purple-300 h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate relative overflow-hidden">
+                            <span className="relative z-[1]">Processando</span>
+                            <span className="absolute inset-y-0 left-0 w-0 bg-novura-primary/40 animate-[processingGrowWidth_1.2s_ease-in-out_infinite]"></span>
+                        </Badge>
+                    ) : showDelayedBadge ? (
+                        <Badge className="uppercase bg-red-600 hover:bg-red-700 text-white h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate">
                             Atrasado
                         </Badge>
                     ) : (
@@ -1523,6 +1713,14 @@ function Pedidos() {
                             <Badge className={`uppercase ${b.className} h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
                                 {b.label}
                             </Badge>
+                        ) : null;
+                    })()}
+                    {activeStatus === 'emissao-nf' && nfBadgeFilter === 'falha' && (() => {
+                        const msg = nfeErrorMessageByPedidoId[String(pedido.id)];
+                        return msg ? (
+                            <div className="mt-1 rounded-md border border-red-200 bg-red-50 text-red-700 text-[10px] leading-snug px-2 py-1 max-w-[220px] whitespace-normal break-words mx-auto relative z-[10]">
+                                {msg}
+                            </div>
                         ) : null;
                     })()}
                 </div>
@@ -1608,7 +1806,6 @@ function Pedidos() {
         } catch (e) {
             console.error('Erro ao carregar preferências de colunas do localStorage:', e);
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [organizationId]);
 
     // Salvar preferências sempre que as colunas mudarem
@@ -1624,26 +1821,28 @@ function Pedidos() {
     }, [columns, organizationId]);
 
     const getStatusColor = (status: string) => {
-        switch (status) {
-            case "Pendente":
-            case "A vincular":
+        const s = String(status || '').trim().toLowerCase();
+        switch (s) {
+            case "pendente":
+            case "a vincular":
                 return "bg-yellow-500 hover:bg-yellow-500 text-white";
-            case "Emissao NF":
+            case "emissao nf":
                 return "bg-orange-500 hover:bg-orange-500 text-white";
-            case "NF Emitida":
-            case "Impressao":
-                return "bg-purple-600 hover:bg-purple-700 text-white";
-            case "Aguardando Coleta":
+            case "subir xml":
                 return "bg-blue-500 hover:bg-blue-500 text-white";
-            case "Enviado":
+            case "nf emitida":
+            case "impressao":
+                return "bg-purple-600 hover:bg-purple-700 text-white";
+            case "aguardando coleta":
+                return "bg-blue-500 hover:bg-blue-500 text-white";
+            case "enviado":
                 return "bg-green-500 hover:bg-green-500 text-white";
-            case "Entregue":
+            case "entregue":
                 return "bg-green-600 hover:bg-green-600 text-white";
-            case "Cancelado":
+            case "cancelado":
                 return "bg-red-500 hover:bg-red-500 text-white";
-            case "Devolvido":
-                return "bg-gray-500 hover:bg-gray-500 text-white";
-            case "Devolução":
+            case "devolvido":
+            case "devolução":
                 return "bg-gray-500 hover:bg-gray-500 text-white";
             default:
                 return "bg-gray-500 hover:bg-gray-500 text-white";
@@ -1707,7 +1906,7 @@ function Pedidos() {
     const { printSettings, setPrintSettings, handleSavePrintSettings } = usePrintingSettings();
 
     // Lógica para processar as vinculações e mover o pedido de status
-    const handleSaveVinculacoes = (vinculosOrPayload: any) => {
+    const handleSaveVinculacoes = async (vinculosOrPayload: any) => {
         // Suporta o formato antigo (mapa) e novo (payload com linkedItems)
         const vinculos: { [anuncioId: string]: string } =
             vinculosOrPayload && Array.isArray(vinculosOrPayload.linkedItems)
@@ -1740,12 +1939,8 @@ function Pedidos() {
         }
     };
 
-    const handleEmitirNfe = async (pedidosToEmit: any[]) => {
+    const handleEmitirNfe = async (pedidosToEmit: any[], opts?: { forceNewNumber?: boolean; forceNewRef?: boolean }) => {
         if (!pedidosToEmit || pedidosToEmit.length === 0) return;
-        setIsEmitting(true);
-        setEmissionProgress(0);
-        setEmittedCount(0);
-        setFailedCount(0);
         try {
             const { data: sessionRes } = await supabase.auth.getSession();
             const token: string | undefined = sessionRes?.session?.access_token;
@@ -1772,37 +1967,32 @@ function Pedidos() {
                 apikey: SUPABASE_PUBLISHABLE_KEY,
                 Authorization: `Bearer ${token}`,
             };
-            const orderIds = pedidosToEmit.map(p => p.id).filter(Boolean);
+            const orderIds: string[] = pedidosToEmit.map(p => String(p.id)).filter(Boolean);
             let envSel: string = 'homologacao';
             try { envSel = localStorage.getItem('nfe_environment') || 'homologacao'; } catch {}
-            const { data, error } = await supabase.functions.invoke<any>('focus-nfe-emit', {
-                body: { organizationId, companyId, orderIds, environment: envSel },
-                headers,
-            } as any);
-            if (error || (data && data.error)) throw new Error(error?.message || data?.error || "Falha na emissão");
-            const results = Array.isArray(data?.results) ? data.results : [];
-            let successCount = 0;
-            let failCount = 0;
-            const idsSucceeded: string[] = [];
-            const idsFailed: string[] = [];
-            results.forEach((r: any) => {
-                if (r?.ok) { successCount++; idsSucceeded.push(r.orderId); } else { failCount++; idsFailed.push(r.orderId); }
-            });
-            setEmittedCount(successCount);
-            setFailedCount(failCount);
-            setEmissionProgress(100);
-            if (successCount + failCount > 0) {
-                setPedidos(prev => prev.map(p => {
-                    if (idsSucceeded.includes(p.id)) return { ...p, status_interno: 'NF Emitida' };
-                    if (idsFailed.includes(p.id)) return { ...p, subStatus: 'Falha na emissao' };
-                    return p;
-                }));
-            }
-        } catch {
-            setFailedCount(pedidosToEmit.length);
-            setEmissionProgress(100);
+            const payload = {
+                organizations_id: organizationId!,
+                company_id: companyId!,
+                environment: envSel,
+                orderIds,
+                forceNewNumber: !!(opts && opts.forceNewNumber),
+                forceNewRef: !!(opts && opts.forceNewRef),
+            };
+            const { error: sendErr } = await (supabase as any).rpc('rpc_queues_emit', { p_message: payload } as any);
+            if (sendErr) throw sendErr;
+            try {
+                if (orderIds.length > 0) {
+                    await (supabase as any)
+                        .from('marketplace_orders_presented_new')
+                        .update({ status_interno: 'Processando NF' })
+                        .in('id', orderIds);
+                }
+            } catch {}
+            navigate('/pedidos/emissao_nfe/processando');
+        } catch (e) {
+            // silencioso para manter UX fluida
         } finally {
-            setTimeout(() => setIsEmitting(false), 800);
+            // sem ações pós-envio
         }
     };
 
@@ -1895,34 +2085,83 @@ function Pedidos() {
         const term = (searchTerm || "").toLowerCase();
         const searchTermMatch = term === "" ||
             p.id?.toLowerCase?.().includes(term) ||
+            String(p.marketplace_order_id || '').toLowerCase().includes(term) ||
+            String(p.pack_id || '').toLowerCase().includes(term) ||
             p.cliente?.toLowerCase?.().includes(term) ||
             (p.sku && p.sku.toLowerCase().includes(term)) ||
             (Array.isArray(p.itens) && p.itens.some((it: any) =>
                 (it?.nome && String(it.nome).toLowerCase().includes(term)) ||
-                (it?.product_name && String(it.product_name).toLowerCase().includes(term))
+                (it?.product_name && String(it.product_name).toLowerCase().includes(term)) ||
+                String(it?.pack_id || '').toLowerCase().includes(term)
             ));
         return inDate && searchTermMatch;
     });
 
     let filteredPedidos = baseFiltered.filter(p => matchStatus(p, activeStatus));
+    const activeMarketplaceFilter = marketplaceFilters[activeStatus] ?? 'all';
+    const activeShippingTypeFilter = shippingTypeFilters[activeStatus] ?? 'all';
+
+    const processingIdsSet = useMemo(() => {
+        const s = new Set<string>();
+        for (const id of processingIdsLocal) s.add(String(id));
+        return s;
+    }, [processingIdsLocal]);
+    const norm = (v: any) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    const nfePedidosAll = pedidos.filter(p => p && (norm(p.status_interno) === 'emissao nf' || norm(p.status_interno) === 'falha na emissao' || norm(p.status_interno) === 'subir xml'));
+    const badgeCountFalha = nfePedidosAll.filter(p => norm(p.status_interno) === 'falha na emissao').length;
+    const badgeCountProcessando = pedidos.filter(p => norm(p.status_interno) === 'processando nf').length;
+    const badgeCountEmitir = nfePedidosAll.filter(p => {
+        const st = String(nfeFocusStatusByPedidoId[String(p.id)] || '').toLowerCase();
+        return norm(p.status_interno) === 'emissao nf' &&
+            norm(p.subStatus) !== 'falha na emissao' &&
+            !processingIdsSet.has(p.id) &&
+            st !== 'processando_autorizacao' &&
+            st !== 'pendente' &&
+            st !== 'erro_autorizacao' &&
+            st !== 'rejeitado' &&
+            st !== 'denegado';
+    }).length;
+    const badgeCountSubirXml = nfePedidosAll.filter(p => norm(p.status_interno) === 'subir xml').length;
 
     // Filtros adicionais por quadro (Marketplace e Tipo de Envio)
-    if (activeStatus === 'impressao' || activeStatus === 'enviado') {
-        if (marketplaceFilter === 'mercado-livre') {
-            filteredPedidos = filteredPedidos.filter(p => String(p.marketplace || '').toLowerCase().includes('mercado'));
+    if (activeStatus === 'impressao' || activeStatus === 'enviado' || activeStatus === 'cancelado') {
+        if (activeMarketplaceFilter !== 'all') {
+            filteredPedidos = filteredPedidos.filter(p => normalizeMarketplaceId(String(p.marketplace || '')) === activeMarketplaceFilter);
         }
-        if (shippingTypeFilter !== 'all') {
-            filteredPedidos = filteredPedidos.filter(p => normalizeShippingType(String(p.tipoEnvio ?? '')) === shippingTypeFilter);
+        if (activeStatus !== 'cancelado' && activeShippingTypeFilter !== 'all') {
+            filteredPedidos = filteredPedidos.filter(p => normalizeShippingType(String(p.tipoEnvio ?? '')) === activeShippingTypeFilter);
         }
     }
 
     if (activeStatus === "emissao-nf") {
-        if (quickFilter === "Falha na emissão") {
-            filteredPedidos = filteredPedidos.filter(p => p.subStatus === "Falha na emissao");
-        } else if (quickFilter === "Falha ao Enviar") {
-            filteredPedidos = filteredPedidos.filter(p => p.subStatus === "Falha ao enviar");
+        if (nfBadgeFilter === "falha") {
+            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'falha na emissao');
+        } else if (nfBadgeFilter === "processando") {
+            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'processando nf');
+        } else if (nfBadgeFilter === "subir_xml") {
+            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'subir xml');
+        } else {
+            filteredPedidos = filteredPedidos.filter(p => {
+                const st = String(nfeFocusStatusByPedidoId[String(p.id)] || '').toLowerCase();
+                return (norm(p.status_interno) === 'emissao nf') &&
+                    norm(p.subStatus) !== "falha na emissao" &&
+                    norm(p.subStatus) !== "falha ao enviar" &&
+                    !processingIdsSet.has(p.id) &&
+                    st !== "processando_autorizacao" &&
+                    st !== "pendente" &&
+                    st !== "erro_autorizacao" &&
+                    st !== "rejeitado" &&
+                    st !== "denegado";
+            });
         }
-        filteredPedidos = filteredPedidos.filter(p => p.status_interno === 'Emissao NF');
+    }
+
+    if (activeStatus === "a-vincular") {
+        if (vincularBadgeFilter === "sem_estoque") {
+            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'sem estoque');
+        } else {
+            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'a vincular');
+        }
     }
 
     // Ordenação antes da paginação
@@ -1966,8 +2205,7 @@ function Pedidos() {
     // Paginação baseada na lista ordenada (suporta paginação no servidor)
     const isServerPaged = totalPedidosCount !== null;
     const totalFiltered = (() => {
-        // Quando filtros locais afetam o conjunto (marketplace/tipo de envio), usar o total local
-        const hasLocalFilterImpact = (marketplaceFilter !== 'all' || shippingTypeFilter !== 'all');
+        const hasLocalFilterImpact = (activeMarketplaceFilter !== 'all' || activeShippingTypeFilter !== 'all');
         if (!isServerPaged || hasLocalFilterImpact) return sortedPedidos.length;
         if (activeStatus === 'todos') return (totalPedidosCount ?? sortedPedidos.length);
         const gs = statusCountsGlobal?.[activeStatus];
@@ -1981,24 +2219,30 @@ function Pedidos() {
     const showingTo = Math.min(startIndex + paginatedPedidos.length, totalFiltered);
 
     // Resetar página ao mudar filtros principais
-    useEffect(() => {
-        setCurrentPage(1);
-    }, [searchTerm, activeStatus, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
+     useEffect(() => {
+         setCurrentPage(1);
+     }, [searchTerm, activeStatus, dateRange, nfBadgeFilter, vincularBadgeFilter, sortKey, sortDir, activeMarketplaceFilter, activeShippingTypeFilter]);
 
-    useEffect(() => {}, [activeStatus]);
+    useEffect(() => {
+        if (activeStatus === 'a-vincular') setVincularBadgeFilter('para_vincular');
+    }, [activeStatus]);
 
     useEffect(() => {}, [currentPage, pageSize]);
 
-    useEffect(() => {}, [searchTerm, dateRange, quickFilter, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
+     useEffect(() => {}, [searchTerm, dateRange, nfBadgeFilter, sortKey, sortDir, activeMarketplaceFilter, activeShippingTypeFilter]);
 
-    // Carregar imediatamente ao entrar no módulo após preparar contagens globais
+    // Carregar imediatamente ao entrar no módulo após preparar contagens globais (evitar múltiplas chamadas)
+    const initialLoadDoneRef = useRef(false);
     useEffect(() => {
-        loadPedidos();
-    }, [organizationId]);
+        if (!initialLoadDoneRef.current) {
+            loadPedidos();
+            initialLoadDoneRef.current = true;
+        }
+    }, [organizationId, loadPedidos]);
 
     useEffect(() => {
         try { loadGlobalStatusCounts(); } catch {}
-    }, [pedidos, dateRange, searchTerm, marketplaceFilter, shippingTypeFilter]);
+    }, [loadGlobalStatusCounts]);
 
     useLayoutEffect(() => {
         const container = listContainerRef.current;
@@ -2009,7 +2253,7 @@ function Pedidos() {
             const offset = Math.max(0, Math.round(tr.bottom - cr.top));
             setListTopOffset(offset);
         }
-    }, [isLoading, activeStatus, sortKey, sortDir, marketplaceFilter, shippingTypeFilter]);
+    }, [isLoading, activeStatus, sortKey, sortDir, activeMarketplaceFilter, activeShippingTypeFilter]);
 
 
     // Garantir que a página atual seja válida quando total de páginas mudar
@@ -2029,6 +2273,7 @@ function Pedidos() {
 
     useEffect(() => {}, [activeStatus, filteredPedidos, processedEnsure]);
 
+    
     
     
     const handleSelectAll = (list: string[], setList: (list: string[]) => void) => {
@@ -2087,6 +2332,8 @@ function Pedidos() {
         setIsVincularModalOpen(true);
     };
 
+    
+
     function matchStatus(p: any, id: string): boolean {
         if (id === 'todos') return true;
         const base = (p?.status_interno ?? p?.status ?? '').toString();
@@ -2095,7 +2342,7 @@ function Pedidos() {
         if (!s && target !== 'a-vincular') return false;
         if (target === 'impressao') return s === 'impressao';
         if (target === 'aguardando-coleta') return s === 'aguardando coleta';
-        if (target === 'a-vincular') return s === 'a vincular' || Boolean(p?.has_unlinked_items);
+        if (target === 'a-vincular') return s === 'a vincular';
         if (target === 'cancelado') return s === 'cancelado' || s === 'devolucao';
         if (target === 'emissao-nf') return s === 'emissao nf';
         if (target === 'enviado') return s === 'enviado';
@@ -2103,9 +2350,11 @@ function Pedidos() {
         return normalized === target;
     }
 
-    const marketplaceOkLocal = (p: any) => (marketplaceFilter === 'all' ? true : String(p?.marketplace || '').toLowerCase().includes('mercado'));
-    const shippingOkLocal = (p: any) => (shippingTypeFilter === 'all' ? true : normalizeShippingType(String(p?.tipoEnvio ?? '')) === shippingTypeFilter);
-    const baseForCounts = baseFiltered.filter(p => marketplaceOkLocal(p) && shippingOkLocal(p));
+    const marketplaceOkLocal = (p: any) => {
+        return true;
+    };
+    const shippingOkLocal = (p: any) => true;
+    const baseForCounts = baseFiltered;
 
     const isPedidoAtrasado = (p: any) => {
         const shipmentStatusLower = String(p?.shipment_status || '').toLowerCase();
@@ -2159,6 +2408,12 @@ function Pedidos() {
                 const url = URL.createObjectURL(blob);
                 window.open(url, '_blank');
             }
+            try {
+                const ids = pedidosToPrint.map((p: any) => p.id);
+                if (ids.length > 0) {
+                    await (supabase as any).rpc('rpc_marketplace_order_print_label', { p_order_ids: ids });
+                }
+            } catch {}
             setSelectedPedidosImpressao([]);
             setSelectedPedidosEmissao([]);
             setSelectedPedidos([]);
@@ -2173,15 +2428,33 @@ function Pedidos() {
         try {
             if (!pedido) return;
 
-            const cachedPdf = pedido?.label?.pdf_base64;
-            if (!cachedPdf) return;
+            const cachedPdf: string | null = pedido?.label?.pdf_base64 || null;
+            const cachedContent: string | null = pedido?.label?.content_base64 || null;
+            const contentType: string | null = pedido?.label?.content_type || null;
+            const fileUrl: string | null = null;
 
-            const binStr = atob(String(cachedPdf));
-            const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
-            const blob = new Blob([bytes], { type: 'application/pdf' });
-            const url = URL.createObjectURL(blob);
-            window.open(url, '_blank');
+            if (fileUrl) {
+                window.open(fileUrl, '_blank');
+            } else if (cachedPdf) {
+                const binStr = atob(String(cachedPdf));
+                const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
+                const blob = new Blob([bytes], { type: 'application/pdf' });
+                const url = URL.createObjectURL(blob);
+                window.open(url, '_blank');
+            } else if (cachedContent) {
+                const binStr = atob(String(cachedContent));
+                const bytes = new Uint8Array([...binStr].map((c) => c.charCodeAt(0)));
+                const blob = new Blob([bytes], { type: (contentType || 'application/pdf') });
+                const url = URL.createObjectURL(blob);
+                window.open(url, '_blank');
+            } else {
+                toast({ title: "Etiqueta não encontrada", description: "Nenhuma etiqueta salva foi localizada para este pedido.", variant: "destructive" });
+                return;
+            }
             setPedidos(prev => prev.map(p => p.id === pedido.id ? { ...p, impressoEtiqueta: true } : p));
+            try {
+                await (supabase as any).rpc('rpc_marketplace_order_print_label', { p_order_ids: [pedido.id] });
+            } catch {}
         } catch (err) {
             console.error('Erro ao reimprimir etiqueta ML:', err);
         }
@@ -2194,6 +2467,8 @@ function Pedidos() {
         activeStatus === 'enviado' ? selectedPedidosEnviado.length :
         0
     );
+
+    
 
     return (
         <TooltipProvider>
@@ -2214,10 +2489,12 @@ function Pedidos() {
                                         0
                                     );
                                     return (
-                                        <Button className="h-10 px-4 rounded-xl bg-primary text-white shadow-lg disabled:opacity-50" disabled={isSyncing} onClick={() => { setIsSyncModalOpen(true); loadShopeeShops(); }}>
-                                            <Zap className="w-4 h-4 mr-2" />
-                                            {isSyncing ? 'Sincronizando...' : 'Sincronizar pedidos'}
-                                        </Button>
+                                        <div className="flex items-center gap-3">
+                                            <Button className="h-10 px-4 rounded-xl bg-primary text-white shadow-lg disabled:opacity-50" disabled={isSyncing} onClick={() => { setIsSyncModalOpen(true); loadShopeeShops(); }}>
+                                                <Zap className="w-4 h-4 mr-2" />
+                                                {isSyncing ? 'Sincronizando...' : 'Sincronizar pedidos'}
+                                            </Button>
+                                        </div>
                                     );
                                 })()}
                             </div>
@@ -2229,7 +2506,14 @@ function Pedidos() {
                                         className={`cursor-pointer transition-all duration-300 hover:shadow-lg hover:scale-105 border-0 bg-white text-gray-900 overflow-hidden relative ${
                                             activeStatus === block.id ? "ring-2 ring-primary shadow-lg scale-105 bg-primary text-white" : ""
                                         }`}
-                                        onClick={() => setActiveStatus(block.id)}
+                                        onClick={() => {
+                                            setActiveStatus(block.id);
+                                            if (block.id === 'emissao-nf') {
+                                                navigate('/pedidos/emissao_nfe');
+                                            } else {
+                                                navigate('/pedidos');
+                                            }
+                                        }}
                                     >
                                         <CardContent className="p-4 text-center relative z-10">
                                             <div className="text-3xl font-bold mb-2 relative inline-block">
@@ -2257,6 +2541,30 @@ function Pedidos() {
                                     </Card>
                                 ))}
                             </div>
+
+                            {activeStatus === "a-vincular" && (
+                                <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
+                                    <div className="w-full">
+                                        <div className="flex items-center gap-3">
+                                            <Button
+                                                variant="outline"
+                                                className={`h-9 rounded-full px-3 ${vincularBadgeFilter === 'para_vincular' ? 'border-novura-primary text-novura-primary' : 'border-gray-200 text-gray-700'}`}
+                                                onClick={() => setVincularBadgeFilter('para_vincular')}
+                                            >
+                                                Para vincular ({(countsReady && statusCountsGlobal && typeof statusCountsGlobal['a-vincular'] === 'number') ? statusCountsGlobal['a-vincular'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'a-vincular')).length : 0)})
+                                            </Button>
+                                            <Button
+                                                variant="outline"
+                                                className={`h-9 rounded-full px-3 ${vincularBadgeFilter === 'sem_estoque' ? 'border-novura-primary text-novura-primary' : 'border-gray-200 text-gray-700'}`}
+                                                onClick={() => setVincularBadgeFilter('sem_estoque')}
+                                            >
+                                                Sem estoque ({(countsReady && statusCountsGlobal && typeof statusCountsGlobal['sem-estoque'] === 'number') ? statusCountsGlobal['sem-estoque'] : (listReady ? baseForCounts.filter(p => String(p?.status_interno || '') === 'Sem estoque').length : 0)})
+                                            </Button>
+                                            
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
 
                             {activeStatus === "todos" && (
                                 <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
@@ -2456,6 +2764,51 @@ function Pedidos() {
 
                             {activeStatus === "emissao-nf" && (
                                 <div className="flex flex-wrap items-center justify-between gap-4 mb-6 w-full">
+                                    <div className="w-full">
+                                        <div className="flex items-center gap-3">
+                                            <Button
+                                                variant="outline"
+                                                className={`h-9 rounded-full px-3 ${nfBadgeFilter === 'emitir' ? 'border-novura-primary text-novura-primary' : 'border-gray-200 text-gray-700'}`}
+                                                onClick={() => {
+                                                    setNfBadgeFilter('emitir');
+                                                    navigate('/pedidos/emissao_nfe/emitir');
+                                                }}
+                                                >
+                                                Emitir ({badgeCountEmitir})
+                                            </Button>
+                                            <Button
+                                                variant="outline"
+                                                className={`h-9 rounded-full px-3 ${nfBadgeFilter === 'processando' ? 'border-novura-primary text-novura-primary' : 'border-gray-200 text-gray-700'}`}
+                                                onClick={() => {
+                                                    setNfBadgeFilter('processando');
+                                                    navigate('/pedidos/emissao_nfe/processando');
+                                                }}
+                                                >
+                                                Processando ({badgeCountProcessando})
+                                            </Button>
+                                            <Button
+                                                variant="outline"
+                                                className={`h-9 rounded-full px-3 ${nfBadgeFilter === 'falha' ? 'border-novura-primary text-novura-primary' : 'border-gray-200 text-gray-700'}`}
+                                                onClick={() => {
+                                                    setNfBadgeFilter('falha');
+                                                    navigate('/pedidos/emissao_nfe/falha_emissao');
+                                                }}
+                                                >
+                                                Falha na emissão ({badgeCountFalha})
+                                            </Button>
+                                            <Button
+                                                variant="outline"
+                                                className={`h-9 rounded-full px-3 ${nfBadgeFilter === 'subir_xml' ? 'border-novura-primary text-novura-primary' : 'border-gray-200 text-gray-700'}`}
+                                                onClick={() => {
+                                                    setNfBadgeFilter('subir_xml');
+                                                    navigate('/pedidos/emissao_nfe/subir_xml');
+                                                }}
+                                                >
+                                                Subir xml ({badgeCountSubirXml})
+                                            </Button>
+                                            
+                                        </div>
+                                    </div>
                                     <div className="relative w-full md:w-1/4">
                                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
                                         <Input
@@ -2464,82 +2817,88 @@ function Pedidos() {
                                             onChange={(e) => setSearchTerm(e.target.value)}
                                             className="h-12 w-full pl-10 pr-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
                                         />
+                                                <style>
+                                                    {`
+                                                        @keyframes processingGrowWidth {
+                                                            0% { width: 0%; }
+                                                            100% { width: 100%; }
+                                                        }
+                                                    `}
+                                                </style>
                                     </div>
                                     <div className="flex items-center gap-4">
-                                        <div className="w-[200px]">
-                                            <Select value={quickFilter} onValueChange={setQuickFilter}>
-                                                <SelectTrigger className="h-12 rounded-2xl bg-white shadow-lg ring-1 ring-gray-200/60">
-                                                    <SelectValue placeholder="Filtro Rápido" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="Todos">Todos</SelectItem>
-                                                    <SelectItem value="Falha na emissão">Falha na emissão</SelectItem>
-                                                    <SelectItem value="Falha ao Enviar">Falha ao Enviar</SelectItem>
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => {
-                                            const ids = filteredPedidos.map(p => p.id).filter(Boolean);
-                                            if (ids.length === 0) return;
-                                            setBulkIdsQueue(ids);
-                                            setPedidoIdParaEmissao(ids[0]);
-                                            setIsEmissaoDrawerOpen(true);
-                                            setEmissaoRestartNonce(Date.now());
-                                        }}>
-                                            <FileText className="w-4 h-4 mr-2" />
-                                            Emitir em Massa
-                                        </Button>
-                                        <Button className="h-12 px-6 rounded-2xl bg-primary shadow-lg" onClick={() => {
-                                            const ids = filteredPedidos.filter(p => selectedPedidosEmissao.includes(p.id)).map(p => p.id).filter(Boolean);
-                                            if (ids.length === 0) return;
-                                            setBulkIdsQueue(ids);
-                                            setPedidoIdParaEmissao(ids[0]);
-                                            setIsEmissaoDrawerOpen(true);
-                                            setEmissaoRestartNonce(Date.now());
-                                        }}>
-                                            <FileText className="w-4 h-4 mr-2" />
-                                            Emitir Selecionados ({selectedPedidosEmissao.length})
-                                        </Button>
-                                        <DropdownMenu>
-                                            <DropdownMenuTrigger asChild>
-                                                <Button
-                                                    variant="outline"
-                                                    size="icon"
-                                                    className="rounded-2xl"
-                                                    aria-label="Configurar ambiente de emissão"
-                                                >
-                                                    <Settings className="w-4 h-4" />
+                                        {nfBadgeFilter === 'emitir' && (
+                                            <>
+                                                <Button className="h-10 px-4 rounded-xl bg-primary shadow-lg" onClick={() => {
+                                                    const toEmit = filteredPedidos;
+                                                    const ids = toEmit.map(p => p.id).filter(Boolean);
+                                                    if (ids.length === 0) return;
+                                                    setProcessingIdsLocal(Array.from(new Set([...processingIdsLocal, ...ids.map(String)])));
+                                                    handleEmitirNfe(toEmit);
+                                                }}>
+                                                    <FileText className="w-4 h-4 mr-2" />
+                                                    Emissão em Massa
                                                 </Button>
-                                            </DropdownMenuTrigger>
-                                            <DropdownMenuContent align="start">
-                                                <DropdownMenuItem
-                                                    className={emitEnvironment === 'homologacao' ? 'text-novura-primary font-medium' : ''}
-                                                    onSelect={(e) => {
-                                                        e.preventDefault();
-                                                        setEmitEnvironment('homologacao');
-                                                        try { localStorage.setItem('nfe_environment', 'homologacao'); } catch {}
+                                                <Button
+                                                    className="h-10 px-4 rounded-xl bg-primary shadow-lg disabled:opacity-50 disabled:pointer-events-none"
+                                                    disabled={selectedPedidosEmissao.length === 0}
+                                                    onClick={() => {
+                                                        const toEmit = filteredPedidos.filter(p => selectedPedidosEmissao.includes(p.id));
+                                                        const ids = toEmit.map(p => p.id).filter(Boolean);
+                                                        if (ids.length === 0) return;
+                                                        setProcessingIdsLocal(Array.from(new Set([...processingIdsLocal, ...ids.map(String)])));
+                                                        handleEmitirNfe(toEmit);
                                                     }}
                                                 >
-                                                    Ambiente: Homologação
-                                                    {emitEnvironment === 'homologacao' && <Check className="w-4 h-4 ml-auto" />}
-                                                </DropdownMenuItem>
-                                                <DropdownMenuItem
-                                                    className={emitEnvironment === 'producao' ? 'text-novura-primary font-medium' : ''}
-                                                    onSelect={(e) => {
-                                                        e.preventDefault();
-                                                        setEmitEnvironment('producao');
-                                                        try { localStorage.setItem('nfe_environment', 'producao'); } catch {}
-                                                    }}
-                                                >
-                                                    Ambiente: Produção
-                                                    {emitEnvironment === 'producao' && <Check className="w-4 h-4 ml-auto" />}
-                                                </DropdownMenuItem>
-                                            </DropdownMenuContent>
-                                        </DropdownMenu>
-                                        {emitEnvironment === 'homologacao' && (
-                                            <Badge className="ml-1 bg-orange-100 text-orange-700 border border-orange-200">
-                                                Homologação
-                                            </Badge>
+                                                    <FileText className="w-4 h-4 mr-2" />
+                                                    Emitir Selecionados ({selectedPedidosEmissao.length})
+                                                </Button>
+                                            </>
+                                        )}
+                                        {nfBadgeFilter === 'emitir' && (
+                                            <>
+                                                <DropdownMenu>
+                                                    <DropdownMenuTrigger asChild>
+                                                        <Button
+                                                            variant="outline"
+                                                            size="icon"
+                                                            className="rounded-2xl"
+                                                            aria-label="Configurar ambiente de emissão"
+                                                        >
+                                                            <Settings className="w-4 h-4" />
+                                                        </Button>
+                                                    </DropdownMenuTrigger>
+                                                    <DropdownMenuContent align="start">
+                                                        <DropdownMenuItem
+                                                            className={emitEnvironment === 'homologacao' ? 'text-novura-primary font-medium' : ''}
+                                                            onSelect={(e) => {
+                                                                e.preventDefault();
+                                                                setEmitEnvironment('homologacao');
+                                                                try { localStorage.setItem('nfe_environment', 'homologacao'); } catch {}
+                                                            }}
+                                                        >
+                                                            Ambiente: Homologação
+                                                            {emitEnvironment === 'homologacao' && <Check className="w-4 h-4 ml-auto" />}
+                                                        </DropdownMenuItem>
+                                                        <DropdownMenuItem
+                                                            className={emitEnvironment === 'producao' ? 'text-novura-primary font-medium' : ''}
+                                                            onSelect={(e) => {
+                                                                e.preventDefault();
+                                                                setEmitEnvironment('producao');
+                                                                try { localStorage.setItem('nfe_environment', 'producao'); } catch {}
+                                                            }}
+                                                        >
+                                                            Ambiente: Produção
+                                                            {emitEnvironment === 'producao' && <Check className="w-4 h-4 ml-auto" />}
+                                                        </DropdownMenuItem>
+                                                    </DropdownMenuContent>
+                                                </DropdownMenu>
+                                                {emitEnvironment === 'homologacao' && (
+                                                    <Badge className="ml-1 bg-orange-100 text-orange-700 border border-orange-200">
+                                                        Homologação
+                                                    </Badge>
+                                                )}
+                                            </>
                                         )}
                                         <div className="flex items-center gap-0.5 select-none">
                                             <Button
@@ -2582,8 +2941,8 @@ function Pedidos() {
                                         <DropdownMenu>
                                             <DropdownMenuTrigger asChild>
                                                 <Button
-                                                    variant="outline"
-                                                    className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60"
+                                                    variant="link"
+                                                    className="h-12 px-0 text-purple-600 hover:text-purple-700 no-underline"
                                                 >
                                                     {sortDir === 'asc' ? (
                                                         <ChevronUp className="w-4 h-4 mr-2" />
@@ -2615,81 +2974,110 @@ function Pedidos() {
                                             </DropdownMenuContent>
                                         </DropdownMenu>
                                         {/* Filtro Marketplace */}
-                                        <div className="w-[160px]">
-                                            <Select value={marketplaceFilter} onValueChange={(v) => setMarketplaceFilter(v as any)}>
-                                                <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
-                                                    <span className={`text-sm ${marketplaceFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
-                                                        {marketplaceFilter !== 'all' ? (marketplaceFilter === 'mercado-livre' ? 'Mercado Livre' : '') : 'Marketplace'}
-                                                    </span>
-                                                    <span className="sr-only">
-                                                        <SelectValue placeholder="Marketplace" />
-                                                    </span>
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="all">Todos</SelectItem>
-                                                    <SelectItem value="mercado-livre">Mercado Livre</SelectItem>
-                                                </SelectContent>
-                                            </Select>
+                                        <div className="w-[200px]">
+                                            {(() => {
+                                                const mkSet = new Set<string>();
+                                                baseFiltered
+                                                    .filter(p => matchStatus(p, 'impressao'))
+                                                    .forEach(p => {
+                                                        const id = normalizeMarketplaceId(String(p.marketplace || ''));
+                                                        if (id) mkSet.add(id);
+                                                    });
+                                                const options = Array.from(mkSet);
+                                                return (
+                                                    <Select value={marketplaceFilters['impressao']} onValueChange={(v) => setMarketplaceFilters(s => ({ ...s, impressao: v as any }))}>
+                                                        <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
+                                                            <span className={`text-sm ${marketplaceFilters['impressao'] === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
+                                                                {marketplaceFilters['impressao'] === 'all' ? 'Marketplace' : formatMarketplaceLabel(marketplaceFilters['impressao'])}
+                                                            </span>
+                                                            <span className="sr-only">
+                                                                <SelectValue placeholder="Marketplace" />
+                                                            </span>
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            <SelectItem value="all">Todos</SelectItem>
+                                                            {options.map((opt) => (
+                                                                <SelectItem key={opt} value={opt}>{formatMarketplaceLabel(opt)}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                );
+                                            })()}
                                         </div>
                                         {/* Filtro Tipo de Envio */}
-                                        <div className="w-[160px]">
-                                            <Select value={shippingTypeFilter} onValueChange={(v) => setShippingTypeFilter(v as any)}>
-                                                <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
-                                                    <span className={`text-sm ${shippingTypeFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
-                                                    {shippingTypeFilter !== 'all' ? (
-                                                        shippingTypeFilter === 'full' ? 'Full'
-                                                        : shippingTypeFilter === 'flex' ? 'Flex'
-                                                        : shippingTypeFilter === 'envios' ? 'Envios'
-                                                        : shippingTypeFilter === 'correios' ? 'Correios'
-                                                        : shippingTypeFilter === 'no_shipping' ? 'Sem envio'
-                                                        : ''
-                                                    ) : 'Tipo de Envio'}
-                                                    </span>
-                                                    <span className="sr-only">
-                                                        <SelectValue placeholder="Tipo de envio" />
-                                                    </span>
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="all">Todos</SelectItem>
-                                                    <SelectItem value="full">Full</SelectItem>
-                                                    <SelectItem value="flex">Flex</SelectItem>
-                                                    <SelectItem value="envios">Envios</SelectItem>
-                                                    <SelectItem value="correios">Correios</SelectItem>
-                                                    <SelectItem value="no_shipping">Sem envio</SelectItem>
-                                                </SelectContent>
-                                            </Select>
+                                        <div className="w-[200px]">
+                                            {(() => {
+                                                const shSet = new Set<string>();
+                                                baseFiltered
+                                                    .filter(p => matchStatus(p, 'impressao'))
+                                                    .forEach(p => {
+                                                        const id = normalizeShippingType(String(p?.tipoEnvio ?? ''));
+                                                        if (id) shSet.add(id);
+                                                    });
+                                                const options = Array.from(shSet);
+                                                return (
+                                                    <Select value={shippingTypeFilters['impressao']} onValueChange={(v) => setShippingTypeFilters(s => ({ ...s, impressao: v as any }))}>
+                                                        <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
+                                                            <span className={`text-sm ${shippingTypeFilters['impressao'] === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
+                                                                {shippingTypeFilters['impressao'] === 'all'
+                                                                    ? 'Tipo de Envio'
+                                                                    : mapTipoEnvioLabel(shippingTypeFilters['impressao'])}
+                                                            </span>
+                                                            <span className="sr-only">
+                                                                <SelectValue placeholder="Tipo de envio" />
+                                                            </span>
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            <SelectItem value="all">Todos</SelectItem>
+                                                            {options.map((opt) => (
+                                                                <SelectItem key={opt} value={opt}>{mapTipoEnvioLabel(opt)}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                );
+                                            })()}
+                                        </div>
+                                        <div className="relative">
+                                            <Button
+                                                size="icon"
+                                                className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
+                                                disabled
+                                                aria-label="Lista de separação (Em breve)"
+                                            >
+                                                <ListChecks className="w-5 h-5" />
+                                            </Button>
+                                            <span className="absolute -top-1 -right-1 text-[10px] px-1 py-0.5 rounded bg-gray-200 text-gray-700">Em breve</span>
                                         </div>
                                         <Button
                                             size="icon"
-                                            className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
-                                            onClick={handlePrintPickingList}
-                                            disabled={selectedPedidosImpressao.length === 0}
-                                            aria-label={`Imprimir lista de separação (${selectedPedidosImpressao.length})`}
-                                        >
-                                            <ListChecks className="w-5 h-5" />
-                                        </Button>
-                                        <Button
-                                            size="icon"
-                                            className="h-12 w-12 rounded-2xl bg-primary text-white shadow-lg disabled:opacity-50 disabled:pointer-events-none"
+                                            className={`h-12 w-12 rounded-2xl ${selectedPedidosImpressao.length > 0 && selectedPedidosImpressao.some(id => {
+                                                const p = pedidos.find(pp => pp.id === id);
+                                                return Boolean(p?.label?.pdf_base64 || p?.label?.content_base64 || p?.label?.zpl2_base64);
+                                            }) ? 'bg-primary text-white' : 'bg-gray-300 text-gray-600'} shadow-lg disabled:opacity-50 disabled:pointer-events-none`}
                                             onClick={handlePrintLabels}
                                             disabled={
                                                 selectedPedidosImpressao.length === 0 ||
                                                 !selectedPedidosImpressao.some(id => {
                                                     const p = pedidos.find(pp => pp.id === id);
-                                                    const sub = String(p?.shipment_substatus || '').toLowerCase();
-                                                    return sub === 'ready_to_print' || Boolean(p?.label?.pdf_base64);
+                                                    return Boolean(p?.label?.pdf_base64 || p?.label?.content_base64 || p?.label?.zpl2_base64);
                                                 })
                                             }
                                             aria-label={`Imprimir etiquetas (${selectedPedidosImpressao.length})`}
                                         >
                                             <FileBadge className="w-5 h-5" />
                                         </Button>
-                                        <Button size="icon" variant="outline" className="h-12 w-12 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" onClick={() => setIsScannerOpen(true)} aria-label="Scanner">
-                                            <Scan className="w-5 h-5" />
-                                        </Button>
-                                        <Button variant="outline" size="icon" className="rounded-2xl" onClick={() => setIsPrintConfigOpen(true)} aria-label="Configurações de impressão">
-                                            <Settings className="w-4 h-4" />
-                                        </Button>
+                                        <div className="relative">
+                                            <Button size="icon" variant="outline" className="h-12 w-12 rounded-2xl bg-white text-gray-800 shadow-lg ring-1 ring-gray-200/60" disabled aria-label="Scanner (Em breve)">
+                                                <Scan className="w-5 h-5" />
+                                            </Button>
+                                            <span className="absolute -top-1 -right-1 text-[10px] px-1 py-0.5 rounded bg-gray-200 text-gray-700">Em breve</span>
+                                        </div>
+                                        <div className="relative">
+                                            <Button variant="outline" size="icon" className="rounded-2xl" disabled aria-label="Configurações (Em breve)">
+                                                <Settings className="w-4 h-4" />
+                                            </Button>
+                                            <span className="absolute -top-1 -right-1 text-[10px] px-1 py-0.5 rounded bg-gray-200 text-gray-700">Em breve</span>
+                                        </div>
                                         <div className="flex items-center gap-0.5 select-none">
                                             <Button
                                                 variant="outline"
@@ -2759,48 +3147,67 @@ function Pedidos() {
                                         </DropdownMenu>
                                         {/* Filtro Marketplace (aba Enviado) */}
                                         <div className="w-[140px]">
-                                            <Select value={marketplaceFilter} onValueChange={(v) => setMarketplaceFilter(v as any)}>
-                                                <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
-                                                    <span className={`text-sm ${marketplaceFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
-                                                        {marketplaceFilter !== 'all' ? (marketplaceFilter === 'mercado-livre' ? 'Mercado Livre' : '') : 'Marketplace'}
-                                                    </span>
-                                                    <span className="sr-only">
-                                                        <SelectValue placeholder="Marketplace" />
-                                                    </span>
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="all">Todos</SelectItem>
-                                                    <SelectItem value="mercado-livre">Mercado Livre</SelectItem>
-                                                </SelectContent>
-                                            </Select>
+                                            {(() => {
+                                                const mkSet = new Set<string>();
+                                                baseFiltered
+                                                    .filter(p => matchStatus(p, 'enviado'))
+                                                    .forEach(p => {
+                                                        const id = normalizeMarketplaceId(String(p.marketplace || ''));
+                                                        if (id) mkSet.add(id);
+                                                    });
+                                                const options = Array.from(mkSet);
+                                                return (
+                                                    <Select value={marketplaceFilters['enviado']} onValueChange={(v) => setMarketplaceFilters(s => ({ ...s, enviado: v as any }))}>
+                                                        <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
+                                                            <span className={`text-sm ${marketplaceFilters['enviado'] === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
+                                                                {marketplaceFilters['enviado'] === 'all' ? 'Marketplace' : formatMarketplaceLabel(marketplaceFilters['enviado'])}
+                                                            </span>
+                                                            <span className="sr-only">
+                                                                <SelectValue placeholder="Marketplace" />
+                                                            </span>
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            <SelectItem value="all">Todos</SelectItem>
+                                                            {options.map((opt) => (
+                                                                <SelectItem key={opt} value={opt}>{formatMarketplaceLabel(opt)}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                );
+                                            })()}
                                         </div>
                                         {/* Filtro Tipo de Envio (aba Enviado) */}
                                         <div className="w-[140px]">
-                                            <Select value={shippingTypeFilter} onValueChange={(v) => setShippingTypeFilter(v as any)}>
-                                                <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
-                                                    <span className={`text-sm ${shippingTypeFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
-                                                    {shippingTypeFilter !== 'all' ? (
-                                                        shippingTypeFilter === 'full' ? 'Full'
-                                                        : shippingTypeFilter === 'flex' ? 'Flex'
-                                                        : shippingTypeFilter === 'envios' ? 'Envios'
-                                                        : shippingTypeFilter === 'correios' ? 'Correios'
-                                                        : shippingTypeFilter === 'no_shipping' ? 'Sem envio'
-                                                        : ''
-                                                    ) : 'Tipo de Envio'}
-                                                    </span>
-                                                    <span className="sr-only">
-                                                        <SelectValue placeholder="Tipo de envio" />
-                                                    </span>
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="all">Todos</SelectItem>
-                                                    <SelectItem value="full">Full</SelectItem>
-                                                    <SelectItem value="flex">Flex</SelectItem>
-                                                    <SelectItem value="envios">Envios</SelectItem>
-                                                    <SelectItem value="correios">Correios</SelectItem>
-                                                    <SelectItem value="no_shipping">Sem envio</SelectItem>
-                                                </SelectContent>
-                                            </Select>
+                                            {(() => {
+                                                const shSet = new Set<string>();
+                                                baseFiltered
+                                                    .filter(p => matchStatus(p, 'enviado'))
+                                                    .forEach(p => {
+                                                        const id = normalizeShippingType(String(p?.tipoEnvio ?? ''));
+                                                        if (id) shSet.add(id);
+                                                    });
+                                                const options = Array.from(shSet);
+                                                return (
+                                                    <Select value={shippingTypeFilters['enviado']} onValueChange={(v) => setShippingTypeFilters(s => ({ ...s, enviado: v as any }))}>
+                                                        <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
+                                                            <span className={`text-sm ${shippingTypeFilters['enviado'] === 'all' ? 'text-gray-500' : 'text-gray-900'}`}>
+                                                                {shippingTypeFilters['enviado'] === 'all'
+                                                                    ? 'Tipo de Envio'
+                                                                    : mapTipoEnvioLabel(shippingTypeFilters['enviado'])}
+                                                            </span>
+                                                            <span className="sr-only">
+                                                                <SelectValue placeholder="Tipo de envio" />
+                                                            </span>
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            <SelectItem value="all">Todos</SelectItem>
+                                                            {options.map((opt) => (
+                                                                <SelectItem key={opt} value={opt}>{mapTipoEnvioLabel(opt)}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                );
+                                            })()}
                                         </div>
                                     </div>
                                 </div>
@@ -2842,10 +3249,10 @@ function Pedidos() {
                                             </DropdownMenuContent>
                                         </DropdownMenu>
                                         <div className="w-[160px]">
-                                            <Select value={marketplaceFilter} onValueChange={(v) => setMarketplaceFilter(v as any)}>
+                                            <Select value={marketplaceFilters['cancelado']} onValueChange={(v) => setMarketplaceFilters(s => ({ ...s, cancelado: v as any }))}>
                                                 <SelectTrigger className="h-12 px-4 rounded-2xl border-0 bg-white shadow-lg ring-1 ring-gray-200/60 justify-between">
-                                                    <span className={`text-sm ${marketplaceFilter === 'all' ? 'text-gray-500' : 'text-gray-900'}`}> 
-                                                        {marketplaceFilter !== 'all' ? (marketplaceFilter === 'mercado-livre' ? 'Mercado Livre' : '') : 'Marketplace'}
+                                                    <span className={`text-sm ${marketplaceFilters['cancelado'] === 'all' ? 'text-gray-500' : 'text-gray-900'}`}> 
+                                                        {marketplaceFilters['cancelado'] !== 'all' ? (marketplaceFilters['cancelado'] === 'mercado-livre' ? 'Mercado Livre' : '') : 'Marketplace'}
                                                     </span>
                                                     <span className="sr-only">
                                                         <SelectValue placeholder="Marketplace" />
@@ -2881,7 +3288,7 @@ function Pedidos() {
                                                 if (selectedCountHere > 0) {
                                                     return (
                                                         <tr>
-                                                            <th className="w-16 px-6 py-3 text-left text-xs font-medium tracking-wider bg-purple-600">
+                                                            <th className="w-[2%] px-2 py-3 text-left text-xs font-medium tracking-wider bg-purple-600">
                                                                 {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
                                                                     <CustomCheckbox
                                                                         checked={
@@ -2907,7 +3314,7 @@ function Pedidos() {
                                                 }
                                                 return (
                                                     <tr>
-                                                        <th className="w-[2%] px-2 py-1 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                        <th className="w-[2%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
                                                                 <div className="w-5 h-5 flex items-center justify-center">
                                                                 <CustomCheckbox
@@ -2917,6 +3324,7 @@ function Pedidos() {
                                                                         (activeStatus === "impressao" && selectedPedidosImpressao.length > 0 && selectedPedidosImpressao.length === filteredPedidos.length) ||
                                                                         (activeStatus === "enviado" && selectedPedidosEnviado.length > 0 && selectedPedidosEnviado.length === filteredPedidos.length)
                                                                     }
+                                                                    disabled={activeStatus === 'emissao-nf' && nfBadgeFilter === 'processando'}
                                                                     onChange={() => {
                                                                         if (activeStatus === "todos") handleSelectAll(selectedPedidos, setSelectedPedidos);
                                                                         if (activeStatus === "emissao-nf") handleSelectAll(selectedPedidosEmissao, setSelectedPedidosEmissao);
@@ -2930,7 +3338,7 @@ function Pedidos() {
                                                         {columns.filter(col => col.enabled).map(col => (
                                                                 <th
                                                                     key={col.id}
-                                                                    className={`py-1 text-[clamp(11px,0.9vw,13px)] font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'text-center w-[4%] pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'text-center w-[15%] pr-0' : ''} ${col.id === 'valor' ? 'text-center w-[10%]' : ''} ${col.id === 'tipoEnvio' ? 'text-center w-[10%]' : ''} ${col.id === 'marketplace' ? 'text-center w-[10%]' : ''} ${col.id === 'status' ? 'text-center w-[10%]' : ''} ${col.id === 'margem' ? 'text-center w-[10%]' : ''}`}
+                                                                    className={`py-3 text-[clamp(11px,0.9vw,13px)] font-medium text-gray-500 uppercase tracking-wider ${col.id === 'produto' ? 'text-left w-[26%] pr-0' : ''} ${col.id === 'itens' ? 'text-center w-[4%] pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'text-center w-[14%] pr-0' : ''} ${col.id === 'valor' ? 'text-left w-[10%]' : ''} ${col.id === 'tipoEnvio' ? 'text-center w-[10%]' : ''} ${col.id === 'marketplace' ? 'text-left w-[8%]' : ''} ${col.id === 'status' ? 'text-center w-[10%]' : ''} ${col.id === 'margem' ? 'text-center w-[8%]' : ''}`}
                                                                 >
                                                                     {col.name}
                                                                 </th>
@@ -2940,7 +3348,7 @@ function Pedidos() {
                                                 );
                                             })()}
                                         </thead>
-                                        <tbody className="bg-white divide-y divide-gray-200">
+                                        <tbody className="bg-white divide-y-[2px] divide-gray-200">
                                             {paginatedPedidos.length > 0 ? (
                                                 paginatedPedidos.map((pedido) => {
                                                     const payLower = String(pedido?.payment_status || '').toLowerCase();
@@ -2955,119 +3363,110 @@ function Pedidos() {
                                                             : (isCancelledRow
                                                                 ? 'Pagamento cancelado'
                                                                 : (isRefundedRow ? 'Pagamento reembolsado' : 'Abrir vinculação')));
+                                                    const hasMultipleItems = Array.isArray(pedido.itens) && pedido.itens.length >= 2;
                                                     return (
-                                                    <tr key={pedido.id} className="group hover:bg-gray-50 transition-colors">
-                                                        <td className="w-[2%] px-2 py-1 whitespace-nowrap">
+                                                    <tr
+                                                        key={pedido.id}
+                                                        className="group hover:bg-gray-50 transition-colors relative overflow-hidden"
+                                                    >
+                                                        <td className="relative overflow-hidden w-[2%] px-2 py-3 whitespace-nowrap align-top">
                                                             {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
-                                                                <div className="w-5 h-5 flex items-center justify-center">
-                                                                <CustomCheckbox
-                                                                    checked={
-                                                                        (activeStatus === "todos" && selectedPedidos.includes(pedido.id)) ||
-                                                                        (activeStatus === "emissao-nf" && selectedPedidosEmissao.includes(pedido.id)) ||
-                                                                        (activeStatus === "impressao" && selectedPedidosImpressao.includes(pedido.id)) ||
-                                                                        (activeStatus === "enviado" && selectedPedidosEnviado.includes(pedido.id))
-                                                                    }
-                                                                    onChange={() => {
-                                                                        if (activeStatus === "todos") handleCheckboxChange(pedido.id, selectedPedidos, setSelectedPedidos);
-                                                                        if (activeStatus === "emissao-nf") handleCheckboxChange(pedido.id, selectedPedidosEmissao, setSelectedPedidosEmissao);
-                                                                        if (activeStatus === "impressao") handleCheckboxChange(pedido.id, selectedPedidosImpressao, setSelectedPedidosImpressao);
-                                                                        if (activeStatus === "enviado") handleCheckboxChange(pedido.id, selectedPedidosEnviado, setSelectedPedidosEnviado);
-                                                                    }}
-                                                                    onClick={(e) => e.stopPropagation()}
-                                                                />
+                                                                <div className="flex flex-col items-center gap-1">
+                                                                    <div className="w-5 h-5 flex items-center justify-center">
+                                                                        <CustomCheckbox
+                                                                            className="outline-none focus:outline-none"
+                                                                            checked={
+                                                                                (activeStatus === "todos" && selectedPedidos.includes(pedido.id)) ||
+                                                                                (activeStatus === "emissao-nf" && selectedPedidosEmissao.includes(pedido.id)) ||
+                                                                                (activeStatus === "impressao" && selectedPedidosImpressao.includes(pedido.id)) ||
+                                                                                (activeStatus === "enviado" && selectedPedidosEnviado.includes(pedido.id))
+                                                                            }
+                                                                            disabled={nfBadgeFilter === 'processando' && processingIdsSet.has(pedido.id)}
+                                                                            onChange={() => {
+                                                                                if (activeStatus === "todos") handleCheckboxChange(pedido.id, selectedPedidos, setSelectedPedidos);
+                                                                                if (activeStatus === "emissao-nf") handleCheckboxChange(pedido.id, selectedPedidosEmissao, setSelectedPedidosEmissao);
+                                                                                if (activeStatus === "impressao") handleCheckboxChange(pedido.id, selectedPedidosImpressao, setSelectedPedidosImpressao);
+                                                                                if (activeStatus === "enviado") handleCheckboxChange(pedido.id, selectedPedidosEnviado, setSelectedPedidosEnviado);
+                                                                            }}
+                                                                            onClick={(e) => e.stopPropagation()}
+                                                                        />
+                                                                    </div>
+                                                                    {hasMultipleItems && (
+                                                                        <TooltipProvider delayDuration={0}>
+                                                                            <Tooltip>
+                                                                                <TooltipTrigger asChild>
+                                                                                    <span className="relative inline-flex items-center justify-center mt-1 cursor-pointer hover:scale-105 transition-transform">
+                                                                                        <span className="absolute inline-flex h-3 w-3 rounded-full bg-purple-600 opacity-75 animate-ping"></span>
+                                                                                        <span className="relative inline-flex rounded-full h-3 w-3 bg-purple-600 ring-2 ring-transparent hover:ring-purple-500"></span>
+                                                                                    </span>
+                                                                                </TooltipTrigger>
+                                                                                <TooltipContent side="right" className="bg-purple-600 text-white border border-purple-600 max-w-[260px] whitespace-normal leading-snug text-center">
+                                                                                    <span>Atenção na embalagem, esse pedido contém múltiplos produtos</span>
+                                                                                </TooltipContent>
+                                                                            </Tooltip>
+                                                                        </TooltipProvider>
+                                                                    )}
                                                                 </div>
                                                             )}
                                                         </td>
                                                         {columns.filter(col => col.enabled).map(col => (
                                                             <td
                                                                 key={col.id}
-                                                                className={`py-1 whitespace-nowrap text-sm text-gray-500 min-w-0 ${col.id === 'produto' ? 'text-left w-[25%] pr-0' : ''} ${col.id === 'itens' ? 'w-[4%] text-center pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'w-[15%] text-center pr-0' : ''} ${col.id === 'valor' ? 'w-[10%] text-center' : ''} ${col.id === 'tipoEnvio' ? 'w-[10%] text-center' : ''} ${col.id === 'marketplace' ? 'w-[10%] text-center' : ''} ${col.id === 'status' ? 'w-[10%] text-center' : ''} ${col.id === 'margem' ? 'w-[10%] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
+                                                                className={`relative py-3 whitespace-nowrap text-sm text-gray-500 min-w-0 ${col.id === 'produto' ? 'text-left w-[26%] pr-0' : ''} ${col.id === 'itens' ? 'w-[4%] text-center pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'w-[14%] text-center pr-0' : ''} ${col.id === 'valor' ? 'w-[10%] text-left' : ''} ${col.id === 'tipoEnvio' ? 'w-[10%] text-center' : ''} ${col.id === 'marketplace' ? 'w-[8%] text-left' : ''} ${col.id === 'status' ? 'w-[10%] text-center' : ''} ${col.id === 'margem' ? 'w-[8%] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
                                                             >
-                                                                {col.render(pedido)}
+                                                                <div className="relative z-[1]">
+                                                                    {col.render(pedido)}
+                                                                </div>
                                                             </td>
                                                         ))}
-                                                        <td className="py-1 w-[8%] whitespace-nowrap text-center text-sm font-medium">
+                                                        <td className="relative overflow-hidden py-3 w-[8%] whitespace-nowrap text-center text-sm font-medium align-middle">
                                                             {activeStatus === "a-vincular" ? (
                                                                 <TooltipProvider>
-                                                                    <Tooltip>
-                                                                        <TooltipTrigger asChild>
-                                                                            <Button
-                                                                                variant="outline"
-                                                                                className="h-8 px-4"
+                                                                <Tooltip>
+                                                                    <TooltipTrigger asChild>
+                                                                        <Button
+                                                                                variant="link"
+                                                                                className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
                                                                                 disabled={!canVincular}
                                                                                 onClick={(e) => { e.stopPropagation(); if (canVincular) handleVincularClick(pedido); }}
                                                                             >
                                                                                 Vincular
                                                                             </Button>
-                                                                        </TooltipTrigger>
+                                                                    </TooltipTrigger>
                                                                         <TooltipContent>
                                                                             <span>{vincularTooltip}</span>
                                                                         </TooltipContent>
                                                                     </Tooltip>
                                                                 </TooltipProvider>
                                                             ) : activeStatus === "aguardando-coleta" ? (
-                                                                <div className="flex items-center justify-center gap-2">
-                                                                    <TooltipProvider>
-                                                                        <Tooltip>
-                                                                            <TooltipTrigger asChild>
-                                                                                <Button
-                                                                                    variant="link"
-                                                                                    className="h-8 w-8 p-0 text-purple-600"
-                                                                                    onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
-                                                                                    aria-label="Reimprimir"
-                                                                                >
-                                                                                    <FileBadge className="h-4 w-4" />
-                                                                                </Button>
-                                                                            </TooltipTrigger>
-                                                                            <TooltipContent>
-                                                                                <span>Reimprimir</span>
-                                                                            </TooltipContent>
-                                                                        </Tooltip>
-                                                                    </TooltipProvider>
-                                                                    <Button variant="link" className="h-8 w-8 p-0 text-primary" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
-                                                                        <ChevronRight className="h-4 w-4" />
-                                                                    </Button>
-                                                                </div>
-                                                            ) : activeStatus === "impressao" ? (
-                                                                <div className="flex items-center justify-center gap-2">
-                                                                    <TooltipProvider>
-                                                                        <Tooltip>
-                                                                            <TooltipTrigger asChild>
-                                                                                <Button
-                                                                                    variant="link"
-                                                                                    className="h-8 w-8 p-0"
-                                                                                    onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
-                                                                                    disabled={String(pedido?.shipment_substatus || '').toLowerCase() === 'buffered'}
-                                                                                    aria-label="Reimprimir etiqueta"
-                                                                                >
-                                                                                    <FileBadge className={`h-4 w-4 ${pedido?.impressoEtiqueta ? 'text-purple-600' : 'text-gray-500'}`} />
-                                                                                </Button>
-                                                                            </TooltipTrigger>
-                                                                            <TooltipContent>
-                                                                                <span>Reimprimir</span>
-                                                                            </TooltipContent>
-                                                                        </Tooltip>
-                                                                    </TooltipProvider>
-                                                                    <Button variant="link" className="h-8 w-8 p-0 text-primary" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); handleOpenDetailsDrawer(pedido); }} data-details-trigger>
-                                                                        <ChevronRight className="h-4 w-4" />
-                                                                    </Button>
-                                                                </div>
-                                                            ) : (
-                                                                <div className="flex items-center justify-center gap-2">
-                                                                    {activeStatus === "emissao-nf" && !nfeAuthorizedByPedidoId[String(pedido.id)] && (
-                                                                        <Button
-                                                                            variant="outline"
-                                                                            className="h-8 px-4"
-                                                                            onClick={(e) => { e.stopPropagation(); setPedidoIdParaEmissao(pedido.id); setIsEmissaoDrawerOpen(true); setEmissaoRestartNonce(Date.now()); }}
-                                                                        >
-                                                                            Emitir
-                                                                        </Button>
-                                                                    )}
+                                                                <div className="flex flex-col items-center justify-center gap-1">
+                                                                    <div className="relative">
+                                                                        <TooltipProvider>
+                                                                            <Tooltip>
+                                                                                <TooltipTrigger asChild>
+                                                                                    <Button
+                                                                                        variant="link"
+                                                                                        className={`h-8 w-8 p-0 ${(pedido?.label?.pdf_base64 || pedido?.label?.content_base64 || pedido?.label?.zpl2_base64) ? 'text-purple-600' : 'text-gray-500'}`}
+                                                                                        onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
+                                                                                        aria-label="Imprimir"
+                                                                                    >
+                                                                                        <FileBadge className="h-4 w-4" />
+                                                                                    </Button>
+                                                                                </TooltipTrigger>
+                                                                                <TooltipContent>
+                                                                                    <span>Reimprimir</span>
+                                                                                </TooltipContent>
+                                                                            </Tooltip>
+                                                                        </TooltipProvider>
+                                                                        {pedido.impressoEtiqueta && (
+                                                                            <CheckCircle2 className="absolute -top-1 -right-1 h-3 w-3 text-green-600 pointer-events-none" />
+                                                                        )}
+                                                                    </div>
                                                                     <DropdownMenu>
                                                                         <DropdownMenuTrigger asChild>
-                                                                            <Button variant="outline" className="h-8 px-3" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); }} data-details-trigger>
+                                                                            <Button variant="link" className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); }} data-details-trigger>
                                                                                 Mais
-                                                                                <ChevronDown className="h-4 w-4 ml-1" />
+                                                                                <ChevronDown className="h-2 w-4 ml-0" />
                                                                             </Button>
                                                                         </DropdownMenuTrigger>
                                                                         <DropdownMenuContent align="end">
@@ -3079,29 +3478,173 @@ function Pedidos() {
                                                                             >
                                                                                 Mostrar detalhes
                                                                             </DropdownMenuItem>
-                                                                            {activeStatus === "emissao-nf" && (
-                                                                                <DropdownMenuItem
-                                                                                    onClick={(e) => {
-                                                                                        e.stopPropagation();
-                                                                                        handleSyncNfeForPedido(pedido);
-                                                                                    }}
-                                                                                >
-                                                                                    Sincronizar NF-e
-                                                                                </DropdownMenuItem>
-                                                                            )}
-                                                                            {activeStatus === "emissao-nf" && nfeAuthorizedByPedidoId[String(pedido.id)] && (
-                                                                                <DropdownMenuItem
-                                                                                    onClick={(e) => {
-                                                                                        e.stopPropagation();
-                                                                                        handleEnviarNfeForPedido(pedido);
-                                                                                    }}
-                                                                                >
-                                                                                    Enviar NFe
-                                                                                </DropdownMenuItem>
-                                                                            )}
                                                                         </DropdownMenuContent>
                                                                     </DropdownMenu>
                                                                 </div>
+                                                            ) : activeStatus === "impressao" ? (
+                                                                <div className="flex flex-col items-center justify-center gap-1">
+                                                                    <TooltipProvider>
+                                                                        <Tooltip>
+                                                                            <TooltipTrigger asChild>
+                                                                                <Button
+                                                                                    variant="link"
+                                                                                    className="h-8 w-8 p-0"
+                                                                                    onClick={(e) => { e.stopPropagation(); handleReprintLabel(pedido); }}
+                                                                                    disabled={!(pedido?.label?.pdf_base64 || pedido?.label?.content_base64 || pedido?.label?.zpl2_base64)}
+                                                                                    aria-label="Reimprimir etiqueta"
+                                                                                >
+                                                                                    <FileBadge className={`h-4 w-4 ${(pedido?.label?.pdf_base64 || pedido?.label?.content_base64 || pedido?.label?.zpl2_base64) ? 'text-purple-600' : 'text-gray-500'}`} />
+                                                                                </Button>
+                                                                            </TooltipTrigger>
+                                                                            <TooltipContent>
+                                                                                <span>Reimprimir</span>
+                                                                            </TooltipContent>
+                                                                        </Tooltip>
+                                                                    </TooltipProvider>
+                                                                    <DropdownMenu>
+                                                                        <DropdownMenuTrigger asChild>
+                                                                            <Button variant="link" className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); }} data-details-trigger>
+                                                                                Mais
+                                                                                <ChevronDown className="h-2 w-4 ml-0" />
+                                                                            </Button>
+                                                                        </DropdownMenuTrigger>
+                                                                        <DropdownMenuContent align="end">
+                                                                            <DropdownMenuItem
+                                                                                onClick={(e) => {
+                                                                                    e.stopPropagation();
+                                                                                    handleOpenDetailsDrawer(pedido);
+                                                                                }}
+                                                                            >
+                                                                                Mostrar detalhes
+                                                                            </DropdownMenuItem>
+                                                                        </DropdownMenuContent>
+                                                                    </DropdownMenu>
+                                                                </div>
+                                                            ) : (
+                                                                (norm(pedido.status_interno) === 'processando nf' || processingIdsSet.has(pedido.id))
+                                                                    ? (
+                                                                        <div className="flex items-center justify-center">
+                                                                            <Badge className="bg-white text-purple-700 border border-purple-300 h-7 px-2 inline-flex items-center gap-2 rounded-md">
+                                                                                <Loader2 className="h-4 w-4 animate-spin text-purple-600" />
+                                                                                Processando NF-e
+                                                                            </Badge>
+                                                                        </div>
+                                                                    )
+                                                                    : (
+                                                                        <div className={`${activeStatus === "emissao-nf" && (nfBadgeFilter === "emitir" || nfBadgeFilter === "subir_xml") ? "flex flex-col items-center justify-center gap-1" : "flex items-center justify-center gap-2"}`}>
+                                                                            {activeStatus === "emissao-nf" && nfBadgeFilter === "emitir" && !nfeAuthorizedByPedidoId[String(pedido.id)] && (
+                                                                                <Button
+                                                                                    variant="link"
+                                                                                    className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        setProcessingIdsLocal(Array.from(new Set([...processingIdsLocal, String(pedido.id)])));
+                                                                                        handleEmitirNfe([pedido]);
+                                                                                    }}
+                                                                                >
+                                                                                    Emitir
+                                                                                </Button>
+                                                                            )}
+                                                                            {activeStatus === "emissao-nf" && nfBadgeFilter === "subir_xml" && (
+                                                                                xmlLoadingSet.has(String(pedido.id)) ? (
+                                                                                    <span className="inline-flex items-center h-8">
+                                                                                        <Loader2 className="h-4 w-4 animate-spin text-purple-600" />
+                                                                                    </span>
+                                                                                ) : (
+                                                                                    <Button
+                                                                                        variant="link"
+                                                                                        className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
+                                                                                        onClick={(e) => {
+                                                                                            e.stopPropagation();
+                                                                                            handleEnviarNfeForPedido(pedido);
+                                                                                        }}
+                                                                                    >
+                                                                                        Subir xml
+                                                                                    </Button>
+                                                                                )
+                                                                            )}
+                                                                            {activeStatus === "emissao-nf" && nfBadgeFilter === "subir_xml" && String(pedido.marketplace || '').toLowerCase().includes('shopee') && (
+                                                                                arrangeLoadingSet.has(String(pedido.id)) ? (
+                                                                                    <span className="inline-flex items-center h-8">
+                                                                                        <Loader2 className="h-4 w-4 animate-spin text-purple-600" />
+                                                                                    </span>
+                                                                                ) : (
+                                                                                    <Button
+                                                                                        variant="link"
+                                                                                        className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
+                                                                                        onClick={(e) => {
+                                                                                            e.stopPropagation();
+                                                                                            handleArrangeShipmentForPedido(pedido);
+                                                                                        }}
+                                                                                    >
+                                                                                        Organizar Envio
+                                                                                    </Button>
+                                                                                )
+                                                                            )}
+                                                                            
+                                                                            <DropdownMenu>
+                                                                                <DropdownMenuTrigger asChild>
+                                                                                    <Button variant="link" className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); }} data-details-trigger>
+                                                                                        Mais
+                                                                                        <ChevronDown className="h-2 w-4 ml-0" />
+                                                                                    </Button>
+                                                                                </DropdownMenuTrigger>
+                                                                                <DropdownMenuContent align="end">
+                                                                                    <DropdownMenuItem
+                                                                                        onClick={(e) => {
+                                                                                            e.stopPropagation();
+                                                                                            handleOpenDetailsDrawer(pedido);
+                                                                                        }}
+                                                                                    >
+                                                                                        Mostrar detalhes
+                                                                                    </DropdownMenuItem>
+                                                                                    
+                                                                                    {activeStatus === "emissao-nf" && nfBadgeFilter !== "subir_xml" && nfBadgeFilter !== "emitir" && (
+                                                                                        <DropdownMenuItem
+                                                                                            onClick={(e) => {
+                                                                                                e.stopPropagation();
+                                                                                                handleSyncNfeForPedido(pedido);
+                                                                                            }}
+                                                                                        >
+                                                                                            Sincronizar NF-e
+                                                                                        </DropdownMenuItem>
+                                                                                    )}
+                                                                                    {activeStatus === "emissao-nf" && nfBadgeFilter === "falha" && (
+                                                                                        <DropdownMenuItem
+                                                                                            onClick={(e) => {
+                                                                                                e.stopPropagation();
+                                                                                                setProcessingIdsLocal(Array.from(new Set([...processingIdsLocal, String(pedido.id)])));
+                                                                                                handleEmitirNfe([pedido]);
+                                                                                            }}
+                                                                                        >
+                                                                                            Reemitir
+                                                                                        </DropdownMenuItem>
+                                                                                    )}
+                                                                                    {activeStatus === "emissao-nf" && ["cancelado", "cancelada", "rejeitado", "rejeitada"].includes(String(nfeFocusStatusByPedidoId[String(pedido.id)] || "").toLowerCase()) && (
+                                                                                        <DropdownMenuItem
+                                                                                            onClick={(e) => {
+                                                                                                e.stopPropagation();
+                                                                                                setProcessingIdsLocal(Array.from(new Set([...processingIdsLocal, String(pedido.id)])));
+                                                                                                handleEmitirNfe([pedido], { forceNewNumber: true, forceNewRef: true });
+                                                                                            }}
+                                                                                        >
+                                                                                            Gerar Nova NF-e
+                                                                                        </DropdownMenuItem>
+                                                                                    )}
+                                                                                    {activeStatus === "emissao-nf" && nfeAuthorizedByPedidoId[String(pedido.id)] && (
+                                                                                        <DropdownMenuItem
+                                                                                            onClick={(e) => {
+                                                                                                e.stopPropagation();
+                                                                                                handleEnviarNfeForPedido(pedido);
+                                                                                            }}
+                                                                                        >
+                                                                                            Subir xml
+                                                                                        </DropdownMenuItem>
+                                                                                    )}
+                                                                                </DropdownMenuContent>
+                                                                            </DropdownMenu>
+                                                                        </div>
+                                                                    )
                                                             )}
                                                         </td>
                                                     </tr>
@@ -3169,34 +3712,14 @@ function Pedidos() {
                 </div>
 
                 {/* Drawer de Detalhes do Pedido */}
-                <PedidoDetailsDrawer pedido={selectedPedido} open={isDetailsDrawerOpen} onOpenChange={(open) => { setIsDetailsDrawerOpen(open); if (!open) { const btn = document.querySelector<HTMLButtonElement>('button[data-details-trigger]'); btn?.focus(); } }} />
-
-                {/* Drawer de Emissão de NF-e */}
-                <EmissaoNFDrawer
-                    open={isEmissaoDrawerOpen}
-                    onOpenChange={(open) => { setIsEmissaoDrawerOpen(open); if (!open) { setPedidoIdParaEmissao(null); } }}
-                    pedidoId={pedidoIdParaEmissao}
-                    onOpenDetails={(id) => {
-                        const p = pedidos.find(pp => String(pp.id) === String(id));
-                        if (p) handleOpenDetailsDrawer(p);
-                    }}
-                    autoAdvance={bulkIdsQueue.length > 0}
-                    queueIndex={pedidoIdParaEmissao ? Math.max(0, bulkIdsQueue.findIndex(id => id === pedidoIdParaEmissao)) : undefined}
-                    queueTotal={bulkIdsQueue.length || undefined}
-                    restartNonce={emissaoRestartNonce}
-                    onEmissaoConcluida={() => {
-                        if (bulkIdsQueue.length > 1) {
-                            const next = bulkIdsQueue.slice(1);
-                            setBulkIdsQueue(next);
-                            setPedidoIdParaEmissao(next[0]);
-                        } else {
-                            setIsEmissaoDrawerOpen(false);
-                            setPedidoIdParaEmissao(null);
-                            setBulkIdsQueue([]);
-                        }
-                        try { refreshNfeAuthorizedMapForList(); } catch {}
-                    }}
+                <PedidoDetailsDrawer
+                    pedido={selectedPedido}
+                    open={isDetailsDrawerOpen}
+                    onOpenChange={(open) => { setIsDetailsDrawerOpen(open); if (!open) { const btn = document.querySelector<HTMLButtonElement>('button[data-details-trigger]'); btn?.focus(); } }}
+                    onArrangeShipment={(p) => handleArrangeShipmentForPedido(p)}
                 />
+
+                
 
                 {/* Drawer de Filtros */}
                 <Drawer direction="right" open={isFilterDrawerOpen} onOpenChange={(open) => { console.log('[Pedidos] Filter Drawer onOpenChange:', open); setIsFilterDrawerOpen(open); }}>
@@ -3613,48 +4136,7 @@ function Pedidos() {
                     </DialogContent>
                 </Dialog>
 
-                {/* Drawer de Carregamento de Emissão de NF */}
-                <Drawer open={isEmitting} onOpenChange={setIsEmitting}>
-                    <DrawerContent className="w-[40%] mx-auto right-0 translate-x-[30%] p-6">
-                        <DrawerHeader className="p-0 mb-4">
-                            <DrawerTitle className="text-xl font-bold flex items-center space-x-2">
-                                <FileText className="h-6 w-6 text-primary" />
-                                <span>Processando Emissão de NF-e</span>
-                            </DrawerTitle>
-                            <DrawerDescription className="text-sm">
-                                Suas notas fiscais estão sendo emitidas. Aguarde.
-                            </DrawerDescription>
-                        </DrawerHeader>
-                        <div className="space-y-4">
-                            <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-                                <div
-                                    className="h-full bg-primary transition-all duration-500 ease-in-out"
-                                    style={{ width: `${emissionProgress}%` }}
-                                ></div>
-                            </div>
-                            <div className="flex justify-between items-center text-sm font-medium text-gray-700">
-                                <span>Progresso: {Math.round(emissionProgress)}%</span>
-                                <span>{emittedCount + failedCount} de {pedidos.filter(p => p.status_interno === 'Emissao NF').length}</span>
-                            </div>
-                            <div className="grid grid-cols-2 gap-4">
-                                <div className="p-4 rounded-lg bg-green-50 border border-green-200 flex items-center space-x-2">
-                                    <CheckCircle2 className="h-5 w-5 text-green-600" />
-                                    <div>
-                                        <div className="text-sm font-semibold">Notas Emitidas</div>
-                                        <div className="text-lg font-bold text-green-700">{emittedCount}</div>
-                                    </div>
-                                </div>
-                                <div className="p-4 rounded-lg bg-red-50 border border-red-200 flex items-center space-x-2">
-                                    <MinusCircle className="h-5 w-5 text-red-600" />
-                                    <div>
-                                        <div className="text-sm font-semibold">Falhas</div>
-                                        <div className="text-lg font-bold text-red-700">{failedCount}</div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </DrawerContent>
-                </Drawer>
+                
             </SidebarProvider>
         </TooltipProvider>
         );

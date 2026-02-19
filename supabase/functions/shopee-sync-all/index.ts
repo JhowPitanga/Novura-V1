@@ -86,6 +86,44 @@ function detectShopId(payload: unknown): string | null {
   return null;
 }
 
+function detectItemId(payload: unknown): string | null {
+  const cand = [
+    ["item_id"],["itemid"],
+    ["data","item_id"],["data","itemid"],
+    ["msg","item_id"],["message","item_id"],
+    ["item","item_id"],["content","item_id"],
+    ["data","content","content","item_id"],
+    ["data","message","content","item_id"],
+    ["item_list","0","item_id"],["data","item_list","0","item_id"],
+    ["item_id_list","0"],["data","item_id_list","0"],
+  ];
+  for (const p of cand) { const v = getStr(payload, p); if (v) return v; }
+  const mt = (getStr(payload, ["data","content","message_type"]) || "").toLowerCase();
+  if (mt === "item") {
+    const v = getStr(payload, ["data","content","content","item_id"]);
+    if (v) return v;
+  }
+  const tryNested = (key: string): string | null => {
+    const raw = getStr(payload, [key]);
+    if (raw && (raw.trim().startsWith("{") || raw.trim().startsWith("["))) {
+      try {
+        const nested = JSON.parse(raw);
+        for (const p of cand) {
+          const v = getStr(nested, p);
+          if (v) return v;
+        }
+        const mt2 = (getStr(nested, ["data","content","message_type"]) || "").toLowerCase();
+        if (mt2 === "item") {
+          const vv = getStr(nested, ["data","content","content","item_id"]);
+          if (vv) return vv;
+        }
+      } catch (_) {}
+    }
+    return null;
+  };
+  return tryNested("data") || tryNested("msg") || tryNested("message") || tryNested("raw");
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -100,30 +138,199 @@ serve(async (req) => {
   try {
     const correlationId = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
     const method = req.method;
+    const contentType = req.headers.get("content-type") || "";
+    const origin = req.headers.get("x-origin") || null;
     
     type StartBody = { organizationId?: string; storeName?: string; connectedByUserId?: string; redirect_uri?: string };
-    const body = method === "GET" ? null : (await req.json() as StartBody);
+    let body: StartBody | Record<string, unknown> | null = null;
+    let rawText: string | null = null;
+    let looksFormFlag = false;
+    if (method !== "GET") {
+      try {
+        const txt = await req.text();
+        rawText = txt;
+        const looksForm = txt.includes("=") && txt.includes("&");
+        looksFormFlag = looksForm;
+        if (looksForm) {
+          const params = new URLSearchParams(txt);
+          const obj: Record<string, unknown> = {};
+          for (const [k, v] of params.entries()) obj[k] = v;
+          const tryJson = (s: unknown) => {
+            try {
+              const st = String(s || "");
+              if (st.trim().startsWith("{") || st.trim().startsWith("[")) return JSON.parse(st);
+            } catch (_) {}
+            return s;
+          };
+          obj["data"] = tryJson(obj["data"]);
+          obj["msg"] = tryJson(obj["msg"]);
+          obj["message"] = tryJson(obj["message"]);
+          body = obj;
+        } else {
+          body = (txt && txt.trim()) ? (JSON.parse(txt) as StartBody) : {};
+        }
+      } catch (_) {
+        try { body = await req.json() as StartBody; } catch { body = {}; }
+      }
+    }
+    try {
+      console.log("[shopee-sync-all] inbound_parsed", {
+        correlationId,
+        method,
+        contentType,
+        rawLen: (rawText || "").length,
+        origin,
+        looksForm: looksFormFlag,
+        hasData: Boolean((body as any)?.data),
+        hasMsg: Boolean((body as any)?.msg),
+        hasMessage: Boolean((body as any)?.message),
+      });
+    } catch (_) {}
     
     // Dados para o STATE (passados para o callback)
-    const organizationId = body?.organizationId || null;
-    const storeName = body?.storeName || null;
-    const connectedByUserId = body?.connectedByUserId || null;
-    const redirectOverride = sanitizeRedirect(body?.redirect_uri || null);
+    const organizationId = (body as any)?.organizationId || null;
+    const storeName = (body as any)?.storeName || null;
+    const connectedByUserId = (body as any)?.connectedByUserId || null;
+    const redirectOverride = sanitizeRedirect((body as any)?.redirect_uri || null);
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    const getNum = (o: unknown, p: string[]): number | null => {
+      const s = getStr(o, p);
+      if (s && /^\d+$/.test(String(s))) return Number(s);
+      return null;
+    };
+    const pushCode =
+      getNum(body || {}, ["code"]) ||
+      getNum(body || {}, ["data","code"]) ||
+      getNum(body || {}, ["message","code"]) ||
+      getNum(body || {}, ["msg","code"]) ||
+      getNum(body || {}, ["push_type"]) ||
+      getNum(body || {}, ["data","push_type"]) ||
+      getNum(body || {}, ["message","push_type"]) ||
+      getNum(body || {}, ["msg","push_type"]) ||
+      getNum(body || {}, ["business_type"]) ||
+      getNum(body || {}, ["data","business_type"]) ||
+      getNum(body || {}, ["message","business_type"]) ||
+      getNum(body || {}, ["msg","business_type"]) ||
+      null;
+    try {
+      console.log("[shopee-sync-all] push_detection", {
+        correlationId,
+        hasPushCode: pushCode !== null,
+        pushCode,
+      });
+    } catch (_) {}
     if (method === "POST") {
-      const isOrderPush = Boolean(detectOrderSn(body || {}));
-      if (isOrderPush) {
-        const { data: forwardData, error: forwardErr } = await (admin as any).functions.invoke("shopee-webhook-orders", {
-          body: body || {},
-          headers: { "x-request-id": correlationId, "x-correlation-id": correlationId },
+      const hasOrdersnNested =
+        Boolean(getStr(body || {}, ["data","ordersn"]) || getStr(body || {}, ["message","ordersn"]) || getStr(body || {}, ["msg","ordersn"]));
+      const detectedOrderSn = detectOrderSn(body || {});
+      const isOrderPush = Boolean(detectedOrderSn || hasOrdersnNested);
+      try {
+        console.log("[shopee-sync-all] detection_summary", {
+          correlationId,
+          hasOrdersnTop: Boolean(detectedOrderSn),
+          hasOrdersnNested,
+          pushCodePresent: pushCode !== null,
+          shopId: getStr(body || {}, ["shop_id"]) || null,
         });
-        if (forwardErr) return jsonResponse({ error: (forwardErr as any)?.message || "Forward failed", correlationId }, 500);
+      } catch (_) {}
+      if (isOrderPush) {
+        const forwardPayload = (() => {
+          const asObj = (body && typeof body === "object") ? body : {};
+          return { ...asObj, raw: rawText || "" };
+        })();
+        try {
+          console.log("[shopee-sync-all] forwarding_to_webhook", {
+            correlationId,
+            hasRaw: Boolean(rawText),
+            origin: "live_push",
+          });
+        } catch (_) {}
+        const { data: forwardData, error: forwardErr } = await (admin as any).functions.invoke("shopee-webhook-orders", {
+          body: forwardPayload,
+          headers: { "x-request-id": correlationId, "x-correlation-id": correlationId, "x-origin": "live_push" },
+        });
+        if (forwardErr) {
+          try {
+            console.warn("[shopee-sync-all] forward_error", {
+              correlationId,
+              message: (forwardErr as any)?.message || null,
+              code: (forwardErr as any)?.code || null,
+            });
+          } catch (_) {}
+          return jsonResponse({ error: (forwardErr as any)?.message || "Forward failed", correlationId }, 500);
+        }
         return jsonResponse({ ok: true, forwarded_to: "shopee-webhook-orders", result: forwardData, correlationId }, 200);
       }
+
+      const itemIdDetectedTop = detectItemId(body || {});
+      if (itemIdDetectedTop) {
+        const forwardPayload = (() => {
+          const asObj = (body && typeof body === "object") ? body : {};
+          return { ...asObj, raw: rawText || "" };
+        })();
+        try {
+          console.log("[shopee-sync-all] forwarding_item_push", {
+            correlationId,
+            itemIdDetected: String(itemIdDetectedTop),
+            hasRaw: Boolean(rawText),
+            origin: "live_push",
+          });
+        } catch (_) {}
+        const { data: forwardData, error: forwardErr } = await (admin as any).functions.invoke("shopee-webhook-items", {
+          body: forwardPayload,
+          headers: { "x-request-id": correlationId, "x-correlation-id": correlationId, "x-origin": "live_push" },
+        });
+        if (forwardErr) {
+          try {
+            console.warn("[shopee-sync-all] forward_error_item", {
+              correlationId,
+              message: (forwardErr as any)?.message || null,
+              code: (forwardErr as any)?.code || null,
+            });
+          } catch (_) {}
+          return jsonResponse({ error: (forwardErr as any)?.message || "Forward failed", correlationId }, 500);
+        }
+        return jsonResponse({ ok: true, forwarded_to: "shopee-webhook-items", result: forwardData, correlationId }, 200);
+      } else if (pushCode !== null) {
+        const itemIdDetected = detectItemId(body || {});
+        const itemPushCodes = new Set<number>([8, 11, 16, 22, 27]);
+        const isItemByCode = typeof pushCode === "number" && itemPushCodes.has(pushCode);
+        const forwardPayload = (() => {
+          const asObj = (body && typeof body === "object") ? body : {};
+          return { ...asObj, raw: rawText || "" };
+        })();
+        try {
+          console.log("[shopee-sync-all] forwarding_by_code", {
+            correlationId,
+            pushCode,
+            isItemPush: Boolean(itemIdDetected || isItemByCode),
+            hasRaw: Boolean(rawText),
+            origin: "live_push",
+          });
+        } catch (_) {}
+        const targetFn = (itemIdDetected || isItemByCode) ? "shopee-webhook-items" : "shopee-webhook-orders";
+        const { data: forwardData, error: forwardErr } = await (admin as any).functions.invoke(targetFn, {
+          body: forwardPayload,
+          headers: { "x-request-id": correlationId, "x-correlation-id": correlationId, "x-origin": "live_push" },
+        });
+        if (forwardErr) {
+          try {
+            console.warn("[shopee-sync-all] forward_error_code", {
+              correlationId,
+              pushCode,
+              message: (forwardErr as any)?.message || null,
+              code: (forwardErr as any)?.code || null,
+            });
+          } catch (_) {}
+          return jsonResponse({ error: (forwardErr as any)?.message || "Forward failed", correlationId }, 500);
+        }
+        return jsonResponse({ ok: true, forwarded_to: targetFn, result: forwardData, correlationId }, 200);
+      }
+      try { console.log("[shopee-sync-all] no_forward", { correlationId }); } catch (_) {}
     }
 
     // Busca Credenciais do App Shopee (Tabela APPS)
@@ -147,7 +354,7 @@ serve(async (req) => {
     }
     
     // --- CONFIGURAÇÃO ESTRITAMENTE DE PRODUÇÃO ---
-    const PROD_AUTH_HOST = "https://partner.shopeemobile.com";
+    const PROD_AUTH_HOST = "https://openplatform.shopee.com.br";
     const fixedAuthPath = "/api/v2/shop/auth_partner";
     const defaultRedirectUri = "https://novuraerp.com.br/oauth/shopee/callback"; // Default de fallback
 

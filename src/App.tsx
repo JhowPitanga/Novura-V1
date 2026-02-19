@@ -177,7 +177,19 @@ const App = () => (
               }
             />
             <Route
-              path="/anuncios/criar/ml"
+              path="/anuncios/criar"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["create","publish","view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <AnunciosCriarML />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/criar/:marketplace"
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["create","publish","view"]}>
@@ -262,6 +274,66 @@ const App = () => (
             />
             <Route
               path="/pedidos"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="pedidos" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <Pedidos />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/pedidos/emissao_nfe"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="pedidos" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <Pedidos />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/pedidos/emissao_nfe/emitir"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="pedidos" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <Pedidos />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/pedidos/emissao_nfe/processando"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="pedidos" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <Pedidos />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/pedidos/emissao_nfe/falha_emissao"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="pedidos" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <Pedidos />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/pedidos/emissao_nfe/subir_xml"
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="pedidos" actions={["view"]}>

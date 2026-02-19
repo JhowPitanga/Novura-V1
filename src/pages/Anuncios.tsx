@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Plus, Search, Filter, ExternalLink, Edit, Pause, Play, TrendingUp, Eye, BarChart, ShoppingCart, Percent, Copy, MoreHorizontal, DollarSign, ChevronUp, ChevronDown, ChevronDown as ChevronDownIcon, Package, Zap, Trash2 } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Plus, Search, Filter, ExternalLink, Edit, Pause, Play, TrendingUp, Eye, BarChart, ShoppingCart, Heart, Copy, MoreHorizontal, DollarSign, ChevronUp, ChevronDown, ChevronDown as ChevronDownIcon, Package, Zap, Trash2, Loader2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
@@ -55,6 +55,12 @@ export default function Anuncios() {
     const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
     const [expandedVariations, setExpandedVariations] = useState<Set<string>>(new Set());
     const [drafts, setDrafts] = useState<any[]>([]);
+    const [stockModalOpen, setStockModalOpen] = useState<boolean>(false);
+    const [stockEditForItemId, setStockEditForItemId] = useState<string | null>(null);
+    const [stockEditVariations, setStockEditVariations] = useState<Array<{ id: string | number; sku: string; seller_stock_total: number }>>([]);
+    const [stockEditsMap, setStockEditsMap] = useState<Record<string, number>>({});
+    const [stockBulkValue, setStockBulkValue] = useState<string>("");
+    const [stockUpdateLoading, setStockUpdateLoading] = useState<boolean>(false);
     const [deletePopoverOpenId, setDeletePopoverOpenId] = useState<string | null>(null);
     const [confirmDeleteItemId, setConfirmDeleteItemId] = useState<string | null>(null);
     const [selectedDraftIds, setSelectedDraftIds] = useState<Set<string>>(new Set());
@@ -62,21 +68,11 @@ export default function Anuncios() {
     // Capacidades/flags de envio do seller (derivadas de shipping_preferences)
     const [shippingCaps, setShippingCaps] = useState<{ flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean } | null>(null);
     const [hasIntegration, setHasIntegration] = useState<boolean>(false);
+    const lastLoadedKeyRef = useRef<string | null>(null);
+    const lastIntegrationLoadKeyRef = useRef<string | null>(null);
     
 
-    useEffect(() => {
-        const run = async () => {
-            if (!organizationId) { setHasIntegration(false); return; }
-            const { data, error } = await supabase
-                .from('marketplace_integrations')
-                .select('id')
-                .eq('organizations_id', organizationId)
-                .limit(1);
-            if (error) { setHasIntegration(false); return; }
-            setHasIntegration(Array.isArray(data) && data.length > 0);
-        };
-        run();
-    }, [organizationId]);
+    // hasIntegration passa a ser configurado dentro de loadConnectedMarketplaces para evitar chamadas duplicadas
 
     useEffect(() => {
         const p = String(location.pathname || '');
@@ -105,28 +101,118 @@ export default function Anuncios() {
     }, [organizationId, activeStatus]);
 
     // Helper para colorização do medidor por nível de qualidade
-    const getQualityStrokeColor = (level?: string | null) => {
+    const getQualityStrokeColor = (level?: any) => {
+        if (typeof level === 'number') {
+            if (level === 1) return '#EF4444';
+            if (level === 2) return '#F59E0B';
+            if (level === 3) return '#7C3AED';
+            return '#6B7280';
+        }
         const s = String(level || '')
             .toLowerCase()
             .normalize('NFD')
             .replace(/[\u0300-\u036f]/g, '');
-        // Priorizar correspondências específicas para evitar colisões de substring
-        if (s.includes('bas')) return '#EF4444'; // vermelho (básica)
-        if (s.includes('satis')) return '#F59E0B'; // âmbar (satisfatória)
-        if (s.includes('prof')) return '#7C3AED'; // roxo Novura (profissional)
-        return '#6B7280'; // cinza (desconhecido)
+        if (s === '1') return '#EF4444';
+        if (s === '2') return '#F59E0B';
+        if (s === '3') return '#7C3AED';
+        if (s.includes('bas')) return '#EF4444';
+        if (s.includes('satis')) return '#F59E0B';
+        if (s.includes('prof')) return '#7C3AED';
+        if (s === 'to_be_improved') return '#EF4444';
+        if (s === 'qualified') return '#F59E0B';
+        if (s === 'excellent') return '#7C3AED';
+        return '#6B7280';
     };
 
-    const loadItems = async () => {
+    const getQualityLabel = (level?: any) => {
+        if (typeof level === 'number') {
+            if (level === 1) return 'Precisa de Melhoria';
+            if (level === 2) return 'Qualificado';
+            if (level === 3) return 'Excelente';
+        }
+        const s = String(level || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '');
+        if (s === '1') return 'Precisa de Melhoria';
+        if (s === '2') return 'Qualificado';
+        if (s === '3') return 'Excelente';
+        if (s.includes('bas')) return 'Básico';
+        if (s.includes('satis')) return 'Satisfatório';
+        if (s.includes('prof')) return 'Profissional';
+        if (s === 'to_be_improved') return 'Precisa de Melhoria';
+        if (s === 'qualified') return 'Qualificado';
+        if (s === 'excellent') return 'Excelente';
+        return '';
+    };
+
+    const translateSuggestion = (text: string) => {
+        const s = String(text || '').trim();
+        const l = s.toLowerCase();
+        const mImg = l.match(/add at least\s*(\d+)\s*images/);
+        if (mImg) return `Adicionar pelo menos ${mImg[1]} imagens`;
+        const mAttr = l.match(/add at least\s*(\d+)\s*attributes/);
+        if (mAttr) return `Adicionar pelo menos ${mAttr[1]} atributos`;
+        if (l.includes('add brand info')) return 'Adicionar informações de marca';
+        if (l.includes('adopt suggested category')) return 'Adotar categoria sugerida';
+        if (l.includes('add at least 1 attributes')) return 'Adicionar pelo menos 1 atributo';
+        if (l.includes('add size chart')) return 'Adicionar tabela de medidas';
+        if (l.includes('adopt the color or size variation')) return 'Adotar variações de cor ou tamanho';
+        if (l.includes('add at least 100 characters or 1 image for desc')) return 'Adicionar ao menos 100 caracteres ou 1 imagem na descrição';
+        if (l.includes('add characters for name to 25~100')) return 'Ajustar nome para 25 a 100 caracteres';
+        if (l.includes('adopt suggested weight')) return 'Adotar peso sugerido';
+        if (l.includes('add video')) return 'Adicionar vídeo';
+        if (l.includes('add at least 3 attributes')) return 'Adicionar pelo menos 3 atributos';
+        const tokens: Record<string, string> = {
+            'add ': 'Adicionar ',
+            'adopt ': 'Adotar ',
+            'brand': 'marca',
+            'info': 'informações',
+            'category': 'categoria',
+            'color': 'cor',
+            'size': 'tamanho',
+            'variation': 'variação',
+            'weight': 'peso',
+            'images': 'imagens',
+            'attributes': 'atributos',
+            'video': 'vídeo',
+            'desc': 'descrição',
+            'characters': 'caracteres',
+            'name': 'nome',
+            'chart': 'tabela'
+        };
+        let out = s;
+        Object.keys(tokens).forEach(k => {
+            out = out.replace(new RegExp(k, 'ig'), tokens[k]);
+        });
+        return out;
+    };
+
+    const getImprovementSuggestions = (pd: any): string[] => {
+        const tasks = Array.isArray(pd?.unfinished_task) ? pd.unfinished_task : [];
+        return tasks.map((t: any) => translateSuggestion(String(t?.suggestion || ''))).filter((x: string) => x && x.trim().length > 0);
+    };
+
+    const loadItems = useCallback(async () => {
         if (!organizationId) return;
         setLoading(true);
         try {
-            const { data, error } = await (supabase as any)
-                .from('marketplace_items_unified')
-                .select('*')
-                .eq('organizations_id', organizationId)
-                .order('updated_at', { ascending: false })
-                .limit(400);
+            const selectedDisplay = marketplaceNavItems.find(i => i.path === selectedMarketplacePath)?.displayName || '';
+            const useShopeeRaw = String(selectedDisplay).toLowerCase() === 'shopee';
+            const { data, error } = useShopeeRaw
+                ? await (supabase as any)
+                    .from('marketplace_items_raw')
+                    .select('*')
+                    .eq('organizations_id', organizationId)
+                    .eq('marketplace_name', 'Shopee')
+                    .order('updated_at', { ascending: false })
+                    .limit(400)
+                : await (supabase as any)
+                    .from('marketplace_items_unified')
+                    .select('*')
+                    .eq('organizations_id', organizationId)
+                    .order('updated_at', { ascending: false })
+                    .limit(400);
             if (error) throw error;
             const rows = data || [];
             setItems(rows);
@@ -139,45 +225,39 @@ export default function Anuncios() {
             (rows || []).forEach((r: any) => {
                 const id = String(r?.marketplace_item_id || r?.id || '');
                 if (!id) return;
-                const lt = r?.listing_type_id ? String(r.listing_type_id) : null;
-                lmap[id] = lt || null;
-                if (r?.listing_prices) pmap[id] = r.listing_prices;
-                const shippingTags = Array.isArray(r?.shipping_tags)
-                    ? r.shipping_tags.map((t: any) => String(t || '').toLowerCase())
-                    : [];
-                if (shippingTags.length) {
-                    smap[id] = shippingTags;
+                if (useShopeeRaw) {
+                    lmap[id] = null;
+                    if (Array.isArray(r?.shipping_types)) {
+                        smap[id] = (r.shipping_types as any[])
+                            .filter((t: any) => t && t.enabled === true)
+                            .map((t: any) => {
+                                const name = String(t?.logistic_name || '').toLowerCase();
+                                if (name.includes('retire')) return 'Retire';
+                                if (name.includes('padrão') || name.includes('padrao')) return 'Padrão';
+                                return t?.logistic_name || '';
+                            })
+                            .filter((s: string) => s && s.trim().length > 0);
+                    }
+                    mmap[id] = { quality_level: (r?.performance_data?.quality_level ?? null), performance_data: r?.performance_data ?? null };
+                } else {
+                    const lt = r?.listing_type_id ? String(r.listing_type_id) : null;
+                    lmap[id] = lt || null;
+                    if (r?.listing_prices) pmap[id] = r.listing_prices;
+                    const shippingTags = Array.isArray(r?.shipping_tags)
+                        ? r.shipping_tags.map((t: any) => String(t || '').toLowerCase())
+                        : [];
+                    if (shippingTags.length) {
+                        smap[id] = shippingTags;
+                    }
+                    mmap[id] = { quality_level: r?.quality_level ?? null, performance_data: r?.performance_data ?? null };
                 }
-                mmap[id] = { quality_level: r?.quality_level ?? null, performance_data: r?.performance_data ?? null };
             });
             setListingTypeByItemId(lmap);
             setListingPricesByItemId(pmap);
             setShippingTypesByItemId(smap);
             setMetricsByItemId(mmap);
 
-            // Buscar flags de shipping_preferences da integração Mercado Livre e consolidar
-            try {
-                const { data: integRows, error: integErr } = await (supabase as any)
-                    .from('marketplace_integrations')
-                    .select('drop_off, xd_drop_off, self_service, marketplace_name')
-                    .eq('organizations_id', organizationId)
-                    .eq('marketplace_name', 'Mercado Livre');
-                if (integErr) {
-                    console.error('Erro ao buscar marketplace_integrations:', integErr);
-                } else {
-                    const caps = {} as { flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean };
-                    const rows = integRows || [];
-                    rows.forEach((r: any) => {
-                        if (r?.self_service === true) caps.flex = true;
-                        if (r?.xd_drop_off === true) caps.envios = true;
-                        if (r?.drop_off === true) caps.correios = true;
-                    });
-                    const anyEnabled = !!(caps.flex || caps.envios || caps.correios || caps.full);
-                    setShippingCaps(anyEnabled ? caps : null);
-                }
-            } catch (capsCatchErr) {
-                console.error('Falha ao carregar shipping caps:', capsCatchErr);
-            }
+            // shipping caps agora são carregados em loadConnectedMarketplaces para evitar chamadas duplicadas
         } catch (e: any) {
             console.error("Erro ao buscar anúncios:", e);
             // Fallback para tabela original se a view não existir ainda
@@ -240,7 +320,7 @@ export default function Anuncios() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [organizationId, marketplaceNavItems, selectedMarketplacePath, toast]);
 
     
 
@@ -302,30 +382,49 @@ export default function Anuncios() {
         }
     };
 
-    const loadConnectedMarketplaces = async () => {
+    const loadConnectedMarketplaces = useCallback(async () => {
         if (!organizationId) return;
         try {
+            const key = String(organizationId || '');
+            if (lastIntegrationLoadKeyRef.current === key && marketplaceNavItems.length > 0) {
+                return;
+            }
+            lastIntegrationLoadKeyRef.current = key;
             const { data, error } = await (supabase as any)
                 .from('marketplace_integrations')
-                .select('marketplace_name')
+                .select('marketplace_name, drop_off, xd_drop_off, self_service')
                 .eq('organizations_id', organizationId);
             if (error) throw error;
-            const rows = (data || []) as Array<{ marketplace_name: string | null }>;
+            const rows = (data || []) as Array<{ marketplace_name: string | null, drop_off?: boolean, xd_drop_off?: boolean, self_service?: boolean }>;
             const names = rows.map((r) => String(r?.marketplace_name || '')).filter(Boolean) as string[];
             const uniqueNames: string[] = Array.from(new Set<string>(names));
             const nav: { title: string; path: string; description?: string; displayName?: string }[] = uniqueNames.map((dn: string) => ({ title: dn, path: toSlug(dn), description: `Anúncios no ${dn}`, displayName: dn }));
             setMarketplaceNavItems(nav);
-            // Se ainda não selecionado, define o primeiro marketplace disponível
+            setHasIntegration(uniqueNames.length > 0);
             if (!selectedMarketplacePath || !nav.some(n => n.path === selectedMarketplacePath)) {
                 setSelectedMarketplacePath(nav[0]?.path || '');
             }
+            const mlRows = rows.filter(r => String(r?.marketplace_name || '').toLowerCase() === 'mercado livre');
+            if (mlRows.length > 0) {
+                const caps = {} as { flex?: boolean; envios?: boolean; correios?: boolean; full?: boolean };
+                mlRows.forEach((r) => {
+                    if (r?.self_service === true) caps.flex = true;
+                    if (r?.xd_drop_off === true) caps.envios = true;
+                    if (r?.drop_off === true) caps.correios = true;
+                });
+                const anyEnabled = !!(caps.flex || caps.envios || caps.correios || caps.full);
+                setShippingCaps(anyEnabled ? caps : null);
+            } else {
+                setShippingCaps(null);
+            }
         } catch (e) {
             console.warn('Falha ao carregar marketplaces conectados', e);
-            // Fallback mínimo: sem itens
             setMarketplaceNavItems([]);
             setSelectedMarketplacePath('');
+            setHasIntegration(false);
+            setShippingCaps(null);
         }
-    };
+    }, [organizationId]);
 
     const handleSync = async () => {
         if (!organizationId) {
@@ -338,25 +437,34 @@ export default function Anuncios() {
             const clientRid = (crypto as any)?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
             console.log('[anuncios.sync] start', { organizationId, clientRid });
 
-            // Orquestração em uma única chamada
-            const { data: orchestration, error: orchError } = await (supabase as any).functions.invoke('mercado-livre-orchestrate-sync', {
-                body: { organizationId, clientRid }
-            });
-            console.log('[anuncios.sync] orchestrator result', { orchError, orchestration });
-            if (orchError) {
-                try {
-                    console.warn('[anuncios.sync] orchestrator failed, trying direct sync-items diagnostics');
-                    const { data: diagData, error: diagErr } = await (supabase as any).functions.invoke('mercado-livre-sync-items', {
-                        body: { organizationId, debug: true }
-                    });
-                    console.log('[anuncios.sync] direct sync-items diag', { diagErr, diagData });
-                } catch (diag) {
-                    console.warn('[anuncios.sync] direct sync-items diag threw', diag);
+            const marketplaceDisplay = marketplaceNavItems.find(i => i.path === selectedMarketplacePath)?.displayName || '';
+            if (String(marketplaceDisplay).toLowerCase() === 'shopee') {
+                const { data: result, error: fnErr } = await (supabase as any).functions.invoke('shopee-sync-items', {
+                    body: { organizationId, page_size: 100, item_status: ['NORMAL'] }
+                });
+                console.log('[anuncios.sync] shopee result', { fnErr, result });
+                if (fnErr) throw fnErr;
+                const total = Array.isArray(result?.results) ? result.results.reduce((acc: number, r: any) => acc + Number(r?.updated || 0), 0) : 0;
+                toast({ title: "Sincronização concluída", description: `Itens sincronizados: ${total}` });
+            } else {
+                const { data: orchestration, error: orchError } = await (supabase as any).functions.invoke('mercado-livre-orchestrate-sync', {
+                    body: { organizationId, clientRid }
+                });
+                console.log('[anuncios.sync] orchestrator result', { orchError, orchestration });
+                if (orchError) {
+                    try {
+                        const { data: diagData, error: diagErr } = await (supabase as any).functions.invoke('mercado-livre-sync-items', {
+                            body: { organizationId, debug: true }
+                        });
+                        console.log('[anuncios.sync] direct sync-items diag', { diagErr, diagData });
+                    } catch (diag) {
+                        console.warn('[anuncios.sync] direct sync-items diag threw', diag);
+                    }
+                    throw orchError;
                 }
-                throw orchError;
+                const synced = Number(orchestration?.sync?.synced ?? 0);
+                toast({ title: "Sincronização concluída", description: `Itens sincronizados: ${synced}` });
             }
-            const synced = Number(orchestration?.sync?.synced ?? 0);
-            toast({ title: "Sincronização concluída", description: `Itens sincronizados: ${synced}` });
 
             // Recarrega itens para refletir todas as atualizações
             try {
@@ -399,11 +507,20 @@ export default function Anuncios() {
             const onlySelectedIds = Array.from(selectedItems);
             console.log('[anuncios.syncSelected] start', { organizationId, clientRid, onlySelectedIds });
 
-            const { data: orchestration, error: orchError } = await (supabase as any).functions.invoke('mercado-livre-orchestrate-sync', {
-                body: { organizationId, clientRid, onlySelectedIds }
-            });
-            console.log('[anuncios.syncSelected] orchestrator result', { orchError, orchestration });
-            if (orchError) throw orchError;
+            const marketplaceDisplay = marketplaceNavItems.find(i => i.path === selectedMarketplacePath)?.displayName || '';
+            if (String(marketplaceDisplay).toLowerCase() === 'shopee') {
+                const { data: result, error: fnErr } = await (supabase as any).functions.invoke('shopee-sync-items', {
+                    body: { organizationId, item_id_list: onlySelectedIds }
+                });
+                console.log('[anuncios.syncSelected] shopee result', { fnErr, result });
+                if (fnErr) throw fnErr;
+            } else {
+                const { data: orchestration, error: orchError } = await (supabase as any).functions.invoke('mercado-livre-orchestrate-sync', {
+                    body: { organizationId, clientRid, onlySelectedIds }
+                });
+                console.log('[anuncios.syncSelected] orchestrator result', { orchError, orchestration });
+                if (orchError) throw orchError;
+            }
 
             toast({ title: "Sincronização concluída", description: `Selecionados sincronizados: ${selectedCount}` });
             try {
@@ -422,11 +539,9 @@ export default function Anuncios() {
         }
     };
 
-    // Atualização inicial + assinatura realtime (todos os marketplaces)
+    // Assinatura realtime e carregamento inicial de marketplaces
     useEffect(() => {
         if (!organizationId) return;
-        // Carrega itens e marketplaces conectados
-        loadItems();
         loadConnectedMarketplaces();
         // Assina mudanças na tabela marketplace_items para a organização
         const channel = (supabase as any)
@@ -459,15 +574,41 @@ export default function Anuncios() {
                 table: 'marketplace_metrics',
                 filter: `organizations_id=eq.${organizationId}`,
             }, (payload: any) => {
-                console.log('Métricas atualizadas:', payload);
-                // Recarrega itens quando métricas são atualizadas para refletir mudanças
-                loadItems();
+                const evt = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE';
+                const n = payload.new as any;
+                const o = payload.old as any;
+                const id = String(n?.marketplace_item_id || n?.item_id || o?.marketplace_item_id || o?.item_id || '');
+                if (!id) return;
+                setMetricsByItemId(prev => {
+                    const next = { ...prev };
+                    if (evt === 'DELETE') {
+                        delete next[id];
+                    } else {
+                        next[id] = {
+                            quality_level: n?.quality_level ?? next[id]?.quality_level ?? null,
+                            performance_data: n?.performance_data ?? next[id]?.performance_data ?? null,
+                        };
+                    }
+                    return next;
+                });
             })
             .subscribe();
         return () => {
             try { (supabase as any).removeChannel(channel); } catch { /* ignore */ }
         };
     }, [organizationId]);
+
+    // Carrega itens apenas quando marketplace selecionado estiver pronto (uma vez por combinação org+path)
+    useEffect(() => {
+        if (!organizationId) return;
+        if (!selectedMarketplacePath) return;
+        if (marketplaceNavItems.length === 0) return;
+        const key = `${organizationId}|${selectedMarketplacePath}`;
+        if (lastLoadedKeyRef.current === key && items.length > 0) return;
+        lastLoadedKeyRef.current = key;
+        loadItems();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [organizationId, selectedMarketplacePath, marketplaceNavItems]);
 
     // Removido auto-sync: sincronização apenas ao clicar no botão
 
@@ -555,11 +696,20 @@ export default function Anuncios() {
                 if (skuAttr?.value_name) derivedSku = skuAttr.value_name;
             }
         }
-        // Preços e promoção
+        const mktLower = String(row?.marketplace_name || '').toLowerCase();
         const priceNum = typeof row?.price === 'number' ? row.price : (Number(row?.price) || 0);
-        const originalPrice = Number(row?.original_price) || null;
-        const hasPromo = !!originalPrice && originalPrice > priceNum;
-        const promoPrice = hasPromo ? priceNum : null;
+        let originalPrice: number | null = null;
+        let promoPrice: number | null = null;
+        if (mktLower === 'shopee') {
+            const pp = typeof (row as any)?.promotion_price === 'number' ? (row as any).promotion_price : null;
+            promoPrice = pp;
+            originalPrice = pp != null ? priceNum : null;
+        } else {
+            const op = Number((row as any)?.original_price) || null;
+            const hasPromo = !!op && op > priceNum;
+            originalPrice = hasPromo ? op : null;
+            promoPrice = hasPromo ? priceNum : null;
+        }
         let shippingTags: string[] = [];
         const idVal = row?.marketplace_item_id || row?.id;
         const tagsBase: string[] = [];
@@ -617,6 +767,12 @@ export default function Anuncios() {
             };
             shippingTags = shippingTags.filter(allow);
         }
+        if (mktLower === 'shopee') {
+            const st = shippingTypesByItemId[idVal] || [];
+            if (Array.isArray(st) && st.length) {
+                shippingTags = Array.from(new Set(st));
+            }
+        }
         const listingTypeIdForItem = listingTypeByItemId[idVal] || null;
         const publicationTypeLabel = toPublicationLabel(listingTypeIdForItem);
         const publicationCosts = (() => {
@@ -635,29 +791,36 @@ export default function Anuncios() {
         // Mesclar performance_data e quality_level das métricas com colunas persistidas
         const metricsForItem = metricsByItemId[idVal] || {};
         const pd = metricsForItem?.performance_data;
-        const scoreRaw = (pd && !isNaN(Number(pd?.score))) ? Number(pd.score) : null;
-        const rawCandidates = [
-            scoreRaw,
-            pd?.quality_score,
-            pd?.listing_quality_percentage,
-            pd?.listing_quality,
-            row?.listing_quality,
-            row?.quality_score,
-        ];
         let qualityPercent = 0;
-        for (const v of rawCandidates) {
-            const num = Number(v);
-            if (!isNaN(num) && num >= 0) {
-                qualityPercent = num <= 1 ? num * 100 : num;
-                break;
+        let persistedLevel = row?.quality_level ?? metricsForItem?.quality_level ?? null;
+        if (mktLower === 'shopee') {
+            const rawLevel = pd?.quality_level ?? persistedLevel ?? null;
+            const numLevel = typeof rawLevel === 'number' ? rawLevel : Number(rawLevel);
+            persistedLevel = Number.isFinite(numLevel) ? numLevel : null;
+            qualityPercent = numLevel === 1 ? 50 : (numLevel === 2 ? 76 : (numLevel === 3 ? 100 : 0));
+        } else {
+            const scoreRaw = (pd && !isNaN(Number(pd?.score))) ? Number(pd.score) : null;
+            const rawCandidates = [
+                scoreRaw,
+                pd?.quality_score,
+                pd?.listing_quality_percentage,
+                pd?.listing_quality,
+                row?.listing_quality,
+                row?.quality_score,
+            ];
+            for (const v of rawCandidates) {
+                const num = Number(v);
+                if (!isNaN(num) && num >= 0) {
+                    qualityPercent = num <= 1 ? num * 100 : num;
+                    break;
+                }
             }
+            qualityPercent = Math.max(0, Math.min(100, qualityPercent));
         }
-        qualityPercent = Math.max(0, Math.min(100, qualityPercent));
-        const persistedLevel = row?.quality_level ?? metricsForItem?.quality_level ?? null;
         // Motivo de pausa (quando aplicável)
         let pauseReason: string | null = null;
         const dataRaw: any = row?.data;
-        if (dataRaw && (dataRaw.sub_status !== undefined)) {
+        if (dataRaw && (dataRaw.sub_status !== undefined) && mktLower !== 'shopee') {
             if (Array.isArray(dataRaw.sub_status)) {
                 const first = (dataRaw.sub_status as any[])[0];
                 pauseReason = translatePauseReason(String(first));
@@ -672,26 +835,60 @@ export default function Anuncios() {
             if (tag) pauseReason = translatePauseReason(String(tag));
         }
 
+        let visitsVal = Number(row?.visits_total ?? row?.visits ?? 0);
+        let salesVal = typeof row?.sold_quantity === 'number' ? Number(row?.sold_quantity) : (Number(row?.sold_quantity) || 0);
+        let likesVal = 0;
+        let stockVal = typeof row?.available_quantity === 'number' ? Number(row?.available_quantity) : (Number(row?.available_quantity) || 0);
+        if (mktLower === 'shopee') {
+            const ip = (row as any)?.item_perfomance || {};
+            visitsVal = Number(ip?.views || 0);
+            salesVal = Number(ip?.sale || 0);
+            likesVal = Number(ip?.liked_count || ip?.like_count || ip?.likes || 0);
+            if (Array.isArray(row?.variations) && row.variations.length > 0) {
+                stockVal = row.variations.reduce((acc: number, v: any) => {
+                    const sellerInfoList = Array.isArray((v as any)?.stock_info_v2?.seller_stock) ? (v as any).stock_info_v2.seller_stock : null;
+                    if (sellerInfoList) {
+                        const sum = sellerInfoList.reduce((a: number, it: any) => a + (Number(it?.stock || 0) || 0), 0);
+                        return acc + sum;
+                    }
+                    const raw = (v as any)?.seller_stock;
+                    if (typeof raw === 'number' && Number.isFinite(raw)) return acc + Number(raw);
+                    if (Array.isArray(raw)) return acc + raw.reduce((a: number, it: any) => a + (Number(it?.stock || 0) || 0), 0);
+                    if (typeof (v as any)?.stock === 'object' && (v as any)?.stock) {
+                        const sv = (v as any).stock;
+                        if (typeof sv?.seller_stock === 'number' && Number.isFinite(sv?.seller_stock)) return acc + Number(sv.seller_stock);
+                        if (Array.isArray(sv?.seller_stock)) return acc + sv.seller_stock.reduce((a: number, it: any) => a + (Number(it?.stock || 0) || 0), 0);
+                        if (Array.isArray(sv?.seller_stock_list)) return acc + sv.seller_stock_list.reduce((a: number, it: any) => a + (Number(it?.stock || 0) || 0), 0);
+                    }
+                    const availSummary = Number((v as any)?.stock_info_v2?.summary_info?.total_available_stock ?? NaN);
+                    const availableQty = Number.isFinite(availSummary) ? availSummary : (Number((v as any)?.available_quantity) || 0);
+                    return acc + availableQty;
+                }, 0);
+            }
+        }
+        const conversionPct = visitsVal > 0 ? (salesVal / visitsVal) * 100 : 0;
+
         return {
             id: idVal,
             title: row?.title || "Sem título",
             sku: derivedSku,
             marketplace: String(row?.marketplace_name || "Mercado Livre"),
             price: priceNum,
-            originalPrice: hasPromo ? originalPrice : null,
+            originalPrice: originalPrice,
             promoPrice,
             status: row?.status || "",
-            visits: Number(row?.visits_total ?? row?.visits ?? 0),
+            visits: visitsVal,
             questions: Number(row?.questions_total ?? row?.questions ?? 0),
-            sales: typeof row?.sold_quantity === 'number' ? row?.sold_quantity : (Number(row?.sold_quantity) || 0),
-            stock: typeof row?.available_quantity === 'number' ? row?.available_quantity : (Number(row?.available_quantity) || 0),
+            sales: salesVal,
+            likes: likesVal,
+            stock: stockVal,
             marketplaceId: row?.marketplace_item_id || "",
             image: firstPic || "/placeholder.svg",
             shippingTags,
             quality: Math.round(qualityPercent),
             qualityLevel: persistedLevel,
             performanceData: pd,
-            margin: Number(row?.margin) || 0,
+            conversion: conversionPct,
             pauseReason,
             publicationType: publicationTypeLabel,
             publicationCosts,
@@ -701,11 +898,15 @@ export default function Anuncios() {
     });
 
     const selectedMarketplaceDisplay = marketplaceNavItems.find(i => i.path === selectedMarketplacePath)?.displayName || null;
+    const isShopeeSelected = String(selectedMarketplaceDisplay || '').toLowerCase() === 'shopee';
 
     const filteredAds = parsedAds
         .filter(ad => {
-            if (activeStatus === "ativos") return ad.status?.toLowerCase() === "active";
-            if (activeStatus === "inativos") {
+            if (activeStatus === "ativos") {
+                const s = String(ad.status || '').toLowerCase();
+                return isShopeeSelected ? s === "normal" : s === "active";
+            }
+            if (!isShopeeSelected && activeStatus === "inativos") {
                 const s = (ad.status || '').toLowerCase();
                 return s === "paused" || s === "inactive";
             }
@@ -775,13 +976,15 @@ export default function Anuncios() {
                     <div key={String(d.id)} className="relative bg-white border border-gray-200 rounded-lg p-4">
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
-                                <Checkbox size="md" indicatorStyle="square" checked={selectedDraftIds.has(String(d.id))} onCheckedChange={() => toggleDraftSelection(String(d.id))} />
+                                <Checkbox size="sm" indicatorStyle="square" checked={selectedDraftIds.has(String(d.id))} onCheckedChange={() => toggleDraftSelection(String(d.id))} />
                                 <div className="text-sm text-gray-900 font-medium">{String(d.title || 'Sem título')}</div>
                                 <div className="text-xs text-gray-600">{String(d.site_id || '')} · {String(d.marketplace_name || '')}</div>
                                 <div className="text-xs text-gray-600">Atualizado: {new Date(String(d.updated_at)).toLocaleString()}</div>
                             </div>
                             <div className="flex items-center gap-2">
-                                <Button size="sm" className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => navigate(`/anuncios/criar/ml?draft_id=${String(d.id)}`)}>Continuar cadastro</Button>
+                                <Button size="sm" className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => {
+                                    navigate(`/anuncios/criar/?draft_id=${String(d.id)}`);
+                                }}>Continuar cadastro</Button>
                                 <Popover open={deletePopoverOpenId === String(d.id)} onOpenChange={(open) => setDeletePopoverOpenId(open ? String(d.id) : null)}>
                                     <PopoverTrigger asChild>
                                         <Button variant="ghost" size="icon" className="h-8 w-8 text-red-600 hover:text-red-700" aria-label="Excluir rascunho">
@@ -913,10 +1116,15 @@ export default function Anuncios() {
             : (itemRow?.thumbnail || "/placeholder.svg");
         return variations.map((variation, index) => {
             const attributes = Array.isArray(variation.attribute_combinations) ? variation.attribute_combinations : [];
-            const types = attributes.map((attr: any) => ({
-                name: attr.name || attr.id || 'Tipo',
-                value: attr.value_name || attr.value || 'N/A'
-            }));
+            const types = (attributes.length > 0)
+                ? attributes.map((attr: any) => ({
+                    name: attr.name || attr.id || 'Tipo',
+                    value: attr.value_name || attr.value || 'N/A'
+                  }))
+                : (() => {
+                    const vname = String(variation?.model_name || variation?.name || '').trim();
+                    return vname ? [{ name: 'Variação', value: vname }] : [];
+                  })();
             let imageUrl: string | null = null;
             const pictureIds = Array.isArray(variation?.picture_ids) ? variation.picture_ids : (variation?.picture_id ? [variation.picture_id] : []);
             if (Array.isArray(pictureIds) && pictureIds.length > 0) {
@@ -929,12 +1137,46 @@ export default function Anuncios() {
                 else imageUrl = match?.url || match?.secure_url || null;
             }
             if (!imageUrl) imageUrl = fallbackImage;
+            const pi0 = Array.isArray((variation as any)?.price_info) ? (variation as any).price_info[0] : null;
+            const cpCandidate = Number(pi0?.current_price ?? pi0?.inflated_price_of_current_price ?? (variation as any)?.current_price ?? NaN);
+            const opCandidate = Number(pi0?.original_price ?? pi0?.inflated_price_of_original_price ?? (variation as any)?.original_price ?? NaN);
+            const cp = Number.isFinite(cpCandidate) ? cpCandidate : undefined;
+            const op = Number.isFinite(opCandidate) ? opCandidate : undefined;
+            const priceFallback = typeof (variation as any)?.price === 'number' ? (variation as any).price : (Number((variation as any)?.price) || undefined);
+            const availSummary = Number((variation as any)?.stock_info_v2?.summary_info?.total_available_stock ?? NaN);
+            const availableQty = Number.isFinite(availSummary) ? availSummary : (Number((variation as any)?.available_quantity) || 0);
+            let sellerTotal: number | null = null;
+            const sellerInfoList = Array.isArray((variation as any)?.stock_info_v2?.seller_stock) ? (variation as any).stock_info_v2.seller_stock : null;
+            if (sellerInfoList) {
+                sellerTotal = sellerInfoList.reduce((acc: number, it: any) => acc + (Number(it?.stock || 0) || 0), 0);
+            }
+            const sellerStockRaw = (variation as any)?.seller_stock;
+            if (typeof sellerStockRaw === 'number' && Number.isFinite(sellerStockRaw)) {
+                sellerTotal = Number(sellerStockRaw);
+            } else if (Array.isArray(sellerStockRaw)) {
+                sellerTotal = sellerStockRaw.reduce((acc: number, it: any) => {
+                    const val = typeof it === 'number' ? it : Number(it?.stock || 0);
+                    return acc + (Number.isFinite(val) ? val : 0);
+                }, 0);
+            } else if (typeof (variation as any)?.stock === 'object' && (variation as any).stock) {
+                const s = (variation as any).stock;
+                if (typeof s?.seller_stock === 'number' && Number.isFinite(s?.seller_stock)) {
+                    sellerTotal = Number(s.seller_stock);
+                } else if (Array.isArray(s?.seller_stock)) {
+                    sellerTotal = s.seller_stock.reduce((acc: number, it: any) => acc + (Number(it?.stock || 0) || 0), 0);
+                } else if (Array.isArray(s?.seller_stock_list)) {
+                    sellerTotal = s.seller_stock_list.reduce((acc: number, it: any) => acc + (Number(it?.stock || 0) || 0), 0);
+                }
+            }
             return {
-                id: variation.id || `var-${index}`,
-                sku: variation.seller_sku || variation.sku || 'N/A',
-                available_quantity: variation.available_quantity || 0,
-                types: types,
-                price: variation.price || 0,
+                id: variation.model_id || variation.id || `var-${index}`,
+                sku: variation.model_sku || variation.seller_sku || variation.sku || 'N/A',
+                available_quantity: availableQty,
+                seller_stock_total: Number.isFinite(Number(sellerTotal)) ? Number(sellerTotal) : availableQty,
+                types,
+                price: cp ?? op ?? priceFallback ?? 0,
+                current_price: cp ?? (priceFallback ?? undefined),
+                original_price: op,
                 image: imageUrl || fallbackImage,
             };
         });
@@ -1040,7 +1282,7 @@ export default function Anuncios() {
                 .single();
             if (error) { toast({ title: 'Falha ao duplicar', description: error?.message || '', variant: 'destructive' }); return; }
             const newId = String((data as any)?.id || '');
-            if (newId) { toast({ title: 'Rascunho criado', description: 'Você pode editar o rascunho agora.' }); navigate(`/anuncios/criar/ml?draft_id=${newId}&step=6`); }
+            if (newId) { toast({ title: 'Rascunho criado', description: 'Você pode editar o rascunho agora.' }); navigate(`/anuncios/criar/?draft_id=${newId}&step=6`); }
         } catch (e: any) {
             toast({ title: 'Erro ao duplicar', description: e?.message || String(e), variant: 'destructive' });
         }
@@ -1058,7 +1300,7 @@ export default function Anuncios() {
                                 items={marketplaceNavItems}
                                 basePath="/anuncios"
                                 activePath={selectedMarketplacePath}
-                                onNavigate={(path) => { setSelectedMarketplacePath(path); navigate(path); }}
+                                onNavigate={(path) => { setSelectedMarketplacePath(path); navigate('/anuncios' + path); }}
                             />
 
                     <main className="flex-1 overflow-auto">
@@ -1084,7 +1326,134 @@ export default function Anuncios() {
                                     </div>
                                 </div>
 
-                                <TabsContent value="anuncios" className="mt-0">
+                                        <TabsContent value="anuncios" className="mt-0">
+                                    {stockModalOpen ? (
+                                        <Dialog open={stockModalOpen} onOpenChange={(open) => { if (!open) { setStockModalOpen(false); setStockEditForItemId(null); setStockEditVariations([]); setStockEditsMap({}); setStockBulkValue(""); setStockUpdateLoading(false); } }}>
+                                            <DialogContent className="max-w-2xl">
+                                                <DialogHeader>
+                                                    <DialogTitle>Atualizar estoque (Shopee)</DialogTitle>
+                                                    <DialogDescription>Edite o estoque das variações e confirme.</DialogDescription>
+                                                </DialogHeader>
+                                                <div className="space-y-4">
+                                                    <div className="flex items-center gap-2">
+                                                        <Input
+                                                            type="number"
+                                                            placeholder="Valor para todos"
+                                                            value={stockBulkValue}
+                                                            onChange={(e) => setStockBulkValue(e.target.value)}
+                                                        />
+                                                        <Button
+                                                            variant="outline"
+                                                            onClick={() => {
+                                                                const v = Number(stockBulkValue);
+                                                                if (!Number.isFinite(v)) return;
+                                                                setStockEditsMap(prev => {
+                                                                    const next: Record<string, number> = { ...prev };
+                                                                    stockEditVariations.forEach(it => { next[String(it.id)] = v; });
+                                                                    return next;
+                                                                });
+                                                            }}
+                                                        >
+                                                            Aplicar a todos
+                                                        </Button>
+                                                    </div>
+                                                    <div className="max-h-[50vh] overflow-y-auto pr-1">
+                                                        <div className="space-y-3">
+                                                            {stockEditVariations.map((v) => {
+                                                                const key = String(v.id);
+                                                                const current = typeof stockEditsMap[key] === 'number' ? stockEditsMap[key] : v.seller_stock_total;
+                                                                return (
+                                                                    <div key={key} className="grid grid-cols-12 items-center gap-3">
+                                                                        <div className="col-span-5">
+                                                                            <div className="text-xs text-gray-500">SKU</div>
+                                                                            <div className="text-sm font-medium text-gray-900">{v.sku}</div>
+                                                                        </div>
+                                                                        <div className="col-span-3">
+                                                                            <div className="text-xs text-gray-500">Atual</div>
+                                                                            <div className="text-sm font-medium text-gray-900">{v.seller_stock_total}</div>
+                                                                        </div>
+                                                                        <div className="col-span-4">
+                                                                            <Input
+                                                                                type="number"
+                                                                                value={current}
+                                                                                onChange={(e) => {
+                                                                                    const num = Number(e.target.value);
+                                                                                    setStockEditsMap(prev => ({ ...prev, [key]: num }));
+                                                                                }}
+                                                                            />
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <DialogFooter>
+                                                    <Button variant="outline" onClick={() => { setStockModalOpen(false); setStockEditForItemId(null); setStockEditVariations([]); setStockEditsMap({}); setStockBulkValue(""); setStockUpdateLoading(false); }}>Cancelar</Button>
+                                                    <Button
+                                                        disabled={stockUpdateLoading}
+                                                        onClick={async () => {
+                                                            try {
+                                                                setStockUpdateLoading(true);
+                                                                if (!stockEditForItemId) return;
+                                                                const itemIdNum = Number(stockEditForItemId);
+                                                                if (!Number.isFinite(itemIdNum)) return;
+                                                                const updates = Object.entries(stockEditsMap)
+                                                                    .map(([modelIdStr, qty]) => ({ model_id: Number(modelIdStr), seller_stock: Number(qty) }))
+                                                                    .filter(it => Number.isFinite(it.model_id) && Number.isFinite(it.seller_stock));
+                                                                if (!updates.length) return;
+                                                                const { data, error } = await (supabase as any).functions.invoke('shopee-update-stock', {
+                                                                    body: { organizationId, item_id: itemIdNum, updates }
+                                                                });
+                                                                if (error) throw error;
+                                                                setItems(prev => prev.map((r: any) => {
+                                                                    const rid = String(r?.marketplace_item_id || r?.id);
+                                                                    if (rid !== String(stockEditForItemId)) return r;
+                                                                    const vars = Array.isArray(r?.variations) ? r.variations : [];
+                                                                    const nextVars = vars.map((vv: any) => {
+                                                                        const mid = String(vv?.model_id || vv?.id);
+                                                                        const upd = updates.find(u => String(u.model_id) === mid);
+                                                                        if (!upd) return vv;
+                                                                        const ns = Number(upd.seller_stock);
+                                                                        const sinfo = typeof vv?.stock_info_v2 === 'object' && vv.stock_info_v2 ? { ...vv.stock_info_v2 } : null;
+                                                                        if (sinfo) {
+                                                                            const list = Array.isArray(sinfo.seller_stock) ? [...sinfo.seller_stock] : [];
+                                                                            if (list.length > 0) {
+                                                                                const first = { ...list[0] };
+                                                                                first.stock = ns;
+                                                                                first.location_id = first.location_id || "BRZ";
+                                                                                list[0] = first;
+                                                                            } else {
+                                                                                list.push({ stock: ns, if_saleable: true, location_id: "BRZ" });
+                                                                            }
+                                                                            sinfo.seller_stock = list;
+                                                                            const summary = typeof sinfo.summary_info === 'object' && sinfo.summary_info ? { ...sinfo.summary_info } : {};
+                                                                            summary.total_available_stock = ns;
+                                                                            sinfo.summary_info = summary;
+                                                                        }
+                                                                        return { ...vv, seller_stock: ns, available_quantity: ns, stock_info_v2: sinfo || vv.stock_info_v2 };
+                                                                    });
+                                                                    return { ...r, variations: nextVars };
+                                                                }));
+                                                                setStockModalOpen(false);
+                                                                setStockEditForItemId(null);
+                                                                setStockEditVariations([]);
+                                                                setStockEditsMap({});
+                                                                setStockBulkValue("");
+                                                                toast({ title: 'Estoque atualizado' });
+                                                            } catch (e: any) {
+                                                                toast({ title: 'Falha ao atualizar estoque', description: e?.message || String(e), variant: 'destructive' });
+                                                            } finally {
+                                                                setStockUpdateLoading(false);
+                                                            }
+                                                        }}
+                                                    >
+                                                        {stockUpdateLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Atualizar"}
+                                                    </Button>
+                                                </DialogFooter>
+                                            </DialogContent>
+                                        </Dialog>
+                                    ) : null}
                                     {confirmDeleteItemId ? (
                                         <Dialog open={!!confirmDeleteItemId} onOpenChange={(open) => { if (!open) setConfirmDeleteItemId(null); }}>
                                             <DialogContent className="max-w-md">
@@ -1131,6 +1500,7 @@ export default function Anuncios() {
                                         </Dialog>
                                     ) : null}
                                     <div className="flex items-center justify-between mb-6">
+                                        {stockModalOpen ? <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[40] pointer-events-none" /> : null}
                                         <div className="flex items-center space-x-4">
                                             <div className="relative flex-1">
                                                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
@@ -1178,7 +1548,7 @@ export default function Anuncios() {
                                                     <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleSyncSelected(); }}>Sincronizar selecionados</DropdownMenuItem>
                                                 </DropdownMenuContent>
                                             </DropdownMenu>
-                                            <Button className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => navigate('/anuncios/criar/ml')}>
+                                            <Button className="bg-novura-primary hover:bg-novura-primary/90" onClick={() => navigate('/anuncios/criar/')}>
                                                 <Plus className="w-4 h-4 mr-2" />
                                                 Criar um anúncio
                                             </Button>
@@ -1187,24 +1557,35 @@ export default function Anuncios() {
 
                                     
                                     <div className="mt-4">
-                                        <CleanNavigation
-                                            items={[
-                                                { title: 'Todos', path: '/anuncios/todos' },
-                                                { title: 'Ativos', path: '/anuncios/ativos' },
-                                                { title: 'Inativos', path: '/anuncios/inativos' },
-                                                { title: 'Rascunhos', path: '/anuncios/rascunhos' },
-                                            ]}
-                                            basePath=""
-                                            activePath={`/anuncios/${activeStatus}`}
-                                            onNavigate={(path) => { const seg = path.split('/').pop() || 'todos'; setActiveStatus(seg); navigate(path); }}
-                                        />
+                                        {(() => {
+                                            const statusItems = isShopeeSelected
+                                                ? [
+                                                    { title: 'Todos', path: '/anuncios/todos' },
+                                                    { title: 'Ativos', path: '/anuncios/ativos' },
+                                                    { title: 'Rascunhos', path: '/anuncios/rascunhos' },
+                                                  ]
+                                                : [
+                                                    { title: 'Todos', path: '/anuncios/todos' },
+                                                    { title: 'Ativos', path: '/anuncios/ativos' },
+                                                    { title: 'Inativos', path: '/anuncios/inativos' },
+                                                    { title: 'Rascunhos', path: '/anuncios/rascunhos' },
+                                                  ];
+                                            return (
+                                                <CleanNavigation
+                                                    items={statusItems}
+                                                    basePath=""
+                                                    activePath={`/anuncios/${activeStatus}`}
+                                                    onNavigate={(path) => { const seg = path.split('/').pop() || 'todos'; setActiveStatus(seg); navigate(path); }}
+                                                />
+                                            );
+                                        })()}
                                     </div>
 
                                     <div className="mt-2 px-2 flex items-center justify-between">
                                         {activeStatus === 'rascunhos' ? (
                                             <>
                                                 <label className="flex items-center space-x-2">
-                                                    <Checkbox size="md" indicatorStyle="square" checked={isAllDraftsSelected} onCheckedChange={toggleSelectAllDrafts} />
+                                                    <Checkbox size="sm" indicatorStyle="square" checked={isAllDraftsSelected} onCheckedChange={toggleSelectAllDrafts} />
                                                     <span className="text-sm text-gray-700">Selecionar todos</span>
                                                 </label>
                                                 <div className="flex items-center gap-3">
@@ -1217,7 +1598,7 @@ export default function Anuncios() {
                                         ) : (
                                             <>
                                                 <label className="flex items-center space-x-2">
-                                                    <Checkbox size="md" indicatorStyle="square" checked={isAllSelected} onCheckedChange={toggleSelectAll} />
+                                                    <Checkbox size="sm" indicatorStyle="square" checked={isAllSelected} onCheckedChange={toggleSelectAll} />
                                                     <span className="text-sm text-gray-700">Selecionar todos</span>
                                                 </label>
                                                 {selectedItems.size > 0 && (
@@ -1230,24 +1611,68 @@ export default function Anuncios() {
                                     <Card className="mt-2 border border-gray-200 shadow-sm">
                                         <CardContent className="p-0">
                                             <div className="space-y-2">
-                                        {activeStatus === 'rascunhos' ? (
-                                            renderDrafts()
-                                        ) : (
-                                            sortedAds.length > 0 ? (
-                                            sortedAds.map((ad) => {
-                                                const itemRow = items.find(item => String(item?.marketplace_item_id || item?.id) === String(ad.id));
-                                                const variations = formatVariationData(itemRow?.variations || [], itemRow);
-                                                const hasVariations = variations.length > 0;
-                                                const isExpanded = expandedVariations.has(ad.id);
-                                                
-                                                return (
-                                                <div key={ad.id} className="relative bg-white border border-gray-200 rounded-lg">
-                                                    <div className="grid grid-cols-12 gap-y-3 gap-x-2 items-center p-3">
-                                                        
+                                                <div className="grid grid-cols-12 gap-x-2 items-center px-3 py-2 border-b border-gray-200">
+                                                    <div className="col-span-1"></div>
+                                                    <div className="col-span-3 text-xs font-medium text-gray-600">Produto(S)</div>
+                                                    <div className="col-span-2 text-xs font-medium text-gray-600">Preço</div>
+                                                    <div className="col-span-2 text-xs font-medium text-gray-600">Dados</div>
+                                                    <div className="col-span-2 text-xs font-medium text-gray-600">Desempenho</div>
+                                                    <div className="col-span-2 text-xs font-medium text-gray-600 text-right">Ações</div>
+                                                </div>
+                                            {activeStatus === 'rascunhos' ? (
+                                                renderDrafts()
+                                            ) : (
+                                                sortedAds.length > 0 ? (
+                                                sortedAds.map((ad) => {
+                                                    const itemRow = items.find(item => String(item?.marketplace_item_id || item?.id) === String(ad.id));
+                                                    const variations = formatVariationData(itemRow?.variations || [], itemRow);
+                                                    const hasVariations = variations.length > 0;
+                                                    const isExpanded = expandedVariations.has(ad.id);
+                                                    const variationRange = (() => {
+                                                        if (!hasVariations) return null;
+                                                        const prices = variations
+                                                            .map(v => {
+                                                                const cp = typeof (v as any)?.current_price === 'number' ? (v as any).current_price : undefined;
+                                                                const p = typeof (v as any)?.price === 'number' ? (v as any).price : undefined;
+                                                                return typeof cp === 'number' ? cp : (typeof p === 'number' ? p : undefined);
+                                                            })
+                                                            .filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
+                                                        if (!prices.length) return null;
+                                                        const min = Math.min(...prices);
+                                                        const max = Math.max(...prices);
+                                                        const fmt = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+                                                        return min === max ? fmt(min) : `${fmt(min)} - ${fmt(max)}`;
+                                                    })();
+
+                                                    return (
+                                                    <div key={ad.id} className="relative bg-white border border-gray-200 rounded-lg">
+                                                        <div className="grid grid-cols-12 gap-y-3 gap-x-2 items-center p-3">
+                                                            
                                                     {/* Coluna de seleção e variações (checkbox acima da seta) */}
                                                     <div className="col-span-1 flex flex-col items-start space-y-2 -ml-2">
+                                                        {(() => {
+                                                            const suggestions = getImprovementSuggestions(ad.performanceData);
+                                                            if (!suggestions || suggestions.length === 0) return null;
+                                                            const text = suggestions.join(' • ');
+                                                            return (
+                                                                <TooltipProvider delayDuration={0}>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger asChild>
+                                                                            <span className="relative inline-flex items-center justify-center cursor-pointer hover:scale-105 transition-transform mx-1">
+                                                                                <span className="absolute inline-flex h-4 w-4 rounded-full bg-purple-600 opacity-75 animate-ping"></span>
+                                                                                <span className="relative inline-flex rounded-full h-3 w-3 bg-purple-600 ring-2 ring-transparent hover:ring-purple-500"></span>
+                                                                            </span>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent side="right" className="bg-purple-600 text-white border border-purple-600 w-[300px] min-h-[64px] whitespace-normal leading-snug text-center px-3 py-2">
+                                                                            <div className="font-semibold">Recomendação Novura:</div>
+                                                                            <div className="mt-1">{text}</div>
+                                                                        </TooltipContent>
+                                                                    </Tooltip>
+                                                                </TooltipProvider>
+                                                            );
+                                                        })()}
                                                         <Checkbox
-                                                            size="md"
+                                                            size="sm"
                                                             indicatorStyle="square"
                                                             checked={selectedItems.has(ad.id)}
                                                             onCheckedChange={() => toggleItemSelection(ad.id)}
@@ -1276,13 +1701,13 @@ export default function Anuncios() {
                                                                 <div className="max-w-full">
                                                                     <div className="flex items-center">
                                                                         {ad.permalink ? (
-                                                                            <a href={ad.permalink} target="_blank" rel="noopener noreferrer" className="font-semibold text-base text-gray-900 break-words whitespace-normal hover:text-novura-primary">{ad.title}</a>
+                                                                            <a href={ad.permalink} target="_blank" rel="noopener noreferrer" className="font-semibold text-sm text-gray-900 break-words whitespace-normal hover:text-novura-primary">{ad.title}</a>
                                                                         ) : (
-                                                                            <div className="font-semibold text-base text-gray-900 break-words whitespace-normal">{ad.title}</div>
+                                                                            <div className="font-semibold text-sm text-gray-900 break-words whitespace-normal">{ad.title}</div>
                                                                         )}
                                                                     </div>
                                                                 </div>
-                                                                <div className="mt-2 text-sm text-gray-500">
+                                                                <div className="mt-2 text-xs text-gray-500">
                                                                     <div className="flex items-center space-x-1">
                                                                         <span className="text-gray-500">SKU:</span>
                                                                         <span className="font-medium">{ad.sku || '—'}</span>
@@ -1297,17 +1722,24 @@ export default function Anuncios() {
 
                                                         {/* Coluna de Preço */}
                                                         <div className="flex flex-col items-start space-y-1 justify-center col-span-2">
-                                                            <div className="text-2xl font-bold text-gray-900">
-                                                                R$ {ad.price.toFixed(2)}
-                                                            </div>
-                                                            {ad.promoPrice && (
-                                                                <>
-                                                                    {ad.originalPrice && (
-                                                                        <div className="text-sm text-gray-500 line-through">R$ {ad.originalPrice.toFixed(2)}</div>
-                                                                    )}
-                                                                    <div className="text-lg font-semibold text-green-600">Promo: R$ {ad.promoPrice.toFixed(2)}</div>
-                                                                </>
-                                                            )}
+                                                            {(() => {
+                                                                const fmt = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+                                                                if (variationRange) {
+                                                                    return <div className="text-lg font-bold text-gray-900">{variationRange}</div>;
+                                                                }
+                                                                if (isShopeeSelected && ad.promoPrice && ad.originalPrice) {
+                                                                    return (
+                                                                        <>
+                                                                            <div className="text-lg font-bold text-novura-primary">{fmt(ad.promoPrice)}</div>
+                                                                            <div className="text-xs text-gray-500 line-through">{fmt(ad.originalPrice)}</div>
+                                                                        </>
+                                                                    );
+                                                                }
+                                                                if (isShopeeSelected && ad.promoPrice && !ad.originalPrice) {
+                                                                    return <div className="text-lg font-bold text-novura-primary">{fmt(ad.promoPrice)}</div>;
+                                                                }
+                                                                return <div className="text-lg font-bold text-gray-900">{fmt(ad.price)}</div>;
+                                                            })()}
                                                         </div>
 
                                                         {/* Coluna de Envio e Motivo */}
@@ -1423,18 +1855,45 @@ export default function Anuncios() {
                                                                         <div className="text-xs text-gray-500">Vendas</div>
                                                                     </div>
                                                                 </div>
-                                                                <div className="flex items-center space-x-2">
+                                                                <div className="flex items-center space-x-2 group">
                                                                     <Package className="w-4 h-4 text-novura-primary" />
                                                                     <div className="text-sm">
-                                                                        <div className="font-bold text-gray-900">{ad.stock}</div>
+                                                                        <div className="font-bold text-gray-900 flex items-center">
+                                                                            <span>{ad.stock}</span>
+                                                                            {isShopeeSelected ? (
+                                                                                <button
+                                                                                    className="ml-2 p-1 rounded hover:bg-gray-100 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                                                    onClick={() => {
+                                                                                        try {
+                                                                                            const itemRow = items.find((row) => String(row?.marketplace_item_id || row?.id) === String(ad.id));
+                                                                                            if (!itemRow) { toast({ title: 'Item não encontrado', variant: 'destructive' }); return; }
+                                                                                            const rawVars = Array.isArray(itemRow?.variations) ? itemRow.variations : [];
+                                                                                            const mapped = formatVariationData(rawVars, itemRow)
+                                                                                                .map((v: any) => ({ id: v.id, sku: v.sku, seller_stock_total: Number(v?.seller_stock_total || 0) }));
+                                                                                            setStockEditVariations(mapped);
+                                                                                            const initMap: Record<string, number> = {};
+                                                                                            mapped.forEach((v) => { initMap[String(v.id)] = Number(v.seller_stock_total || 0); });
+                                                                                            setStockEditsMap(initMap);
+                                                                                            setStockEditForItemId(String(ad.id));
+                                                                                            setStockBulkValue("");
+                                                                                            setStockModalOpen(true);
+                                                                                        } catch (e: any) {
+                                                                                            toast({ title: 'Falha ao abrir edição de estoque', description: e?.message || String(e), variant: 'destructive' });
+                                                                                        }
+                                                                                    }}
+                                                                                >
+                                                                                    <Pencil className="w-4 h-4 text-novura-primary" />
+                                                                                </button>
+                                                                            ) : null}
+                                                                        </div>
                                                                         <div className="text-xs text-gray-500">Estoque</div>
                                                                     </div>
                                                                 </div>
                                                                 <div className="flex items-center space-x-2">
-                                                                    <DollarSign className="w-4 h-4 text-novura-primary" />
+                                                                    <Heart className="w-4 h-4 text-[#7C3AED]" />
                                                                     <div className="text-sm">
-                                                                        <div className="font-bold text-gray-900">{ad.margin}%</div>
-                                                                        <div className="text-xs text-gray-500">Margem</div>
+                                                                        <div className="font-bold text-gray-900">{Number(ad.likes || 0)}</div>
+                                                                        <div className="text-xs text-gray-500">Curtidas</div>
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -1470,30 +1929,26 @@ export default function Anuncios() {
                                                                             {Math.max(0, Math.min(100, Number(ad.quality) || 0))}
                                                                         </text>
                                                                     </svg>
-                                                                    {ad.qualityLevel && (() => {
-                                                                        const raw = String(ad.qualityLevel || '').toLowerCase();
-                                                                        const label = raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
+                                                                    {ad.qualityLevel !== null && ad.qualityLevel !== undefined && (() => {
+                                                                        const label = getQualityLabel(ad.qualityLevel);
                                                                         const labelColor = getQualityStrokeColor(ad.qualityLevel);
-                                                                        return (
-                                                                            <div
-                                                                                className="mt-1 px-2 py-0.5 text-[10px] leading-4 border-2 rounded-full"
-                                                                                style={{ borderColor: labelColor, color: labelColor }}
-                                                                            >
+                                                                        return label ? (
+                                                                            <div className="mt-1 px-2 py-0.5 text-[10px] leading-4 border-2 rounded-full" style={{ borderColor: labelColor, color: labelColor }}>
                                                                                 {label}
                                                                             </div>
-                                                                        );
+                                                                        ) : null;
                                                                     })()}
                                                                 </div>
 
                                                                 {/* Switch de Status (após o medidor) */}
                                                                 <div className="flex flex-col items-center">
-                                                                    <span className="text-xs text-gray-600 mb-1">{((ad.status || '').toLowerCase() === 'active') ? 'Ativo' : 'Inativo'}</span>
+                                                                    <span className="text-xs text-gray-600 mb-1">{(((ad.status || '').toLowerCase() === 'active') || (isShopeeSelected && (ad.status || '').toLowerCase() === 'normal')) ? 'Ativo' : 'Inativo'}</span>
                                                                     <Popover open={confirmPauseFor === ad.id} onOpenChange={(open) => { if (!open) setConfirmPauseFor(null); }}>
                                                                         <PopoverTrigger asChild>
                                                                             <Switch
-                                                                                checked={(ad.status || '').toLowerCase() === 'active'}
+                                                                                checked={(((ad.status || '').toLowerCase() === 'active') || (isShopeeSelected && (ad.status || '').toLowerCase() === 'normal'))}
                                                                                 onCheckedChange={(checked) => {
-                                                                                    const isActive = (ad.status || '').toLowerCase() === 'active';
+                                                                                    const isActive = ((ad.status || '').toLowerCase() === 'active') || (isShopeeSelected && (ad.status || '').toLowerCase() === 'normal');
                                                                                     if (isActive && !checked) setConfirmPauseFor(ad.id); else toggleItemStatus(ad, checked);
                                                                                 }}
                                                                                 className="data-[state=checked]:bg-[#7C3AED] data-[state=unchecked]:bg-gray-200"
@@ -1590,37 +2045,55 @@ export default function Anuncios() {
                                                     {hasVariations && (
                                                         <div className="border-t border-gray-100 bg-gray-50">
                                                             <Collapsible open={isExpanded}>
-                                                                <CollapsibleContent className="px-3 pb-3">
-                                                                    <div className="space-y-2">
+                                                                <CollapsibleContent className="px-0,5 pb-3">
+                                                                    <div className="space-y-1">
                                                                         {variations.map((variation, index) => (
-                                                                            <div key={variation.id} className="bg-white rounded-lg p-3 border border-gray-200">
+                                                                            <div key={variation.id} className="bg-white rounded-lg p-2 border border-gray-200">
                                                                                 {/* Usamos grid de 12 colunas para alinhar 'Estoque' ao bloco de métricas acima */}
                                                                                 <div className="grid grid-cols-12 gap-4 items-center text-xs">
                                                                                     {/* Foto da variação, posicionada sob a coluna do anúncio */}
-                                                                                    <div className="col-start-2 col-span-1 flex items-center justify-center">
+                                                                                    <div className="col-start-2 col-span-1 flex items-right justify-center">
                                                                                         <img src={variation.image} alt={`Variação ${variation.sku}`} className="w-12 h-12 rounded-md object-cover bg-gray-100" />
                                                                                     </div>
-                                                                                    {/* SKU */}
+                                                                                    {/* SKU + Tipos abaixo */}
                                                                                     <div className="col-start-3 col-span-2">
                                                                                         <div className="text-gray-500 mb-1">SKU</div>
                                                                                         <div className="font-medium text-gray-900">{variation.sku}</div>
-                                                                                    </div>
-                                                                                    {/* Tipos */}
-                                                                                    <div className="col-start-5 col-span-3">
-                                                                                        <div className="text-gray-500 mb-1">Tipos</div>
+                                                                                        <div className="text-gray-500 mt-2 mb-1">Tipos</div>
                                                                                         <div className="space-y-1">
                                                                                             {variation.types.map((type, typeIndex) => (
                                                                                                 <div key={typeIndex} className="text-gray-900">
-                                                                                                    <span className="font-medium">{type.name}:</span> {type.value}
+                                                                                                    {type.value}
                                                                                                 </div>
                                                                                             ))}
                                                                                         </div>
                                                                                     </div>
+                                                                                    {/* Preço — alinhado sob a coluna de preço (colunas 5-6 do card) */}
+                                                                                    <div className="col-start-5 col-span-2">
+                                                                                        <div className="text-gray-500 mb-1">Preço</div>
+                                                                                        {(() => {
+                                                                                            const cp = typeof (variation as any)?.current_price === 'number' ? (variation as any).current_price : undefined;
+                                                                                            const op = typeof (variation as any)?.original_price === 'number' ? (variation as any).original_price : undefined;
+                                                                                            const p = typeof (variation as any)?.price === 'number' ? (variation as any).price : undefined;
+                                                                                            const fmt = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+                                                                                            if (typeof cp === 'number' && typeof op === 'number' && cp < op) {
+                                                                                                return (
+                                                                                                    <div className="flex items-baseline gap-2">
+                                                                                                        <span className="text-gray-900 font-medium">{fmt(cp)}</span>
+                                                                                                        <span className="text-gray-500 line-through">{fmt(op)}</span>
+                                                                                                    </div>
+                                                                                                );
+                                                                                            }
+                                                                                            if (typeof cp === 'number') return <div className="text-gray-900 font-medium">{fmt(cp)}</div>;
+                                                                                            if (typeof p === 'number') return <div className="text-gray-900 font-medium">{fmt(p)}</div>;
+                                                                                            return <div className="text-gray-900">—</div>;
+                                                                                        })()}
+                                                                                    </div>
                                                                                     {/* Estoque — alinhado sob o ícone de estoque (colunas 9-10 do card) */}
                                                                                     <div className="col-start-9 col-span-2">
                                                                                         <div className="text-gray-500 mb-1">Estoque</div>
-                                                                                        <div className={`font-medium ${variation.available_quantity < 10 ? 'text-red-600' : 'text-gray-900'}`}>
-                                                                                            {variation.available_quantity}
+                                                                                        <div className={`font-medium ${((variation as any)?.seller_stock_total ?? variation.available_quantity) < 10 ? 'text-red-600' : 'text-gray-900'}`}>
+                                                                                            {(variation as any)?.seller_stock_total ?? variation.available_quantity}
                                                                                         </div>
                                                                                     </div>
                                                                                 </div>
