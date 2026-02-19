@@ -1,0 +1,3 @@
+[functions.inventory-jobs-worker]
+verify_jwt = false
+

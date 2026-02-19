@@ -59,6 +59,8 @@ const Index = () => {
 
   const [expiringCerts, setExpiringCerts] = useState<ExpiringCert[]>([]);
   const [loadingCerts, setLoadingCerts] = useState(false);
+  const [statusCounts, setStatusCounts] = useState({ vincular: 0, emissao: 0, impressao: 0, coleta: 0, enviado: 0 });
+  const [delayedFlags, setDelayedFlags] = useState({ vincular: false, emissao: false, impressao: false, coleta: false });
 
   const today = useMemo(() => new Date(), []);
   const toDateStr = useMemo(() => {
@@ -110,6 +112,64 @@ const Index = () => {
     };
     fetchExpiring();
   }, [organizationId, toDateStr, today]);
+
+  useEffect(() => {
+    const fetchCounts = async () => {
+      if (!organizationId) return;
+      try {
+        const mk = 'marketplace_orders_presented_new';
+        const delivered = ['delivered','receiver_received','picked_up','ready_to_pickup','shipped','dropped_off'];
+        const { data, error } = await (supabase as any)
+          .from(mk)
+          .select('id,status_interno,shipment_status,shipment_sla_status,estimated_delivery_limit_at,shipment_sla_expected_date')
+          .eq('organizations_id', organizationId);
+        if (error) throw error;
+        const rows: any[] = Array.isArray(data) ? data : [];
+        const vincArr = ['A vincular','A Vincular','A VINCULAR'];
+        const emisArr = ['Emissao NF','Emissão NF','EMISSÃO NF','Subir xml','subir xml'];
+        const imprArr = ['Impressao','Impressão','IMPRESSÃO'];
+        const colArr = ['Aguardando Coleta','Aguardando coleta','AGUARDANDO COLETA'];
+        const cancelArr = ['Cancelado','Devolução','Devolucao'];
+        const isDelivered = (s: any) => delivered.includes(String(s || '').toLowerCase());
+        const nowMs = Date.now();
+        const isExpired = (r: any) => {
+          const edStr = r?.estimated_delivery_limit_at || r?.shipment_sla_expected_date;
+          if (!edStr) return false;
+          const ed = new Date(edStr).getTime();
+          return ed <= nowMs;
+        };
+        const isDelayed = (r: any) => {
+          const si = String(r?.status_interno || '');
+          if (si === 'Enviado' || cancelArr.includes(si)) return false;
+          if (isDelivered(r?.shipment_status)) return false;
+          const slaStatusLower = String(r?.shipment_sla_status || '').toLowerCase();
+          return slaStatusLower === 'delayed' || isExpired(r);
+        };
+        const vincRows = rows.filter(r => vincArr.includes(String(r?.status_interno || '')));
+        const emisRows = rows.filter(r => emisArr.includes(String(r?.status_interno || '')));
+        const imprRows = rows.filter(r => imprArr.includes(String(r?.status_interno || '')));
+        const colRows = rows.filter(r => colArr.includes(String(r?.status_interno || '')));
+        const envRows = rows.filter(r => String(r?.status_interno || '') === 'Enviado');
+        setStatusCounts({
+          vincular: vincRows.length,
+          emissao: emisRows.length,
+          impressao: imprRows.length,
+          coleta: colRows.length,
+          enviado: envRows.length,
+        });
+        setDelayedFlags({
+          vincular: vincRows.some(isDelayed),
+          emissao: emisRows.some(isDelayed),
+          impressao: imprRows.some(isDelayed),
+          coleta: colRows.some(isDelayed),
+        });
+      } catch {
+        setStatusCounts({ vincular: 0, emissao: 0, impressao: 0, coleta: 0, enviado: 0 });
+        setDelayedFlags({ vincular: false, emissao: false, impressao: false, coleta: false });
+      }
+    };
+    fetchCounts();
+  }, [organizationId]);
 
   const nextSlide = () => {
     setCurrentSlide((prev) => (prev + 1) % totalSlides);
@@ -210,34 +270,7 @@ const Index = () => {
               </CardContent>
             </Card>
             
-            {/* Quadro de Vendas do Dia */}
-            <Card className="mb-8 border-0 shadow-lg rounded-xl bg-white">
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900">Resumo do Dia</h3>
-                  <Button asChild variant="outline" size="sm" className="rounded-xl">
-                    <Link to="/desempenho">
-                      Ver Desempenho
-                      <ChevronRight className="w-4 h-4 ml-1" />
-                    </Link>
-                  </Button>
-                </div>
-                <div className="grid grid-cols-3 gap-6">
-                  <div className="text-center p-4 bg-gray-50 rounded-xl">
-                    <div className="text-2xl font-bold text-gray-900 mb-1">R$ 12.847</div>
-                    <div className="text-sm text-gray-600">Vendas do Dia</div>
-                  </div>
-                  <div className="text-center p-4 bg-gray-50 rounded-xl">
-                    <div className="text-2xl font-bold text-gray-900 mb-1">89</div>
-                    <div className="text-sm text-gray-600">Pedidos</div>
-                  </div>
-                  <div className="text-center p-4 bg-gray-50 rounded-xl">
-                    <div className="text-2xl font-bold text-gray-900 mb-1">22.5%</div>
-                    <div className="text-sm text-gray-600">Margem do Dia</div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            
 
             {/* Quadro de Pedidos */}
             <Card className="mb-8 border-0 shadow-lg rounded-xl bg-white">
@@ -245,33 +278,33 @@ const Index = () => {
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Status dos Pedidos</h3>
                 <div className="grid grid-cols-5 gap-4">
                   <Button asChild variant="ghost" className="h-auto p-4 flex flex-col items-center space-y-2 hover:bg-gray-50 rounded-xl">
-                    <Link to="/pedidos">
-                      <div className="text-2xl font-bold text-gray-900">18</div>
-                      <div className="text-sm text-gray-600 text-center">Vincular</div>
+                    <Link to="/pedidos?status=a-vincular">
+                      <div className={`text-2xl font-bold ${delayedFlags.vincular ? 'text-red-600' : 'text-gray-900'}`}>{statusCounts.vincular}</div>
+                      <div className={`text-sm ${delayedFlags.vincular ? 'text-red-600' : 'text-gray-600'} text-center`}>Vincular</div>
                     </Link>
                   </Button>
                   <Button asChild variant="ghost" className="h-auto p-4 flex flex-col items-center space-y-2 hover:bg-gray-50 rounded-xl">
-                    <Link to="/pedidos">
-                      <div className="text-2xl font-bold text-gray-900">25</div>
-                      <div className="text-sm text-gray-600 text-center">Impressão</div>
+                    <Link to="/pedidos/emissao_nfe/emitir">
+                      <div className={`text-2xl font-bold ${delayedFlags.emissao ? 'text-red-600' : 'text-gray-900'}`}>{statusCounts.emissao}</div>
+                      <div className={`text-sm ${delayedFlags.emissao ? 'text-red-600' : 'text-gray-600'} text-center`}>Para emitir</div>
                     </Link>
                   </Button>
                   <Button asChild variant="ghost" className="h-auto p-4 flex flex-col items-center space-y-2 hover:bg-gray-50 rounded-xl">
-                    <Link to="/pedidos">
-                      <div className="text-2xl font-bold text-red-600">8</div>
-                      <div className="text-sm text-red-600 text-center">Coleta Atrasada</div>
+                    <Link to="/pedidos?status=impressao">
+                      <div className={`text-2xl font-bold ${delayedFlags.impressao ? 'text-red-600' : 'text-gray-900'}`}>{statusCounts.impressao}</div>
+                      <div className={`text-sm ${delayedFlags.impressao ? 'text-red-600' : 'text-gray-600'} text-center`}>Imprimir</div>
                     </Link>
                   </Button>
                   <Button asChild variant="ghost" className="h-auto p-4 flex flex-col items-center space-y-2 hover:bg-gray-50 rounded-xl">
-                    <Link to="/pedidos">
-                      <div className="text-2xl font-bold text-gray-900">67</div>
+                    <Link to="/pedidos?status=aguardando-coleta">
+                      <div className={`text-2xl font-bold ${delayedFlags.coleta ? 'text-red-600' : 'text-gray-900'}`}>{statusCounts.coleta}</div>
+                      <div className={`text-sm ${delayedFlags.coleta ? 'text-red-600' : 'text-gray-600'} text-center`}>Coleta</div>
+                    </Link>
+                  </Button>
+                  <Button asChild variant="ghost" className="h-auto p-4 flex flex-col items-center space-y-2 hover:bg-gray-50 rounded-xl">
+                    <Link to="/pedidos?status=enviado">
+                      <div className="text-2xl font-bold text-gray-900">{statusCounts.enviado}</div>
                       <div className="text-sm text-gray-600 text-center">Enviado</div>
-                    </Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="h-auto p-4 flex flex-col items-center space-y-2 hover:bg-gray-50 rounded-xl">
-                    <Link to="/pedidos">
-                      <div className="text-2xl font-bold text-gray-900">3</div>
-                      <div className="text-sm text-gray-600 text-center">Devoluções</div>
                     </Link>
                   </Button>
                 </div>

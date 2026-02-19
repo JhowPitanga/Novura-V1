@@ -583,8 +583,13 @@ serve(async (req) => {
         .from("marketplace_orders_raw")
         .update({ labels: labelsObj, billing_info: billingInfoAggregated, last_updated: nowIso })
         .eq("id", upId);
-      if (!updLabelsErr) {
-        try { await admin.rpc('refresh_presented_order', { p_order_id: upId }); } catch (_) {}
+      try {
+        await (admin as any).functions.invoke("mercado-livre-process-presented", {
+          body: { raw_id: upId },
+          headers: { "x-request-id": correlationId, "x-correlation-id": correlationId },
+        });
+      } catch (e) {
+        console.warn("mercado-livre-webhook-orders process-presented invoke_failed", { correlationId, raw_id: upId, error: (e as any)?.message });
       }
     }
 
@@ -633,6 +638,23 @@ serve(async (req) => {
           console.error("mercado-livre-webhook-orders upsert_failed_fallback", { correlationId, message: upErr2.message });
           return jsonResponse({ ok: false, error: `Failed to upsert order: ${upErr.message}`, correlationId, code: (upErr as any).code, details: (upErr as any).details, hint: (upErr as any).hint }, 200);
         }
+        try {
+          const { data: row } = await admin
+            .from("marketplace_orders_raw")
+            .select("id")
+            .eq("organizations_id", integration.organizations_id)
+            .eq("marketplace_name", "Mercado Livre")
+            .eq("marketplace_order_id", String(orderDataClean.id))
+            .limit(1)
+            .single();
+          const rawId = row?.id || null;
+          if (rawId) {
+            await (admin as any).functions.invoke("mercado-livre-process-presented", {
+              body: { raw_id: rawId },
+              headers: { "x-request-id": correlationId, "x-correlation-id": correlationId },
+            });
+          }
+        } catch (_) {}
       } catch (_) {
         console.error("mercado-livre-webhook-orders upsert_exception_fallback", { correlationId });
         return jsonResponse({ ok: false, error: `Failed to upsert order: ${upErr.message}`, correlationId, code: (upErr as any).code, details: (upErr as any).details, hint: (upErr as any).hint }, 200);

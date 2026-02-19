@@ -1,5 +1,71 @@
 BEGIN;
 
+CREATE OR REPLACE FUNCTION public.upsert_shopee_order_items(
+  p_pack_id text,
+  p_items jsonb
+)
+RETURNS void AS $$
+DECLARE
+  v_items_deleted_count integer;
+  v_items_inserted_count integer;
+  v_items_raw_count integer;
+BEGIN
+  v_items_raw_count := COALESCE(jsonb_array_length(COALESCE(p_items, '[]'::jsonb)), 0);
+  RAISE NOTICE 'Shopee items upsert: pack_id=%, raw_count=%', p_pack_id, v_items_raw_count;
+  PERFORM set_config('request.jwt.claim.role', 'service_role', true);
+  PERFORM set_config('row_security', 'off', true);
+  IF p_pack_id IS NULL THEN
+    RAISE NOTICE 'Shopee items upsert skip: pack_id null';
+    PERFORM set_config('row_security', 'on', true);
+    RETURN;
+  END IF;
+  IF v_items_raw_count > 0 THEN
+    DELETE FROM public.marketplace_order_items WHERE pack_id = p_pack_id;
+    GET DIAGNOSTICS v_items_deleted_count = ROW_COUNT;
+    RAISE NOTICE 'Shopee items upsert delete: pack_id=%, deleted_count=%', p_pack_id, v_items_deleted_count;
+    INSERT INTO public.marketplace_order_items (
+      model_sku_externo,
+      model_id_externo,
+      variation_name,
+      sku,
+      item_name,
+      quantity,
+      unit_price,
+      image_url,
+      stock_status,
+      pack_id
+    )
+    SELECT
+      NULLIF(oi->>'model_sku',''),
+      COALESCE(NULLIF(oi->>'model_id',''), NULLIF(oi->>'item_id',''), NULLIF(oi->>'order_item_id','')),
+      NULLIF(oi->>'model_name',''),
+      COALESCE(NULLIF(oi->>'model_sku',''), NULLIF(oi->>'sku',''), NULLIF(oi->>'item_sku','')),
+      NULLIF(oi->>'item_name',''),
+      COALESCE(
+        NULLIF(regexp_replace(COALESCE(oi->>'model_quantity_purchased',''), '[^0-9-]+', '', 'g'),'')::int,
+        NULLIF(regexp_replace(COALESCE(oi->>'quantity',''), '[^0-9-]+', '', 'g'),'')::int,
+        NULLIF(regexp_replace(COALESCE(oi->>'quantity_purchased',''), '[^0-9-]+', '', 'g'),'')::int,
+        1
+      ),
+      COALESCE(
+        NULLIF(replace(regexp_replace(COALESCE(oi->>'item_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(oi->>'original_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(oi->>'discounted_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(oi->>'selling_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        0
+      ),
+      NULLIF(regexp_replace(COALESCE(oi->'image_info'->>'image_url',''), '[\\s`]+', '', 'g'),''),
+      NULL,
+      p_pack_id
+    FROM jsonb_array_elements(COALESCE(p_items, '[]'::jsonb)) AS oi;
+  END IF;
+  PERFORM set_config('row_security', 'on', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('row_security', 'on', true);
+  RAISE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 CREATE OR REPLACE FUNCTION public.process_marketplace_order_presented_new()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -106,15 +172,15 @@ BEGIN
       v_shp_shipping_carrier := COALESCE(NEW.data->'order_detail'->>'shipping_carrier', NEW.data->'order_list_item'->>'shipping_carrier', NEW.data->'notification'->>'shipping_carrier', '');
 
       v_order_total := COALESCE(
-        NULLIF(NEW.data->'order_detail'->>'order_selling_price','')::numeric,
-        NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'order_selling_price','')::numeric,
-        NULLIF(NEW.data->'order_list_item'->>'order_selling_price','')::numeric,
-        NULLIF(NEW.data->'notification'->>'order_selling_price','')::numeric
+        NULLIF(replace(regexp_replace(COALESCE(NEW.data->'order_detail'->>'order_selling_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(NEW.data->'escrow_detail'->'response'->'order_income'->>'order_selling_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(NEW.data->'order_list_item'->>'order_selling_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(NEW.data->'notification'->>'order_selling_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric
       );
       v_payment_total := COALESCE(
-        NULLIF(NEW.data->'order_detail'->>'total_amount','')::numeric,
-        NULLIF(NEW.data->'order_list_item'->>'total_amount','')::numeric,
-        NULLIF(NEW.data->'notification'->>'total_amount','')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(NEW.data->'order_detail'->>'total_amount',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(NEW.data->'order_list_item'->>'total_amount',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(NEW.data->'notification'->>'total_amount',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
         v_order_total
       );
 
@@ -169,21 +235,35 @@ BEGIN
 
       v_items_count := COALESCE(jsonb_array_length(COALESCE(NEW.data->'order_detail'->'item_list','[]'::jsonb)), 0);
       SELECT
-        COALESCE(SUM(COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0),
-        COALESCE(SUM(COALESCE(NULLIF(oi->>'item_price','')::numeric, NULLIF(oi->>'original_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
-        COALESCE(SUM(COALESCE(NULLIF(oi->>'original_price','')::numeric, NULLIF(oi->>'item_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
+        COALESCE(SUM(COALESCE(NULLIF(regexp_replace(COALESCE(oi->>'model_quantity_purchased',''), '[^0-9-]+', '', 'g'),'')::int, NULLIF(regexp_replace(COALESCE(oi->>'quantity',''), '[^0-9-]+', '', 'g'),'')::int, 1)), 0),
+        COALESCE(SUM(
+          COALESCE(
+            NULLIF(replace(regexp_replace(COALESCE(oi->>'item_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+            NULLIF(replace(regexp_replace(COALESCE(oi->>'original_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+            0
+          )
+          * COALESCE(NULLIF(regexp_replace(COALESCE(oi->>'model_quantity_purchased',''), '[^0-9-]+', '', 'g'),'')::int, NULLIF(regexp_replace(COALESCE(oi->>'quantity',''), '[^0-9-]+', '', 'g'),'')::int, 1)
+        ), 0)::numeric,
+        COALESCE(SUM(
+          COALESCE(
+            NULLIF(replace(regexp_replace(COALESCE(oi->>'original_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+            NULLIF(replace(regexp_replace(COALESCE(oi->>'item_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+            0
+          )
+          * COALESCE(NULLIF(regexp_replace(COALESCE(oi->>'model_quantity_purchased',''), '[^0-9-]+', '', 'g'),'')::int, NULLIF(regexp_replace(COALESCE(oi->>'quantity',''), '[^0-9-]+', '', 'g'),'')::int, 1)
+        ), 0)::numeric,
         COALESCE(BOOL_OR(NULLIF(oi->>'model_id','') IS NOT NULL), false)
       INTO v_items_total_quantity, v_items_total_amount, v_items_total_full_amount, v_has_variations
       FROM jsonb_array_elements(COALESCE(NEW.data->'order_detail'->'item_list','[]'::jsonb)) oi;
 
       v_commission_fee := COALESCE(
-        NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'commission_fee','')::numeric,
-        NULLIF(((NEW.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'commission_fee'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(NEW.data->'escrow_detail'->'response'->'order_income'->>'commission_fee',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(((NEW.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'commission_fee'),''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
         0
       );
       v_service_fee := COALESCE(
-        NULLIF(NEW.data->'escrow_detail'->'response'->'order_income'->>'service_fee','')::numeric,
-        NULLIF(((NEW.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'service_fee'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(NEW.data->'escrow_detail'->'response'->'order_income'->>'service_fee',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(((NEW.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'service_fee'),''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
         0
       );
       v_items_total_sale_fee := COALESCE(v_commission_fee, 0) + COALESCE(v_service_fee, 0);
@@ -325,7 +405,7 @@ BEGIN
         v_first_item_variation_id, NULL, v_variation_color_names, '{}'::text[], '{}'::text[],
         '{}'::text[], v_has_variations, false, false,
         CASE
-          WHEN NEW.marketplace_name = 'Shopee' THEN v_pack_id
+          WHEN NEW.marketplace_name = 'Shopee' THEN NULL
           ELSE NULL
         END,
         false, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -419,62 +499,11 @@ BEGIN
         ELSE 'none'
       END;
       v_items_raw_count := jsonb_array_length(v_items_jsonb);
-      RAISE NOTICE 'Shopee items: order_id=%, source=%, raw_count=%, rls=%, role=%',
-        NEW.id, v_items_source, v_items_raw_count,
+      RAISE NOTICE 'Shopee items: pack_id=%, source=%, raw_count=%, rls=%, role=%',
+        v_pack_id, v_items_source, v_items_raw_count,
         current_setting('row_security'),
         current_setting('request.jwt.claim.role', true);
-      SELECT EXISTS(SELECT 1 FROM public.marketplace_orders_presented_new WHERE id = NEW.id) INTO v_presented_exists;
-      RAISE NOTICE 'Shopee items fk-check: order_id=%, presented_exists=%', NEW.id, v_presented_exists;
-      PERFORM set_config('request.jwt.claim.role', 'service_role', true);
-      PERFORM set_config('row_security', 'off', true);
-      IF v_items_raw_count > 0 THEN
-        DELETE FROM public.marketplace_order_items WHERE order_id = NEW.id;
-        GET DIAGNOSTICS v_items_deleted_count = ROW_COUNT;
-        RAISE NOTICE 'Shopee items delete: order_id=%, deleted_count=%', NEW.id, v_items_deleted_count;
-        INSERT INTO public.marketplace_order_items (
-          order_id,
-          model_sku_externo,
-          model_id_externo,
-          variation_name,
-          sku,
-          item_name,
-          quantity,
-          unit_price,
-          image_url,
-          stock_status,
-          pack_id
-        )
-        SELECT
-          NEW.id,
-          NULLIF(oi->>'model_sku',''),
-          COALESCE(NULLIF(oi->>'model_id',''), NULLIF(oi->>'item_id',''), NULLIF(oi->>'order_item_id','')),
-          NULLIF(oi->>'model_name',''),
-          COALESCE(NULLIF(oi->>'model_sku',''), NULLIF(oi->>'sku',''), NULLIF(oi->>'item_sku','')),
-          NULLIF(oi->>'item_name',''),
-          COALESCE(
-            NULLIF(oi->>'model_quantity_purchased','')::int,
-            NULLIF(oi->>'quantity','')::int,
-            NULLIF(oi->>'quantity_purchased','')::int,
-            1
-          ),
-          COALESCE(
-            NULLIF(oi->>'model_discounted_price','')::numeric,
-            NULLIF(oi->>'item_price','')::numeric,
-            NULLIF(oi->>'original_price','')::numeric,
-            NULLIF(oi->>'discounted_price','')::numeric,
-            NULLIF(oi->>'selling_price','')::numeric,
-            0
-          ),
-          NULLIF(regexp_replace(oi->'image_info'->>'image_url', '[`\\s]+', '', 'g'),''),
-          NULL,
-          v_pack_id
-        FROM jsonb_array_elements(COALESCE(v_items_jsonb, '[]'::jsonb)) AS oi;
-        GET DIAGNOSTICS v_items_inserted_count = ROW_COUNT;
-        RAISE NOTICE 'Shopee items insert: order_id=%, inserted_count=%', NEW.id, v_items_inserted_count;
-      ELSE
-        RAISE NOTICE 'Shopee items skip: order_id=%, no items in payload (source=%)', NEW.id, v_items_source;
-      END IF;
-      PERFORM set_config('row_security', 'on', true);
+      PERFORM public.upsert_shopee_order_items(v_pack_id, v_items_jsonb);
       RETURN NEW;
     EXCEPTION WHEN OTHERS THEN
       GET STACKED DIAGNOSTICS v_err_message = MESSAGE_TEXT,
@@ -595,10 +624,10 @@ BEGIN
       v_shp_shipping_carrier := COALESCE(rec.data->'order_detail'->>'shipping_carrier', rec.data->'order_list_item'->>'shipping_carrier', rec.data->'notification'->>'shipping_carrier', '');
 
       v_order_total := COALESCE(
-        NULLIF(rec.data->'order_detail'->>'order_selling_price','')::numeric,
-        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'order_selling_price','')::numeric,
-        NULLIF(rec.data->'order_list_item'->>'order_selling_price','')::numeric,
-        NULLIF(rec.data->'notification'->>'order_selling_price','')::numeric
+        NULLIF(replace(regexp_replace(COALESCE(rec.data->'order_detail'->>'order_selling_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(rec.data->'escrow_detail'->'response'->'order_income'->>'order_selling_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(rec.data->'order_list_item'->>'order_selling_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(rec.data->'notification'->>'order_selling_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric
       );
       v_payment_total := v_order_total;
 
@@ -645,21 +674,35 @@ BEGIN
 
       v_items_count := COALESCE(jsonb_array_length(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)), 0);
       SELECT
-        COALESCE(SUM(COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0),
-        COALESCE(SUM(COALESCE(NULLIF(oi->>'item_price','')::numeric, NULLIF(oi->>'original_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
-        COALESCE(SUM(COALESCE(NULLIF(oi->>'original_price','')::numeric, NULLIF(oi->>'item_price','')::numeric, 0) * COALESCE(NULLIF(oi->>'model_quantity_purchased','')::int, NULLIF(oi->>'quantity','')::int, 1)), 0)::numeric,
+        COALESCE(SUM(COALESCE(NULLIF(regexp_replace(COALESCE(oi->>'model_quantity_purchased',''), '[^0-9-]+', '', 'g'),'')::int, NULLIF(regexp_replace(COALESCE(oi->>'quantity',''), '[^0-9-]+', '', 'g'),'')::int, 1)), 0),
+        COALESCE(SUM(
+          COALESCE(
+            NULLIF(replace(regexp_replace(COALESCE(oi->>'item_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+            NULLIF(replace(regexp_replace(COALESCE(oi->>'original_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+            0
+          )
+          * COALESCE(NULLIF(regexp_replace(COALESCE(oi->>'model_quantity_purchased',''), '[^0-9-]+', '', 'g'),'')::int, NULLIF(regexp_replace(COALESCE(oi->>'quantity',''), '[^0-9-]+', '', 'g'),'')::int, 1)
+        ), 0)::numeric,
+        COALESCE(SUM(
+          COALESCE(
+            NULLIF(replace(regexp_replace(COALESCE(oi->>'original_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+            NULLIF(replace(regexp_replace(COALESCE(oi->>'item_price',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+            0
+          )
+          * COALESCE(NULLIF(regexp_replace(COALESCE(oi->>'model_quantity_purchased',''), '[^0-9-]+', '', 'g'),'')::int, NULLIF(regexp_replace(COALESCE(oi->>'quantity',''), '[^0-9-]+', '', 'g'),'')::int, 1)
+        ), 0)::numeric,
         COALESCE(BOOL_OR(NULLIF(oi->>'model_id','') IS NOT NULL), false)
       INTO v_items_total_quantity, v_items_total_amount, v_items_total_full_amount, v_has_variations
       FROM jsonb_array_elements(COALESCE(rec.data->'order_detail'->'item_list','[]'::jsonb)) oi;
 
       v_commission_fee := COALESCE(
-        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'commission_fee','')::numeric,
-        NULLIF(((rec.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'commission_fee'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(rec.data->'escrow_detail'->'response'->'order_income'->>'commission_fee',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(((rec.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'commission_fee'),''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
         0
       );
       v_service_fee := COALESCE(
-        NULLIF(rec.data->'escrow_detail'->'response'->'order_income'->>'service_fee','')::numeric,
-        NULLIF(((rec.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'service_fee'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(rec.data->'escrow_detail'->'response'->'order_income'->>'service_fee',''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
+        NULLIF(replace(regexp_replace(COALESCE(((rec.data->'escrow_detail'->>'response')::jsonb -> 'order_income' ->> 'service_fee'),''), '[^0-9.,-]+', '', 'g'), ',', '.'),'')::numeric,
         0
       );
       v_items_total_sale_fee := COALESCE(v_commission_fee, 0) + COALESCE(v_service_fee, 0);
@@ -734,9 +777,7 @@ BEGIN
           SELECT COALESCE(e->>'marketplace_item_id','') AS marketplace_item_id,
                  COALESCE(e->>'variation_id','') AS variation_id,
                  NULLIF(e->>'product_id','')::uuid AS product_id
-          FROM jsonb_array_elements(
-            COALESCE((SELECT linked_products FROM public.marketplace_orders_presented_new WHERE id = rec.id),'[]'::jsonb)
-          ) e
+          FROM jsonb_array_elements(COALESCE(rec.linked_products, '[]'::jsonb)) e
         )
         SELECT oip.item_id_text,
                oip.variation_id_text,
@@ -803,7 +844,7 @@ BEGIN
         v_first_item_variation_id, NULL, v_variation_color_names, '{}'::text[], '{}'::text[],
         '{}'::text[], v_has_variations, false, false,
         CASE
-          WHEN rec.marketplace_name = 'Shopee' THEN v_pack_id
+          WHEN rec.marketplace_name = 'Shopee' THEN NULL
           ELSE
             CASE
               WHEN jsonb_typeof(rec.data->'pack_id') = 'number' THEN rec.data->>'pack_id'
@@ -902,62 +943,11 @@ BEGIN
         ELSE 'none'
       END;
       v_items_raw_count := jsonb_array_length(v_items_jsonb);
-      RAISE NOTICE 'Shopee items: order_id=%, source=%, raw_count=%, rls=%, role=%',
-        rec.id, v_items_source, v_items_raw_count,
+      RAISE NOTICE 'Shopee items: pack_id=%, source=%, raw_count=%, rls=%, role=%',
+        v_pack_id, v_items_source, v_items_raw_count,
         current_setting('row_security'),
         current_setting('request.jwt.claim.role', true);
-      SELECT EXISTS(SELECT 1 FROM public.marketplace_orders_presented_new WHERE id = rec.id) INTO v_presented_exists;
-      RAISE NOTICE 'Shopee items fk-check: order_id=%, presented_exists=%', rec.id, v_presented_exists;
-      PERFORM set_config('request.jwt.claim.role', 'service_role', true);
-      PERFORM set_config('row_security', 'off', true);
-      IF v_items_raw_count > 0 THEN
-        DELETE FROM public.marketplace_order_items WHERE order_id = rec.id;
-        GET DIAGNOSTICS v_items_deleted_count = ROW_COUNT;
-        RAISE NOTICE 'Shopee items delete: order_id=%, deleted_count=%', rec.id, v_items_deleted_count;
-        INSERT INTO public.marketplace_order_items (
-          order_id,
-          model_sku_externo,
-          model_id_externo,
-          variation_name,
-          sku,
-          item_name,
-          quantity,
-          unit_price,
-          image_url,
-          stock_status,
-          pack_id
-        )
-        SELECT
-          rec.id,
-          NULLIF(oi->>'model_sku',''),
-          COALESCE(NULLIF(oi->>'model_id',''), NULLIF(oi->>'item_id',''), NULLIF(oi->>'order_item_id','')),
-          NULLIF(oi->>'model_name',''),
-          COALESCE(NULLIF(oi->>'model_sku',''), NULLIF(oi->>'sku',''), NULLIF(oi->>'item_sku','')),
-          NULLIF(oi->>'item_name',''),
-          COALESCE(
-            NULLIF(oi->>'model_quantity_purchased','')::int,
-            NULLIF(oi->>'quantity','')::int,
-            NULLIF(oi->>'quantity_purchased','')::int,
-            1
-          ),
-          COALESCE(
-            NULLIF(oi->>'model_discounted_price','')::numeric,
-            NULLIF(oi->>'item_price','')::numeric,
-            NULLIF(oi->>'original_price','')::numeric,
-            NULLIF(oi->>'discounted_price','')::numeric,
-            NULLIF(oi->>'selling_price','')::numeric,
-            0
-          ),
-          NULLIF(regexp_replace(oi->'image_info'->>'image_url', '[`\\s]+', '', 'g'),''),
-          NULL,
-          v_pack_id
-        FROM jsonb_array_elements(COALESCE(v_items_jsonb, '[]'::jsonb)) AS oi;
-        GET DIAGNOSTICS v_items_inserted_count = ROW_COUNT;
-        RAISE NOTICE 'Shopee items insert: order_id=%, inserted_count=%', rec.id, v_items_inserted_count;
-      ELSE
-        RAISE NOTICE 'Shopee items skip: order_id=%, no items in payload (source=%)', rec.id, v_items_source;
-      END IF;
-      PERFORM set_config('row_security', 'on', true);
+      PERFORM public.upsert_shopee_order_items(v_pack_id, v_items_jsonb);
       RETURN;
     EXCEPTION WHEN OTHERS THEN
       GET STACKED DIAGNOSTICS v_err_message = MESSAGE_TEXT,
@@ -1371,5 +1361,37 @@ BEGIN
     status_interno = EXCLUDED.status_interno;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+ALTER TABLE public.marketplace_orders_presented_new ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE ON public.marketplace_orders_presented_new TO authenticated;
+REVOKE SELECT, INSERT, UPDATE ON public.marketplace_orders_presented_new FROM anon;
+
+DROP POLICY IF EXISTS "Members can view marketplace_orders_presented_new" ON public.marketplace_orders_presented_new;
+CREATE POLICY "Members can view marketplace_orders_presented_new"
+ON public.marketplace_orders_presented_new
+FOR SELECT
+USING (
+  organizations_id IS NOT NULL
+  AND (public.is_org_member(auth.uid(), organizations_id) OR auth.role() = 'service_role')
+);
+
+DROP POLICY IF EXISTS "Members can update marketplace_orders_presented_new" ON public.marketplace_orders_presented_new;
+CREATE POLICY "Members can update marketplace_orders_presented_new"
+ON public.marketplace_orders_presented_new
+FOR UPDATE
+USING (
+  organizations_id IS NOT NULL
+  AND (public.is_org_member(auth.uid(), organizations_id) OR auth.role() = 'service_role')
+);
+
+DROP POLICY IF EXISTS "Owners/Admins can insert marketplace_orders_presented_new" ON public.marketplace_orders_presented_new;
+CREATE POLICY "Owners/Admins can insert marketplace_orders_presented_new"
+ON public.marketplace_orders_presented_new
+FOR INSERT
+WITH CHECK (
+  organizations_id IS NOT NULL
+  AND (public.has_org_role(auth.uid(), organizations_id, ARRAY['owner','admin']) OR auth.role() = 'service_role')
+);
 
 COMMIT;

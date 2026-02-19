@@ -1,0 +1,3 @@
+[functions.linked-products-item]
+verify_jwt = false
+

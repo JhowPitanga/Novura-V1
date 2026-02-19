@@ -12,13 +12,10 @@ import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, Dr
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
-import { getSalesByState } from "@/hooks/useSalesByState";
 import { getOrdersMetrics } from "@/hooks/useOrdersMetrics";
 import { getListingsRanking, type ListingRankingItem } from "@/hooks/useListingsRanking";
 import { LineChart, Line, XAxis, YAxis, PieChart, Pie, Cell, ResponsiveContainer, CartesianGrid } from "recharts";
-import { ComposableMap, Geographies, Geography, ZoomableGroup } from "react-simple-maps";
-import { scaleLinear } from "d3-scale";
-import { TrendingUp, DollarSign, Package, MapPin, Award, Calendar as CalendarIcon, Filter } from "lucide-react";
+import { TrendingUp, DollarSign, Package, Award, Calendar as CalendarIcon, Filter } from "lucide-react";
 import { Routes, Route } from "react-router-dom";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -26,6 +23,7 @@ import type { DateRange } from "react-day-picker";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs } from "@/lib/datetime";
 
 const navigationItems = [
   { title: "Visão Geral", path: "", description: "Métricas principais" },
@@ -48,10 +46,7 @@ function VisaoGeral() {
   const [tempDateRange, setTempDateRange] = useState<DateRange | undefined>(defaultRange);
   const [activeQuick, setActiveQuick] = useState<"hoje" | "7dias" | "30dias" | null>("7dias");
   const [selectedMarketplace, setSelectedMarketplace] = useState<string>("todos");
-  const [mapZoom, setMapZoom] = useState(1);
-  const [mapCenter, setMapCenter] = useState<[number, number]>([-50, -15]);
-  const [hoverInfo, setHoverInfo] = useState<{ name: string; total: number } | null>(null);
-  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
+  
 
   // Métricas reais
   const [totals, setTotals] = useState({ vendas: 0, unidades: 0, pedidos: 0, ticketMedio: 0 });
@@ -201,29 +196,6 @@ function VisaoGeral() {
     return () => { mounted = false; };
   }, [appliedDateRange?.from?.toString(), appliedDateRange?.to?.toString(), selectedMarketplaceDisplay, organizationId]);
 
-  // API de vendas por estado
-  // Importação dinâmica para evitar ciclo durante HMR
-  const [stateSales, setStateSales] = useState<{ state: string; total: number }[]>([]);
-  const [regionSales, setRegionSales] = useState<{ region: string; total: number }[]>([]);
-  const [totalStateSales, setTotalStateSales] = useState<number>(0);
-  useEffect(() => {
-    let mounted = true;
-    const load = async () => {
-      try {
-        const res = await getSalesByState(appliedDateRange, selectedMarketplaceDisplay);
-        if (!mounted) return;
-        setStateSales(res.byState);
-        setRegionSales(res.byRegion);
-        setTotalStateSales(res.total);
-      } catch (e) {
-        setStateSales([]);
-        setRegionSales([]);
-        setTotalStateSales(0);
-      }
-    };
-    load();
-    return () => { mounted = false; };
-  }, [appliedDateRange?.from?.toString(), appliedDateRange?.to?.toString(), selectedMarketplaceDisplay]);
   const salesSources = marketplaceBreakdown.map((m) => ({ name: m.marketplace, value: m.total }));
   const totalSources = salesSources.reduce((acc, s) => acc + s.value, 0);
   const pieData = salesSources.length ? salesSources.map((s) => ({ name: s.name, value: s.value })) : [{ name: "Sem dados", value: 1 }];
@@ -235,18 +207,6 @@ function VisaoGeral() {
       { label: entry.name, color: piePalette[index % piePalette.length] },
     ])
   );
-
-  const brGeoUrl = "https://raw.githubusercontent.com/deldersveld/topojson/master/countries/brazil/brazil-states.json";
-  const NAME_TO_UF: Record<string, string> = {
-    "Acre": "AC", "Alagoas": "AL", "Amapá": "AP", "Amazonas": "AM", "Bahia": "BA", "Ceará": "CE",
-    "Distrito Federal": "DF", "Espírito Santo": "ES", "Goiás": "GO", "Maranhão": "MA", "Mato Grosso": "MT",
-    "Mato Grosso do Sul": "MS", "Minas Gerais": "MG", "Pará": "PA", "Paraíba": "PB", "Paraná": "PR",
-    "Pernambuco": "PE", "Piauí": "PI", "Rio de Janeiro": "RJ", "Rio Grande do Norte": "RN", "Rio Grande do Sul": "RS",
-    "Rondônia": "RO", "Roraima": "RR", "Santa Catarina": "SC", "São Paulo": "SP", "Sergipe": "SE", "Tocantins": "TO"
-  };
-  const totalsByUf: Record<string, number> = Object.fromEntries(stateSales.map(s => [s.state, s.total]));
-  const maxStateTotal = Math.max(...stateSales.map(s => s.total), 1);
-  const colorScale = scaleLinear<number, string>().domain([0, maxStateTotal]).range(["#E0F2FE", "#1D4ED8"]);
 
   return (
     <div className="space-y-6">
@@ -462,7 +422,7 @@ function VisaoGeral() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Anúncio</TableHead>
+                <TableHead>SKU</TableHead>
                 <TableHead>Marketplace</TableHead>
                 <TableHead>Pedidos</TableHead>
                 <TableHead>Unidades Vendidas</TableHead>
@@ -482,7 +442,7 @@ function VisaoGeral() {
               ) : (
                 topListings.map((ad) => (
                   <TableRow key={ad.marketplace_item_id}>
-                    <TableCell className="font-medium">{ad.title}</TableCell>
+                    <TableCell className="font-medium">{ad.marketplace_item_id}</TableCell>
                     <TableCell>
                       <Badge variant="outline">{ad.marketplace}</Badge>
                     </TableCell>
@@ -502,106 +462,148 @@ function VisaoGeral() {
         </CardContent>
       </Card>
 
-      {/* Localização de Vendas */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Localização de vendas</CardTitle>
-          <CardDescription>Mapa interativo por estado e ranking ao lado</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Mapa interativo por estado */}
-            <div className="relative border rounded-lg p-2">
-              <div className="text-sm text-gray-600 mb-2 px-2">Mapa do Brasil por estado (zoom e arraste)</div>
-              <ComposableMap projection="geoMercator" projectionConfig={{ scale: 600 }} style={{ width: "100%", height: 380 }}>
-                <ZoomableGroup zoom={mapZoom} center={mapCenter} onMoveEnd={({ zoom, center }) => { setMapZoom(zoom as number); setMapCenter(center as [number, number]); }}>
-                  <Geographies geography={brGeoUrl}>
-                    {({ geographies }) => (
-                      geographies.map((geo) => {
-                        const name = (geo.properties as any).name || (geo.properties as any).NAME_1;
-                        const uf = NAME_TO_UF[name] || name;
-                        const val = totalsByUf[uf] || 0;
-                        return (
-                          <Geography
-                            key={geo.rsmKey}
-                            geography={geo}
-                            onMouseEnter={(e) => { setHoverInfo({ name, total: val }); setHoverPos({ x: e.clientX, y: e.clientY }); }}
-                            onMouseLeave={() => { setHoverInfo(null); setHoverPos(null); }}
-                            style={{
-                              default: { fill: colorScale(val), stroke: "#CBD5E1", outline: "none" },
-                              hover: { fill: "#3B82F6", stroke: "#0F172A", outline: "none" },
-                              pressed: { fill: "#1D4ED8", stroke: "#0F172A", outline: "none" },
-                            }}
-                          />
-                        );
-                      })
-                    )}
-                  </Geographies>
-                </ZoomableGroup>
-              </ComposableMap>
-              <div className="absolute left-3 bottom-3 flex flex-col space-y-2">
-                <Button size="icon" variant="outline" onClick={() => setMapZoom((z) => Math.min(z + 0.4, 8))}>+</Button>
-                <Button size="icon" variant="outline" onClick={() => setMapZoom((z) => Math.max(z - 0.4, 1))}>-</Button>
-              </div>
-              {hoverInfo && hoverPos && (
-                <div className="pointer-events-none absolute bg-white border rounded-md shadow px-3 py-2 text-sm" style={{ left: hoverPos.x - 60, top: hoverPos.y - 90 }}>
-                  <div className="font-medium">{hoverInfo.name}</div>
-                  <div className="text-gray-700">R$ {hoverInfo.total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
-                </div>
-              )}
-            </div>
-
-            {/* Ranking por estado */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm text-gray-600">Total do período: <span className="font-medium">R$ {totalStateSales.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span></div>
-              </div>
-              <div className="border rounded-lg">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Estado</TableHead>
-                      <TableHead>Valor de Vendas</TableHead>
-                      <TableHead>% do Total</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {stateSales.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={3} className="text-sm text-gray-600">Sem dados de vendas por estado no período.</TableCell>
-                      </TableRow>
-                    ) : (
-                      [...stateSales].sort((a, b) => b.total - a.total).map((s) => (
-                        <TableRow key={s.state}>
-                          <TableCell className="font-medium">{s.state}</TableCell>
-                          <TableCell>R$ {s.total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
-                          <TableCell>{totalStateSales === 0 ? 0 : Math.round((s.total / totalStateSales) * 100)}%</TableCell>
-                        </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      
     </div>
   );
 }
 
 function PorProduto() {
   const [activeTab, setActiveTab] = useState("produtos");
-
-  const produtosData = [
-    { id: 1, nome: "iPhone 15 Pro Max", pedidos: 15, unidades: 18, valor: 161999.82, margem: 23.5, vinculos: 5 },
-    { id: 2, nome: "MacBook Air M3", pedidos: 8, unidades: 8, valor: 103999.92, margem: 18.2, vinculos: 3 },
-  ];
-
-  const anunciosData = [
-    { id: 1, titulo: "iPhone 15 Pro Max 256GB Titânio", marketplace: "Mercado Livre", vendas: 12, valor: 8999.99 },
-    { id: 2, titulo: "iPhone 15 Pro Max Azul Titânio", marketplace: "Amazon", vendas: 8, valor: 9299.99 },
-  ];
+  const { organizationId } = useAuth();
+  const now = new Date();
+  const defaultFrom = new Date(now);
+  defaultFrom.setDate(defaultFrom.getDate() - 6);
+  const fromISO = new Date(calendarStartOfDaySPEpochMs(defaultFrom)).toISOString();
+  const toISO = new Date(calendarEndOfDaySPEpochMs(now)).toISOString();
+  const [produtosData, setProdutosData] = useState<any[]>([]);
+  const [anunciosData, setAnunciosData] = useState<any[]>([]);
+  const [productModelsByProduct, setProductModelsByProduct] = useState<Record<string, string[]>>({});
+  const [loadingProdutos, setLoadingProdutos] = useState<boolean>(false);
+  const [loadingAnuncios, setLoadingAnuncios] = useState<boolean>(false);
+  const [selectedMarketplaceAnuncios, setSelectedMarketplaceAnuncios] = useState<string>("todos");
+  const marketplacesFromAnuncios = Array.from(new Set(anunciosData.map((a) => String(a.marketplace || 'Outros'))));
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setLoadingProdutos(true);
+      setLoadingAnuncios(true);
+      try {
+        let oq: any = supabase
+          .from('marketplace_orders_presented_new')
+          .select('id, marketplace, created_at');
+        if (organizationId) oq = oq.eq('organizations_id', organizationId);
+        oq = oq.gte('created_at', fromISO).lte('created_at', toISO);
+        const { data: orders, error: ordersErr } = await oq;
+        if (ordersErr) throw ordersErr;
+        const orderList = Array.isArray(orders) ? orders : [];
+        const orderIds = Array.from(new Set(orderList.map((o: any) => o.id).filter(Boolean)));
+        const marketplaceByOrderId: Record<string, string> = {};
+        for (const o of orderList) {
+          const id = String(o.id || '');
+          if (id) marketplaceByOrderId[id] = o.marketplace || 'Outros';
+        }
+        if (orderIds.length === 0) {
+          if (!mounted) return;
+          setProdutosData([]);
+          setAnunciosData([]);
+          setLoadingProdutos(false);
+          setLoadingAnuncios(false);
+          return;
+        }
+        const byProduct: Record<string, { pedidosSet: Set<string>; unidades: number; valor: number; modelsSet: Set<string> }> = {};
+        const byListing: Record<string, { pedidosSet: Set<string>; unidades: number; valor: number; marketplace: string; title?: string; image?: string }> = {};
+        const chunkSize = 200;
+        for (let i = 0; i < orderIds.length; i += chunkSize) {
+          const chunk = orderIds.slice(i, i + chunkSize);
+          const iq: any = supabase
+            .from('marketplace_order_items')
+            .select('id, linked_products, model_id_externo, quantity, unit_price, item_name, image_url')
+            .in('id', chunk);
+          const { data: itemsRows, error: itemsErr } = await iq;
+          if (itemsErr) throw itemsErr;
+          for (const it of (itemsRows || [])) {
+            const oid = String(it?.id || '');
+            const qn = Number(it?.quantity || 0) || 0;
+            const up = Number(it?.unit_price || 0) || 0;
+            const pid = String(it?.linked_products || '').trim();
+            if (pid) {
+              if (!byProduct[pid]) {
+                byProduct[pid] = { pedidosSet: new Set<string>(), unidades: 0, valor: 0, modelsSet: new Set<string>() };
+              }
+              const bp = byProduct[pid];
+              bp.pedidosSet.add(oid);
+              bp.unidades += qn;
+              bp.valor += qn * up;
+              const mid = String(it?.model_id_externo || '').trim();
+              if (mid) bp.modelsSet.add(mid);
+            }
+            const mid = String(it?.model_id_externo || '').trim();
+            if (mid) {
+              if (!byListing[mid]) {
+                byListing[mid] = { pedidosSet: new Set<string>(), unidades: 0, valor: 0, marketplace: marketplaceByOrderId[oid] || 'Outros' };
+              }
+              const bl = byListing[mid];
+              bl.pedidosSet.add(oid);
+              bl.unidades += qn;
+              bl.valor += qn * up;
+              if (!bl.title && it?.item_name) bl.title = String(it.item_name);
+              if (!bl.image && it?.image_url) bl.image = String(it.image_url);
+              if (!bl.marketplace) bl.marketplace = marketplaceByOrderId[oid] || 'Outros';
+            }
+          }
+        }
+        const productIds = Object.keys(byProduct);
+        const nameByProduct: Record<string, string> = {};
+        if (productIds.length > 0) {
+          const { data: prows } = await supabase
+            .from('products')
+            .select('id, name')
+            .in('id', productIds);
+          (prows || []).forEach((r: any) => {
+            nameByProduct[String(r.id)] = r?.name || '';
+          });
+        }
+        const produtosArr = productIds.map((pid) => {
+          const agg = byProduct[pid];
+          return {
+            id: pid,
+            nome: nameByProduct[pid] || pid,
+            pedidos: agg.pedidosSet.size,
+            unidades: agg.unidades,
+            valor: agg.valor,
+            vinculos: agg.modelsSet.size,
+          };
+        }).sort((a, b) => b.valor - a.valor);
+        const modelsMap: Record<string, string[]> = {};
+        productIds.forEach((pid) => { modelsMap[pid] = Array.from(byProduct[pid].modelsSet); });
+        const anunciosArr = Object.keys(byListing).map((mid) => {
+          const agg = byListing[mid];
+          const unit = agg.unidades > 0 ? (agg.valor / agg.unidades) : 0;
+          return {
+            id: mid,
+            titulo: agg.title || `Anúncio ${mid}`,
+            marketplace: agg.marketplace,
+            vendas: agg.unidades,
+            valor: unit,
+            image_url: agg.image || '',
+          };
+        }).sort((a, b) => b.vendas - a.vendas);
+        if (!mounted) return;
+        setProdutosData(produtosArr);
+        setAnunciosData(anunciosArr);
+        setProductModelsByProduct(modelsMap);
+      } catch (_) {
+        if (!mounted) return;
+        setProdutosData([]);
+        setAnunciosData([]);
+      } finally {
+        if (!mounted) return;
+        setLoadingProdutos(false);
+        setLoadingAnuncios(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [organizationId]);
 
   return (
     <div className="space-y-6">
@@ -639,30 +641,32 @@ function PorProduto() {
                   <TableHead>Pedidos</TableHead>
                   <TableHead>Unidades Vendidas</TableHead>
                   <TableHead>Valor Total</TableHead>
-                  <TableHead>Margem</TableHead>
                   <TableHead>Vínculos</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {produtosData.map((produto) => (
+                {loadingProdutos ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-sm text-gray-600">Carregando produtos...</TableCell>
+                  </TableRow>
+                ) : produtosData.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-sm text-gray-600">Sem vendas no período selecionado.</TableCell>
+                  </TableRow>
+                ) : produtosData.map((produto) => (
                   <TableRow key={produto.id}>
                     <TableCell className="font-medium">{produto.nome}</TableCell>
                     <TableCell>{produto.pedidos}</TableCell>
                     <TableCell>{produto.unidades}</TableCell>
                     <TableCell>R$ {produto.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
                     <TableCell>
-                      <Badge variant={produto.margem > 20 ? "default" : "secondary"}>
-                        {produto.margem}%
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Drawer>
+                      <Drawer shouldScaleBackground={false} direction="right">
                         <DrawerTrigger asChild>
                           <Button variant="outline" size="sm">
                             {produto.vinculos} vínculos
                           </Button>
                         </DrawerTrigger>
-                        <DrawerContent>
+                        <DrawerContent className="w-[35%] p-6 overflow-y-auto overflow-x-hidden fixed right-0 shadow-none rounded-l-3xl ring-1 ring-gray-200/60 bg-white z-[10001]">
                           <DrawerHeader>
                             <DrawerTitle>Anúncios Vinculados</DrawerTitle>
                             <DrawerDescription>
@@ -671,7 +675,9 @@ function PorProduto() {
                           </DrawerHeader>
                           <div className="p-6">
                             <div className="space-y-4">
-                              {anunciosData.map((anuncio) => (
+                              {anunciosData
+                                .filter((a) => Array.isArray(productModelsByProduct[produto.id]) ? productModelsByProduct[produto.id].includes(a.id) : false)
+                                .map((anuncio) => (
                                 <div key={anuncio.id} className="flex justify-between items-center p-4 border rounded-lg">
                                   <div>
                                     <h4 className="font-medium">{anuncio.titulo}</h4>
@@ -679,7 +685,7 @@ function PorProduto() {
                                   </div>
                                   <div className="text-right">
                                     <p className="font-semibold">{anuncio.vendas} vendas</p>
-                                    <p className="text-sm text-gray-600">R$ {anuncio.valor}</p>
+                                    <p className="text-sm text-gray-600">R$ {anuncio.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
                                   </div>
                                 </div>
                               ))}
@@ -704,20 +710,22 @@ function PorProduto() {
           </CardHeader>
           <CardContent>
             <div className="flex space-x-4 mb-4">
-              <Select defaultValue="todos">
-                <SelectTrigger className="w-[200px]">
+              <Select value={selectedMarketplaceAnuncios} onValueChange={setSelectedMarketplaceAnuncios}>
+                <SelectTrigger className="w-[220px]">
                   <SelectValue placeholder="Marketplace" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="todos">Todos</SelectItem>
-                  <SelectItem value="mercadolivre">Mercado Livre</SelectItem>
-                  <SelectItem value="amazon">Amazon</SelectItem>
+                  {marketplacesFromAnuncios.map((mk) => (
+                    <SelectItem key={mk} value={mk}>{mk}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>Imagem</TableHead>
                   <TableHead>Anúncio</TableHead>
                   <TableHead>Marketplace</TableHead>
                   <TableHead>Vendas</TableHead>
@@ -725,14 +733,31 @@ function PorProduto() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {anunciosData.map((anuncio) => (
+                {loadingAnuncios ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-sm text-gray-600">Carregando anúncios...</TableCell>
+                  </TableRow>
+                ) : anunciosData.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-sm text-gray-600">Sem vendas no período selecionado.</TableCell>
+                  </TableRow>
+                ) : anunciosData
+                  .filter((a) => selectedMarketplaceAnuncios === 'todos' ? true : a.marketplace === selectedMarketplaceAnuncios)
+                  .map((anuncio) => (
                   <TableRow key={anuncio.id}>
+                    <TableCell>
+                      {anuncio.image_url ? (
+                        <img src={anuncio.image_url} alt={anuncio.titulo} className="w-12 h-12 rounded-md object-cover" />
+                      ) : (
+                        <div className="w-12 h-12 rounded-md bg-gray-200" />
+                      )}
+                    </TableCell>
                     <TableCell className="font-medium">{anuncio.titulo}</TableCell>
                     <TableCell>
                       <Badge variant="outline">{anuncio.marketplace}</Badge>
                     </TableCell>
                     <TableCell>{anuncio.vendas}</TableCell>
-                    <TableCell>R$ {anuncio.valor}</TableCell>
+                    <TableCell>R$ {anuncio.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

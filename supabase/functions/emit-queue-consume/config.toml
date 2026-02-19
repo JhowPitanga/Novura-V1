@@ -1,0 +1,2 @@
+[functions.emit-queue-consume]
+verify_jwt = false

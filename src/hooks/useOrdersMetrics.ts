@@ -60,35 +60,62 @@ export async function getOrdersMetrics(
 
   const fromMs = from ? calendarStartOfDaySPEpochMs(from) : undefined;
   const toMs = to ? calendarEndOfDaySPEpochMs(to) : undefined;
+  const fromISO = fromMs !== undefined ? new Date(fromMs).toISOString() : undefined;
+  const toISO = toMs !== undefined ? new Date(toMs).toISOString() : undefined;
 
-  // Fetch orders (optionally filter by marketplace)
+  // Fetch orders from presented_new only
   let q: any = supabase
-    .from('marketplace_orders_presented')
+    .from('marketplace_orders_presented_new')
     .select(`
       id,
       marketplace_order_id,
       order_total,
       marketplace,
-      items_total_quantity
+      items_total_quantity,
+      created_at
     `);
+  if (organizationId) {
+    q = (q as any).eq('organizations_id', organizationId);
+  }
   if (selectedMarketplaceDisplay && selectedMarketplaceDisplay !== 'todos') {
     q = q.eq('marketplace', selectedMarketplaceDisplay);
+  }
+  if (fromISO) {
+    q = q.gte('created_at', fromISO);
+  }
+  if (toISO) {
+    q = q.lte('created_at', toISO);
   }
   const { data: orders, error: ordersErr } = await q;
   if (ordersErr) throw ordersErr;
 
   const orderList = Array.isArray(orders) ? orders : [];
-  const orderIds = Array.from(new Set(orderList.map((o: any) => o.marketplace_order_id).filter(Boolean)));
+  const orderIds = Array.from(new Set(orderList.map((o: any) => o.id).filter(Boolean)));
 
-  // Fetch RAW marketplace orders to compute payment date
-  let mq = supabase
-    .from('marketplace_orders_raw')
-    .select('marketplace_order_id, payments, shipments, date_created')
-    .in('marketplace_order_id', orderIds);
-  if (organizationId) mq = (mq as any).eq('organizations_id', organizationId);
-  const { data: mqRows, error: mqErr } = await mq;
-  if (mqErr) throw mqErr;
-  const mqById: Record<string, any> = Object.fromEntries((mqRows || []).map((r: any) => [r.marketplace_order_id, r]));
+  // If there are no orders, return empty aggregates
+  if (orderIds.length === 0) {
+    const series: MetricPoint[] = [];
+    const totals = { vendas: 0, unidades: 0, pedidos: 0, ticketMedio: 0 };
+    return { totals, series, byMarketplace: [] };
+  }
+
+  // Fetch items quantities per order from items table (chunked)
+  const qtyByOrderId: Record<string, number> = {};
+  const chunkSize = 200;
+  for (let i = 0; i < orderIds.length; i += chunkSize) {
+    const chunk = orderIds.slice(i, i + chunkSize);
+    const itemsQ: any = supabase
+      .from('marketplace_order_items')
+      .select('id, quantity')
+      .in('id', chunk);
+    const { data: itemsRows, error: itemsErr } = await itemsQ;
+    if (itemsErr) throw itemsErr;
+    (itemsRows || []).forEach((it: any) => {
+      const k = String(it?.id || '');
+      const qn = Number(it?.quantity || 0) || 0;
+      qtyByOrderId[k] = (qtyByOrderId[k] || 0) + qn;
+    });
+  }
 
   // Prepare buckets
   const seriesMap: Record<string, MetricPoint> = {};
@@ -112,23 +139,22 @@ export async function getOrdersMetrics(
     }
   }
 
-  // Filter orders by payment date, aggregate totals and series
+  // Aggregate totals and series using created_at
   let totalVendas = 0;
   let totalUnidades = 0;
   let totalPedidos = 0;
   const byMarketplace: Record<string, number> = {};
 
   for (const o of orderList) {
-    const mqRow = o?.marketplace_order_id ? mqById[o.marketplace_order_id] : null;
-    const paymentISO = computePaymentDateISO(mqRow);
-    const evtMs = paymentISO ? eventToSPEpochMs(paymentISO) : null;
-    const inRange = fromMs === undefined || (evtMs !== null && toMs !== undefined
-      ? (evtMs >= fromMs && evtMs <= toMs)
-      : (evtMs >= fromMs));
-    if (!inRange) continue;
+    const evtMs = o?.created_at ? eventToSPEpochMs(o.created_at) : null;
 
     const venda = Number(o?.order_total || 0) || 0;
-    const unidades = Number(o?.items_total_quantity || 0) || 0;
+    const unidades = (() => {
+      const k = String(o?.marketplace_order_id || '');
+      const v = qtyByOrderId[k];
+      if (typeof v === 'number') return v;
+      return Number(o?.items_total_quantity || 0) || 0;
+    })();
     totalVendas += venda;
     totalUnidades += unidades;
     totalPedidos += 1;

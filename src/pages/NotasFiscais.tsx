@@ -1,7 +1,7 @@
 
 import { useState, useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import { Download, Eye, Plus, Search, MoreHorizontal } from "lucide-react";
+import { Download, Eye, Plus, Search, MoreHorizontal, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -279,7 +279,19 @@ function NotasTodas({
                 const marketplace = String(nota?.marketplace || "");
                 const authorizedAt = nota?.authorized_at ? new Date(String(nota?.authorized_at)).toLocaleString("pt-BR") : "-";
                 const sf = String(nota?.status_focus || "").toLowerCase();
-                const statusLabel = sf === "autorizado" ? "Autorizada" : sf === "cancelada" ? "Cancelada" : sf === "pendente" ? "Pendente" : sf || "";
+                const ss = String(nota?.status || "").toLowerCase();
+                const statusLabel =
+                  ss === "cancelada" || ss === "cancelado"
+                    ? "Cancelada"
+                    : sf === "autorizado"
+                    ? "Autorizada"
+                    : sf === "pendente"
+                    ? "Pendente"
+                    : (sf === "cancelada" || sf === "cancelado")
+                    ? "Cancelada"
+                    : ss
+                    ? ss.charAt(0).toUpperCase() + ss.slice(1)
+                    : sf || "";
                 const serie = String(nota?.serie || "");
                 let valor: number | undefined = typeof nota?.total_value === "number" ? nota.total_value : undefined;
                 if (valor == null) {
@@ -323,6 +335,130 @@ function NotasTodas({
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-40">
+                          {String(nota?.status_focus || "").toLowerCase() === "autorizado" && (
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                ;(async () => {
+                                  try {
+                                    const justificativa = window.prompt("Justificativa do cancelamento (15 a 255 caracteres):", "");
+                                    if (!justificativa) return;
+                                    const j = justificativa.trim();
+                                    if (j.length < 15 || j.length > 255) return;
+                                    const { data: { session } } = await (supabase as any).auth.getSession();
+                                    const token: string | undefined = session?.access_token;
+                                    if (!token) return;
+                                    let organizationId: string | null = null;
+                                    try {
+                                      const { data: orgId } = await (supabase as any).rpc('get_current_user_organization_id');
+                                      organizationId = (Array.isArray(orgId) ? orgId?.[0] : orgId) || null;
+                                    } catch {}
+                                    if (!organizationId) return;
+                                    let companyId: string = String((nota as any)?.company_id || "");
+                                    if (!companyId) {
+                                      try {
+                                        const { data: companiesForOrg } = await (supabase as any)
+                                          .from('companies')
+                                          .select('id')
+                                          .eq('organization_id', organizationId)
+                                          .order('is_active', { ascending: false })
+                                          .order('created_at', { ascending: true })
+                                          .limit(1);
+                                        companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : "";
+                                      } catch {}
+                                    }
+                                    if (!companyId) return;
+                                    let orderId: string = String((nota as any)?.order_id || "");
+                                    if (!orderId) {
+                                      const mpOrderId = String((nota as any)?.marketplace_order_id || "").trim();
+                                      if (mpOrderId) {
+                                        try {
+                                          const { data: row } = await (supabase as any)
+                                            .from('marketplace_orders_presented_new')
+                                            .select('id')
+                                            .eq('organizations_id', organizationId)
+                                            .eq('marketplace_order_id', mpOrderId)
+                                            .limit(1)
+                                            .maybeSingle();
+                                          if ((row as any)?.id) orderId = String((row as any).id);
+                                        } catch {}
+                                      }
+                                    }
+                                    if (!orderId) return;
+                                    const envSel = String((nota as any)?.emissao_ambiente || "").toLowerCase() || "homologacao";
+                                    const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${token}` };
+                                    const { data, error } = await (supabase as any).functions.invoke('focus-nfe-cancel', {
+                                      body: { organizationId, companyId, orderId, environment: envSel, justificativa: j },
+                                      headers,
+                                    } as any);
+                                    if (!error && data && data.ok) {
+                                      try { (nota as any).status_focus = "cancelado"; } catch {}
+                                    }
+                                  } catch {}
+                                })();
+                              }}
+                            >
+                              Cancelar NF-e
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              ;(async () => {
+                                try {
+                                  const { data: { session } } = await (supabase as any).auth.getSession();
+                                  const token: string | undefined = session?.access_token;
+                                  if (!token) return;
+                                  let organizationId: string | null = null;
+                                  try {
+                                    const { data: orgId } = await (supabase as any).rpc('get_current_user_organization_id');
+                                    organizationId = (Array.isArray(orgId) ? orgId?.[0] : orgId) || null;
+                                  } catch {}
+                                  if (!organizationId) return;
+                                  let companyId: string = String((nota as any)?.company_id || "");
+                                  if (!companyId) {
+                                    try {
+                                      const { data: companiesForOrg } = await (supabase as any)
+                                        .from('companies')
+                                        .select('id')
+                                        .eq('organization_id', organizationId)
+                                        .order('is_active', { ascending: false })
+                                        .order('created_at', { ascending: true })
+                                        .limit(1);
+                                      companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : "";
+                                    } catch {}
+                                  }
+                                  if (!companyId) return;
+                                  let orderId: string = String((nota as any)?.order_id || "");
+                                  if (!orderId) {
+                                    const mpOrderId = String((nota as any)?.marketplace_order_id || "").trim();
+                                    if (mpOrderId) {
+                                      try {
+                                        const { data: row } = await (supabase as any)
+                                          .from('marketplace_orders_presented_new')
+                                          .select('id')
+                                          .eq('organizations_id', organizationId)
+                                          .eq('marketplace_order_id', mpOrderId)
+                                          .limit(1)
+                                          .maybeSingle();
+                                        if ((row as any)?.id) orderId = String((row as any).id);
+                                      } catch {}
+                                    }
+                                  }
+                                  if (!orderId) return;
+                                  const envSel = String((nota as any)?.emissao_ambiente || "").toLowerCase() || "homologacao";
+                                  const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${token}` };
+                                  await (supabase as any).functions.invoke('focus-nfe-sync', {
+                                    body: { organizationId, companyId, orderIds: [orderId], environment: envSel },
+                                    headers,
+                                  } as any);
+                                } catch {}
+                              })();
+                            }}
+                          >
+                            <RefreshCw className="w-4 h-4 mr-2" />
+                            Sincronizar
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={(e) => {
                               e.stopPropagation();
@@ -533,7 +669,19 @@ function NotasSaida({
                 const marketplace = String(nota?.marketplace || "");
                 const authorizedAt = nota?.authorized_at ? new Date(String(nota?.authorized_at)).toLocaleString("pt-BR") : "-";
                 const sf = String(nota?.status_focus || "").toLowerCase();
-                const statusLabel = sf === "autorizado" ? "Autorizada" : sf === "cancelada" ? "Cancelada" : sf === "pendente" ? "Pendente" : sf || "";
+                const ss = String(nota?.status || "").toLowerCase();
+                const statusLabel =
+                  ss === "cancelada" || ss === "cancelado"
+                    ? "Cancelada"
+                    : sf === "autorizado"
+                    ? "Autorizada"
+                    : sf === "pendente"
+                    ? "Pendente"
+                    : (sf === "cancelada" || sf === "cancelado")
+                    ? "Cancelada"
+                    : ss
+                    ? ss.charAt(0).toUpperCase() + ss.slice(1)
+                    : sf || "";
                 const serie = String(nota?.serie || "");
                 let valor: number | undefined = typeof nota?.total_value === "number" ? nota.total_value : undefined;
                 if (valor == null) {
@@ -575,6 +723,130 @@ function NotasSaida({
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-40">
+                          {String(nota?.status_focus || "").toLowerCase() === "autorizado" && (
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                ;(async () => {
+                                  try {
+                                    const justificativa = window.prompt("Justificativa do cancelamento (15 a 255 caracteres):", "");
+                                    if (!justificativa) return;
+                                    const j = justificativa.trim();
+                                    if (j.length < 15 || j.length > 255) return;
+                                    const { data: { session } } = await (supabase as any).auth.getSession();
+                                    const token: string | undefined = session?.access_token;
+                                    if (!token) return;
+                                    let organizationId: string | null = null;
+                                    try {
+                                      const { data: orgId } = await (supabase as any).rpc('get_current_user_organization_id');
+                                      organizationId = (Array.isArray(orgId) ? orgId?.[0] : orgId) || null;
+                                    } catch {}
+                                    if (!organizationId) return;
+                                    let companyId: string = String((nota as any)?.company_id || "");
+                                    if (!companyId) {
+                                      try {
+                                        const { data: companiesForOrg } = await (supabase as any)
+                                          .from('companies')
+                                          .select('id')
+                                          .eq('organization_id', organizationId)
+                                          .order('is_active', { ascending: false })
+                                          .order('created_at', { ascending: true })
+                                          .limit(1);
+                                        companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : "";
+                                      } catch {}
+                                    }
+                                    if (!companyId) return;
+                                    let orderId: string = String((nota as any)?.order_id || "");
+                                    if (!orderId) {
+                                      const mpOrderId = String((nota as any)?.marketplace_order_id || "").trim();
+                                      if (mpOrderId) {
+                                        try {
+                                          const { data: row } = await (supabase as any)
+                                            .from('marketplace_orders_presented_new')
+                                            .select('id')
+                                            .eq('organizations_id', organizationId)
+                                            .eq('marketplace_order_id', mpOrderId)
+                                            .limit(1)
+                                            .maybeSingle();
+                                          if ((row as any)?.id) orderId = String((row as any).id);
+                                        } catch {}
+                                      }
+                                    }
+                                    if (!orderId) return;
+                                    const envSel = String((nota as any)?.emissao_ambiente || "").toLowerCase() || "homologacao";
+                                    const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${token}` };
+                                    const { data, error } = await (supabase as any).functions.invoke('focus-nfe-cancel', {
+                                      body: { organizationId, companyId, orderId, environment: envSel, justificativa: j },
+                                      headers,
+                                    } as any);
+                                    if (!error && data && data.ok) {
+                                      try { (nota as any).status_focus = "cancelado"; } catch {}
+                                    }
+                                  } catch {}
+                                })();
+                              }}
+                            >
+                              Cancelar NF-e
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              ;(async () => {
+                                try {
+                                  const { data: { session } } = await (supabase as any).auth.getSession();
+                                  const token: string | undefined = session?.access_token;
+                                  if (!token) return;
+                                  let organizationId: string | null = null;
+                                  try {
+                                    const { data: orgId } = await (supabase as any).rpc('get_current_user_organization_id');
+                                    organizationId = (Array.isArray(orgId) ? orgId?.[0] : orgId) || null;
+                                  } catch {}
+                                  if (!organizationId) return;
+                                  let companyId: string = String((nota as any)?.company_id || "");
+                                  if (!companyId) {
+                                    try {
+                                      const { data: companiesForOrg } = await (supabase as any)
+                                        .from('companies')
+                                        .select('id')
+                                        .eq('organization_id', organizationId)
+                                        .order('is_active', { ascending: false })
+                                        .order('created_at', { ascending: true })
+                                        .limit(1);
+                                      companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : "";
+                                    } catch {}
+                                  }
+                                  if (!companyId) return;
+                                  let orderId: string = String((nota as any)?.order_id || "");
+                                  if (!orderId) {
+                                    const mpOrderId = String((nota as any)?.marketplace_order_id || "").trim();
+                                    if (mpOrderId) {
+                                      try {
+                                        const { data: row } = await (supabase as any)
+                                          .from('marketplace_orders_presented_new')
+                                          .select('id')
+                                          .eq('organizations_id', organizationId)
+                                          .eq('marketplace_order_id', mpOrderId)
+                                          .limit(1)
+                                          .maybeSingle();
+                                        if ((row as any)?.id) orderId = String((row as any).id);
+                                      } catch {}
+                                    }
+                                  }
+                                  if (!orderId) return;
+                                  const envSel = String((nota as any)?.emissao_ambiente || "").toLowerCase() || "homologacao";
+                                  const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${token}` };
+                                  await (supabase as any).functions.invoke('focus-nfe-sync', {
+                                    body: { organizationId, companyId, orderIds: [orderId], environment: envSel },
+                                    headers,
+                                  } as any);
+                                } catch {}
+                              })();
+                            }}
+                          >
+                            <RefreshCw className="w-4 h-4 mr-2" />
+                            Sincronizar
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={(e) => {
                               e.stopPropagation();
@@ -789,7 +1061,19 @@ function NotasEntrada({
                 const marketplace = String(nota?.marketplace || "");
                 const authorizedAt = nota?.authorized_at ? new Date(String(nota?.authorized_at)).toLocaleString("pt-BR") : "-";
                 const sf = String(nota?.status_focus || "").toLowerCase();
-                const statusLabel = sf === "autorizado" ? "Autorizada" : sf === "cancelada" ? "Cancelada" : sf === "pendente" ? "Pendente" : sf || "";
+                const ss = String(nota?.status || "").toLowerCase();
+                const statusLabel =
+                  ss === "cancelada" || ss === "cancelado"
+                    ? "Cancelada"
+                    : sf === "autorizado"
+                    ? "Autorizada"
+                    : sf === "pendente"
+                    ? "Pendente"
+                    : (sf === "cancelada" || sf === "cancelado")
+                    ? "Cancelada"
+                    : ss
+                    ? ss.charAt(0).toUpperCase() + ss.slice(1)
+                    : sf || "";
                 const serie = String(nota?.serie || "");
                 let valor: number | undefined = typeof nota?.total_value === "number" ? nota.total_value : undefined;
                 if (valor == null) {

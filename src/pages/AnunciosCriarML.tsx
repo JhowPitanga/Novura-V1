@@ -13,14 +13,15 @@ import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
 import { NavigationButtons } from "@/components/produtos/criar/NavigationButtons";
 import { CleanNavigation } from "@/components/CleanNavigation";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ImageUpload } from "@/components/produtos/criar/ImageUpload";
+import { VideoUpload } from "@/components/produtos/criar/VideoUpload";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
-import { Search, Trash2, Plus, ChevronDown, X } from "lucide-react";
+import { Search, Trash2, Plus, ChevronDown, X, Loader2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Badge } from "@/components/ui/badge";
@@ -124,19 +125,55 @@ export default function AnunciosCriarML() {
   const { organizationId } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const [currentStep, setCurrentStep] = useState(1);
   const maxSteps = 8;
   const [connectedApps, setConnectedApps] = useState<string[]>([]);
   const [marketplaceSelection, setMarketplaceSelection] = useState<string>("");
+  const isShopeeMode = useMemo(() => String(marketplaceSelection || "").toLowerCase() === "shopee", [marketplaceSelection]);
+  const marketplaceSlugify = (name: string) => {
+    const raw = String(name || "").trim().toLowerCase();
+    const normalized = raw
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[_\s]+/g, "-")
+      .replace(/[^a-z0-9-]/g, "");
+    if (normalized === "mercado_livre") return "mercado-livre";
+    return normalized;
+  };
+  const marketplaceDisplayNameFromSlug = (slug: string) => {
+    const s = String(slug || "").trim().toLowerCase();
+    if (s === "mercado-livre" || s === "mercado_livre" || s === "mercado") return "Mercado Livre";
+    if (s === "shopee") return "Shopee";
+    return s.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  };
   const [fetchGate, setFetchGate] = useState<{ s1: boolean; s3: boolean; s6: boolean; s7: boolean }>({ s1: false, s3: false, s6: false, s7: false });
   const [lastCategoryLoaded, setLastCategoryLoaded] = useState<string>("");
+  const getFnHeaders = async (): Promise<Record<string, string>> => {
+    return { apikey: SUPABASE_PUBLISHABLE_KEY };
+  };
+  const invokeFn = async (fnName: string, body: any): Promise<{ data: any; error: any }> => {
+    try {
+      const headers = await getFnHeaders();
+      console.groupCollapsed(`[invokeFn] ${fnName}`);
+      console.log("request_meta", { url: `${SUPABASE_URL}/functions/v1/${fnName}`, headers, body });
+      const res = await (supabase as any).functions.invoke(fnName, { body, headers });
+      console.log("response_meta", { status: (res as any)?.status || null, data_preview: JSON.stringify(res?.data)?.slice(0, 300) });
+      console.groupEnd();
+      return { data: res.data, error: res.error };
+    } catch (err) {
+      console.error("[invokeFn] error", { name: (err as any)?.name, message: (err as any)?.message, stack: (err as any)?.stack });
+      return { data: null, error: err instanceof Error ? err : new Error("Invoke failed") };
+    }
+  };
   const [siteId, setSiteId] = useState("MLB");
   const [title, setTitle] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [currencyId, setCurrencyId] = useState("BRL");
   const [attributes, setAttributes] = useState<any[]>([]);
   const [pictures, setPictures] = useState<string[]>([]);
+  const [video, setVideo] = useState<File | string | null>(null);
   const [variations, setVariations] = useState<any[]>([]);
   const [listingTypeId, setListingTypeId] = useState<string>("");
   const [price, setPrice] = useState<string>("");
@@ -172,22 +209,27 @@ export default function AnunciosCriarML() {
   const [pathsByCategoryId, setPathsByCategoryId] = useState<Record<string, string>>({});
   const [pendingCategoryId, setPendingCategoryId] = useState<string>("");
   const [pendingCategoryName, setPendingCategoryName] = useState<string>("");
+  const [shopeeCategoriesRaw, setShopeeCategoriesRaw] = useState<any[]>([]);
   const [confirmExit, setConfirmExit] = useState(false);
   const [maxVisitedStep, setMaxVisitedStep] = useState<number>(1);
   const [publishing, setPublishing] = useState(false);
   const [errorSteps, setErrorSteps] = useState<number[]>([]);
+  const [fashionImage34, setFashionImage34] = useState<boolean>(false);
   const getStepTitle = (id: number) => {
     const it = (steps as any).find((s: any) => Number(s?.id) === Number(id));
     return String(it?.title || id);
   };
   const [currentDraftId, setCurrentDraftId] = useState<string | null>(searchParams.get('draft_id'));
-  const sessionCacheRef = useRef<{ attrsMetaByCategory: Record<string, any[]>; techInputByCategory: Record<string, any>; saleTermsMetaByCategory: Record<string, any[]>; listingTypesByCategory: Record<string, any[]>; listingPriceOptionsByKey: Record<string, any[]> }>({ attrsMetaByCategory: {}, techInputByCategory: {}, saleTermsMetaByCategory: {}, listingTypesByCategory: {}, listingPriceOptionsByKey: {} });
+  const sessionCacheRef = useRef<{ attrsMetaByCategory: Record<string, any[]>; techInputByCategory: Record<string, any>; saleTermsMetaByCategory: Record<string, any[]>; listingTypesByCategory: Record<string, any[]>; listingPriceOptionsByKey: Record<string, any[]>; brandListByCategory: Record<string, any[]> }>({ attrsMetaByCategory: {}, techInputByCategory: {}, saleTermsMetaByCategory: {}, listingTypesByCategory: {}, listingPriceOptionsByKey: {}, brandListByCategory: {} });
+  const [shopeeBrandList, setShopeeBrandList] = useState<any[]>([]);
   const [apiCache, setApiCache] = useState<any>({});
   const [hasSearchedCategory, setHasSearchedCategory] = useState(false);
+  const [isLoadingPredict, setIsLoadingPredict] = useState(false);
   const [showAllTechAttrs, setShowAllTechAttrs] = useState(false);
   const [attrTab, setAttrTab] = useState<"required" | "tech">("required");
   const [primaryVariationIndex, setPrimaryVariationIndex] = useState<number | null>(null);
   const [preferFlex, setPreferFlex] = useState<boolean>(false);
+  const [variationsEnabled, setVariationsEnabled] = useState<boolean>(false);
   const attrSig = useMemo(() => {
     const base = (attributes || []).map((a: any) => ({ id: String(a?.id || ""), vid: (a as any)?.value_id ?? null, vn: (a as any)?.value_name ?? null }));
     try { return JSON.stringify(base); } catch { return String(base.length); }
@@ -320,7 +362,7 @@ export default function AnunciosCriarML() {
     const cat = String(categoryId || '');
     if (!cat) return;
     if (lastCategoryLoaded && lastCategoryLoaded !== cat) {
-      sessionCacheRef.current = { attrsMetaByCategory: {}, techInputByCategory: {}, saleTermsMetaByCategory: {}, listingTypesByCategory: {}, listingPriceOptionsByKey: {} };
+      sessionCacheRef.current = { attrsMetaByCategory: {}, techInputByCategory: {}, saleTermsMetaByCategory: {}, listingTypesByCategory: {}, listingPriceOptionsByKey: {}, brandListByCategory: {} };
       setLastCategoryLoaded('');
     }
   }, [categoryId]);
@@ -436,7 +478,7 @@ export default function AnunciosCriarML() {
     const hasItemCondition = (attrsMeta || []).some((a: any) => String(a?.id || "").toUpperCase() === "ITEM_CONDITION");
     if (baseIds.has("ITEM_CONDITION") || hasItemCondition) reqSet.add("ITEM_CONDITION");
     (conditionalRequiredIds || []).forEach((id) => reqSet.add(String(id)));
-    let required = base.filter((a: any) => {
+    const required = base.filter((a: any) => {
       const id = String(a?.id || "");
       const isVar = !!variationAttrs.find((v: any) => String(v?.id || "") === id);
       const isAllowVar = !!allowVariationAttrs.find((v: any) => String(v?.id || "") === id);
@@ -450,16 +492,41 @@ export default function AnunciosCriarML() {
     });
     return { required, tech } as { required: any[]; tech: any[] };
   }, [attrsMeta, variationAttrs, allowVariationAttrs, conditionalRequiredIds, techSpecsInput]);
-  const steps = useMemo(() => ([
-    { id: 1, title: "Marketplace", description: "Escolha o marketplace" },
-    { id: 2, title: "Categoria", description: "Defina Categoria" },
-    { id: 3, title: "Atributos", description: "Dados obrigatórios" },
-    { id: 4, title: "Variações", description: "Variações e Mídia" },
-    { id: 5, title: "Ficha Técnica", description: "Ficha técnica" },
-    { id: 6, title: "Preço e Publicação", description: "Preço e publicação" },
-    { id: 7, title: "Envio", description: "Envio e dimensões" },
-    { id: 8, title: "Revisão", description: "Revisão e publicação" },
-  ].sort((a, b) => a.id - b.id)), []);
+  const steps = useMemo(() => {
+    if (isShopeeMode) {
+      return [
+        { id: 1, title: "Marketplace", description: "Escolha o marketplace" },
+        { id: 2, title: "Título e Categoria", description: "Defina título e categoria" },
+        { id: 3, title: "Mídia e Descrição", description: "Fotos e descrição" },
+        { id: 4, title: "Ficha técnica", description: "Ficha técnica" },
+        { id: 5, title: "Informações de Vendas", description: "Simples ou Variantes" },
+        { id: 7, title: "Envio", description: "Envio e dimensões" },
+        { id: 8, title: "Revisão", description: "Revisão e publicação" },
+      ];
+    }
+    return [
+      { id: 1, title: "Marketplace", description: "Escolha o marketplace" },
+      { id: 2, title: "Categoria", description: "Defina Categoria" },
+      { id: 3, title: "Atributos", description: "Dados obrigatórios" },
+      { id: 4, title: "Variações", description: "Variações e Mídia" },
+      { id: 5, title: "Ficha Técnica", description: "Ficha técnica" },
+      { id: 6, title: "Preço e Publicação", description: "Preço e publicação" },
+      { id: 7, title: "Envio", description: "Envio e dimensões" },
+      { id: 8, title: "Revisão", description: "Revisão e publicação" },
+    ];
+  }, [isShopeeMode]);
+
+  useEffect(() => {
+    const path = String(location?.pathname || "");
+    if (!marketplaceSelection) {
+      const m = path.match(/\/anuncios\/criar\/([^/?#]+)/i);
+      const slug = m?.[1] || "";
+      if (slug) {
+        const display = marketplaceDisplayNameFromSlug(slug);
+        if (display) setMarketplaceSelection(display);
+      }
+    }
+  }, [location?.pathname, marketplaceSelection]);
 
   const compressImage = async (file: File, quality = 0.8, maxDim = 1280): Promise<File> => {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -535,7 +602,6 @@ export default function AnunciosCriarML() {
       const mapped: string[] = names.map((n) => (n === "mercado_livre" ? "Mercado Livre" : n));
       const clean: string[] = Array.from(new Set<string>(mapped)).filter((n): n is string => !!n);
       setConnectedApps(clean);
-      if (!marketplaceSelection && clean.includes("Mercado Livre")) setMarketplaceSelection("Mercado Livre");
     };
     loadApps();
   }, [organizationId, currentStep]);
@@ -543,27 +609,93 @@ export default function AnunciosCriarML() {
   useEffect(() => {
     const fetchAttrs = async () => {
       if (!organizationId || !categoryId) return;
-      if (currentStep !== 3) return;
+      if (isShopeeMode ? (currentStep !== 4 && currentStep !== 5) : (currentStep !== 3)) return;
       if (!fetchGate.s3) return;
       if (Array.isArray(attrsMeta) && attrsMeta.length > 0 && lastCategoryLoaded === String(categoryId || "")) return;
       setLoadingAttrs(true);
       try {
-        const { data, error } = await (supabase as any).functions.invoke("mercado-livre-categories-attributes", {
-          body: { organizationId, categoryId }
-        });
-        if (!error) setAttrsMeta(Array.isArray(data?.attributes) ? data.attributes : []);
+        if (isShopeeMode) {
+          const cat = String(categoryId || "");
+          const cachedAttrs = sessionCacheRef.current.attrsMetaByCategory[cat];
+          const cachedBrands = sessionCacheRef.current.brandListByCategory[cat];
+          if (Array.isArray(cachedAttrs) && cachedAttrs.length > 0) {
+            setAttrsMeta(cachedAttrs);
+            if (Array.isArray(cachedBrands)) setShopeeBrandList(cachedBrands);
+            setLastCategoryLoaded(cat);
+            return;
+          }
+          const attrsRes = await (supabase as any).functions.invoke("shopee-product-attributes", { body: { organizationId, category_id: categoryId, language: "pt-BR" } });
+          if (!attrsRes.error) {
+            const payload = (attrsRes.data as any) || {};
+            const listData = Array.isArray((payload as any)?.data?.attribute_list) ? (payload as any).data.attribute_list : (Array.isArray((payload as any)?.data?.attribute_tree) ? (payload as any).data.attribute_tree : []);
+            const listResp = Array.isArray((payload as any)?.response?.attribute_list) ? (payload as any).response.attribute_list : (Array.isArray((payload as any)?.response?.attribute_tree) ? (payload as any).response.attribute_tree : []);
+            const listRoot = Array.isArray((payload as any)?.attribute_list) ? (payload as any).attribute_list : (Array.isArray((payload as any)?.attribute_tree) ? (payload as any).attribute_tree : []);
+            const listAny = Array.isArray((payload as any)?.list) ? (payload as any).list : [];
+            const list: any[] = (listAny.length ? listAny : (listData.length ? listData : (listResp.length ? listResp : listRoot)));
+            const mapped = list.map((a: any) => {
+              const idNum = typeof a?.attribute_id === "number" ? a.attribute_id : Number(a?.attribute_id || 0);
+              const idStr = Number.isFinite(idNum) ? String(idNum) : String(a?.attribute_id || "");
+              const nameStr = String(a?.attribute_name || a?.name || idStr || "");
+              const opts = Array.isArray(a?.option_list) ? a.option_list : (Array.isArray(a?.options) ? a.options : []);
+              const values = Array.isArray(opts) ? opts.map((o: any) => {
+                const oidNum = typeof o?.option_id === "number" ? o.option_id : Number(o?.id || 0);
+                const oid = Number.isFinite(oidNum) ? String(oidNum) : String(o?.option_id || o?.id || "");
+                const ml = Array.isArray((o as any)?.multi_lang) ? (o as any).multi_lang : null;
+                const translated = Array.isArray(ml) ? ml.find((m: any) => String((m as any)?.language || "").toLowerCase() === "pt-br") : null;
+                const oname = String((translated as any)?.value || o?.option_text || o?.name || o?.value || o?.label || oid || "");
+                return { id: oid, name: oname };
+              }) : [];
+              const allowed_units = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
+              const default_unit = String((a as any)?.default_unit || "");
+              const itype = String(a?.input_type || a?.value_type || "").toLowerCase();
+              const vtype = values.length > 0 ? "list" : (allowed_units.length > 0 ? "number_unit" : (itype.includes("number") ? "number" : "string"));
+              const mandatory = !!(a?.is_mandatory || a?.mandatory);
+              const allowVar = !!(a?.is_attribute_for_variation || a?.allow_variations || (Array.isArray(a?.tags) ? a.tags.includes("allow_variations") : false));
+              const tags = { required: mandatory, allow_variations: allowVar };
+              return { id: idStr, name: nameStr, values, value_type: vtype, tags, allowed_units, default_unit };
+            });
+            const brandRaw = Array.isArray((payload as any)?.data?.brand_list)
+              ? (payload as any).data.brand_list
+              : (Array.isArray((payload as any)?.response?.brand_list)
+                ? (payload as any).response.brand_list
+                : (Array.isArray((payload as any)?.brand_list) ? (payload as any).brand_list : []));
+            const brandList = (Array.isArray(brandRaw) ? brandRaw : []).map((b: any, idx: number) => {
+              const bidNum = typeof b?.brand_id === "number" ? b.brand_id : Number(b?.id || 0);
+              const bid = Number.isFinite(bidNum) ? String(bidNum) : String(b?.brand_id || b?.id || idx);
+              const bname = String(b?.original_brand_name || b?.display_brand_name || b?.brand_name || b?.name || bid);
+              return { id: bid, name: bname };
+            });
+            setAttrsMeta(mapped);
+            sessionCacheRef.current.attrsMetaByCategory[cat] = mapped;
+            setShopeeBrandList(brandList);
+            sessionCacheRef.current.brandListByCategory[cat] = brandList;
+            setLastCategoryLoaded(cat);
+          }
+        } else {
+          const { data, error } = await (supabase as any).functions.invoke("mercado-livre-categories-attributes", {
+            body: { organizationId, categoryId }
+          });
+          if (!error) {
+            const arr = Array.isArray(data?.attributes) ? data.attributes : [];
+            setAttrsMeta(arr);
+            const cat = String(categoryId || "");
+            sessionCacheRef.current.attrsMetaByCategory[cat] = arr;
+            setLastCategoryLoaded(cat);
+          }
+        }
       } finally {
         setLoadingAttrs(false);
       }
     };
     fetchAttrs();
-  }, [organizationId, categoryId, currentStep, fetchGate.s3, lastCategoryLoaded]);
+  }, [organizationId, categoryId, currentStep, fetchGate.s3, lastCategoryLoaded, isShopeeMode]);
 
   useEffect(() => {
     const fetchTechInput = async () => {
       if (!organizationId || !categoryId) return;
       if (currentStep !== 5) return;
       if (!fetchGate.s3) return;
+      if (isShopeeMode) return;
       if (techSpecsInput && lastCategoryLoaded === String(categoryId || "")) return;
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-technical-specs-input", {
@@ -573,13 +705,14 @@ export default function AnunciosCriarML() {
       } catch {}
     };
     fetchTechInput();
-  }, [organizationId, categoryId, currentStep, fetchGate.s3, lastCategoryLoaded]);
+  }, [organizationId, categoryId, currentStep, fetchGate.s3, lastCategoryLoaded, isShopeeMode]);
 
   useEffect(() => {
     const fetchSaleTermsMeta = async () => {
       if (!organizationId || !categoryId) return;
       if (currentStep !== 6) return;
       if (!fetchGate.s6) return;
+      if (isShopeeMode) return;
       const cat = String(categoryId || "");
       const cached = sessionCacheRef.current.saleTermsMetaByCategory[cat];
       if (Array.isArray(cached)) { setSaleTermsMeta(cached); return; }
@@ -591,13 +724,14 @@ export default function AnunciosCriarML() {
       } catch {}
     };
     fetchSaleTermsMeta();
-  }, [organizationId, categoryId, currentStep, fetchGate.s6]);
+  }, [organizationId, categoryId, currentStep, fetchGate.s6, isShopeeMode]);
 
   useEffect(() => {
     const evalConditional = async () => {
       if (!organizationId || !categoryId) return;
       if (!fetchGate.s3) return;
       if (!conditionalTrigger) return;
+      if (isShopeeMode) return;
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-attributes-conditional", {
           body: { organizationId, categoryId, attributes }
@@ -608,13 +742,14 @@ export default function AnunciosCriarML() {
       }
     };
     evalConditional();
-  }, [organizationId, categoryId, conditionalTrigger, fetchGate.s3]);
+  }, [organizationId, categoryId, conditionalTrigger, fetchGate.s3, isShopeeMode]);
 
   useEffect(() => {
     const fetchListingTypes = async () => {
       if (!organizationId || !categoryId || !siteId) return;
       if (currentStep !== 6) return;
       if (!fetchGate.s6) return;
+      if (isShopeeMode) return;
       const cat = String(categoryId || "");
       let arr = Array.isArray(sessionCacheRef.current.listingTypesByCategory[cat]) ? sessionCacheRef.current.listingTypesByCategory[cat] : [];
       if (!Array.isArray(arr) || arr.length === 0) {
@@ -643,7 +778,7 @@ export default function AnunciosCriarML() {
       setListingTypes(arr);
     };
     fetchListingTypes();
-  }, [organizationId, categoryId, siteId, currentStep, fetchGate.s6]);
+  }, [organizationId, categoryId, siteId, currentStep, fetchGate.s6, isShopeeMode]);
 
   useEffect(() => {
     if (currentStep < 6) return;
@@ -660,6 +795,7 @@ export default function AnunciosCriarML() {
       if (!organizationId || !categoryId || !siteId || !p) return;
       if (currentStep !== 6) return;
       if (!fetchGate.s6) return;
+      if (isShopeeMode) return;
       setLoadingListing(true);
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-listing-prices", {
@@ -671,7 +807,7 @@ export default function AnunciosCriarML() {
       }
     };
     fetchListingPrices();
-  }, [organizationId, siteId, categoryId, debouncedPrice, currentStep, fetchGate.s6]);
+  }, [organizationId, siteId, categoryId, debouncedPrice, currentStep, fetchGate.s6, isShopeeMode]);
 
   useEffect(() => {
     const h = setTimeout(() => setDebouncedPrice(price), 500);
@@ -687,6 +823,7 @@ export default function AnunciosCriarML() {
     const fetchShippingModes = async () => {
       if (!organizationId || !siteId) return;
       if (currentStep < 6) return;
+      if (isShopeeMode) return;
       try {
         const { data, error } = await (supabase as any).functions.invoke("mercado-livre-shipping-methods", {
           body: { organizationId, siteId }
@@ -762,18 +899,15 @@ export default function AnunciosCriarML() {
         try {
           const { data: capsRow } = await (supabase as any)
             .from("marketplace_integrations")
-            .select("drop_off, xd_drop_off, self_service")
+            .select("marketplace_name")
             .eq("organizations_id", organizationId)
             .eq("marketplace_name", "Mercado Livre")
             .order("expires_in", { ascending: false })
             .limit(1)
             .single();
           const allowedSet = new Set<string>();
-          if (capsRow?.drop_off) allowedSet.add("drop_off");
-          if (capsRow?.xd_drop_off) allowedSet.add("xd_drop_off");
-          if (capsRow?.self_service) allowedSet.add("self_service");
           const baseFiltered = typesForMode.length > 0 ? typesForMode : knownTypes;
-          const toShow = baseFiltered.filter((t) => allowedSet.has(String(t)));
+          const toShow = allowedSet.size > 0 ? baseFiltered.filter((t) => allowedSet.has(String(t))) : baseFiltered;
           setAvailableLogisticTypes(toShow);
           const defType = String((defaultsMap as any)[modeForTypes] || "");
           const nonFlex = toShow.filter((t) => String(t || "") !== "self_service");
@@ -782,7 +916,7 @@ export default function AnunciosCriarML() {
           if (!selectedLogisticType && primaryPick) setSelectedLogisticType(primaryPick);
         } catch {}
         if (!shipping?.mode || !modes.includes(String((shipping as any)?.mode || ""))) {
-          let next = { ...(shipping || {}), mode: preferredMode } as any;
+          const next = { ...(shipping || {}), mode: preferredMode } as any;
           try {
             const fcRaw: any = prefs ? (prefs as any).freeConfigurations : null;
             let fcArr: any[] | null = null;
@@ -825,37 +959,54 @@ export default function AnunciosCriarML() {
     const loadRoots = async () => {
       setDumpLoading(true);
       try {
-        const res = await fetch(`https://api.mercadolibre.com/sites/${siteId}/categories`);
-        const data = await res.json();
-        const roots = Array.isArray(data) ? data.map((c: any) => ({ id: String(c?.id || ""), name: String(c?.name || "") })) : [];
-        if (roots.length > 0) {
-          setDumpRoots(roots);
-        } else {
-          try {
-            const resAll = await fetch(`https://api.mercadolibre.com/sites/${siteId}/categories/all`);
-            const dataAll = await resAll.json();
-            const rootMap = new Map<string, string>();
-            const visit = (node: any) => {
-              const p = Array.isArray((node as any)?.path_from_root) ? (node as any)?.path_from_root : [];
-              if (p.length > 0 && p[0]?.id) {
-                const rid = String(p[0].id);
-                const rname = String(p[0].name || "");
-                if (!rootMap.has(rid)) rootMap.set(rid, rname);
-              }
-              const children = Array.isArray((node as any)?.children_categories) ? (node as any)?.children_categories : [];
-              children.forEach(visit);
-            };
-            if (Array.isArray(dataAll)) {
-              dataAll.forEach(visit);
-            } else if (Array.isArray((dataAll as any)?.categories)) {
-              (dataAll as any).categories.forEach(visit);
-            } else if (dataAll && typeof dataAll === "object") {
-              Object.values(dataAll as any).forEach((v: any) => { if (v && typeof v === "object") visit(v); });
-            }
-            const rootsArr = Array.from(rootMap.entries()).map(([id, name]) => ({ id, name }));
-            setDumpRoots(rootsArr);
-          } catch {
+        if (isShopeeMode) {
+          const { data, error } = await invokeFn("shopee-categories-predict", { organizationId, action: "get_category", language: "pt-br" });
+          if (!error) {
+            const api = (data as any)?.data || (data as any);
+            const resp = (api as any)?.response || api;
+            const list: any[] = Array.isArray((resp as any)?.category_list) ? (resp as any).category_list : [];
+            setShopeeCategoriesRaw(list);
+            const roots = list
+              .filter((c: any) => Number(c?.parent_category_id || 0) === 0)
+              .map((c: any) => ({ id: String(c?.category_id || ""), name: String(c?.display_category_name || c?.original_category_name || c?.category_name || "") }));
+            setDumpRoots(roots);
+          } else {
+            setShopeeCategoriesRaw([]);
             setDumpRoots([]);
+          }
+        } else {
+          const res = await fetch(`https://api.mercadolibre.com/sites/${siteId}/categories`);
+          const data = await res.json();
+          const roots = Array.isArray(data) ? data.map((c: any) => ({ id: String(c?.id || ""), name: String(c?.name || "") })) : [];
+          if (roots.length > 0) {
+            setDumpRoots(roots);
+          } else {
+            try {
+              const resAll = await fetch(`https://api.mercadolibre.com/sites/${siteId}/categories/all`);
+              const dataAll = await resAll.json();
+              const rootMap = new Map<string, string>();
+              const visit = (node: any) => {
+                const p = Array.isArray((node as any)?.path_from_root) ? (node as any)?.path_from_root : [];
+                if (p.length > 0 && p[0]?.id) {
+                  const rid = String(p[0].id);
+                  const rname = String(p[0].name || "");
+                  if (!rootMap.has(rid)) rootMap.set(rid, rname);
+                }
+                const children = Array.isArray((node as any)?.children_categories) ? (node as any)?.children_categories : [];
+                children.forEach(visit);
+              };
+              if (Array.isArray(dataAll)) {
+                dataAll.forEach(visit);
+              } else if (Array.isArray((dataAll as any)?.categories)) {
+                (dataAll as any).categories.forEach(visit);
+              } else if (dataAll && typeof dataAll === "object") {
+                Object.values(dataAll as any).forEach((v: any) => { if (v && typeof v === "object") visit(v); });
+              }
+              const rootsArr = Array.from(rootMap.entries()).map(([id, name]) => ({ id, name }));
+              setDumpRoots(rootsArr);
+            } catch {
+              setDumpRoots([]);
+            }
           }
         }
       } catch {
@@ -865,9 +1016,16 @@ export default function AnunciosCriarML() {
       }
     };
     if (dumpOpen && dumpRoots.length === 0) loadRoots();
-  }, [dumpOpen, siteId]);
+  }, [dumpOpen, siteId, isShopeeMode, organizationId]);
 
   const loadChildren = async (id: string): Promise<any[]> => {
+    if (isShopeeMode) {
+      const children = (shopeeCategoriesRaw || [])
+        .filter((c: any) => String(c?.parent_category_id || "") === String(id))
+        .map((c: any) => ({ id: String(c?.category_id || ""), name: String(c?.display_category_name || c?.original_category_name || c?.category_name || "") }));
+      setDumpChildrenById((prev) => ({ ...prev, [id]: children }));
+      return children;
+    }
     try {
       const res = await fetch(`https://api.mercadolibre.com/categories/${id}`);
       const data = await res.json();
@@ -940,12 +1098,14 @@ export default function AnunciosCriarML() {
     if (currentStep === 1) return !!marketplaceSelection;
     if (currentStep === 2) return !!title && !!categoryId;
     if (currentStep === 3) {
+      if (isShopeeMode) return description.length > 0;
       const reqIds = new Set<string>(filteredAttrs.required.map((a: any) => String(a.id)));
       const filled = new Set<string>((attributes || []).map((a: any) => String(a.id)).filter(Boolean));
       const missing = Array.from(reqIds).filter((id) => !filled.has(id));
       return description.length > 0 && missing.length === 0;
     }
     if (currentStep === 4) {
+      if (isShopeeMode) return true;
       return (Array.isArray(variations) ? variations.length : 0) > 0;
     }
     if (currentStep === 7) {
@@ -959,14 +1119,20 @@ export default function AnunciosCriarML() {
       return h > 0 && l > 0 && w > 0 && g > 0;
     }
     if (currentStep === 6) {
-      const ok = !!listingTypeId && !!price;
-      const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
-      const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro','gold_special'].includes(String(listingTypeId || '').toLowerCase());
-      if (requiresPic) {
+      if (isShopeeMode) {
+        const ok = !!price;
         const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
         return ok && hasAtLeastOneImage;
+      } else {
+        const ok = !!listingTypeId && !!price;
+        const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
+        const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro','gold_special'].includes(String(listingTypeId || '').toLowerCase());
+        if (requiresPic) {
+          const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
+          return ok && hasAtLeastOneImage;
+        }
+        return ok;
       }
-      return ok;
     }
     return true;
   };
@@ -980,13 +1146,14 @@ export default function AnunciosCriarML() {
             try {
               const { data, error } = await (supabase as any)
                 .from("marketplace_integrations")
-                .select("marketplace_name, site_id, drop_off, xd_drop_off, self_service, shipping_preferences, preferences_fetched_at")
+                .select("marketplace_name")
                 .eq("organizations_id", organizationId);
               if (!error) {
                 const names: string[] = (data || []).map((r: any) => String(r?.marketplace_name || "")).map((n) => (n === "mercado_livre" ? "Mercado Livre" : n));
                 const clean = Array.from(new Set(names)).filter(Boolean);
                 setConnectedApps(clean);
-                if (!marketplaceSelection && clean.includes("Mercado Livre")) setMarketplaceSelection("Mercado Livre");
+              } else {
+                console.error("[load marketplaces] error", { code: (error as any)?.code, message: (error as any)?.message });
               }
             } catch {}
             setFetchGate((g) => ({ ...g, s1: true }));
@@ -998,25 +1165,26 @@ export default function AnunciosCriarML() {
               const cat = String(categoryId || "");
               const cachedAttrs = sessionCacheRef.current.attrsMetaByCategory[cat];
               const cachedTech = sessionCacheRef.current.techInputByCategory[cat];
-              if (Array.isArray(cachedAttrs)) {
-                setAttrsMeta(cachedAttrs);
-              } else {
-                const [attrsRes, techRes] = await Promise.all([
-                  (supabase as any).functions.invoke("mercado-livre-categories-attributes", { body: { organizationId, categoryId } }),
-                  (supabase as any).functions.invoke("mercado-livre-technical-specs-input", { body: { organizationId, categoryId } }),
-                ]);
-                if (!attrsRes.error) {
-                  const arr = Array.isArray(attrsRes.data?.attributes) ? attrsRes.data.attributes : [];
-                  setAttrsMeta(arr);
-                  sessionCacheRef.current.attrsMetaByCategory[cat] = arr;
-                }
-                if (!techRes.error) {
-                  const inpt = techRes.data || null;
-                  setTechSpecsInput(inpt);
-                  sessionCacheRef.current.techInputByCategory[cat] = inpt;
+              if (Array.isArray(cachedAttrs)) { setAttrsMeta(cachedAttrs); }
+              else {
+                if (!isShopeeMode) {
+                  const [attrsRes, techRes] = await Promise.all([
+                    (supabase as any).functions.invoke("mercado-livre-categories-attributes", { body: { organizationId, categoryId } }),
+                    (supabase as any).functions.invoke("mercado-livre-technical-specs-input", { body: { organizationId, categoryId } }),
+                  ]);
+                  if (!attrsRes.error) {
+                    const arr = Array.isArray(attrsRes.data?.attributes) ? attrsRes.data.attributes : [];
+                    setAttrsMeta(arr);
+                    sessionCacheRef.current.attrsMetaByCategory[cat] = arr;
+                    setLastCategoryLoaded(String(categoryId || ""));
+                  }
+                  if (!techRes.error) {
+                    const inpt = techRes.data || null;
+                    setTechSpecsInput(inpt);
+                    sessionCacheRef.current.techInputByCategory[cat] = inpt;
+                  }
                 }
               }
-              setLastCategoryLoaded(String(categoryId || ""));
             } catch {}
           }
           setFetchGate((g) => ({ ...g, s3: true }));
@@ -1026,51 +1194,61 @@ export default function AnunciosCriarML() {
         }
         if (currentStep === 5) {
           try {
-            const cat = String(categoryId || "");
-            const cachedTerms = sessionCacheRef.current.saleTermsMetaByCategory[cat];
-            const cachedTypes = sessionCacheRef.current.listingTypesByCategory[cat];
-            let arr = Array.isArray(cachedTypes) ? cachedTypes : [];
-            if (!Array.isArray(cachedTerms) || !Array.isArray(cachedTypes)) {
-              const [termsRes, typesRes] = await Promise.all([
-                (supabase as any).functions.invoke("mercado-livre-categories-sale-terms", { body: { organizationId, categoryId } }),
-                (supabase as any).functions.invoke("mercado-livre-available-listing-types", { body: { organizationId, categoryId } }),
-              ]);
-              if (!termsRes.error) {
-                const terms = Array.isArray((termsRes.data as any)?.terms) ? (termsRes.data as any).terms : [];
-                setSaleTermsMeta(terms);
-                sessionCacheRef.current.saleTermsMetaByCategory[cat] = terms;
+            if (isShopeeMode) {
+              setSaleTermsMeta([]);
+              setListingTypes([]);
+              setFetchGate((g) => ({ ...g, s6: true }));
+            } else {
+              const cat = String(categoryId || "");
+              const cachedTerms = sessionCacheRef.current.saleTermsMetaByCategory[cat];
+              const cachedTypes = sessionCacheRef.current.listingTypesByCategory[cat];
+              let arr = Array.isArray(cachedTypes) ? cachedTypes : [];
+              if (!Array.isArray(cachedTerms) || !Array.isArray(cachedTypes)) {
+                const [termsRes, typesRes] = await Promise.all([
+                  (supabase as any).functions.invoke("mercado-livre-categories-sale-terms", { body: { organizationId, categoryId } }),
+                  (supabase as any).functions.invoke("mercado-livre-available-listing-types", { body: { organizationId, categoryId } }),
+                ]);
+                if (!termsRes.error) {
+                  const terms = Array.isArray((termsRes.data as any)?.terms) ? (termsRes.data as any).terms : [];
+                  setSaleTermsMeta(terms);
+                  sessionCacheRef.current.saleTermsMetaByCategory[cat] = terms;
+                }
+                arr = Array.isArray(typesRes.data?.types) ? typesRes.data.types : [];
               }
-              arr = Array.isArray(typesRes.data?.types) ? typesRes.data.types : [];
+              if (String(siteId).toUpperCase() === "MLB") {
+                const pick = new Set(["gold_special", "gold_pro"]);
+                arr = (arr || []).filter((t: any) => pick.has(String(t?.id || t))).map((t: any) => {
+                  const id = String(t?.id || t);
+                  const name = id === "gold_special" ? "Clássico" : (id === "gold_pro" ? "Premium" : String(t?.name || t?.listing_type_name || id));
+                  return { id, name };
+                });
+              }
+              setListingTypes(arr);
+              sessionCacheRef.current.listingTypesByCategory[cat] = arr;
+              setFetchGate((g) => ({ ...g, s6: true }));
             }
-            if (String(siteId).toUpperCase() === "MLB") {
-              const pick = new Set(["gold_special", "gold_pro"]);
-              arr = (arr || []).filter((t: any) => pick.has(String(t?.id || t))).map((t: any) => {
-                const id = String(t?.id || t);
-                const name = id === "gold_special" ? "Clássico" : (id === "gold_pro" ? "Premium" : String(t?.name || t?.listing_type_name || id));
-                return { id, name };
-              });
-            }
-            setListingTypes(arr);
-            sessionCacheRef.current.listingTypesByCategory[cat] = arr;
-            setFetchGate((g) => ({ ...g, s6: true }));
           } catch {}
         }
         if (currentStep === 6) {
           const p = Number(price);
           if (p > 0) {
             try {
-              const key = `${String(siteId)}:${String(categoryId)}:${p}`;
-              const cached = sessionCacheRef.current.listingPriceOptionsByKey[key];
-              if (Array.isArray(cached)) {
-                setListingPriceOptions(cached);
+              if (isShopeeMode) {
+                setListingPriceOptions([]);
               } else {
-                const { data, error } = await (supabase as any).functions.invoke("mercado-livre-listing-prices", {
-                  body: { organizationId, siteId, price: p, categoryId }
-                });
-                if (!error) {
-                  const arr = Array.isArray(data?.prices) ? data.prices : [];
-                  setListingPriceOptions(arr);
-                  sessionCacheRef.current.listingPriceOptionsByKey[key] = arr;
+                const key = `${String(siteId)}:${String(categoryId)}:${p}`;
+                const cached = sessionCacheRef.current.listingPriceOptionsByKey[key];
+                if (Array.isArray(cached)) {
+                  setListingPriceOptions(cached);
+                } else {
+                  const { data, error } = await (supabase as any).functions.invoke("mercado-livre-listing-prices", {
+                    body: { organizationId, siteId, price: p, categoryId }
+                  });
+                  if (!error) {
+                    const arr = Array.isArray(data?.prices) ? data.prices : [];
+                    setListingPriceOptions(arr);
+                    sessionCacheRef.current.listingPriceOptionsByKey[key] = arr;
+                  }
                 }
               }
             } catch {}
@@ -1085,18 +1263,31 @@ export default function AnunciosCriarML() {
       return;
     }
     if (currentStep === 6) {
-      const okBasic = !!listingTypeId && !!price;
-      if (!okBasic) {
-        toast({ title: "Complete esta etapa", description: "Selecione o tipo de publicação e informe o preço.", variant: "destructive" });
-        return;
-      }
-      const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
-      const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro','gold_special'].includes(String(listingTypeId || '').toLowerCase());
-      if (requiresPic) {
+      if (isShopeeMode) {
+        const okBasic = !!price;
+        if (!okBasic) {
+          toast({ title: "Preço obrigatório", description: "Informe o preço.", variant: "destructive" });
+          return;
+        }
         const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
         if (!hasAtLeastOneImage) {
-          toast({ title: "Foto obrigatória no Premium", description: "Adicione pelo menos uma foto nas variações ou nas fotos gerais.", variant: "destructive" });
+          toast({ title: "Foto obrigatória", description: "Adicione pelo menos uma foto nas variações ou nas fotos gerais.", variant: "destructive" });
           return;
+        }
+      } else {
+        const okBasic = !!listingTypeId && !!price;
+        if (!okBasic) {
+          toast({ title: "Complete esta etapa", description: "Selecione o tipo de publicação e informe o preço.", variant: "destructive" });
+          return;
+        }
+        const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
+        const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro','gold_special'].includes(String(listingTypeId || '').toLowerCase());
+        if (requiresPic) {
+          const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
+          if (!hasAtLeastOneImage) {
+            toast({ title: "Foto obrigatória no Premium", description: "Adicione pelo menos uma foto nas variações ou nas fotos gerais.", variant: "destructive" });
+            return;
+          }
         }
       }
     } else if (currentStep === 7) {
@@ -1109,7 +1300,11 @@ export default function AnunciosCriarML() {
       toast({ title: "Variação obrigatória", description: "Adicione ao menos uma variação.", variant: "destructive" });
       return;
     } else if (currentStep === 3) {
-      toast({ title: "Preencha os obrigatórios", description: "Preencha os atributos obrigatórios e a descrição.", variant: "destructive" });
+      if (isShopeeMode) {
+        toast({ title: "Descrição obrigatória", description: "Preencha a descrição do produto.", variant: "destructive" });
+      } else {
+        toast({ title: "Preencha os obrigatórios", description: "Preencha os atributos obrigatórios e a descrição.", variant: "destructive" });
+      }
       return;
     } else if (currentStep === 2) {
       toast({ title: "Título e categoria", description: "Informe o título e selecione a categoria.", variant: "destructive" });
@@ -1186,7 +1381,7 @@ export default function AnunciosCriarML() {
       }));
       const draft: any = {
         organizations_id: organizationId,
-        marketplace_name: "Mercado Livre",
+        marketplace_name: isShopeeMode ? "Shopee" : "Mercado Livre",
         site_id: siteId,
         title,
         category_id: categoryId,
@@ -1448,14 +1643,91 @@ export default function AnunciosCriarML() {
     const sellerShippingPreferences = preferFlex ? { prefer_flex: true } : undefined;
     setPublishing(true);
     try {
-      const { data, error } = await (supabase as any).functions.invoke("mercado-livre-publish-item", {
-        body: { organizationId, payload, description: { plain_text: description }, upload_variation_files: uploadVariationFiles, seller_shipping_preferences: sellerShippingPreferences }
-      });
+      let data: any = null;
+      let error: any = null;
+      if (isShopeeMode) {
+        const imageUrlList = (pictureUrls || []).slice(0, 8).filter((u) => typeof u === "string" && /^https?:\/\//i.test(String(u)));
+        const weightKg = (() => {
+          const w = Number((shipping as any)?.weight || 0);
+          return Number.isFinite(w) && w > 0 ? (w / 1000) : undefined;
+        })();
+        const dim = (shipping as any)?.dimensions || {};
+        const pkgHeight = Number(dim?.height || (shipping as any)?.height || 0);
+        const pkgLength = Number(dim?.length || (shipping as any)?.length || 0);
+        const pkgWidth = Number(dim?.width || (shipping as any)?.width || 0);
+        const models: any[] = (() => {
+          if (!variationsEnabled || !Array.isArray(variations) || variations.length === 0) return [];
+          const uniqueComboIds = Array.from(new Set<string>((variations || []).flatMap((v: any) => {
+            const combos = Array.isArray(v?.attribute_combinations) ? v.attribute_combinations : [];
+            return combos.map((c: any) => String(c?.id || ""));
+          }).filter(Boolean)));
+          const orderedIds = (variationAttrs || []).map((a: any) => String(a?.id || "")).filter((id: string) => uniqueComboIds.includes(id));
+          const tiers = orderedIds.map((id: string) => {
+            const name = String((variationAttrs || []).find((a: any) => String(a?.id || "") === id)?.name || id);
+            const optsSet = new Set<string>();
+            (variations || []).forEach((v: any) => {
+              const combos = Array.isArray(v?.attribute_combinations) ? v.attribute_combinations : [];
+              const cur = combos.find((c: any) => String(c?.id || "") === id);
+              const text = String(cur?.value_name || cur?.name || "").trim();
+              if (text) optsSet.add(text);
+            });
+            const option_list = Array.from(optsSet).map((t) => ({ option_text: t }));
+            return { name, option_list };
+          });
+          const model_list = (variations || []).map((v: any) => {
+            const combos = Array.isArray(v?.attribute_combinations) ? v.attribute_combinations : [];
+            const tier_index = orderedIds.map((id: string, idx: number) => {
+              const cur = combos.find((c: any) => String(c?.id || "") === id);
+              const text = String(cur?.value_name || cur?.name || "").trim();
+              const tier = tiers[idx];
+              const i = (tier?.option_list || []).findIndex((o: any) => String(o?.option_text || "") === text);
+              return i >= 0 ? i : 0;
+            });
+            const skuAttr = (Array.isArray(v?.attributes) ? v.attributes : []).find((a: any) => String(a?.id || "").toUpperCase() === "SELLER_SKU");
+            const model_sku = String((skuAttr as any)?.value_name || "");
+            const priceStr = String(v?.price || "").trim();
+            const priceNumVar = (() => {
+              if (!priceStr) return priceNum || 0;
+              const norm = priceStr.replace(/\./g, "").replace(/,/g, ".").replace(/[^0-9.]/g, "");
+              const val = Number(norm);
+              return isNaN(val) ? (priceNum || 0) : val;
+            })();
+            const normal_stock = Math.max(0, Number(v?.available_quantity) || 0);
+            const obj: any = { tier_index, model_sku: model_sku || undefined, price: priceNumVar, normal_stock };
+            return obj;
+          });
+          return { tiers, model_list };
+        })();
+        const payloadShopee: any = {
+          category_id: Number(categoryId) || 0,
+          item_name: title,
+          attributes: (attributes || []),
+          original_price: priceNum || undefined,
+          description: description,
+          image: imageUrlList.length ? { image_url_list: imageUrlList } : undefined,
+          weight: weightKg,
+          dimension: (pkgHeight && pkgLength && pkgWidth) ? {
+            package_height: pkgHeight,
+            package_length: pkgLength,
+            package_width: pkgWidth
+          } : undefined,
+          item_status: "UNLIST",
+          ...(Array.isArray((models as any)?.model_list) && (models as any).model_list.length > 0 ? {
+            tier_variation: (models as any).tiers,
+            model_list: (models as any).model_list,
+          } : {}),
+        };
+        const res = await invokeFn("shopee-product-add-item", { organizationId, payload: payloadShopee });
+        data = res.data; error = res.error;
+      } else {
+        const res = await (supabase as any).functions.invoke("mercado-livre-publish-item", {
+          body: { organizationId, payload, description: { plain_text: description }, upload_variation_files: uploadVariationFiles, seller_shipping_preferences: sellerShippingPreferences }
+        });
+        data = res.data; error = res.error;
+      }
       if (error || (data && (data as any)?.error)) {
-        const rawMsg = error?.message || ((data as any)?.meli?.message || (data as any)?.error || "Erro");
-        const rawCauses: string[] = Array.isArray((data as any)?.meli?.cause)
-          ? ((data as any)?.meli?.cause as any[]).map((c: any) => String(c?.message || c?.code || "")).filter(Boolean)
-          : [];
+        const rawMsg = error?.message || ((data as any)?.meli?.message || (data as any)?.message || (data as any)?.error || "Erro");
+        const rawCauses: string[] = Array.isArray((data as any)?.meli?.cause) ? ((data as any)?.meli?.cause as any[]).map((c: any) => String(c?.message || c?.code || "")).filter(Boolean) : [];
         const merged = [rawMsg, ...rawCauses].join(" \n ").toLowerCase();
         const find = (kw: string | RegExp) => {
           if (typeof kw === 'string') return merged.includes(kw.toLowerCase());
@@ -1467,13 +1739,13 @@ export default function AnunciosCriarML() {
         else if (find(/title|título/i)) { stepId = 2; field = "Título"; }
         else if (find(/description|descri[cç][aã]o/i)) { stepId = 3; field = "Descrição"; }
         else if (find(/item[_-]?condition|condi[cç][aã]o/i)) { stepId = 3; field = "Condição"; }
-        else if (find(/attribute|atributo/i) && !find(/variation|varia[cç][aã]o/i)) { stepId = 3; field = "Atributos"; }
-        else if (find(/ficha|technical|t[eé]cnica/i)) { stepId = 5; field = "Ficha técnica"; }
-        else if (find(/variation|varia[cç][aã]o|attribute[_-]?combinations/i)) { stepId = 4; field = "Variações"; }
-        else if (find(/picture|pictures|image|foto|thumbnail/i) || find(/pictures\s+are\s+mandatory|fotos\s+obrigat[oó]rias/i)) { stepId = 4; field = "Imagens"; }
+        else if (find(/attribute|atributo/i) && !find(/variation|varia[cç][aã]o/i)) { stepId = isShopeeMode ? 4 : 3; field = "Atributos"; }
+        else if (find(/ficha|technical|t[eé]cnica/i)) { stepId = isShopeeMode ? 4 : 5; field = "Ficha técnica"; }
+        else if (find(/variation|varia[cç][aã]o|attribute[_-]?combinations/i)) { stepId = isShopeeMode ? 5 : 4; field = "Variações"; }
+        else if (find(/picture|pictures|image|foto|thumbnail/i) || find(/pictures\s+are\s+mandatory|fotos\s+obrigat[oó]rias/i)) { stepId = isShopeeMode ? 3 : 4; field = "Imagens"; }
         else if (find(/price|pre[cç]o|listing[_-]?type/i)) { stepId = 6; field = "Preço/Publicação"; }
         else if (find(/shipping|envio|dimensions|dimens[oõ]es|weight|peso|me2|mercado\s*envios/i)) { stepId = 7; field = "Envio e dimensões"; }
-        else if (find(/available[_-]?quantity|estoque/i)) { stepId = 4; field = "Estoque da variação"; }
+        else if (find(/available[_-]?quantity|estoque/i)) { stepId = isShopeeMode ? 5 : 4; field = "Estoque da variação"; }
         setErrorSteps(Array.from(new Set([ ...errorSteps, stepId ])));
         setCurrentStep(stepId);
         toast({ title: "Corrija o campo", description: `${field} no passo ${getStepTitle(stepId)}`, variant: "destructive" });
@@ -1501,17 +1773,101 @@ export default function AnunciosCriarML() {
     if (!organizationId) return;
     if (!title.trim()) return;
     try {
+      setIsLoadingPredict(true);
+      console.groupCollapsed("[runPredict] start");
+      console.log("params", { organizationId, isShopeeMode, title });
       setHasSearchedCategory(true);
-      const { data, error } = await (supabase as any).functions.invoke("mercado-livre-categories-predict", {
-        body: { organizationId, siteId, title: title.trim() }
-      });
-      if (error) { toast({ title: "Falha no preditor", description: error.message || String(error), variant: "destructive" }); return; }
-      const preds = Array.isArray(data?.predictions) ? data.predictions : [];
-      setCategorySuggestions(preds);
-      const doms = Array.isArray(data?.domain_discovery) ? data.domain_discovery : [];
-      setDomainSuggestions(doms);
+      if (isShopeeMode) {
+          const { data, error } = await invokeFn("shopee-categories-predict", { organizationId, title: title.trim(), action: "recommend", language: "pt-br" });
+          if (error) { toast({ title: "Falha no preditor", description: error.message || String(error), variant: "destructive" }); setCategorySuggestions([]); setDomainSuggestions([]); console.groupEnd(); return; }
+          const ok = !!((data as any)?.ok);
+          const correlationId = (data as any)?.correlationId;
+          const api = (data as any)?.data || (data as any);
+          const resp = (api as any)?.response || api;
+        let preds: any[] = [];
+        if (Array.isArray((resp as any)?.category_list)) preds = (resp as any).category_list;
+        else if (Array.isArray((resp as any)?.data?.category_list)) preds = (resp as any).data.category_list;
+        else {
+          const vals = Object.values(resp || {}).filter((v: any) => Array.isArray(v)) as any[];
+          const found = vals.find((arr) => Array.isArray(arr) && arr.some((it: any) => typeof it === "object" && (("category_id" in it) || ("category_name" in it))));
+          if (Array.isArray(found)) preds = found as any[];
+        }
+        const normalized = (Array.isArray(preds) ? preds : []).map((c: any) => ({
+          category_id: String(c?.category_id ?? c?.id ?? ""),
+          category_name: String(c?.category_name ?? c?.name ?? ""),
+        })).filter((c: any) => c.category_id && c.category_name);
+        console.log("[shopee.category_recommend] parsed", { correlationId, count: normalized.length });
+        if (!ok) {
+          const code = (api as any)?.code ?? (api as any)?.error ?? null;
+          const msg = (api as any)?.message ?? (api as any)?.msg ?? (api as any)?.error_info ?? null;
+          const c = String(code || "").toLowerCase();
+          const m = String(msg || "").trim();
+          const map: Record<string, string> = {
+            error_param: "Parâmetros inválidos ou ausentes.",
+            error_auth: "Falha de autenticação.",
+            error_sign: "Assinatura inválida.",
+            error_network: "Falha de rede interna.",
+            error_data: "Erro ao processar dados.",
+            error_server: "Erro no servidor Shopee.",
+            error_shop: "Shop ID inválido.",
+            error_inner: "Sistema da Shopee indisponível.",
+            error_item_not_found: "Produto não encontrado.",
+            error_system_busy: "Sistema ocupado, tente novamente.",
+            error_image_unavailable: "Imagem indisponível.",
+            error_param_shop_id_not_found: "Shop_id não encontrado."
+          };
+          const base = map[c] || "Erro na API Shopee.";
+          const friendly = m ? `${base} ${m}` : base;
+          console.error("[shopee.category_recommend] error", { code, message: msg, correlationId, status: (data as any)?.status });
+          toast({ title: "Falha ao buscar categorias", description: friendly, variant: "destructive" });
+        }
+        setDomainSuggestions([]);
+        try {
+          const { data: treeData, error: treeErr } = await invokeFn("shopee-categories-predict", { organizationId, action: "get_category", language: "pt-br" });
+          if (!treeErr) {
+            const api2 = (treeData as any)?.data || (treeData as any);
+            const resp2 = (api2 as any)?.response || api2;
+            const list: any[] = Array.isArray((resp2 as any)?.category_list) ? (resp2 as any).category_list : [];
+            setShopeeCategoriesRaw(list);
+            const nameById: Record<string, string> = {};
+            for (const c of list) {
+              const key = String((c as any)?.category_id ?? (c as any)?.id ?? "");
+              const val = String((c as any)?.display_category_name ?? (c as any)?.original_category_name ?? (c as any)?.category_name ?? "");
+              if (key) nameById[key] = val;
+            }
+            const roots = list
+              .filter((c: any) => Number(c?.parent_category_id || 0) === 0)
+              .map((c: any) => ({ id: String(c?.category_id || ""), name: String(c?.display_category_name || c?.original_category_name || c?.category_name || "Categoria") }));
+            setDumpRoots(roots);
+            console.log("[shopee.get_category] parsed", { count: roots.length });
+            const normalizedPt = normalized.map((s: any) => ({
+              ...s,
+              category_name: nameById[String(s.category_id)] || s.category_name
+            }));
+            setCategorySuggestions(normalizedPt);
+          } else {
+            setCategorySuggestions(normalized);
+          }
+        } catch {
+          setCategorySuggestions(normalized);
+        }
+      } else {
+        const { data, error } = await (supabase as any).functions.invoke("mercado-livre-categories-predict", {
+          body: { organizationId, siteId, title: title.trim() }
+        });
+        if (error) { toast({ title: "Falha no preditor", description: error.message || String(error), variant: "destructive" }); return; }
+        const preds = Array.isArray(data?.predictions) ? data.predictions : [];
+        setCategorySuggestions(preds);
+        const doms = Array.isArray(data?.domain_discovery) ? data.domain_discovery : [];
+        setDomainSuggestions(doms);
+      }
+      console.log("[runPredict] success", { suggestions_count: (Array.isArray(categorySuggestions) ? categorySuggestions.length : 0) });
+      console.groupEnd();
     } catch (e: any) {
+      console.error("[runPredict] exception", { name: e?.name, message: e?.message, stack: e?.stack });
       toast({ title: "Erro no preditor", description: e?.message || String(e), variant: "destructive" });
+    } finally {
+      setIsLoadingPredict(false);
     }
   };
 
@@ -1553,7 +1909,7 @@ export default function AnunciosCriarML() {
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h1 className="text-2xl font-bold text-gray-900">Criar um anúncio</h1>
-                  <p className="text-gray-600">Modo Mercado Livre</p>
+                  <p className="text-gray-600">{isShopeeMode ? "Modo Shopee" : "Modo Mercado Livre"}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Button
@@ -1578,7 +1934,7 @@ export default function AnunciosCriarML() {
                             <button
                               key={name}
                               className={`border rounded-lg px-4 py-3 text-left ${selected ? "border-novura-primary bg-purple-50" : "border-gray-200 bg-white"}`}
-                              onClick={() => setMarketplaceSelection(name)}
+                              onClick={() => { setMarketplaceSelection(name); navigate(`/anuncios/criar/${marketplaceSlugify(name)}`); }}
                             >
                               <div className="font-medium text-gray-900">{name}</div>
                               <div className="text-xs text-gray-600">Conectado</div>
@@ -1612,8 +1968,17 @@ export default function AnunciosCriarML() {
                       </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4" />
                       <div className="space-y-2">
-                        {hasSearchedCategory && categorySuggestions.length === 0 && domainSuggestions.length === 0 ? (
-                          <div className="text-sm text-gray-600">Nenhuma sugestão de categoria</div>
+                        {isLoadingPredict ? (
+                          <div className="text-sm text-gray-600 flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" /> Carregando sugestões...
+                          </div>
+                        ) : hasSearchedCategory && categorySuggestions.length === 0 && domainSuggestions.length === 0 ? (
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm text-gray-600">Nenhuma sugestão de categoria</div>
+                            <Button className="bg-novura-primary hover:bg-novura-primary/90 text-white" onClick={() => setDumpOpen(true)}>
+                              Selecionar manualmente
+                            </Button>
+                          </div>
                         ) : (
                           <div className="grid grid-cols-1 gap-2">
                             {categorySuggestions.map((sug: any, idx: number) => {
@@ -1775,11 +2140,16 @@ export default function AnunciosCriarML() {
                               <Button className="bg-novura-primary hover:bg-novura-primary/90" disabled={!pendingCategoryId} onClick={async () => {
                                 if (pendingCategoryId) {
                                   try {
-                                    const res = await fetch(`https://api.mercadolibre.com/categories/${pendingCategoryId}`);
-                                    const data = await res.json();
-                                    const pathArr = Array.isArray((data as any)?.path_from_root) ? (data as any)?.path_from_root : [];
-                                    const fullPath = pathArr.map((p: any) => String(p?.name || "")).filter(Boolean).join(" › ");
-                                    if (fullPath) setPathsByCategoryId((prev) => ({ ...prev, [pendingCategoryId]: fullPath }));
+                                    if (isShopeeMode) {
+                                      const path = [...dumpSelected.map((s: any) => String(s?.name || "")), String(pendingCategoryName || "")].filter(Boolean).join(" › ");
+                                      if (path) setPathsByCategoryId((prev) => ({ ...prev, [pendingCategoryId]: path }));
+                                    } else {
+                                      const res = await fetch(`https://api.mercadolibre.com/categories/${pendingCategoryId}`);
+                                      const data = await res.json();
+                                      const pathArr = Array.isArray((data as any)?.path_from_root) ? (data as any)?.path_from_root : [];
+                                      const fullPath = pathArr.map((p: any) => String(p?.name || "")).filter(Boolean).join(" › ");
+                                      if (fullPath) setPathsByCategoryId((prev) => ({ ...prev, [pendingCategoryId]: fullPath }));
+                                    }
                                   } catch {}
                                   setCategoryId(pendingCategoryId);
                                   setDomainSuggestions([]);
@@ -1798,8 +2168,41 @@ export default function AnunciosCriarML() {
                     </div>
                   )}
                   {currentStep === 3 && (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-6">
+                      <div className="border-2 border-novura-primary/30 rounded-xl p-4 bg-purple-50/40">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-gray-700">Imagens do Produto</div>
+                            <div className="text-xs text-gray-600 mt-0.5">* Imagem 1:1</div>
+                          </div>
+                          <div className="text-xs text-gray-600">
+                            {isShopeeMode ? `${Math.min((pictures || []).length, 9)}/${9}` : `${Math.min((pictures || []).length, 8)}/${8}`}
+                          </div>
+                        </div>
+                        <div className="mt-3">
+                          <ImageUpload
+                            selectedImages={(pictures as any)}
+                            onImagesChange={(imgs) => setPictures(imgs as any)}
+                            maxImages={isShopeeMode ? 9 : 8}
+                            allowedMimeTypes={["image/jpeg","image/png"]}
+                            label=""
+                            showCoverBadge
+                            addLabel={`Adicionar Imagem (${isShopeeMode ? `${Math.min((pictures || []).length, 9)}/${9}` : `${Math.min((pictures || []).length, 8)}/${8}`})`}
+                            variant="purple"
+                          />
+                        </div>
+                        <div className="mt-3 p-3 rounded-lg bg-white border border-gray-200">
+                          <label className="flex items-center gap-2">
+                            <Checkbox checked={fashionImage34} onCheckedChange={(val) => setFashionImage34(!!val)} />
+                            <span className="text-sm text-gray-700">Imagem 3:4</span>
+                          </label>
+                          <div className="text-xs text-gray-600 mt-1">
+                            Impressione os compradores adicionando imagens 3:4 para produtos de moda. <a href="#" className="text-novura-primary">Veja mais</a>
+                          </div>
+                        </div>
+                      </div>
+                      {!isShopeeMode && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         {filteredAttrs.required.map((a: any) => {
                           const id = String(a?.id || "");
                           const name = String(a?.name || id || "Atributo");
@@ -1945,23 +2348,65 @@ export default function AnunciosCriarML() {
                             </div>
                           );
                         })}
-                        
+                      </div>
+                      )}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="md:col-span-1">
+                          <div className="border-2 border-novura-primary/30 rounded-xl p-4 bg-purple-50/40">
+                            <div className="text-sm font-semibold text-gray-700 mb-3">Vídeo do Produto</div>
+                            <VideoUpload
+                              video={video}
+                              onVideoChange={setVideo}
+                              maxSizeMB={30}
+                              maxResolution={{ width: 1280, height: 1280 }}
+                              minDurationSec={10}
+                              maxDurationSec={60}
+                              accept="video/mp4"
+                              variant="purple"
+                            />
+                          </div>
+                        </div>
+                        <div className="md:col-span-1">
+                          <div className="border rounded-xl p-4 bg-white">
+                            <ul className="text-sm text-gray-700 space-y-2">
+                              <li className="flex items-start"><span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span> Tamanho: máximo de 30MB, a resolução não pode exceder 1280x1280px</li>
+                              <li className="flex items-start"><span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span> Duração: 10s–60s</li>
+                              <li className="flex items-start"><span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span> Formato: MP4</li>
+                              <li className="flex items-start"><span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span> Nota: o produto pode ser publicado enquanto o vídeo está sendo processado. O vídeo será exibido na lista automaticamente após ser processado com sucesso.</li>
+                            </ul>
+                          </div>
+                        </div>
                       </div>
                       <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Descrição em texto plano" className="min-h-[160px]" />
                     </div>
                   )}
-                  {currentStep === 4 && (
+                  {((isShopeeMode && currentStep === 5) || (!isShopeeMode && currentStep === 4)) && (
                     <div className="space-y-4">
-                      <div className="flex items-center gap-3">
-                        <div className="text-sm text-gray-700">Configure ao menos uma variação</div>
-                        <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => {
-                          const next = [...(variations || []), { attribute_combinations: [], available_quantity: 0, pictureFiles: [] }];
-                          setVariations(next);
-                          if (primaryVariationIndex === null && next.length === 1) setPrimaryVariationIndex(0);
-                        }}>
-                          <Plus className="w-4 h-4 mr-1" /> Adicionar variação
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm text-gray-700">Variações</div>
+                        <Button
+                          variant="link"
+                          className="text-novura-primary p-0 h-auto"
+                          onClick={() => setVariationsEnabled(!variationsEnabled)}
+                        >
+                          {variationsEnabled ? "Desabilitar Variações" : "Adicionar Variações"}
                         </Button>
                       </div>
+                      {variationsEnabled && (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-3">
+                          <div className="text-sm text-gray-700">Configure ao menos uma variação</div>
+                          <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => {
+                            const next = [...(variations || []), { attribute_combinations: [], available_quantity: 0, pictureFiles: [], price: "" }];
+                            setVariations(next);
+                            if (primaryVariationIndex === null && next.length === 1) setPrimaryVariationIndex(0);
+                          }}>
+                            <Plus className="w-4 h-4 mr-1" /> Adicionar variação
+                          </Button>
+                        </div>
+                      </div>
+                      )}
+                      {variationsEnabled && (
                       <Accordion type="multiple" className="mt-3">
                         {(variations || []).map((v: any, idx: number) => (
                           <AccordionItem key={idx} value={`var-${idx}`} className="border rounded-lg bg-white">
@@ -2250,6 +2695,17 @@ export default function AnunciosCriarML() {
                                     );
                                 })}
                                 <div>
+                                  <Label>Preço</Label>
+                                  <div className="relative mt-2">
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">R$</span>
+                                    <Input value={String(v?.price ?? "")} placeholder="Preço da variação" className="pl-10" onChange={(e) => {
+                                      const buf = [...variations];
+                                      buf[idx] = { ...v, price: e.target.value };
+                                      setVariations(buf);
+                                    }} />
+                                  </div>
+                                </div>
+                                <div>
                                   <Label>Estoque</Label>
                                   <Input value={String(v?.available_quantity ?? "")} placeholder="Estoque" onChange={(e) => {
                                     const buf = [...variations];
@@ -2272,13 +2728,14 @@ export default function AnunciosCriarML() {
                           </AccordionItem>
                         ))}
                       </Accordion>
+                      )}
                     </div>
                   )}
-                  {currentStep === 5 && (
+                  {(((isShopeeMode && currentStep === 4) || (!isShopeeMode && currentStep === 5))) && (
                     <div className="space-y-4">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {(() => {
-                          const base = (showAllTechAttrs ? filteredAttrs.tech : filteredAttrs.tech.slice(0, 6));
+                          const base = (isShopeeMode ? ([...filteredAttrs.required, ...filteredAttrs.tech]) : (showAllTechAttrs ? filteredAttrs.tech : filteredAttrs.tech.slice(0, 6)));
                           const others = base.filter((a: any) => {
                             const hasValues = Array.isArray(a?.values) && a.values.length > 0;
                             const isBoolean = String(a?.value_type || "").toLowerCase() === "boolean" || (hasValues && a.values.some((v: any) => /^(yes|no|sim|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || ""))));
@@ -2286,6 +2743,7 @@ export default function AnunciosCriarML() {
                           });
                           return others.map((a: any) => {
                           const id = String(a?.id || "");
+                          const idUp = id.toUpperCase();
                           const name = String(a?.name || id || "Atributo");
                           const hasValues = Array.isArray(a?.values) && a.values.length > 0;
                           const current = (attributes || []).find((x: any) => String(x?.id) === id);
@@ -2380,7 +2838,15 @@ export default function AnunciosCriarML() {
                             );
                           }
                           if (isString) {
-                            const suggestions = (Array.isArray(a?.values) ? a.values : []).map((v: any) => ({ id: String(v?.id || ""), name: String(v?.name || v?.value || v?.id || "") }));
+                            const baseSug = (Array.isArray(a?.values) ? a.values : []).map((v: any) => ({ id: String(v?.id || ""), name: String(v?.name || v?.value || v?.id || "") }));
+                            const extraBrand = (idUp === "BRAND" ? (Array.isArray(shopeeBrandList) ? shopeeBrandList : []) : []);
+                            const seen = new Set<string>();
+                            const suggestions = [...baseSug, ...extraBrand].filter((s) => {
+                              const key = `${String(s.id)}|${String(s.name).toLowerCase()}`;
+                              if (seen.has(key)) return false;
+                              seen.add(key);
+                              return true;
+                            });
                             return (
                               <div key={id}>
                                 <RequiredLabel text={name} required={isRequired} />
@@ -2494,7 +2960,7 @@ export default function AnunciosCriarML() {
                         })()}
                       </div>
                       {(() => {
-                        const booleans = (showAllTechAttrs ? filteredAttrs.tech : filteredAttrs.tech.slice(0, 6)).filter((a: any) => {
+                        const booleans = (isShopeeMode ? filteredAttrs.tech : (showAllTechAttrs ? filteredAttrs.tech : filteredAttrs.tech.slice(0, 6))).filter((a: any) => {
                           const hasValues = Array.isArray(a?.values) && a.values.length > 0;
                           return String(a?.value_type || "").toLowerCase() === "boolean" || (hasValues && a.values.some((v: any) => /^(yes|no|sim|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || ""))));
                         });
@@ -2562,14 +3028,14 @@ export default function AnunciosCriarML() {
                       </div>
                         );
                       })()}
-                      {(!showAllTechAttrs && filteredAttrs.tech.length > 6) && (
+                      {!isShopeeMode && (!showAllTechAttrs && filteredAttrs.tech.length > 6) && (
                         <div className="flex justify-center">
                           <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => setShowAllTechAttrs(true)}>
                             <ChevronDown className="w-4 h-4 mr-1" /> Preencher mais campos
                           </Button>
                         </div>
                       )}
-                      {(showAllTechAttrs && filteredAttrs.tech.length > 6) && (
+                      {!isShopeeMode && ((showAllTechAttrs && filteredAttrs.tech.length > 6)) && (
                         <div className="flex justify-center">
                           <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => setShowAllTechAttrs(false)}>
                             Mostrar menos

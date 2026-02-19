@@ -81,8 +81,16 @@ serve(async (req) => {
 
     const authHeader = req.headers.get("Authorization") || "";
     const token = authHeader.replace("Bearer ", "");
-    const { data: userRes, error: userErr } = await (admin as any).auth.getUser(token);
-    if (userErr || !userRes?.user) return json({ error: "Unauthorized" }, 401);
+    const internalWorker = (req.headers.get("x-internal-worker") || "").toLowerCase() === "queue-consume";
+    let userRes: any = null;
+    let userErr: any = null;
+    if (token) {
+      const u = await (admin as any).auth.getUser(token);
+      userRes = u?.data;
+      userErr = u?.error;
+    }
+    const userMode = !!userRes?.user && !userErr;
+    if (!userMode && !internalWorker) return json({ error: "Unauthorized" }, 401);
 
     const raw = await req.text();
     let body: any = {};
@@ -98,6 +106,7 @@ serve(async (req) => {
       },
       body_preview: (raw || "").slice(0, 256),
     });
+    console.log("[ML-SUBMIT-XML] auth_mode", { rid, user_mode: userMode, internal_worker: internalWorker });
 
     const organizationId: string | undefined = body?.organizationId || body?.organization_id;
     const companyId: string | undefined = body?.companyId || body?.company_id;
@@ -109,12 +118,14 @@ serve(async (req) => {
     if (!companyId) return json({ error: "companyId is required" }, 400);
     if (!notaFiscalId && !nfeKey) return json({ error: "notaFiscalId or nfeKey is required" }, 400);
 
-    const { data: isMemberData, error: isMemberErr } = await (admin as any).rpc("is_org_member", {
-      p_user_id: userRes.user.id,
-      p_org_id: organizationId,
-    });
-    const isMember = (Array.isArray(isMemberData) ? isMemberData?.[0] : isMemberData) === true;
-    if (isMemberErr || !isMember) return json({ error: "Forbidden" }, 403);
+    if (userMode) {
+      const { data: isMemberData, error: isMemberErr } = await (admin as any).rpc("is_org_member", {
+        p_user_id: userRes.user.id,
+        p_org_id: organizationId,
+      });
+      const isMember = (Array.isArray(isMemberData) ? isMemberData?.[0] : isMemberData) === true;
+      if (isMemberErr || !isMember) return json({ error: "Forbidden" }, 403);
+    }
 
     const { data: company, error: compErr } = await admin.from("companies").select("id, organization_id, focus_token_producao, focus_token_homologacao").eq("id", companyId).single();
     if (compErr || !company) return json({ error: compErr?.message || "Company not found" }, 404);

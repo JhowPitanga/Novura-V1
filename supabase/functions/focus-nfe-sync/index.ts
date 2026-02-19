@@ -216,6 +216,35 @@ serve(async (req) => {
         try { jsonResp = text ? JSON.parse(text) : {}; } catch { jsonResp = { raw: text }; }
         if (!resp.ok) {
           log("sync_focus_error", { oid, httpStatus: resp.status, message: jsonResp?.mensagem || jsonResp?.message || "Erro na consulta" });
+          try {
+            const { data: existingSyncErr } = await admin
+              .from("notas_fiscais")
+              .select("id")
+              .eq("company_id", companyId)
+              .eq("marketplace_order_id", order.marketplace_order_id)
+              .eq("emissao_ambiente", useHomolog ? "homologacao" : "producao")
+              .limit(1)
+              .maybeSingle();
+            const nfErrWrite: any = {
+              company_id: companyId,
+              order_id: oid,
+              marketplace: order.marketplace,
+              marketplace_order_id: order.marketplace_order_id,
+              pack_id: packId,
+              emissao_ambiente: useHomolog ? "homologacao" : "producao",
+              status_focus: jsonResp?.status || jsonResp?.status_sefaz || null,
+              status: mapDomainStatus(jsonResp?.status || jsonResp?.status_sefaz || null),
+              error_details: {
+                status_sefaz: jsonResp?.status_sefaz || null,
+                mensagem_sefaz: jsonResp?.mensagem_sefaz || jsonResp?.mensagem || jsonResp?.message || "Falha ao consultar NF-e",
+              },
+            };
+            if (existingSyncErr?.id) {
+              await admin.from("notas_fiscais").update(nfErrWrite).eq("id", existingSyncErr.id);
+            } else {
+              await admin.from("notas_fiscais").insert(nfErrWrite);
+            }
+          } catch {}
           results.push({ orderId: oid, packId, ok: false, status: jsonResp?.status || jsonResp?.status_sefaz, error: jsonResp?.mensagem || jsonResp?.message || "Falha ao consultar NF-e por referência", response: jsonResp });
           continue;
         }
@@ -351,11 +380,12 @@ serve(async (req) => {
         if (pdfB64Sync) nfWriteSync.pdf_base64 = pdfB64Sync;
         if (xmlUrlSync) nfWriteSync.xml_url = xmlUrlSync;
         if (pdfUrlSync) nfWriteSync.pdf_url = pdfUrlSync;
-        nfWriteSync.marketplace_submission_response = {
-          status_sefaz: jsonResp?.status_sefaz || null,
-          mensagem_sefaz: jsonResp?.mensagem_sefaz || jsonResp?.mensagem || jsonResp?.message || null,
-          links: linksMeta,
-        };
+        if ((jsonResp?.mensagem_sefaz || jsonResp?.mensagem || jsonResp?.message) && String(statusSync).toLowerCase() !== "autorizado") {
+          nfWriteSync.error_details = {
+            status_sefaz: jsonResp?.status_sefaz || null,
+            mensagem_sefaz: jsonResp?.mensagem_sefaz || jsonResp?.mensagem || jsonResp?.message || null,
+          };
+        }
         let writeOk = true;
         let lastErrMsg: string | null = null;
         const statusCandidates = [
@@ -403,6 +433,49 @@ serve(async (req) => {
           }
         }
         if (writeOk) {
+          if (String(statusSync).toLowerCase() === "autorizado") {
+            try {
+              await admin
+                .from("notas_fiscais")
+                .update({ marketplace_submission_status: "pending" })
+                .eq("company_id", companyId)
+                .eq("marketplace_order_id", order.marketplace_order_id);
+            } catch {}
+            try {
+              let updOk = false;
+              const { data: d1, error: e1 } = await admin
+                .from("marketplace_orders_presented_new")
+                .update({ status_interno: "subir xml" })
+                .eq("organizations_id", organizationId)
+                .eq("company_id", companyId)
+                .eq("marketplace", order.marketplace)
+                .eq("marketplace_order_id", order.marketplace_order_id)
+                .select("id");
+              updOk = !e1 && Array.isArray(d1) && d1.length > 0;
+              if (!updOk) {
+                const { data: d2, error: e2 } = await admin
+                  .from("marketplace_orders_presented_new")
+                  .update({ status_interno: "subir xml" })
+                  .eq("organizations_id", organizationId)
+                  .eq("company_id", companyId)
+                  .eq("marketplace_order_id", order.marketplace_order_id)
+                  .select("id");
+                updOk = !e2 && Array.isArray(d2) && d2.length > 0;
+                if (!updOk) {
+                  const { data: d3, error: e3 } = await admin
+                    .from("marketplace_orders_presented_new")
+                    .update({ status_interno: "subir xml" })
+                    .eq("company_id", companyId)
+                    .eq("marketplace_order_id", order.marketplace_order_id)
+                    .select("id");
+                  updOk = !e3 && Array.isArray(d3) && d3.length > 0;
+                }
+              }
+              if (!updOk) {
+                log("presented_new_update_authorized_not_found", { organizationId, companyId, marketplaceOrderId: order.marketplace_order_id, marketplace: order.marketplace, attempted: ["with_marketplace", "without_marketplace", "company_only"] });
+              }
+            } catch {}
+          }
           log("sync_done", { oid, ref: refStr, status: statusSync });
           results.push({ orderId: oid, packId, ok: true, status: statusSync, response: jsonResp });
         } else {

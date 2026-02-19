@@ -212,6 +212,7 @@ serve(async (req) => {
     
     const prodHosts = [
       "https://openplatform.shopee.com.br",
+      "https://partner.shopeemobile.com",
     ];
 
     const listHosts = prodHosts;
@@ -251,7 +252,9 @@ serve(async (req) => {
       const companyId = String(getField(integration, "company_id"));
       const integrationId = String(getField(integration, "id"));
       const cfgInt = getField(integration, "config") as Record<string, unknown> | null;
-      const shopIdCandidate = (cfgInt && typeof cfgInt?.["shopee_shop_id"] !== "undefined") ? Number(cfgInt?.["shopee_shop_id"]) : Number(getField(integration, "meli_user_id") || 0);
+      const shopIdCandidate = (cfgInt && typeof cfgInt?.["shopee_shop_id"] !== "undefined")
+        ? Number(cfgInt?.["shopee_shop_id"])
+        : Number(getField(integration, "shopee_shop_id") || 0);
       if (!Number.isFinite(shopIdCandidate) || shopIdCandidate <= 0) {
         console.warn("shopee-sync-orders skip_integration_missing_shop_id", { correlationId, integration_id: integrationId });
         continue;
@@ -362,6 +365,258 @@ serve(async (req) => {
         return null;
       };
 
+      const buyerInvoicePath = "/api/v2/order/get_buyer_invoice_info";
+      const fetchBuyerInvoiceInfo = async (orderSn: string, allowRefresh = true): Promise<any | null> => {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const baseString = `${partnerId}${buyerInvoicePath}${timestamp}${accessToken}${shopIdCandidate}`;
+        let sign = await hmacSha256Hex(partnerKey, baseString);
+        const signPreview = sign.slice(0, 8);
+        const tsDiff = Math.abs(Math.floor(Date.now() / 1000) - timestamp);
+        const invoiceHosts = ["https://openplatform.shopee.com.br"];
+        for (const host of invoiceHosts) {
+          const url = `${host}${buyerInvoicePath}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&access_token=${encodeURIComponent(accessToken)}&shop_id=${encodeURIComponent(String(shopIdCandidate))}&sign=${sign}`;
+          const urlMasked = url.replace(/access_token=[^&]*/i, "access_token=***").replace(/sign=[^&]*/i, "sign=***");
+          try {
+            console.log("shopee-sync-orders invoice_sign_inputs", { correlationId, integration_id: integrationId, path: buyerInvoicePath, timestamp, partner_id: partnerId, shop_id: shopIdCandidate, access_len: accessToken.length, sign_preview: signPreview });
+            console.log("shopee-sync-orders invoice_api_request", { correlationId, integration_id: integrationId, host, url: urlMasked, method: "POST", order_sn: orderSn, ts_diff: tsDiff });
+            const resp = await fetch(url, {
+              method: "POST",
+              headers: { "content-type": "application/json", "accept": "application/json" },
+              body: JSON.stringify({ queries: [{ order_sn: String(orderSn) }] }),
+            });
+            const text = await resp.text();
+            let json: any = null;
+            try { json = JSON.parse(text);
+            } catch (_) { json = null; }
+            try {
+              console.log("shopee-sync-orders invoice_api_raw", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, ok: resp.ok, body: text });
+            } catch (_) {}
+            if (!resp.ok) {
+              try {
+                const errCode = (json as any)?.code ?? (json as any)?.error ?? (json as any)?.data?.code ?? null;
+                const errMsg = (typeof (json as any)?.message === "string" ? (json as any)?.message : (typeof (json as any)?.msg === "string" ? (json as any)?.msg : "")) || null;
+                console.warn("shopee-sync-orders invoice_api_err", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, code: errCode, message: errMsg });
+                if ((resp.status === 401 || resp.status === 403 || String(errCode).includes("invalid_access_token")) && allowRefresh) {
+                  const refreshed = await tryRefreshAccessToken();
+                  if (refreshed) {
+                    return await fetchBuyerInvoiceInfo(orderSn, false);
+                  }
+                }
+              } catch (_) {}
+            }
+            if (resp.status === 401 || resp.status === 403) return null;
+            if (resp.ok) return json;
+          } catch (_) { continue; }
+        }
+        return null;
+      };
+
+      const packageDetailPath = "/api/v2/order/get_package_detail";
+      const fetchPackageDetailsByNumberList = async (pkgNumbers: string[], allowRefresh = true): Promise<any | null> => {
+        if (!Array.isArray(pkgNumbers) || pkgNumbers.length === 0) return null;
+        const timestamp = Math.floor(Date.now() / 1000);
+        const baseString = `${partnerId}${packageDetailPath}${timestamp}${accessToken}${shopIdCandidate}`;
+        let sign = await hmacSha256Hex(partnerKey, baseString);
+        const signPreview = sign.slice(0, 8);
+        const tsDiff = Math.abs(Math.floor(Date.now() / 1000) - timestamp);
+        const listParam = pkgNumbers.join(",");
+        for (const host of detailHosts) {
+          const qs = new URLSearchParams({
+            partner_id: String(partnerId),
+            timestamp: String(timestamp),
+            access_token: String(accessToken),
+            shop_id: String(shopIdCandidate),
+            sign: String(sign),
+            package_number_list: String(listParam),
+          });
+          const url = `${host}${packageDetailPath}?${qs.toString()}`;
+          const urlMasked = url.replace(/access_token=[^&]*/i, "access_token=***").replace(/sign=[^&]*/i, "sign=***").replace(/package_number_list=[^&]*/i, "package_number_list=***");
+          try {
+            console.log("shopee-sync-orders package_sign_inputs", { correlationId, integration_id: integrationId, path: packageDetailPath, timestamp, partner_id: partnerId, shop_id: shopIdCandidate, access_len: accessToken.length, sign_preview: signPreview });
+            console.log("shopee-sync-orders package_api_request", { correlationId, integration_id: integrationId, host, url: urlMasked, package_number_list_len: pkgNumbers.length, ts_diff: tsDiff });
+            const resp = await fetch(url, { method: "GET", headers: { "content-type": "application/json" } });
+            const text = await resp.text();
+            let json: any = null;
+            try { json = JSON.parse(text);
+            } catch (_) { json = null; }
+            try {
+              console.log("shopee-sync-orders package_api_raw", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, ok: resp.ok, body: text });
+            } catch (_) {}
+            if (resp.ok && json && String((json as any)?.error || "").toLowerCase() === "error_sign") {
+              const ts2 = Math.floor(Date.now() / 1000);
+              const base2 = `${partnerId}${packageDetailPath}${ts2}${accessToken}${shopIdCandidate}`;
+              sign = await hmacSha256Hex(partnerKey, base2);
+              const qs2 = new URLSearchParams({
+                partner_id: String(partnerId),
+                timestamp: String(ts2),
+                access_token: String(accessToken),
+                shop_id: String(shopIdCandidate),
+                sign: String(sign),
+                package_number_list: String(listParam),
+              });
+              const url2 = `${host}${packageDetailPath}?${qs2.toString()}`;
+              const resp2 = await fetch(url2, { method: "GET", headers: { "content-type": "application/json" } });
+              const text2 = await resp2.text();
+              try { json = JSON.parse(text2); } catch (_) { json = null; }
+              try { console.log("shopee-sync-orders package_api_raw_retry", { correlationId, integration_id: integrationId, host, status: resp2.status, ok: resp2.ok, body: text2 }); } catch (_) {}
+            }
+            if (!resp.ok) {
+              try {
+                const errCode = (json as any)?.code ?? (json as any)?.error ?? (json as any)?.data?.code ?? null;
+                const errMsg = (typeof (json as any)?.message === "string" ? (json as any)?.message : (typeof (json as any)?.msg === "string" ? (json as any)?.msg : "")) || null;
+                console.warn("shopee-sync-orders package_api_err", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, code: errCode, message: errMsg });
+                if ((resp.status === 401 || resp.status === 403 || String(errCode).includes("invalid_access_token")) && allowRefresh) {
+                  const refreshed = await tryRefreshAccessToken();
+                  if (refreshed) {
+                    return await fetchPackageDetailsByNumberList(pkgNumbers, false);
+                  }
+                }
+              } catch (_) {}
+            }
+            if (resp.status === 401 || resp.status === 403) return null;
+            if (resp.ok) return json;
+          } catch (_) { continue; }
+        }
+        return null;
+      };
+      const shipmentListPath = "/api/v2/order/get_shipment_list";
+      const fetchShipmentList = async (orderSn: string, allowRefresh = true): Promise<any | null> => {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const baseString = `${partnerId}${shipmentListPath}${timestamp}${accessToken}${shopIdCandidate}`;
+        let sign = await hmacSha256Hex(partnerKey, baseString);
+        for (const host of detailHosts) {
+          const qs = new URLSearchParams({
+            partner_id: String(partnerId),
+            timestamp: String(timestamp),
+            access_token: String(accessToken),
+            shop_id: String(shopIdCandidate),
+            sign: String(sign),
+            order_sn: String(orderSn),
+          });
+          const url = `${host}${shipmentListPath}?${qs.toString()}`;
+          const urlMasked = url.replace(/access_token=[^&]*/i, "access_token=***").replace(/sign=[^&]*/i, "sign=***");
+          try {
+            console.log("shopee-sync-orders shipment_list_sign_inputs", { correlationId, integration_id: integrationId, path: shipmentListPath, timestamp, partner_id: partnerId, shop_id: shopIdCandidate });
+            console.log("shopee-sync-orders shipment_list_request", { correlationId, integration_id: integrationId, host, url: urlMasked, order_sn: orderSn });
+            const resp = await fetch(url, { method: "GET", headers: { "content-type": "application/json" } });
+            const text = await resp.text();
+            let json: any = null;
+            try { json = JSON.parse(text); } catch (_) { json = null; }
+            console.log("shopee-sync-orders shipment_list_raw", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, ok: resp.ok, body: text });
+            if (!resp.ok) {
+              const errCode = (json as any)?.code ?? (json as any)?.error ?? (json as any)?.data?.code ?? null;
+              const errMsg = (typeof (json as any)?.message === "string" ? (json as any)?.message : (typeof (json as any)?.msg === "string" ? (json as any)?.msg : "")) || null;
+              console.warn("shopee-sync-orders shipment_list_err", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, code: errCode, message: errMsg });
+              if ((resp.status === 401 || resp.status === 403 || String(errCode).includes("invalid_access_token")) && allowRefresh) {
+                const refreshed = await tryRefreshAccessToken();
+                if (refreshed) {
+                  return await fetchShipmentList(orderSn, false);
+                }
+              }
+            }
+            if (resp.status === 401 || resp.status === 403) return null;
+            if (resp.ok) return json;
+          } catch (_) { continue; }
+        }
+        return null;
+      };
+      const fetchPackageDetailById = async (pkgId: string, allowRefresh = true): Promise<any | null> => {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const baseString = `${partnerId}${packageDetailPath}${timestamp}${accessToken}${shopIdCandidate}`;
+        let sign = await hmacSha256Hex(partnerKey, baseString);
+        for (const host of detailHosts) {
+          const url = `${host}${packageDetailPath}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&access_token=${encodeURIComponent(accessToken)}&shop_id=${encodeURIComponent(String(shopIdCandidate))}&sign=${sign}&package_id=${encodeURIComponent(String(pkgId))}`;
+          try {
+            const resp = await fetch(url, { method: "GET", headers: { "content-type": "application/json" } });
+            const text = await resp.text();
+            let json: any = null;
+            try { json = JSON.parse(text); } catch (_) { json = null; }
+            if (!resp.ok) {
+              const errCode = (json as any)?.code ?? (json as any)?.error ?? (json as any)?.data?.code ?? null;
+              if ((resp.status === 401 || resp.status === 403 || String(errCode).includes("invalid_access_token")) && allowRefresh) {
+                const refreshed = await tryRefreshAccessToken();
+                if (refreshed) {
+                  return await fetchPackageDetailById(pkgId, false);
+                }
+              }
+            }
+            if (resp.status === 401 || resp.status === 403) return null;
+            if (resp.ok) return json;
+          } catch (_) { continue; }
+        }
+        return null;
+      };
+      const shippingParamPath = "/api/v2/logistics/get_shipping_parameter";
+      const fetchShippingParameter = async (ordSn: string, pkgNumber?: string, allowRefresh = true): Promise<any | null> => {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const baseString = `${partnerId}${shippingParamPath}${timestamp}${accessToken}${shopIdCandidate}`;
+        let sign = await hmacSha256Hex(partnerKey, baseString);
+        const signPreview = sign.slice(0, 8);
+        const tsDiff = Math.abs(Math.floor(Date.now() / 1000) - timestamp);
+        for (const host of detailHosts) {
+          const qs = new URLSearchParams({
+            partner_id: String(partnerId),
+            timestamp: String(timestamp),
+            access_token: String(accessToken),
+            shop_id: String(shopIdCandidate),
+            sign: String(sign),
+            order_sn: String(ordSn),
+          });
+          if (pkgNumber) qs.set("package_number", String(pkgNumber));
+          const url = `${host}${shippingParamPath}?${qs.toString()}`;
+          const urlMasked = url.replace(/access_token=[^&]*/i, "access_token=***").replace(/sign=[^&]*/i, "sign=***");
+          try {
+            console.log("shopee-sync-orders shipping_param_sign_inputs", { correlationId, integration_id: integrationId, path: shippingParamPath, timestamp, partner_id: partnerId, shop_id: shopIdCandidate, access_len: accessToken.length, sign_preview: signPreview });
+            console.log("shopee-sync-orders shipping_param_request", { correlationId, integration_id: integrationId, host, url: urlMasked, order_sn: ordSn, package_number: pkgNumber || null, ts_diff: tsDiff });
+            const resp = await fetch(url, { method: "GET", headers: { "content-type": "application/json" } });
+            const text = await resp.text();
+            let json: any = null;
+            try { json = JSON.parse(text);
+            } catch (_) { json = null; }
+            try {
+              console.log("shopee-sync-orders shipping_param_raw", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, ok: resp.ok, body: text });
+            } catch (_) {}
+            if (resp.ok && json && (String((json as any)?.error || "").includes("error_sign") || String((json as any)?.message || "").toLowerCase().includes("wrong sign"))) {
+              const ts2 = Math.floor(Date.now() / 1000);
+              const base2 = `${partnerId}${shippingParamPath}${ts2}${accessToken}${shopIdCandidate}`;
+              sign = await hmacSha256Hex(partnerKey, base2);
+              const qs2 = new URLSearchParams({
+                partner_id: String(partnerId),
+                timestamp: String(ts2),
+                access_token: String(accessToken),
+                shop_id: String(shopIdCandidate),
+                sign: String(sign),
+                order_sn: String(ordSn),
+              });
+              if (pkgNumber) qs2.set("package_number", String(pkgNumber));
+              const url2 = `${host}${shippingParamPath}?${qs2.toString()}`;
+              const resp2 = await fetch(url2, { method: "GET", headers: { "content-type": "application/json" } });
+              const text2 = await resp2.text();
+              try { json = JSON.parse(text2); } catch (_) { json = null; }
+              try {
+                console.log("shopee-sync-orders shipping_param_raw_retry", { correlationId, integration_id: integrationId, host, status: resp2.status, ok: resp2.ok, body: text2 });
+              } catch (_) {}
+            }
+            if (!resp.ok) {
+              try {
+                const errCode = (json as any)?.code ?? (json as any)?.error ?? (json as any)?.data?.code ?? null;
+                const errMsg = (typeof (json as any)?.message === "string" ? (json as any)?.message : (typeof (json as any)?.msg === "string" ? (json as any)?.msg : "")) || null;
+                console.warn("shopee-sync-orders shipping_param_err", { correlationId, integration_id: integrationId, host, url: urlMasked, status: resp.status, code: errCode, message: errMsg });
+                if ((resp.status === 401 || resp.status === 403 || String(errCode).includes("invalid_access_token")) && allowRefresh) {
+                  const refreshed = await tryRefreshAccessToken();
+                  if (refreshed) {
+                    return await fetchShippingParameter(ordSn, pkgNumber, false);
+                  }
+                }
+              } catch (_) {}
+            }
+            if (resp.status === 401 || resp.status === 403) return null;
+            if (resp.ok) return json;
+          } catch (_) { continue; }
+        }
+        return null;
+      };
+
       const fetchList = async (cursor?: string, rangeField?: string, fromTs?: number, toTs?: number, allowRefresh = true): Promise<any | null> => {
         const timestamp = Math.floor(Date.now() / 1000);
         const rf = rangeField || timeRangeFieldInput;
@@ -393,6 +648,13 @@ serve(async (req) => {
         const allowedStatuses = new Set(["UNPAID","READY_TO_SHIP","PROCESSED","SHIPPED","COMPLETED","IN_CANCEL","CANCELLED","INVOICE_PENDING"]);
         const orderStatusValid = orderStatusNorm ? allowedStatuses.has(orderStatusNorm) : false;
         if (orderStatusValid) queryParams.set("order_status", orderStatusNorm);
+        else {
+          queryParams.set("order_status", "INVOICE_PENDING");
+          queryParams.set("request_order_status_pending", "true");
+          try {
+            console.log("shopee-sync-orders list_order_status_defaulted", { correlationId, integration_id: integrationId, defaulted_to: "INVOICE_PENDING" });
+          } catch (_) {}
+        }
         console.log("shopee-sync-orders list_order_status_param", { correlationId, integration_id: integrationId, raw: rawOrderStatus || null, normalized: orderStatusNorm || null, valid: orderStatusValid });
         const respOptFieldsRaw = getStr(body, ["response_optional_fields"]);
         if (respOptFieldsRaw && respOptFieldsRaw.trim().toLowerCase() === "order_status") queryParams.set("response_optional_fields", "order_status");
@@ -559,7 +821,26 @@ serve(async (req) => {
             }
             console.log("shopee-sync-orders list_summary", { correlationId, integration_id: integrationId, fetched_initial: fetched, explicit_period: true });
           } else {
-            console.log("shopee-sync-orders list_skipped_no_explicit_period", { correlationId, integration_id: integrationId });
+            let listJson = await fetchList();
+            while (true) {
+              const current = cursor ? await fetchList(cursor) : listJson;
+              if (!current) break;
+              const items = readOrderList(current);
+              const sns = items.map((o: any) => String(o?.ordersn || o?.order_sn || "")).filter(Boolean);
+              for (const it of items) {
+                const snx = String(it?.ordersn || it?.order_sn || "");
+                if (snx) orderListMap.set(snx, it);
+              }
+              fetched += sns.length;
+              if (sns.length) pushBatch(sns);
+              if (hasMore(current)) {
+                cursor = nextCursor(current);
+                if (!cursor) break;
+              } else {
+                break;
+              }
+            }
+            console.log("shopee-sync-orders list_summary", { correlationId, integration_id: integrationId, fetched_initial: fetched, explicit_period: false });
           }
       }
 
@@ -584,7 +865,112 @@ serve(async (req) => {
           const nowIso = new Date().toISOString();
           const listEntry = orderListMap.get(ordSn) || null;
           const escrow = await fetchEscrowDetail(ordSn).catch(() => null);
-          const combined = escrow ? { order_list_item: listEntry, order_detail: ord, escrow_detail: escrow } as const : { order_list_item: listEntry, order_detail: ord } as const;
+          const invStatusRaw =
+            (typeof ord?.invoice_data === "object" ? String(ord?.invoice_data?.invoice_status || "") : "") ||
+            String(ord?.order_status || ord?.status || "");
+          const vShpInvPending = invStatusRaw.toLowerCase() === "pending" || invStatusRaw.toLowerCase() === "invoice_pending";
+          const statusNorm = (status || "").trim().toUpperCase();
+          const eligibleStatuses = new Set(["INVOICE_PENDING","READY_TO_SHIP","PROCESSED","RETURN/REFUND","RETURN_REFUND","RETURNED","R/R"]);
+          const eligibleForBuyerInfo = vShpInvPending || eligibleStatuses.has(statusNorm);
+          try {
+            console.log("shopee-sync-orders invoice_eval", { correlationId, integration_id: integrationId, ordSn, status: statusNorm || null, invoice_status: invStatusRaw || null, invoice_pending: vShpInvPending, eligible_for_buyer_info: eligibleForBuyerInfo });
+          } catch (_) {}
+          const packageIds = (() => {
+            const list = Array.isArray(ord?.package_list) ? ord?.package_list : [];
+            const ids: string[] = [];
+            for (const p of list) {
+              const v = String((p?.package_id ?? p?.packageid ?? p?.id ?? "") || "");
+              if (v) ids.push(v);
+            }
+            return ids;
+          })();
+          const packageNumbersFromOrder = (() => {
+            const list = Array.isArray(ord?.package_list) ? ord?.package_list : [];
+            const set = new Set<string>();
+            for (const p of list) {
+              const v = String((p?.package_number ?? p?.pack_number ?? "") || "");
+              if (v) set.add(v);
+            }
+            return Array.from(set);
+          })();
+          const shipmentListResp = await fetchShipmentList(ordSn).catch(() => null);
+          const packageNumbersFromShipment = (() => {
+            const out = new Set<string>();
+            const arrA = Array.isArray((shipmentListResp as any)?.response?.package_list) ? (shipmentListResp as any)?.response?.package_list : [];
+            const arrB = Array.isArray((shipmentListResp as any)?.package_list) ? (shipmentListResp as any)?.package_list : [];
+            const arrC = Array.isArray((shipmentListResp as any)?.data?.package_list) ? (shipmentListResp as any)?.data?.package_list : [];
+            const base = arrA.length ? arrA : (arrB.length ? arrB : arrC);
+            for (const e of Array.isArray(base) ? base : []) {
+              const v = String((e?.package_number ?? e?.pack_number ?? "") || "");
+              if (v) out.add(v);
+            }
+            return Array.from(out);
+          })();
+          const allPackageNumbers = Array.from(new Set([...(packageNumbersFromOrder || []), ...(packageNumbersFromShipment || [])]));
+          const packageDetailResponse = allPackageNumbers.length ? await fetchPackageDetailsByNumberList(allPackageNumbers).catch(() => null) : null;
+          const packageDetails = (() => {
+            const arrA = Array.isArray((packageDetailResponse as any)?.response?.package_detail_list) ? (packageDetailResponse as any)?.response?.package_detail_list : [];
+            const arrB = Array.isArray((packageDetailResponse as any)?.response?.package_list) ? (packageDetailResponse as any)?.response?.package_list : [];
+            const arrC = Array.isArray((packageDetailResponse as any)?.package_detail_list) ? (packageDetailResponse as any)?.package_detail_list : [];
+            const arrD = Array.isArray((packageDetailResponse as any)?.package_list) ? (packageDetailResponse as any)?.package_list : [];
+            const base = arrA.length ? arrA : (arrB.length ? arrB : (arrC.length ? arrC : arrD));
+            return Array.isArray(base) ? base : [];
+          })();
+          if ((!packageDetailResponse || (packageDetailResponse && String((packageDetailResponse as any)?.error || "").toLowerCase() === "error_not_found")) && packageIds.length) {
+            const detailsFallback = [];
+            for (const pid of packageIds) {
+              const det = await fetchPackageDetailById(pid).catch(() => null);
+              if (det) detailsFallback.push({ package_id: pid, ...det });
+            }
+          if (detailsFallback.length && !packageDetails.length) {
+            const merged = detailsFallback.flatMap((d: any) => {
+              const arr = Array.isArray(d?.response?.package_detail_list) ? d.response.package_detail_list : (Array.isArray(d?.package_detail_list) ? d.package_detail_list : []);
+              return arr;
+            });
+            if (merged.length) (packageDetails as any[]).push(...merged);
+          }
+        }
+          const statusesFromShipment = (() => {
+            const out = new Set<string>();
+            const arrA = Array.isArray((shipmentListResp as any)?.response?.package_list) ? (shipmentListResp as any)?.response?.package_list : [];
+            const arrB = Array.isArray((shipmentListResp as any)?.package_list) ? (shipmentListResp as any)?.package_list : [];
+            const arrC = Array.isArray((shipmentListResp as any)?.data?.package_list) ? (shipmentListResp as any)?.data?.package_list : [];
+            const base = arrA.length ? arrA : (arrB.length ? arrB : arrC);
+            for (const e of Array.isArray(base) ? base : []) {
+              const v = (getStr(e || {}, ["status"]) || getStr(e || {}, ["logistics_status"]) || "").trim();
+              if (v) out.add(v.toUpperCase());
+            }
+            return Array.from(out);
+          })();
+          const statusesFromOrderPkgs = (() => {
+            const list = Array.isArray(ord?.package_list) ? ord?.package_list : [];
+            const out = new Set<string>();
+            for (const p of list) {
+              const v = (getStr(p || {}, ["logistics_status"]) || getStr(p || {}, ["status"]) || "").trim();
+              if (v) out.add(v.toUpperCase());
+            }
+            return Array.from(out);
+          })();
+          const hasLogisticsRequestCreated = (() => {
+            const s = new Set<string>([...statusesFromShipment, ...statusesFromOrderPkgs]);
+            for (const v of s) {
+              if (v === "LOGISTICS_REQUEST_CREATED") return true;
+            }
+            return false;
+          })();
+          const hasLogisticsReady = (() => {
+            const s = new Set<string>([...statusesFromShipment, ...statusesFromOrderPkgs]);
+            for (const v of s) {
+              if (v === "LOGISTICS_READY") return true;
+            }
+            return false;
+          })();
+          const shouldFetchShipParam = !vShpInvPending && ((statusNorm === "READY_TO_SHIP") || (statusNorm === "PROCESSED" && hasLogisticsRequestCreated) || hasLogisticsReady);
+          const firstPkgNumber = allPackageNumbers[0] || null;
+          const shippingParam = shouldFetchShipParam ? await fetchShippingParameter(ordSn, firstPkgNumber || undefined).catch(() => null) : null;
+          const combined = escrow
+            ? ({ order_list_item: listEntry, order_detail: ord, escrow_detail: escrow, invoice_status_label: invStatusRaw, invoice_pending: vShpInvPending, ...(shippingParam ? { shipping_parameter: shippingParam } : {}), ...(packageDetails.length ? { package_detail_list: packageDetails } : {}), ...(packageDetailResponse ? { package_detail_response: packageDetailResponse } : {}), ...(shipmentListResp ? { shipment_list_response: shipmentListResp } : {}) } as const)
+            : ({ order_list_item: listEntry, order_detail: ord, invoice_status_label: invStatusRaw, invoice_pending: vShpInvPending, ...(shippingParam ? { shipping_parameter: shippingParam } : {}), ...(packageDetails.length ? { package_detail_list: packageDetails } : {}), ...(packageDetailResponse ? { package_detail_response: packageDetailResponse } : {}), ...(shipmentListResp ? { shipment_list_response: shipmentListResp } : {}) } as const);
           const upsertData = {
             organizations_id: organizationsId,
             company_id: companyId,
@@ -628,8 +1014,337 @@ serve(async (req) => {
                 console.warn("shopee-sync-orders upsert_failed", { integration_id: integrationId, order_sn: ordSn, message: upErr.message });
               }
             }
-            if (rawId) { try { await admin.rpc('refresh_presented_order', { p_order_id: rawId });
-            } catch (_) {} }
+            if (rawId) {
+              try {
+                await (admin as any).functions.invoke("shopee-process-presented", {
+                  body: { raw_id: rawId },
+                  headers: { "x-request-id": correlationId, "x-correlation-id": correlationId },
+                });
+              } catch (_) {}
+            }
+          } catch (_) {}
+          try {
+            const getShippingDocumentParamPath = "/api/v2/logistics/get_shipping_document_parameter";
+            const createShippingDocumentPath = "/api/v2/logistics/create_shipping_document";
+            const getShippingDocumentResultPath = "/api/v2/logistics/get_shipping_document_result";
+            const downloadShippingDocumentPath = "/api/v2/logistics/download_shipping_document";
+            const tn =
+              getStr(ord || {}, ["tracking_number"]) ||
+              getStr(ord || {}, ["tracking_no"]) ||
+              getStr(ord || {}, ["package_list","0","tracking_number"]) ||
+              getStr(ord || {}, ["package_list","0","tracking_no"]) ||
+              (() => {
+                for (const pd of Array.isArray(packageDetails) ? packageDetails : []) {
+                  const v =
+                    getStr(pd || {}, ["last_mile_tracking_number"]) ||
+                    getStr(pd || {}, ["first_mile_tracking_number"]) ||
+                    getStr(pd || {}, ["tracking_number"]) ||
+                    null;
+                  if (v) return v;
+                }
+                return null;
+              })() ||
+              null;
+            if (tn) {
+              const tsP = Math.floor(Date.now() / 1000);
+              const baseP = `${partnerId}${getShippingDocumentParamPath}${tsP}${accessToken}${shopIdCandidate}`;
+              let signP = await hmacSha256Hex(partnerKey, baseP);
+              const qsP = new URLSearchParams({
+                partner_id: String(partnerId),
+                timestamp: String(tsP),
+                access_token: String(accessToken),
+                shop_id: String(shopIdCandidate),
+                sign: String(signP),
+                order_sn: String(ordSn),
+              });
+              if (firstPkgNumber) qsP.set("package_number", String(firstPkgNumber));
+              let paramsObj: any = null;
+              for (const host of detailHosts) {
+                const urlP = `${host}${getShippingDocumentParamPath}?${qsP.toString()}`;
+                try {
+                  const respP = await fetch(urlP, { method: "GET", headers: { "content-type": "application/json" } });
+                  const textP = await respP.text();
+                  let jsonP: any = null;
+                  try { jsonP = JSON.parse(textP); } catch { jsonP = null; }
+                  if (respP.ok && jsonP) {
+                    paramsObj = jsonP;
+                    break;
+                  }
+                } catch (_) {}
+              }
+              const tsC = Math.floor(Date.now() / 1000);
+              const baseC = `${partnerId}${createShippingDocumentPath}${tsC}${accessToken}${shopIdCandidate}`;
+              let signC = await hmacSha256Hex(partnerKey, baseC);
+              const qsC = new URLSearchParams({
+                partner_id: String(partnerId),
+                timestamp: String(tsC),
+                access_token: String(accessToken),
+                shop_id: String(shopIdCandidate),
+                sign: String(signC),
+              });
+              const respFields = paramsObj && (paramsObj.response || paramsObj.data || paramsObj);
+              const docType =
+                (respFields && (respFields.document_type || respFields.type || respFields.default_document_type)) ||
+                "label";
+              const docFormat =
+                (respFields && (respFields.file_type || respFields.format || respFields.default_file_type)) ||
+                "pdf";
+              const payloadC: any = { order_sn: String(ordSn), tracking_number: String(tn), document_type: String(docType), file_type: String(docFormat) };
+              if (firstPkgNumber) payloadC.package_number = String(firstPkgNumber);
+              let createOk = false;
+              let createResp: any = null;
+              for (const host of detailHosts) {
+                const urlC = `${host}${createShippingDocumentPath}?${qsC.toString()}`;
+                try {
+                  const respC = await fetch(urlC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payloadC) });
+                  const textC = await respC.text();
+                  let jsonC: any = null;
+                  try { jsonC = JSON.parse(textC); } catch { jsonC = null; }
+                  createResp = jsonC;
+                  if (respC.ok && jsonC) {
+                    createOk = true;
+                    break;
+                  }
+                  if (!respC.ok) {
+                    const errCode = (jsonC as any)?.code ?? (jsonC as any)?.error ?? (jsonC as any)?.data?.code ?? null;
+                    if ((respC.status === 401 || respC.status === 403 || String(errCode || "").includes("invalid_access_token")) && await tryRefreshAccessToken()) {
+                      const tsC2 = Math.floor(Date.now() / 1000);
+                      const baseC2 = `${partnerId}${createShippingDocumentPath}${tsC2}${accessToken}${shopIdCandidate}`;
+                      signC = await hmacSha256Hex(partnerKey, baseC2);
+                      const qsC2 = new URLSearchParams({
+                        partner_id: String(partnerId),
+                        timestamp: String(tsC2),
+                        access_token: String(accessToken),
+                        shop_id: String(shopIdCandidate),
+                        sign: String(signC),
+                      });
+                      const urlC2 = `${host}${createShippingDocumentPath}?${qsC2.toString()}`;
+                      const respC2 = await fetch(urlC2, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payloadC) });
+                      const textC2 = await respC2.text();
+                      try { createResp = JSON.parse(textC2); } catch { createResp = null; }
+                      if (respC2.ok) {
+                        createOk = true;
+                        break;
+                      }
+                    }
+                  }
+                } catch (_) {}
+              }
+              const tsR = Math.floor(Date.now() / 1000);
+              const baseR = `${partnerId}${getShippingDocumentResultPath}${tsR}${accessToken}${shopIdCandidate}`;
+              let signR = await hmacSha256Hex(partnerKey, baseR);
+              const qsR = new URLSearchParams({
+                partner_id: String(partnerId),
+                timestamp: String(tsR),
+                access_token: String(accessToken),
+                shop_id: String(shopIdCandidate),
+                sign: String(signR),
+              });
+              const payloadR: any = { order_list: [{ order_sn: String(ordSn), ...(firstPkgNumber ? { package_number: String(firstPkgNumber) } : {}) }] };
+              let readyOk = false;
+              let resultResp: any = null;
+              for (const host of detailHosts) {
+                const urlR = `${host}${getShippingDocumentResultPath}?${qsR.toString()}`;
+                try {
+                  const respR = await fetch(urlR, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payloadR) });
+                  const textR = await respR.text();
+                  let jsonR: any = null;
+                  try { jsonR = JSON.parse(textR); } catch { jsonR = null; }
+                  resultResp = jsonR;
+                  const rObj = jsonR && (jsonR.response || jsonR.data || jsonR);
+                  const statusStr =
+                    getStr(rObj || {}, ["status"]) ||
+                    getStr(rObj || {}, ["task_status"]) ||
+                    getStr(rObj || {}, ["result","status"]) ||
+                    null;
+                  if (respR.ok && jsonR && statusStr && String(statusStr).toUpperCase().includes("READY")) {
+                    readyOk = true;
+                    break;
+                  }
+                  if (!respR.ok) {
+                    const errCode = (jsonR as any)?.code ?? (jsonR as any)?.error ?? (jsonR as any)?.data?.code ?? null;
+                    if ((respR.status === 401 || respR.status === 403 || String(errCode || "").includes("invalid_access_token")) && await tryRefreshAccessToken()) {
+                      const tsR2 = Math.floor(Date.now() / 1000);
+                      const baseR2 = `${partnerId}${getShippingDocumentResultPath}${tsR2}${accessToken}${shopIdCandidate}`;
+                      signR = await hmacSha256Hex(partnerKey, baseR2);
+                      const qsR2 = new URLSearchParams({
+                        partner_id: String(partnerId),
+                        timestamp: String(tsR2),
+                        access_token: String(accessToken),
+                        shop_id: String(shopIdCandidate),
+                        sign: String(signR),
+                      });
+                      const urlR2 = `${host}${getShippingDocumentResultPath}?${qsR2.toString()}`;
+                      const respR2 = await fetch(urlR2, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payloadR) });
+                      const textR2 = await respR2.text();
+                      try { resultResp = JSON.parse(textR2); } catch { resultResp = null; }
+                      const rObj2 = resultResp && (resultResp.response || resultResp.data || resultResp);
+                      const statusStr2 =
+                        getStr(rObj2 || {}, ["status"]) ||
+                        getStr(rObj2 || {}, ["task_status"]) ||
+                        getStr(rObj2 || {}, ["result","status"]) ||
+                        null;
+                      if (respR2.ok && statusStr2 && String(statusStr2).toUpperCase().includes("READY")) {
+                        readyOk = true;
+                        break;
+                      }
+                    }
+                  }
+                } catch (_) {}
+              }
+              const tsD = Math.floor(Date.now() / 1000);
+              const baseD = `${partnerId}${downloadShippingDocumentPath}${tsD}${accessToken}${shopIdCandidate}`;
+              let signD = await hmacSha256Hex(partnerKey, baseD);
+              const qsD = new URLSearchParams({
+                partner_id: String(partnerId),
+                timestamp: String(tsD),
+                access_token: String(accessToken),
+                shop_id: String(shopIdCandidate),
+                sign: String(signD),
+              });
+              const shippingDocType =
+                String(docFormat).toLowerCase().includes("zpl") ? "THERMAL_UNPACKAGED_LABEL" : "NORMAL_AIR_WAYBILL";
+              const payloadD: any = {
+                shipping_document_type: shippingDocType,
+                order_list: [{ order_sn: String(ordSn), ...(firstPkgNumber ? { package_number: String(firstPkgNumber) } : {}) }],
+              };
+              let labelOk = false;
+              let labelResp: any = null;
+              let labelRespStatus: number | null = null;
+              let labelRespHost: string | null = null;
+              let contentType: string | null = null;
+              let contentBase64: string | null = null;
+              for (const host of detailHosts) {
+                const urlD = `${host}${downloadShippingDocumentPath}?${qsD.toString()}`;
+                try {
+                  const respD = await fetch(urlD, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payloadD) });
+                  contentType = respD.headers.get("content-type");
+                  let buf: ArrayBuffer | null = null;
+                  try { buf = await respD.arrayBuffer(); } catch (_) { buf = null; }
+                  if (buf) {
+                    const bytes = new Uint8Array(buf);
+                    let bin = "";
+                    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+                    contentBase64 = btoa(bin);
+                  } else {
+                    const textD = await respD.text();
+                    let jsonD: any = null;
+                    try { jsonD = JSON.parse(textD); } catch { jsonD = null; }
+                    labelResp = jsonD || textD;
+                  }
+                  labelRespStatus = respD.status;
+                  labelRespHost = host;
+                  if (respD.ok) {
+                    labelOk = true;
+                    break;
+                  }
+                  if (!respD.ok) {
+                    const errCode = (labelResp as any)?.code ?? (labelResp as any)?.error ?? (labelResp as any)?.data?.code ?? null;
+                    if ((respD.status === 401 || respD.status === 403 || String(errCode || "").includes("invalid_access_token")) && await tryRefreshAccessToken()) {
+                      const tsD2 = Math.floor(Date.now() / 1000);
+                      const baseD2 = `${partnerId}${downloadShippingDocumentPath}${tsD2}${accessToken}${shopIdCandidate}`;
+                      signD = await hmacSha256Hex(partnerKey, baseD2);
+                      const qsD2 = new URLSearchParams({
+                        partner_id: String(partnerId),
+                        timestamp: String(tsD2),
+                        access_token: String(accessToken),
+                        shop_id: String(shopIdCandidate),
+                        sign: String(signD),
+                      });
+                      const urlD2 = `${host}${downloadShippingDocumentPath}?${qsD2.toString()}`;
+                      const respD2 = await fetch(urlD2, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payloadD) });
+                      contentType = respD2.headers.get("content-type");
+                      let buf2: ArrayBuffer | null = null;
+                      try { buf2 = await respD2.arrayBuffer(); } catch (_) { buf2 = null; }
+                      if (buf2) {
+                        const bytes2 = new Uint8Array(buf2);
+                        let bin2 = "";
+                        for (let i = 0; i < bytes2.length; i++) bin2 += String.fromCharCode(bytes2[i]);
+                        contentBase64 = btoa(bin2);
+                      } else {
+                        const textD2 = await respD2.text();
+                        let jsonD2: any = null;
+                        try { jsonD2 = JSON.parse(textD2); } catch { jsonD2 = null; }
+                        labelResp = jsonD2 || textD2;
+                      }
+                      labelRespStatus = respD2.status;
+                      labelRespHost = host;
+                      if (respD2.ok) {
+                        labelOk = true;
+                        break;
+                      }
+                    }
+                  }
+                } catch (_) {}
+              }
+              const { data: pres } = await admin
+                .from("marketplace_orders_presented_new")
+                .select("id, shipping_info")
+                .eq("marketplace", "Shopee")
+                .eq("marketplace_order_id", String(ordSn))
+                .limit(1)
+                .single();
+              const prevInfo = pres?.shipping_info && typeof pres.shipping_info === "object" ? (pres.shipping_info as any) : null;
+              const nextInfo: any = {};
+              if (prevInfo && typeof prevInfo === "object") {
+                for (const k of Object.keys(prevInfo)) nextInfo[k] = (prevInfo as any)[k];
+              }
+              nextInfo.label_request = { order_sn: String(ordSn), package_number: firstPkgNumber || null, tracking_number: tn, document_type: String(docType), file_type: String(docFormat), requested_at: nowIso };
+              nextInfo.label_create_response = createResp || null;
+              nextInfo.label_result_response = resultResp || null;
+              nextInfo.label_download_request = { order_sn: String(ordSn), package_number: firstPkgNumber || null, shipping_document_type: shippingDocType, requested_at: nowIso };
+              nextInfo.label_download_success = labelOk;
+              nextInfo.label_download_content_type = contentType || null;
+              const logs = Array.isArray(nextInfo.log_events) ? nextInfo.log_events : [];
+              nextInfo.log_events = [
+                ...logs,
+                {
+                  stage: "label",
+                  time: nowIso,
+                  correlation_id: correlationId,
+                  success: createOk,
+                  tracking_number: tn,
+                  package_number: firstPkgNumber || null,
+                },
+                {
+                  stage: "label_result",
+                  time: nowIso,
+                  correlation_id: correlationId,
+                  success: readyOk,
+                  package_number: firstPkgNumber || null,
+                },
+                {
+                  stage: "label_download",
+                  time: nowIso,
+                  correlation_id: correlationId,
+                  request_host: labelRespHost,
+                  response_status: labelRespStatus,
+                  success: labelOk,
+                  package_number: firstPkgNumber || null,
+                },
+              ];
+              const updLabel: Record<string, unknown> = { shipping_info: nextInfo };
+              if (contentBase64) {
+                const sizeBytes = Math.floor((contentBase64.length * 3) / 4);
+                updLabel["label_cached"] = true;
+                updLabel["label_response_type"] = contentType && contentType.toLowerCase().includes("pdf") ? "pdf" : (contentType && contentType.toLowerCase().includes("zpl") ? "zpl2" : null);
+                updLabel["label_fetched_at"] = nowIso;
+                updLabel["label_size_bytes"] = sizeBytes;
+                updLabel["label_content_base64"] = contentBase64;
+                updLabel["label_content_type"] = contentType || null;
+                if (contentType && contentType.toLowerCase().includes("pdf")) updLabel["label_pdf_base64"] = contentBase64;
+                if (contentType && contentType.toLowerCase().includes("zpl")) updLabel["label_zpl2_base64"] = contentBase64;
+              }
+              if (pres?.id) {
+                await admin.from("marketplace_orders_presented_new").update(updLabel).eq("id", pres.id);
+              } else {
+                await admin
+                  .from("marketplace_orders_presented_new")
+                  .update(updLabel)
+                  .eq("marketplace", "Shopee")
+                  .eq("marketplace_order_id", String(ordSn));
+              }
+            }
           } catch (_) {}
         }
       }

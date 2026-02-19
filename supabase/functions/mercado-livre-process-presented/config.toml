@@ -1,0 +1,3 @@
+[functions.mercado-livre-process-presented]
+verify_jwt = false
+

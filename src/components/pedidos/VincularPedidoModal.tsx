@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Search, Check, X } from "lucide-react";
 import { useBindableProducts } from '@/hooks/useProducts';
 import { toast } from '@/components/ui/use-toast';
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
 interface Product {
@@ -24,6 +24,7 @@ interface AnuncioParaVincular {
   nome: string;
   quantidade: number;
   marketplace: string;
+  rowId?: string;
   produtoERPId?: string;
   sku?: string; // opcional: SKU do anúncio
   variacao?: string; // opcional: cor/variação
@@ -41,15 +42,19 @@ interface VincularPedidoModalProps {
 }
 
 export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anunciosParaVincular }: VincularPedidoModalProps) {
-  const { bindableProducts, loading, error } = useBindableProducts(isOpen);
+  const [isProductPickerOpen, setProductPickerOpen] = useState(false);
+  const [didProductFetch, setDidProductFetch] = useState(false);
+  const enabledProductsFetch = isProductPickerOpen && !didProductFetch;
+  const { bindableProducts, loading, error } = useBindableProducts(enabledProductsFetch);
   const { organizationId: orgIdFromAuth } = useAuth();
 
   // Estado principal de vinculações por anúncio
   const [vinculacoes, setVinculacoes] = useState<{ [anuncioId: string]: string }>({});
   const [permanenteFlags, setPermanenteFlags] = useState<{ [anuncioId: string]: boolean }>({});
+  const [storageIdState, setStorageIdState] = useState<string | null>(null);
+  const [insufficientMap, setInsufficientMap] = useState<{ [anuncioId: string]: { available: number | null; required: number } }>({});
 
   // Estado do modal secundário (busca de produtos)
-  const [isProductPickerOpen, setProductPickerOpen] = useState(false);
   const [anuncioEmSelecao, setAnuncioEmSelecao] = useState<string | null>(null);
   const [produtoSelecionadoNoPicker, setProdutoSelecionadoNoPicker] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -146,19 +151,19 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
     const persistErrors: string[] = [];
     try {
       // Obter organização atual
-      let organizationId: string | null = orgIdFromAuth ? String(orgIdFromAuth) : null;
+      const organizationId: string | null = orgIdFromAuth ? String(orgIdFromAuth) : null;
 
       // Obter company_id do pedido via view presented (por id ou marketplace_order_id)
       let companyId: string | null = null;
       if (pedidoId) {
         try {
           // 1) Tenta por marketplace_order_id
-          let q = (supabase as any)
+          const q = (supabase as any)
             .from('marketplace_orders_presented')
             .select('id, company_id, marketplace_order_id')
             .eq('marketplace_order_id', pedidoId)
             .maybeSingle();
-          let { data: ord1, error: err1 } = await q;
+          const { data: ord1, error: err1 } = await q;
           if (!err1 && ord1?.company_id) {
             companyId = String(ord1.company_id);
           }
@@ -261,78 +266,6 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
       return;
     }
 
-    const reservationErrors: string[] = [];
-    try {
-      const { data: ord } = await (supabase as any)
-        .from('marketplace_orders_presented_new')
-        .select('id, marketplace_order_id, company_id, pack_id')
-        .or(`id.eq.${pedidoId},marketplace_order_id.eq.${pedidoId}`)
-        .maybeSingle();
-      const resolvedCompanyId = ord?.company_id || null;
-      const resolvedPackId = (ord as any)?.pack_id || null;
-      const resolvedOrgId = orgIdFromAuth ? String(orgIdFromAuth) : null;
-      for (const item of linkedItems) {
-        const { error } = await supabase.rpc('reserve_stock_for_order_item', {
-          p_product_id: item.productId,
-          p_quantity_to_reserve: item.quantity,
-          p_storage_id: storageId,
-        });
-        if (error) {
-          reservationErrors.push(error.message);
-        } else {
-          const { data: existingTx } = await (supabase as any)
-            .from('inventory_transactions')
-            .select('id')
-            .eq('pack_id', resolvedPackId)
-            .eq('product_id', item.productId)
-            .eq('storage_id', storageId)
-            .eq('movement_type', 'RESERVA')
-            .maybeSingle();
-          if (!existingTx) {
-            await (supabase as any)
-              .from('inventory_transactions')
-              .insert({
-                organizations_id: resolvedOrgId,
-                company_id: resolvedCompanyId,
-                product_id: item.productId,
-                storage_id: storageId,
-                pack_id: resolvedPackId ?? null,
-                movement_type: 'RESERVA',
-                quantity_change: -Math.abs(item.quantity || 0),
-                source_ref: `PEDIDO[${resolvedPackId ?? ''}]`,
-              });
-          }
-        }
-      }
-    } catch (e: any) {
-      reservationErrors.push(e?.message || 'Falha ao reservar estoque para o pedido.');
-    }
-
-    try {
-      const { data: ordNew2 } = await (supabase as any)
-        .from('marketplace_orders_presented_new')
-        .select('id')
-        .or(`id.eq.${pedidoId},marketplace_order_id.eq.${pedidoId}`)
-        .maybeSingle();
-      const resolvedOrderId2 = ordNew2?.id || null;
-      if (resolvedOrderId2) {
-        const ephLinks = linkedItems
-          .filter(li => !li.permanent && !!li.marketplaceItemId && !!li.productId)
-          .map(li => ({
-            marketplace_item_id: li.marketplaceItemId,
-            variation_id: li.variationId || '',
-            product_id: li.productId,
-          }));
-        const { error: rpcErr } = await supabase.rpc('update_presented_order_links', {
-          p_order_id: resolvedOrderId2,
-          p_links: ephLinks,
-        });
-        if (rpcErr) {
-          persistErrors.push(rpcErr.message);
-        }
-      }
-    } catch {}
-
     // Montar payload novo para salvar (inclui flags permanentes e dados de reserva)
     const payload = {
       linkedItems,
@@ -340,26 +273,247 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
       pedidoId,
     };
 
+    try {
+      const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, 'x-request-id': crypto.randomUUID() };
+      let presentedNewId: string | null = null;
+      let marketplaceName: string | null = null;
+      let marketplaceOrderIdStr: string | null = null;
+      {
+        const { data: pres1 } = await (supabase as any)
+          .from('marketplace_orders_presented_new')
+          .select('id, marketplace, marketplace_order_id')
+          .eq('id', pedidoId)
+          .maybeSingle();
+        if (pres1?.id) {
+          presentedNewId = String(pres1.id);
+          marketplaceName = String(pres1.marketplace || '');
+          marketplaceOrderIdStr = String(pres1.marketplace_order_id || '');
+        } else {
+          const { data: pres2 } = await (supabase as any)
+            .from('marketplace_orders_presented_new')
+            .select('id, marketplace, marketplace_order_id')
+            .eq('marketplace_order_id', pedidoId)
+            .maybeSingle();
+          if (pres2?.id) {
+            presentedNewId = String(pres2.id);
+            marketplaceName = String(pres2.marketplace || '');
+            marketplaceOrderIdStr = String(pres2.marketplace_order_id || '');
+          }
+        }
+      }
+
+      const ops = linkedItems.map((li) => {
+        const ref = anunciosParaVincular.find((a) => a.id === li.anuncioId);
+        return (async () => {
+          let updErrMsg: string | null = null;
+          if (ref?.rowId) {
+            const upd = await (supabase as any)
+              .from('marketplace_order_items')
+              .update({ linked_products: li.productId, has_unlinked_items: false })
+              .eq('row_id', ref.rowId)
+              .select('row_id, id, linked_products, has_unlinked_items')
+              .maybeSingle();
+            if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por row_id');
+          } else if (li.variationId && presentedNewId) {
+            const upd = await (supabase as any)
+              .from('marketplace_order_items')
+              .update({ linked_products: li.productId, has_unlinked_items: false })
+              .eq('id', presentedNewId)
+              .eq('model_id_externo', li.variationId)
+              .select('row_id, id, linked_products, has_unlinked_items')
+              .maybeSingle();
+            if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por variation_id');
+          } else {
+            updErrMsg = 'Item sem referência para atualização';
+          }
+          if (updErrMsg) {
+            toast({
+              title: 'Falha na vinculação',
+              description: updErrMsg,
+              variant: 'destructive',
+            });
+            await (supabase as any)
+              .from('marketplace_orders_presented_new')
+              .update({ has_unlinked_items: true })
+              .or(`id.eq.${presentedNewId || pedidoId},marketplace_order_id.eq.${pedidoId}`);
+          }
+        })();
+      }).filter(Boolean) as Promise<any>[];
+      if (ops.length > 0) {
+        await Promise.all(ops);
+      }
+
+      if (presentedNewId) {
+        const { data: aggRows } = await (supabase as any)
+          .from('marketplace_order_items')
+          .select('linked_products, has_unlinked_items')
+          .eq('id', presentedNewId);
+        const orderHasUnlinked = Array.isArray(aggRows)
+          ? aggRows.some((r: any) => (r?.has_unlinked_items === true) || !String(r?.linked_products || '').trim())
+          : false;
+        await (supabase as any)
+          .from('marketplace_orders_presented_new')
+          .update({ has_unlinked_items: orderHasUnlinked })
+          .eq('id', presentedNewId);
+      }
+
+      if (presentedNewId) {
+        const itemsForRpc = linkedItems.map((li) => ({
+          product_id: li.productId,
+          quantity: li.quantity,
+          marketplace_item_id: li.marketplaceItemId || null,
+          variation_id: li.variationId || '',
+          permanent: !!li.permanent,
+        }));
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(storageId)) {
+          toast({
+            title: 'Armazém inválido',
+            description: 'O armazém padrão não está configurado corretamente.',
+            variant: 'destructive',
+          });
+          return;
+        }
+        const { data: reservationResult, error: reservationError } = await (supabase as any).rpc('fn_order_reserva_stock_linked', {
+          p_order_id: presentedNewId,
+          p_items: itemsForRpc,
+          p_storage_id: storageId,
+        });
+        if (reservationError || (reservationResult && (reservationResult as any)?.ok === false)) {
+          const rawMsg = reservationError?.message || ((reservationResult as any)?.error) || 'Falha na reserva de estoque';
+          const msg = String(rawMsg || '').startsWith('RESERVA_FALHA_')
+            ? `Sem estoque para ${String(rawMsg).replace('RESERVA_FALHA_', '')} item(ns)`
+            : [
+                rawMsg,
+                reservationError?.code ? `Código: ${reservationError.code}` : null,
+                reservationError?.details ? `Detalhes: ${reservationError.details}` : null,
+                reservationError?.hint ? `Dica: ${reservationError.hint}` : null,
+              ].filter(Boolean).join(' | ');
+          toast({
+            title: 'Falha na reserva',
+            description: msg,
+            variant: 'destructive',
+          });
+          return;
+        }
+      }
+
+      if (marketplaceName && marketplaceOrderIdStr) {
+        const fnName = marketplaceName.toLowerCase().includes('mercado')
+          ? 'mercado-livre-process-presented'
+          : (marketplaceName.toLowerCase().includes('shopee') ? 'shopee-process-presented' : null);
+        if (fnName) {
+          const body =
+            fnName === 'mercado-livre-process-presented'
+              ? { order_id: marketplaceOrderIdStr, status_only: true }
+              : { order_sn: marketplaceOrderIdStr, status_only: true };
+          await (supabase as any).functions.invoke(fnName, { body, headers } as any);
+        }
+      }
+    } catch {}
+
     onSave(payload);
     onClose();
 
     // Feedback consolidando possíveis erros de persistência e de reserva
-    const anyErrors = (persistErrors.length > 0) || (reservationErrors.length > 0);
+    const anyErrors = (persistErrors.length > 0);
     const details = [
       ...(persistErrors.length > 0 ? [
         `Persistência de vínculos: ${persistErrors.join('; ')}`,
-      ] : []),
-      ...(reservationErrors.length > 0 ? [
-        `Reservas de estoque: ${reservationErrors.join('; ')}`,
       ] : []),
     ].join(' | ');
 
     toast({
       title: anyErrors ? 'Vinculação concluída com avisos' : 'Vinculação salva!',
-      description: anyErrors ? (details || 'Ocorreram avisos na operação.') : 'Os anúncios foram vinculados e o estoque foi reservado corretamente.',
+      description: anyErrors ? (details || 'Ocorreram avisos na operação.') : 'Os anúncios foram vinculados corretamente.',
       variant: 'default',
     });
   };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    (async () => {
+      let sid: string | null = null;
+      try {
+        const { data: authUserData } = await supabase.auth.getUser();
+        const uid = authUserData?.user?.id;
+        if (uid && orgIdFromAuth) {
+          const { data: userOrgSettings } = await supabase
+            .from('user_organization_settings')
+            .select('default_storage_id')
+            .eq('organization_id', orgIdFromAuth)
+            .eq('user_id', uid)
+            .maybeSingle();
+          sid = (userOrgSettings as any)?.default_storage_id ?? null;
+        }
+      } catch {}
+      if (!sid && typeof window !== 'undefined') {
+        try { sid = localStorage.getItem('defaultStorageId') || null; } catch {}
+      }
+      if (!sid) {
+        try {
+          let q: any = supabase
+            .from('storage')
+            .select('id')
+            .eq('active', true)
+            .order('created_at', { ascending: true })
+            .limit(1);
+          if (orgIdFromAuth) q = (q as any).eq('organizations_id', orgIdFromAuth);
+          const { data } = await q;
+          if (data && data.length > 0) sid = String(data[0].id);
+        } catch {}
+      }
+      setStorageIdState(sid);
+    })();
+  }, [isOpen, orgIdFromAuth]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const vincIds = Object.keys(vinculacoes);
+    if (vincIds.length === 0 || !storageIdState) {
+      setInsufficientMap({});
+      return;
+    }
+    const productIds = vincIds.map((aid) => vinculacoes[aid]).filter(Boolean);
+    (async () => {
+      try {
+        const { data } = await (supabase as any)
+          .from('products_stock')
+          .select('product_id,current,reserved')
+          .eq('storage_id', storageIdState)
+          .in('product_id', productIds);
+        const stockMap: Record<string, number | null> = {};
+        const rows: any[] = Array.isArray(data) ? data : [];
+        rows.forEach((r: any) => {
+          const pid = String(r.product_id);
+          const available = Number(r.current || 0) - Number(r.reserved || 0);
+          stockMap[pid] = available;
+        });
+        const next: { [anuncioId: string]: { available: number | null; required: number } } = {};
+        anunciosParaVincular.forEach((anuncio) => {
+          const pid = vinculacoes[anuncio.id];
+          if (!pid) return;
+          const available = stockMap.hasOwnProperty(pid) ? (stockMap[pid] as number) : null;
+          next[anuncio.id] = { available, required: anuncio.quantidade };
+        });
+        setInsufficientMap(next);
+      } catch {
+        const next: { [anuncioId: string]: { available: number | null; required: number } } = {};
+        anunciosParaVincular.forEach((anuncio) => {
+          const pid = vinculacoes[anuncio.id];
+          if (!pid) return;
+          next[anuncio.id] = { available: null, required: anuncio.quantidade };
+        });
+        setInsufficientMap(next);
+      }
+    })();
+  }, [isOpen, storageIdState, vinculacoes, anunciosParaVincular]);
+
+  useEffect(() => {
+    if (isProductPickerOpen && !didProductFetch && !loading && Array.isArray(bindableProducts) && bindableProducts.length > 0) {
+      setDidProductFetch(true);
+    }
+  }, [isProductPickerOpen, didProductFetch, loading, bindableProducts]);
 
   return (
     <>
@@ -367,12 +521,10 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
         <DialogContent className="fixed left-[50%] top-[50%] -translate-x-[50%] -translate-y-[50%] sm:max-w-5xl p-0 max-h-[80vh] overflow-hidden">
           {/* Botão de fechar (X) posicionado acima e afastado do quadro de vincular */}
           
-          {/* Título informativo */}
-          <div className="p-6 pb-0">
-            <h2 className="text-base md:text-lg font-semibold">
-              Vincule os anúncios para que seu estoque seja atualizado da forma correta
-            </h2>
-          </div>
+          <DialogHeader>
+            <DialogTitle>Vincular produtos ao pedido</DialogTitle>
+            <DialogDescription>Vincule todos os itens e confirme apenas com estoque suficiente no armazém selecionado.</DialogDescription>
+          </DialogHeader>
           <div className="p-6 space-y-6 max-h-[58vh] overflow-y-auto">
             {anunciosParaVincular.map((anuncio) => {
               const produtoVinculado = vinculacoes[anuncio.id] ? bindableProducts.find((p: Product) => p.id === vinculacoes[anuncio.id]) : null;
@@ -420,6 +572,18 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
                           <div className="text-primary font-bold text-sm md:text-base">DEDUZIR: {anuncio.quantidade}</div>
                         </div>
                         <div className="text-xs text-gray-600">SKU: {produtoVinculado.sku}</div>
+                        {(() => {
+                          const info = insufficientMap[anuncio.id];
+                          const lack = info && info.available !== null && info.available < info.required;
+                          const unknown = info && info.available === null;
+                          return (
+                            <div className={`text-xs ${lack || unknown ? 'text-red-600' : 'text-green-600'}`}>
+                              {lack ? `Sem estoque no armazém selecionado: disponível ${info?.available ?? 0}, solicitado ${info?.required}` :
+                               unknown ? 'O produto selecionado não possui estoque, adicione e tente novamente' :
+                               `Estoque suficiente: disponível ${info?.available ?? 0}, solicitado ${info?.required}`}
+                            </div>
+                          );
+                        })()}
 
                         <div className="inline-flex items-center gap-2 text-xs">
                           <Checkbox
@@ -451,7 +615,14 @@ export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anuncio
           </div>
 
           <DialogFooter className="bg-gray-100 p-4 border-t flex justify-end">
-            <Button onClick={handleSave} disabled={Object.keys(vinculacoes).length === 0}>
+            <Button
+              onClick={handleSave}
+              disabled={
+                Object.keys(vinculacoes).length === 0 ||
+                (anunciosParaVincular.length > 0 && (Object.keys(vinculacoes).length < anunciosParaVincular.length || anunciosParaVincular.some(a => !vinculacoes[a.id]))) ||
+                Object.values(insufficientMap).some((v) => (v.available === null) || (v.available < v.required))
+              }
+            >
               <Check className="h-4 w-4 mr-2" />
               Salvar Alterações
             </Button>

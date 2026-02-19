@@ -1,0 +1,3 @@
+[functions.focus-nfe-emit]
+verify_jwt = false
+
