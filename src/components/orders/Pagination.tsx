@@ -8,7 +8,7 @@ interface PaginacaoProps {
   currentPage: number;
 }
 
-export function Paginacao({ totalItems, limit, currentPage }: PaginacaoProps) {
+export function OrderPagination({ totalItems, limit, currentPage }: PaginacaoProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const totalPages = Math.ceil(totalItems / limit);
 

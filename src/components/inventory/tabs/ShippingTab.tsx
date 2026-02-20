@@ -5,10 +5,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { MoreHorizontal, Truck, Eye } from "lucide-react";
-import { expedicaoData } from "@/data/estoqueData";
-import { getStatusBadge } from "@/utils/estoqueUtils";
+import { expedicaoData } from "@/data/inventoryData";
+import { getStatusBadge } from "@/utils/inventoryUtils";
 
-export function ExpedicaoTab() {
+export function ShippingTab() {
   return (
     <Card>
       <CardContent className="p-0">

@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Settings, Package } from "lucide-react";
 // Removemos o util de badge para customizar o design localmente
-import { EstoqueManagementDrawer } from "../EstoqueManagementDrawer";
+import { InventoryManagementDrawer } from "../InventoryManagementDrawer";
 import { useStockData } from "@/hooks/useStockData";
 
 interface EstoqueTabProps {
@@ -16,7 +16,7 @@ interface EstoqueTabProps {
   selectedCategory: string;
 }
 
-export function EstoqueTab({ activeFilter, searchTerm, selectedGalpao, selectedCategory }: EstoqueTabProps) {
+export function StockTab({ activeFilter, searchTerm, selectedGalpao, selectedCategory }: EstoqueTabProps) {
   const { stockData, loading, error, refetch } = useStockData();
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -285,7 +285,7 @@ export function EstoqueTab({ activeFilter, searchTerm, selectedGalpao, selectedC
         </CardContent>
       </Card>
 
-      <EstoqueManagementDrawer
+      <InventoryManagementDrawer
         isOpen={isDrawerOpen}
         onClose={handleCloseDrawer}
         product={selectedProduct}

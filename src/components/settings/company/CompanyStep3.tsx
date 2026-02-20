@@ -17,7 +17,7 @@ interface EmpresaStep3Props {
   loadingStores?: boolean;
 }
 
-export function EmpresaStep3({ data, updateData, connectedStores = [], loadingStores = false }: EmpresaStep3Props) {
+export function CompanyStep3({ data, updateData, connectedStores = [], loadingStores = false }: EmpresaStep3Props) {
   const [selectedStores, setSelectedStores] = useState<string[]>(data.lojas_associadas);
   const [drawerOpen, setDrawerOpen] = useState(false);
 

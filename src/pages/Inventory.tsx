@@ -12,9 +12,9 @@ import { useCategories } from "@/hooks/useCategories";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { EstoqueTab } from "@/components/estoque/tabs/EstoqueTab";
+import { StockTab } from "@/components/inventory/tabs/StockTab";
 import { CleanNavigation } from "@/components/CleanNavigation";
-import { StorageManagementDrawer } from "@/components/estoque/StorageManagementDrawer";
+import { StorageManagementDrawer } from "@/components/inventory/StorageManagementDrawer";
 
 export default function Estoque() {
   const { storageLocations, loading: storageLoading, refetch: refetchStorage } = useStorage();
@@ -115,7 +115,7 @@ export default function Estoque() {
                 </Card>
 
                 {/* Lista principal de estoque */}
-                <EstoqueTab activeFilter={activeFilter} searchTerm={searchTerm} selectedGalpao={selectedGalpao} selectedCategory={selectedCategory} />
+                <StockTab activeFilter={activeFilter} searchTerm={searchTerm} selectedGalpao={selectedGalpao} selectedCategory={selectedCategory} />
                 <StorageManagementDrawer
                   open={isStorageDrawerOpen}
                   onOpenChange={(open) => setIsStorageDrawerOpen(open)}

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ConfiguracoesFiscais } from "@/components/configuracoes/ConfiguracoesFiscais";
-import { ConfiguracoesUsuarios } from "@/components/configuracoes/ConfiguracoesUsuarios";
+import { FiscalSettings } from "@/components/settings/FiscalSettings";
+import { UserSettings } from "@/components/settings/UserSettings";
 
 interface ConfiguracoesModalProps {
   open: boolean;
@@ -42,11 +42,11 @@ export function ConfiguracoesModal({ open, onOpenChange }: ConfiguracoesModalPro
 
             <div className="max-h-[60vh] overflow-y-auto">
               <TabsContent value="fiscais">
-                <ConfiguracoesFiscais />
+                <FiscalSettings />
               </TabsContent>
 
               <TabsContent value="usuarios">
-                <ConfiguracoesUsuarios onClose={() => onOpenChange(false)} />
+                <UserSettings onClose={() => onOpenChange(false)} />
               </TabsContent>
             </div>
           </Tabs>

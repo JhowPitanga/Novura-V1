@@ -1,263 +1,177 @@
-
-import { useState } from "react";
-import { Settings, FileText, Printer } from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Settings, FileBadge, ListChecks } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox as CustomCheckbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { PickingListPDFMockup } from "./PickingListPDFMockup";
+import { LabelPDFMockup } from "./LabelPDFMockup";
+
+interface PrintSettings {
+  labelPrinter: string;
+  labelSize: string;
+  separateLabelPerItem: boolean;
+  groupByProduct: boolean;
+  includeBarcode: boolean;
+  includeOrderNumber: boolean;
+}
 
 interface PrintConfigModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  activePrintTab: string;
+  onActivePrintTabChange: (v: string) => void;
+  printSettings: PrintSettings;
+  onPrintSettingsChange: (s: PrintSettings) => void;
+  selectedPedidos: any[];
+  onSave: () => void;
+  onPrintPickingList: () => void;
 }
 
-export function PrintConfigModal({ open, onOpenChange }: PrintConfigModalProps) {
-  const [etiquetaFormat, setEtiquetaFormat] = useState("pdf");
-  const [etiquetaPdfOption, setEtiquetaPdfOption] = useState("danfe");
-  const [etiquetaZebraOption, setEtiquetaZebraOption] = useState("danfe");
-  const [zebraProductInfo, setZebraProductInfo] = useState("produto");
-  const [listOrder, setListOrder] = useState("sku");
-
-  const handleSave = () => {
-    // Save configurations
-    console.log("Salvando configurações:", {
-      etiquetaFormat,
-      etiquetaPdfOption,
-      etiquetaZebraOption,
-      zebraProductInfo,
-      listOrder
-    });
-    onOpenChange(false);
-  };
-
+export function PrintConfigModal({
+  open,
+  onOpenChange,
+  activePrintTab,
+  onActivePrintTabChange,
+  printSettings,
+  onPrintSettingsChange,
+  selectedPedidos,
+  onSave,
+  onPrintPickingList,
+}: PrintConfigModalProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl h-[80vh] bg-white rounded-2xl overflow-hidden" aria-describedby="print-config-desc" aria-labelledby="print-config-title">
-        <DialogHeader className="p-6 border-b border-gray-100">
-          <div className="flex items-center space-x-3">
-            <Settings className="w-6 h-6 text-novura-primary" />
-            <DialogTitle id="print-config-title" className="text-2xl">Configurações de Impressão</DialogTitle>
-          </div>
-          <DialogDescription id="print-config-desc" className="mt-2">Defina as preferências de impressão para etiquetas e listas de separação.</DialogDescription>
-        </DialogHeader>
-
-        <div className="flex-1 overflow-y-auto">
-          <Tabs defaultValue="etiquetas" className="h-full">
-            <div className="border-b border-gray-100">
-              <TabsList className="grid w-full grid-cols-2 bg-transparent h-16 rounded-none">
-                <TabsTrigger 
-                  value="etiquetas" 
-                  className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:bg-transparent"
-                >
-                  <Printer className="w-4 h-4 mr-2" />
-                  Etiquetas
-                </TabsTrigger>
-                <TabsTrigger 
-                  value="lista-separacao"
-                  className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:bg-transparent"
-                >
-                  <FileText className="w-4 h-4 mr-2" />
-                  Lista de Separação
-                </TabsTrigger>
-              </TabsList>
-            </div>
-
-            <TabsContent value="etiquetas" className="p-6">
-              <div className="grid grid-cols-2 gap-8">
-                {/* Configuration Panel */}
-                <div className="space-y-6">
-                  <div>
-                    <Label className="text-base font-semibold mb-4 block">Formato da Etiqueta</Label>
-                    <div className="space-y-3">
-                      <div className="flex items-center space-x-3">
-                        <input
-                          type="radio"
-                          id="pdf-format"
-                          name="etiqueta-format"
-                          value="pdf"
-                          checked={etiquetaFormat === "pdf"}
-                          onChange={() => setEtiquetaFormat("pdf")}
-                          className="w-4 h-4 text-novura-primary"
-                        />
-                        <Label htmlFor="pdf-format" className="text-sm font-medium">
-                          Impressão comum PDF
-                        </Label>
-                      </div>
-                      <div className="flex items-center space-x-3">
-                        <input
-                          type="radio"
-                          id="zebra-format"
-                          name="etiqueta-format"
-                          value="zebra"
-                          checked={etiquetaFormat === "zebra"}
-                          onChange={() => setEtiquetaFormat("zebra")}
-                          className="w-4 h-4 text-novura-primary"
-                        />
-                        <Label htmlFor="zebra-format" className="text-sm font-medium">
-                          Impressão Zebra
-                        </Label>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* PDF Options */}
-                  {etiquetaFormat === "pdf" && (
-                    <div className="pl-7 space-y-3">
-                      <div className="flex items-center space-x-3">
-                        <input
-                          type="radio"
-                          id="danfe-pdf"
-                          name="pdf-option"
-                          value="danfe"
-                          checked={etiquetaPdfOption === "danfe"}
-                          onChange={() => setEtiquetaPdfOption("danfe")}
-                          className="w-4 h-4 text-novura-primary"
-                        />
-                        <Label htmlFor="danfe-pdf" className="text-sm">
-                          Imprimir etiqueta com DANFE SIMPLIFICADA
-                        </Label>
-                      </div>
-                      <div className="flex items-center space-x-3">
-                        <input
-                          type="radio"
-                          id="casada-pdf"
-                          name="pdf-option"
-                          value="casada"
-                          checked={etiquetaPdfOption === "casada"}
-                          onChange={() => setEtiquetaPdfOption("casada")}
-                          className="w-4 h-4 text-novura-primary"
-                        />
-                        <Label htmlFor="casada-pdf" className="text-sm">
-                          Imprimir etiqueta casada
-                        </Label>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Zebra Options */}
-                  {etiquetaFormat === "zebra" && (
-                    <div className="pl-7 space-y-4">
-                      <div className="space-y-3">
-                        <div className="flex items-center space-x-3">
-                          <input
-                            type="radio"
-                            id="danfe-zebra"
-                            name="zebra-option"
-                            value="danfe"
-                            checked={etiquetaZebraOption === "danfe"}
-                            onChange={() => setEtiquetaZebraOption("danfe")}
-                            className="w-4 h-4 text-novura-primary"
-                          />
-                          <Label htmlFor="danfe-zebra" className="text-sm">
-                            Imprimir etiqueta com DANFE SIMPLIFICADA
-                          </Label>
-                        </div>
-                        <div className="flex items-center space-x-3">
-                          <input
-                            type="radio"
-                            id="casada-zebra"
-                            name="zebra-option"
-                            value="casada"
-                            checked={etiquetaZebraOption === "casada"}
-                            onChange={() => setEtiquetaZebraOption("casada")}
-                            className="w-4 h-4 text-novura-primary"
-                          />
-                          <Label htmlFor="casada-zebra" className="text-sm">
-                            Imprimir etiqueta casada
-                          </Label>
-                        </div>
-                      </div>
-
+      <DialogContent className="sm:max-w-[1200px] h-[90vh] p-0 flex">
+        <div className="w-1/4 p-6 border-r flex flex-col items-start">
+          <DialogHeader className="w-full">
+            <DialogTitle className="flex items-center space-x-2">
+              <Settings className="w-5 h-5" />
+              <span>Configurações</span>
+            </DialogTitle>
+            <DialogDescription>
+              Ajuste as configurações de impressão.
+            </DialogDescription>
+          </DialogHeader>
+          <Tabs value={activePrintTab} onValueChange={onActivePrintTabChange} orientation="vertical" className="flex-1 w-full mt-4">
+            <TabsList className="flex flex-col items-start p-0 h-auto space-y-1 w-full">
+              <TabsTrigger value="label" className="w-full justify-start data-[state=active]:bg-primary data-[state=active]:text-white">
+                <FileBadge className="w-4 h-4 mr-2" />
+                Etiqueta de Envio
+              </TabsTrigger>
+              <TabsTrigger value="picking-list" className="w-full justify-start data-[state=active]:bg-primary data-[state=active]:text-white">
+                <ListChecks className="w-4 h-4 mr-2" />
+                Lista de Separação
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
+        <div className="flex-1 flex flex-col h-full overflow-hidden">
+          <Tabs value={activePrintTab} onValueChange={onActivePrintTabChange} className="flex-1 flex flex-col h-full">
+            <div className="flex-1 p-6 grid grid-cols-2 gap-8 overflow-y-auto">
+              <div className="col-span-1">
+                <TabsContent value="label" className="mt-0">
+                  <section className="space-y-4">
+                    <h3 className="font-semibold text-lg flex items-center space-x-2">
+                      <FileBadge className="h-5 w-5" />
+                      <span>Etiqueta de Envio</span>
+                    </h3>
+                    <div className="space-y-4">
                       <div>
-                        <Label className="text-sm font-medium mb-2 block">
-                          Informações do Produto
-                        </Label>
-                        <Select value={zebraProductInfo} onValueChange={setZebraProductInfo}>
-                          <SelectTrigger className="w-full">
-                            <SelectValue />
+                        <label className="text-sm font-medium">Impressora de Etiquetas</label>
+                        <Select value={printSettings.labelPrinter} onValueChange={(value) => onPrintSettingsChange({ ...printSettings, labelPrinter: value })}>
+                          <SelectTrigger className="w-full mt-1">
+                            <SelectValue placeholder="Selecione a impressora" />
                           </SelectTrigger>
-                          <SelectContent className="bg-white border shadow-lg">
-                            <SelectItem value="produto">Nome do produto</SelectItem>
-                            <SelectItem value="cliente">Nome do cliente</SelectItem>
-                            <SelectItem value="nenhuma">Nenhuma (segurança no envio)</SelectItem>
+                          <SelectContent>
+                            <SelectItem value="zebra">Zebra ZT410</SelectItem>
+                            <SelectItem value="elgin">Elgin L42 Pro</SelectItem>
+                            <SelectItem value="argox">Argox OS-214 Plus</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
+                      <div>
+                        <label className="text-sm font-medium">Tamanho da Etiqueta</label>
+                        <Select value={printSettings.labelSize} onValueChange={(value) => onPrintSettingsChange({ ...printSettings, labelSize: value })}>
+                          <SelectTrigger className="w-full mt-1">
+                            <SelectValue placeholder="Selecione o tamanho" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="10x15">10x15 cm</SelectItem>
+                            <SelectItem value="A4">A4 (com 4 etiquetas)</SelectItem>
+                            <SelectItem value="10x10">10x10 cm</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <CustomCheckbox
+                          checked={printSettings.separateLabelPerItem}
+                          onChange={(e) => onPrintSettingsChange({ ...printSettings, separateLabelPerItem: (e.target as HTMLInputElement).checked })}
+                        />
+                        <span className="text-sm text-gray-700">Imprimir uma etiqueta por item</span>
+                      </label>
                     </div>
+                  </section>
+                </TabsContent>
+                <TabsContent value="picking-list" className="mt-0">
+                  <section className="space-y-4">
+                    <h3 className="font-semibold text-lg flex items-center space-x-2">
+                      <ListChecks className="h-5 w-5" />
+                      <span>Lista de Separação</span>
+                    </h3>
+                    <div className="space-y-4">
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <CustomCheckbox
+                          checked={printSettings.groupByProduct}
+                          onChange={(e) => onPrintSettingsChange({ ...printSettings, groupByProduct: (e.target as HTMLInputElement).checked })}
+                        />
+                        <span className="text-sm text-gray-700">Agrupar por produto (Picking List)</span>
+                      </label>
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <CustomCheckbox
+                          checked={printSettings.includeBarcode}
+                          onChange={(e) => onPrintSettingsChange({ ...printSettings, includeBarcode: (e.target as HTMLInputElement).checked })}
+                        />
+                        <span className="text-sm text-gray-700">Incluir código de barras no SKU</span>
+                      </label>
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <CustomCheckbox
+                          checked={printSettings.includeOrderNumber}
+                          onChange={(e) => onPrintSettingsChange({ ...printSettings, includeOrderNumber: (e.target as HTMLInputElement).checked })}
+                        />
+                        <span className="text-sm text-gray-700">Incluir número do pedido</span>
+                      </label>
+                    </div>
+                  </section>
+                </TabsContent>
+              </div>
+              <div className="col-span-1 border-l pl-8 h-full flex flex-col">
+                <div className="flex-1 overflow-y-auto">
+                  {activePrintTab === "label" ? (
+                    <LabelPDFMockup settings={printSettings} pedidos={selectedPedidos} />
+                  ) : (
+                    <PickingListPDFMockup settings={printSettings} pedidos={selectedPedidos} onPrint={onPrintPickingList} />
                   )}
                 </div>
-
-                {/* Preview Panel */}
-                <div>
-                  <Label className="text-base font-semibold mb-4 block">Visualização da Etiqueta</Label>
-                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-8 h-80 flex items-center justify-center bg-gray-50">
-                    <div className="text-center">
-                      <Printer className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                      <p className="text-gray-600 font-medium">
-                        Pré-visualização da Etiqueta
-                      </p>
-                      <p className="text-sm text-gray-500 mt-2">
-                        Formato: {etiquetaFormat === "pdf" ? "PDF" : "Zebra"}
-                      </p>
-                      <p className="text-sm text-gray-500">
-                        Opção: {etiquetaFormat === "pdf" ? 
-                          (etiquetaPdfOption === "danfe" ? "DANFE Simplificada" : "Etiqueta Casada") :
-                          (etiquetaZebraOption === "danfe" ? "DANFE Simplificada" : "Etiqueta Casada")
-                        }
-                      </p>
-                      {etiquetaFormat === "zebra" && (
-                        <p className="text-sm text-gray-500">
-                          Info: {zebraProductInfo === "produto" ? "Nome do produto" : 
-                                zebraProductInfo === "cliente" ? "Nome do cliente" : "Sem informações"}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </div>
               </div>
-            </TabsContent>
-
-            <TabsContent value="lista-separacao" className="p-6">
-              <div className="max-w-md">
-                <Label className="text-base font-semibold mb-4 block">
-                  Ordem de Impressão da Lista
-                </Label>
-                <Select value={listOrder} onValueChange={setListOrder}>
-                  <SelectTrigger className="w-full h-12 rounded-2xl">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-white border shadow-lg">
-                    <SelectItem value="sku">Ordem de SKU</SelectItem>
-                    <SelectItem value="localizacao">Ordem de localização dos produtos</SelectItem>
-                    <SelectItem value="alfabetica">Ordem alfabética</SelectItem>
-                    <SelectItem value="prioridade">Ordem de prioridade</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-sm text-gray-600 mt-2">
-                  Esta configuração define como os itens aparecerão na lista de separação impressa.
-                </p>
-              </div>
-            </TabsContent>
+            </div>
+            <DialogFooter className="p-4 border-t">
+              <Button onClick={() => { onSave(); onOpenChange(false); }}>Salvar Configurações</Button>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>Fechar</Button>
+            </DialogFooter>
           </Tabs>
-        </div>
-
-        <div className="p-6 border-t border-gray-100">
-          <div className="flex justify-end space-x-3">
-            <Button
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              className="h-12 px-6 rounded-2xl"
-            >
-              Cancelar
-            </Button>
-            <Button
-              onClick={handleSave}
-              className="h-12 px-6 rounded-2xl bg-novura-primary"
-            >
-              Salvar Configurações
-            </Button>
-          </div>
         </div>
       </DialogContent>
     </Dialog>

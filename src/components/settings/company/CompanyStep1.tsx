@@ -29,7 +29,7 @@ interface EmpresaData {
    onLogoSelected?: (file: File | null) => void;
  }
 
- export function EmpresaStep1({ data, updateData, showErrors, cnpjBlocked, onLogoSelected }: EmpresaStep1Props) {
+ export function CompanyStep1({ data, updateData, showErrors, cnpjBlocked, onLogoSelected }: EmpresaStep1Props) {
    const formatCNPJ = (value: string) => {
     const digits = value.replace(/\D/g, "").slice(0, 14);
     const parts = [

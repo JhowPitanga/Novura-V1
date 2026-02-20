@@ -11,7 +11,7 @@ interface EmpresaStep4Props {
   updateData: (data: Partial<EmpresaData>) => void;
 }
 
-export function EmpresaStep4({ data, updateData }: EmpresaStep4Props) {
+export function CompanyStep4({ data, updateData }: EmpresaStep4Props) {
   return (
     <div className="space-y-6">
       <div>

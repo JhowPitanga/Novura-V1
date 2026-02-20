@@ -4,9 +4,9 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, Tag, Package } from "lucide-react";
-import { BuscarCategoriasTab } from "@/components/pesquisa-mercado/BuscarCategoriasTab";
-import { PalavrasChaveTab } from "@/components/pesquisa-mercado/PalavrasChaveTab";
-import { ProdutoTab } from "@/components/pesquisa-mercado/ProdutoTab";
+import { SearchCategoriesTab } from "@/components/market-research/SearchCategoriesTab";
+import { KeywordsTab } from "@/components/market-research/KeywordsTab";
+import { ProductTab } from "@/components/market-research/ProductTab";
 
 export default function PesquisaMercado() {
   const [activeTab, setActiveTab] = useState("categorias");
@@ -55,15 +55,15 @@ export default function PesquisaMercado() {
                   </div>
 
                   <TabsContent value="categorias" className="p-6 mt-0">
-                    <BuscarCategoriasTab />
+                    <SearchCategoriesTab />
                   </TabsContent>
 
                   <TabsContent value="palavras-chave" className="p-6 mt-0">
-                    <PalavrasChaveTab />
+                    <KeywordsTab />
                   </TabsContent>
 
                   <TabsContent value="produto" className="p-6 mt-0">
-                    <ProdutoTab />
+                    <ProductTab />
                   </TabsContent>
                 </Tabs>
               </div>

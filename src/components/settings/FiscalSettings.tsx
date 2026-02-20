@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { CleanNavigation } from "@/components/CleanNavigation";
-import { AdicionarImpostoModal, TaxRecord, CompanyOption } from "@/components/configuracoes/impostos/AdicionarImpostoModal";
+import { AddTaxModal, TaxRecord, CompanyOption } from "@/components/settings/taxes/AddTaxModal";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/hooks/useAuth";
@@ -25,7 +25,7 @@ interface Company {
   imposto_pago?: number | null;
 }
 
-export function ConfiguracoesFiscais() {
+export function FiscalSettings() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
@@ -391,7 +391,7 @@ export function ConfiguracoesFiscais() {
             )}
           </Card>
 
-          <AdicionarImpostoModal
+          <AddTaxModal
             open={isTaxModalOpen}
             onOpenChange={(open) => {
               setIsTaxModalOpen(open);

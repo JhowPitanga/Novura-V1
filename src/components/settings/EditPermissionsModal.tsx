@@ -3,7 +3,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerFooter, DrawerClose } from "@/components/ui/drawer";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
+import { StepIndicator } from "@/components/products/create/StepIndicator";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { useEffect, useMemo, useState } from "react";

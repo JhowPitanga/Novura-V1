@@ -12,35 +12,44 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { Loader2 } from "lucide-react";
-const Index = lazy(() => import("./pages/Index"));
-const Desempenho = lazy(() => import("./pages/Desempenho"));
-const PesquisaMercado = lazy(() => import("./pages/PesquisaMercado"));
-const Produtos = lazy(() => import("./pages/Produtos"));
-const Anuncios = lazy(() => import("./pages/Anuncios"));
-const AnunciosCriarML = lazy(() => import("./pages/AnunciosCriarML"));
-const AnunciosEditarML = lazy(() => import("./pages/AnunciosEditarML"));
-const RecursosSeller = lazy(() => import("./pages/RecursosSeller"));
-const Aplicativos = lazy(() => import("./pages/Aplicativos"));
-const Estoque = lazy(() => import("./pages/Estoque"));
-const NotasFiscais = lazy(() => import("./pages/NotasFiscais"));
-const Pedidos = lazy(() => import("./pages/Pedidos"));
-const Equipe = lazy(() => import("./pages/Equipe"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Performance = lazy(() => import("./pages/Performance"));
+const MarketResearch = lazy(() => import("./pages/MarketResearch"));
+const Products = lazy(() => import("./pages/Products"));
+const Listings = lazy(() => import("./pages/Listings"));
+const CreateListingML = lazy(() => import("./pages/CreateListingML"));
+const EditListingML = lazy(() => import("./pages/EditListingML"));
+const SellerResources = lazy(() => import("./pages/SellerResources"));
+const Apps = lazy(() => import("./pages/Apps"));
+const Inventory = lazy(() => import("./pages/Inventory"));
+const Invoices = lazy(() => import("./pages/Invoices"));
+const Orders = lazy(() => import("./pages/Orders"));
+const Team = lazy(() => import("./pages/Team"));
 const Landing = lazy(() => import("./pages/Landing"));
 const Login = lazy(() => import("./pages/Login"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const NovuraAcademy = lazy(() => import("./pages/NovuraAcademy"));
 const NovuraAdmin = lazy(() => import("./pages/NovuraAdmin"));
 const ProductDetailsPage = lazy(() => import("./pages/ProductDetailsPage"));
-const Configuracoes = lazy(() => import("./pages/Configuracoes"));
-const NovaEmpresa = lazy(() => import("./pages/NovaEmpresa"));
-const SAC = lazy(() => import("./pages/SAC"));
-const Comunidade = lazy(() => import("./pages/Comunidade"));
+const Settings = lazy(() => import("./pages/Settings"));
+const NewCompany = lazy(() => import("./pages/NewCompany"));
+const CustomerService = lazy(() => import("./pages/CustomerService"));
+const Community = lazy(() => import("./pages/Community"));
 const Auth = lazy(() => import("./pages/Auth"));
 const MercadoLivreCallback = lazy(() => import("./pages/MercadoLivreCallback"));
 const ShopeeCallback = lazy(() => import("./pages/ShopeeCallback"));
-const ConviteAceito = lazy(() => import("./pages/ConviteAceito"));
+const InviteAccepted = lazy(() => import("./pages/InviteAccepted"));
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000,
+      gcTime: 10 * 60 * 1000,
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
 
 // Fallback de carregamento para módulos protegidos mantendo o Sidebar fixo
 const ModuleLoadingFallback = () => (
@@ -97,7 +106,7 @@ const App = () => (
               path="/convite-aceito"
               element={
                 <Suspense fallback={<div className="p-6">Carregando...</div>}>
-                  <ConviteAceito />
+                  <InviteAccepted />
                 </Suspense>
               }
             />
@@ -123,7 +132,7 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <Suspense fallback={<ModuleLoadingFallback />}>
-                    <Index />
+                    <Dashboard />
                   </Suspense>
                 </ProtectedRoute>
               }
@@ -134,7 +143,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="desempenho" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Desempenho />
+                      <Performance />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -146,7 +155,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="pesquisa_mercado" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <PesquisaMercado />
+                      <MarketResearch />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -158,7 +167,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="produtos" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Produtos />
+                      <Products />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -170,7 +179,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Anuncios />
+                      <Listings />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -182,7 +191,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["create","publish","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <AnunciosCriarML />
+                      <CreateListingML />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -194,7 +203,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["create","publish","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <AnunciosCriarML />
+                      <CreateListingML />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -206,7 +215,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["edit","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <AnunciosEditarML />
+                      <EditListingML />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -218,7 +227,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="recursos_seller" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <RecursosSeller />
+                      <SellerResources />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -242,7 +251,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="equipe" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Equipe />
+                      <Team />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -254,7 +263,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="aplicativos" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Aplicativos />
+                      <Apps />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -266,7 +275,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="sac" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <SAC />
+                      <CustomerService />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -278,7 +287,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="pedidos" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Pedidos />
+                      <Orders />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -290,7 +299,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="pedidos" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Pedidos />
+                      <Orders />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -302,7 +311,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="pedidos" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Pedidos />
+                      <Orders />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -314,7 +323,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="pedidos" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Pedidos />
+                      <Orders />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -326,7 +335,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="pedidos" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Pedidos />
+                      <Orders />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -338,7 +347,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="pedidos" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Pedidos />
+                      <Orders />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -350,7 +359,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="estoque" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Estoque />
+                      <Inventory />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -362,7 +371,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="notas_fiscais" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <NotasFiscais />
+                      <Invoices />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -374,7 +383,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="configuracoes" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Configuracoes />
+                      <Settings />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -386,7 +395,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="notas_fiscais" actions={["create","edit","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <NovaEmpresa />
+                      <NewCompany />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -422,7 +431,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="comunidade" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <Comunidade />
+                      <Community />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>

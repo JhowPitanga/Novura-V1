@@ -7,17 +7,17 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ShoppingBag, ShoppingCart, Search, Link } from "lucide-react"; 
 import { Tabs, TabsContent } from "@/components/ui/tabs";
-import { SuccessModal } from "@/components/recursos/SuccessModal";
-import { ProductGrid } from "@/components/recursos/ProductGrid";
-import { CategoryFilter } from "@/components/recursos/CategoryFilter";
-import { CartDrawer } from "@/components/recursos/CartDrawer";
-import { PurchasesTab } from "@/components/recursos/PurchasesTab";
-import { RecurringPurchaseModal } from "@/components/recursos/RecurringPurchaseModal";
-import { ShopBanner } from "@/components/recursos/ShopBanner";
-import { ModernTabs } from "@/components/recursos/ModernTabs";
+import { SuccessModal } from "@/components/seller-resources/SuccessModal";
+import { ProductGrid } from "@/components/seller-resources/ProductGrid";
+import { CategoryFilter } from "@/components/seller-resources/CategoryFilter";
+import { CartDrawer } from "@/components/seller-resources/CartDrawer";
+import { PurchasesTab } from "@/components/seller-resources/PurchasesTab";
+import { RecurringPurchaseModal } from "@/components/seller-resources/RecurringPurchaseModal";
+import { ShopBanner } from "@/components/seller-resources/ShopBanner";
+import { ModernTabs } from "@/components/seller-resources/ModernTabs";
 // NOVOS Componentes (Mockados - precisam ser implementados)
-import { ProductDetailModal } from "@/components/recursos/ProductModal";
-import { ProductCarousel } from "@/components/recursos/ProductCarousel"; 
+import { ProductDetailModal } from "@/components/seller-resources/ProductModal";
+import { ProductCarousel } from "@/components/seller-resources/ProductCarousel"; 
 
 
 // --- DADOS MOCKADOS (Aprimorados para Marketplace) ---

@@ -4,8 +4,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { MoreHorizontal, PackageOpen, Eye } from "lucide-react";
-import { pickingData } from "@/data/estoqueData";
-import { getStatusBadge } from "@/utils/estoqueUtils";
+import { pickingData } from "@/data/inventoryData";
+import { getStatusBadge } from "@/utils/inventoryUtils";
 
 export function PickingTab() {
   return (

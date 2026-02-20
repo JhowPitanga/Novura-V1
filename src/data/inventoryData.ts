@@ -1,5 +1,5 @@
 
-import { EstoqueItem, RecebimentoItem, PickingItem, ExpedicaoItem, Armazem, Marketplace } from "@/types/estoque";
+import { EstoqueItem, RecebimentoItem, PickingItem, ExpedicaoItem, Armazem, Marketplace } from "@/types/inventory";
 
 export const armazens: Armazem[] = [
   { id: "todos", name: "Todos os Galpões" },

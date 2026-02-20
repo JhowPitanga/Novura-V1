@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Package, Search, BarChart3 } from "lucide-react";
 
-export function ProdutoTab() {
+export function ProductTab() {
   return (
     <div className="space-y-6">
       <Card>

@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import * as forge from "node-forge";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
-import { NavigationButtons } from "@/components/produtos/criar/NavigationButtons";
-import { EmpresaStep1 } from "@/components/configuracoes/empresa/EmpresaStep1";
-import { EmpresaStep2 } from "@/components/configuracoes/empresa/EmpresaStep2";
-import { EmpresaStep3 } from "@/components/configuracoes/empresa/EmpresaStep3";
-import { EmpresaStep4 } from "@/components/configuracoes/empresa/EmpresaStep4";
+import { StepIndicator } from "@/components/products/create/StepIndicator";
+import { NavigationButtons } from "@/components/products/create/NavigationButtons";
+import { CompanyStep1 } from "@/components/settings/company/CompanyStep1";
+import { CompanyStep2 } from "@/components/settings/company/CompanyStep2";
+import { CompanyStep3 } from "@/components/settings/company/CompanyStep3";
+import { CompanyStep4 } from "@/components/settings/company/CompanyStep4";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -781,10 +781,10 @@ export function NovaEmpresa() {
   const renderCurrentStep = () => {
     switch (currentStep) {
       case 1:
-        return <EmpresaStep1 data={empresaData} updateData={updateEmpresaData} showErrors={showErrors} cnpjBlocked={cnpjBlocked} onLogoSelected={handleLogoSelected} />;
+        return <CompanyStep1 data={empresaData} updateData={updateEmpresaData} showErrors={showErrors} cnpjBlocked={cnpjBlocked} onLogoSelected={handleLogoSelected} />;
       case 2:
         return (
-          <EmpresaStep2
+          <CompanyStep2
             data={empresaData}
             updateData={updateEmpresaData}
             onPfxSelected={(file) => {
@@ -803,10 +803,10 @@ export function NovaEmpresa() {
           />
         );
       case 3:
-        return <EmpresaStep4 data={empresaData} updateData={updateEmpresaData} />; // NF-e agora no Step 3
+        return <CompanyStep4 data={empresaData} updateData={updateEmpresaData} />; // NF-e agora no Step 3
       case 4:
         return (
-          <EmpresaStep3
+          <CompanyStep3
             data={empresaData}
             updateData={updateEmpresaData}
             connectedStores={connectedStores}

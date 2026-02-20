@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
-export function ConfiguracoesPessoais() {
+export function PersonalSettings() {
   const { user } = useAuth();
 
   const [name, setName] = useState("");

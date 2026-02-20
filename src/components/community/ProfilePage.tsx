@@ -8,7 +8,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 // Tipagem
-import { User } from '@/components/comunidade/types'; 
+import { User } from '@/components/community/types'; 
 
 interface ProfilePageProps {
     user: User & { // Expansão do tipo User para incluir dados do perfil

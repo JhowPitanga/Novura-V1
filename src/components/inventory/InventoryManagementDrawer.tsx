@@ -46,7 +46,7 @@ interface EstoqueManagementDrawerProps {
   onStockAdjusted?: () => void;
 }
 
-export function EstoqueManagementDrawer({
+export function InventoryManagementDrawer({
   isOpen,
   onClose,
   product,

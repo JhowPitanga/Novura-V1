@@ -9,7 +9,7 @@ interface EstoqueStatsProps {
   setActiveFilter: (filter: string) => void;
 }
 
-export function EstoqueStats({ activeFilter, setActiveFilter }: EstoqueStatsProps) {
+export function InventoryStats({ activeFilter, setActiveFilter }: EstoqueStatsProps) {
   const { stockData, loading } = useStockData();
 
   // Calcular estatísticas baseadas nos dados reais

@@ -7,9 +7,9 @@ import { Card } from '@/components/ui/card';
 import { User as UserIcon } from 'lucide-react';
 
 // Importe o PostCard, que listará as postagens
-import { PostCard } from '@/components/comunidade/PostCard'; 
+import { PostCard } from '@/components/community/PostCard'; 
 // Importe as tipagens que definimos
-import { Post, User } from '@/components/comunidade/types'; 
+import { Post, User } from '@/components/community/types'; 
 
 interface FeedTabProps {
     onOpenCreatePost: () => void; // Função passada pelo Comunidade.tsx para abrir o modal

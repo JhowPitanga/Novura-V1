@@ -6,14 +6,14 @@ import { Button } from "@/components/ui/button";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
-import { CriarProduto } from "@/components/produtos/CriarProduto";
-import { EditarProduto } from "@/components/produtos/EditarProduto";
-import { EditarVariacao } from "@/components/produtos/EditarVariacao";
-import { EditarKit } from "@/components/produtos/EditarKit";
-import { ProdutosHeader } from "@/components/produtos/ProdutosHeader";
-import { ProdutosUnicos } from "@/components/produtos/tabs/ProdutosUnicos";
-import { ProdutosVariacoes } from "@/components/produtos/tabs/ProdutosVariacoes";
-import { ProdutosKits } from "@/components/produtos/tabs/ProdutosKits";
+import { CreateProductPage as CriarProduto } from "@/components/products/create/CreateProductPage";
+import { EditarProduto } from "@/components/products/EditProduct";
+import { EditVariationWrapper as EditarVariacao } from "@/components/products/edit/EditVariationWrapper";
+import { EditKitWrapper as EditarKit } from "@/components/products/edit/EditKitWrapper";
+import { ProdutosHeader } from "@/components/products/ProductsHeader";
+import { ProdutosUnicos } from "@/components/products/tabs/SingleProducts";
+import { ProdutosVariacoes } from "@/components/products/tabs/ProductVariations";
+import { ProdutosKits } from "@/components/products/tabs/ProductKits";
 import { useAuth } from "@/hooks/useAuth";
 
 const navigationItems = [

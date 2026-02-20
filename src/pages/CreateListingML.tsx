@@ -1,32 +1,30 @@
-import { useEffect, useMemo, useState, useRef } from "react";
-import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
-import { Card, CardContent } from "@/components/ui/card";
+import LoadingOverlay from "@/components/LoadingOverlay";
+import { ImageUpload } from "@/components/products/create/ImageUpload";
+import { NavigationButtons } from "@/components/products/create/NavigationButtons";
+import { StepIndicator } from "@/components/products/create/StepIndicator";
+import { VideoUpload } from "@/components/products/create/VideoUpload";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
-import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
-import { NavigationButtons } from "@/components/produtos/criar/NavigationButtons";
-import { CleanNavigation } from "@/components/CleanNavigation";
-import { useAuth } from "@/hooks/useAuth";
-import { supabase, SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "@/integrations/supabase/client";
-import { useToast } from "@/hooks/use-toast";
-import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ImageUpload } from "@/components/produtos/criar/ImageUpload";
-import { VideoUpload } from "@/components/produtos/criar/VideoUpload";
-import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
-import { Search, Trash2, Plus, ChevronDown, X, Loader2 } from "lucide-react";
-import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SidebarProvider } from "@/components/ui/sidebar";
+import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Badge } from "@/components/ui/badge";
-import LoadingOverlay from "@/components/LoadingOverlay";
- 
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL, supabase } from "@/integrations/supabase/client";
+import { ChevronDown, Loader2, Plus, Search, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+
 
 const StringSuggestInput = ({
   id,
@@ -81,7 +79,7 @@ const MultiValuedBadgeInput = ({
   };
   const addToken = (t: { id?: string; name: string }) => {
     if (disabled) return;
-    const next = [ ...tokens, t ];
+    const next = [...tokens, t];
     setTokens(next);
     commitTokens(next);
     setInput("");
@@ -353,7 +351,7 @@ export default function AnunciosCriarML() {
           setCurrentStep(d.last_step);
           setMaxVisitedStep(d.last_step);
         }
-      } catch {}
+      } catch { }
     };
     run();
   }, [searchParams, organizationId]);
@@ -366,7 +364,7 @@ export default function AnunciosCriarML() {
       setLastCategoryLoaded('');
     }
   }, [categoryId]);
-  
+
   const variationAttrs = useMemo(() => {
     const isPackagingId = (id: string) => /^PACKAGE_|^PACKAGING_|^SELLING_FORMAT_DIMENSIONS_/i.test(id);
     const isPackagingName = (name: string) => /\bembalagem\b|\bpackage\b|\bpackaging\b|\bpeso da embalagem\b|\blargura da embalagem\b|\baltura da embalagem\b|\bcomprimento da embalagem\b/i.test(name);
@@ -453,7 +451,7 @@ export default function AnunciosCriarML() {
           const fields = Array.isArray(g?.fields) ? g.fields : [];
           fields.forEach((f: any) => { const id = String((f as any)?.id || f || ""); if (id) s.add(id); });
         });
-      } catch {}
+      } catch { }
       return s;
     })();
     const isHiddenExtra = (name?: string) => /\bcor\s+filtr[aá]vel\b|\bfilter\s*color\b|\bcolor\s*filterable\b|\bmodelo\s+detalhado\b|\bdetailed\s+model\b|\bmotivo\b.*\bgtin\b|\bgtin\b.*\bvazio\b|\bmotivo\b.*\bc[oó]digo\b.*\bbarras\b|\bvisibilidade\s+limitada\b|\bplataformas?\s+exclu[ií]das\b/i.test(String(name || ""));
@@ -554,7 +552,7 @@ export default function AnunciosCriarML() {
   const uploadImageToStorage = async (file: File): Promise<string | null> => {
     let toUpload = file;
     if (/^image\//.test(toUpload.type)) {
-      try { toUpload = await compressImage(toUpload, 0.8, 1280); } catch {}
+      try { toUpload = await compressImage(toUpload, 0.8, 1280); } catch { }
     }
     const safeName = (toUpload.name || 'upload').replace(/[^a-zA-Z0-9._-]/g, '-');
     const folder = `${organizationId ? `org_${organizationId}` : 'org_anon'}/${currentDraftId ? `draft_${currentDraftId}` : 'temp'}/${crypto.randomUUID()}`;
@@ -587,7 +585,7 @@ export default function AnunciosCriarML() {
       };
       scan(opt);
       if (mandatory && !(shipping as any)?.free_shipping) setShipping({ ...(shipping || {}), free_shipping: true });
-    } catch {}
+    } catch { }
   }, [listingPriceOptions, listingTypeId, shipping, currentStep]);
   useEffect(() => {
     const loadApps = async () => {
@@ -702,7 +700,7 @@ export default function AnunciosCriarML() {
           body: { organizationId, categoryId }
         });
         if (!error) setTechSpecsInput(data || null);
-      } catch {}
+      } catch { }
     };
     fetchTechInput();
   }, [organizationId, categoryId, currentStep, fetchGate.s3, lastCategoryLoaded, isShopeeMode]);
@@ -721,7 +719,7 @@ export default function AnunciosCriarML() {
           body: { organizationId, categoryId }
         });
         if (!error) setSaleTermsMeta(Array.isArray((data as any)?.terms) ? (data as any).terms : []);
-      } catch {}
+      } catch { }
     };
     fetchSaleTermsMeta();
   }, [organizationId, categoryId, currentStep, fetchGate.s6, isShopeeMode]);
@@ -763,9 +761,9 @@ export default function AnunciosCriarML() {
               const res = await fetch(`https://api.mercadolibre.com/sites/${siteId}/listing_types`);
               const json = await res.json();
               if (Array.isArray(json)) arr = json;
-            } catch {}
+            } catch { }
           }
-        } catch {}
+        } catch { }
       }
       if (String(siteId).toUpperCase() === "MLB") {
         const pick = new Set(["gold_special", "gold_pro"]);
@@ -914,7 +912,7 @@ export default function AnunciosCriarML() {
           const primaryPick = nonFlex.includes(defType) ? defType : (nonFlex[0] || "");
           const hasFlex = toShow.includes("self_service");
           if (!selectedLogisticType && primaryPick) setSelectedLogisticType(primaryPick);
-        } catch {}
+        } catch { }
         if (!shipping?.mode || !modes.includes(String((shipping as any)?.mode || ""))) {
           const next = { ...(shipping || {}), mode: preferredMode } as any;
           try {
@@ -926,7 +924,7 @@ export default function AnunciosCriarML() {
               const def = fcArr.find((r: any) => r?.rule?.default === true);
               if (def && def.rule && def.rule.free_shipping_flag === true) next.free_shipping = true;
             }
-          } catch {}
+          } catch { }
           const modeNow = preferredMode;
           const priceValNow = (() => { const s = String(price || "").replace(/\./g, "").replace(/,/g, "."); const n = Number(s); return isNaN(n) ? 0 : n; })();
           const priceRule = String(siteId).toUpperCase() === "MLB" && priceValNow >= 79 && modeNow === "me2";
@@ -934,7 +932,7 @@ export default function AnunciosCriarML() {
           if (cfgRule || priceRule) next.free_shipping = true;
           if (preferredMode) setShipping(next);
         }
-      } catch {}
+      } catch { }
     };
     fetchShippingModes();
   }, [organizationId, siteId, currentStep]);
@@ -1088,7 +1086,7 @@ export default function AnunciosCriarML() {
           const pathArr = Array.isArray((data as any)?.path_from_root) ? (data as any)?.path_from_root : [];
           const fullPath = pathArr.map((p: any) => String(p?.name || "")).filter(Boolean).join(" › ");
           if (fullPath) setPathsByCategoryId((prev) => ({ ...prev, [id]: fullPath }));
-        } catch {}
+        } catch { }
       }
     };
     if (domainSuggestions.length > 0 && currentStep === 2) run();
@@ -1126,7 +1124,7 @@ export default function AnunciosCriarML() {
       } else {
         const ok = !!listingTypeId && !!price;
         const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
-        const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro','gold_special'].includes(String(listingTypeId || '').toLowerCase());
+        const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro', 'gold_special'].includes(String(listingTypeId || '').toLowerCase());
         if (requiresPic) {
           const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
           return ok && hasAtLeastOneImage;
@@ -1155,7 +1153,7 @@ export default function AnunciosCriarML() {
               } else {
                 console.error("[load marketplaces] error", { code: (error as any)?.code, message: (error as any)?.message });
               }
-            } catch {}
+            } catch { }
             setFetchGate((g) => ({ ...g, s1: true }));
           }
         }
@@ -1185,7 +1183,7 @@ export default function AnunciosCriarML() {
                   }
                 }
               }
-            } catch {}
+            } catch { }
           }
           setFetchGate((g) => ({ ...g, s3: true }));
         }
@@ -1227,7 +1225,7 @@ export default function AnunciosCriarML() {
               sessionCacheRef.current.listingTypesByCategory[cat] = arr;
               setFetchGate((g) => ({ ...g, s6: true }));
             }
-          } catch {}
+          } catch { }
         }
         if (currentStep === 6) {
           const p = Number(price);
@@ -1251,7 +1249,7 @@ export default function AnunciosCriarML() {
                   }
                 }
               }
-            } catch {}
+            } catch { }
           }
         }
         if (currentStep === 6) setFetchGate((g) => ({ ...g, s7: true }));
@@ -1281,7 +1279,7 @@ export default function AnunciosCriarML() {
           return;
         }
         const opt = (listingPriceOptions || []).find((o: any) => String(o?.listing_type_id || o?.id || '') === String(listingTypeId || ''));
-        const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro','gold_special'].includes(String(listingTypeId || '').toLowerCase());
+        const requiresPic = !!(opt as any)?.requires_picture || ['gold_pro', 'gold_special'].includes(String(listingTypeId || '').toLowerCase());
         if (requiresPic) {
           const hasAtLeastOneImage = (variations || []).some((v: any) => Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0) || (pictures || []).length > 0;
           if (!hasAtLeastOneImage) {
@@ -1340,7 +1338,7 @@ export default function AnunciosCriarML() {
               const blob = await res.blob();
               const name = (src.split("/").pop() || "upload").split("?")[0];
               return new File([blob], name, { type: blob.type || "application/octet-stream" });
-            } catch {}
+            } catch { }
           }
         }
         if (typeof f === "string") {
@@ -1349,7 +1347,7 @@ export default function AnunciosCriarML() {
             const blob = await res.blob();
             const name = (f.split("/").pop() || "upload").split("?")[0];
             return new File([blob], name, { type: blob.type || "application/octet-stream" });
-          } catch {}
+          } catch { }
         }
         return null;
       };
@@ -1468,7 +1466,7 @@ export default function AnunciosCriarML() {
             const blob = await res.blob();
             const name = (src.split("/").pop() || "upload").split("?")[0];
             return new File([blob], name, { type: blob.type || "application/octet-stream" });
-          } catch {}
+          } catch { }
         }
       }
       if (typeof f === "string") {
@@ -1477,7 +1475,7 @@ export default function AnunciosCriarML() {
           const blob = await res.blob();
           const name = (f.split("/").pop() || "upload").split("?")[0];
           return new File([blob], name, { type: blob.type || "application/octet-stream" });
-        } catch {}
+        } catch { }
       }
       return null;
     };
@@ -1490,7 +1488,7 @@ export default function AnunciosCriarML() {
         for (const f of files) {
           let fileObj = await ensureFile(f);
           if (!fileObj) continue;
-          if (/^image\//.test(fileObj.type)) { try { fileObj = await compressImage(fileObj, 0.85, 1280); } catch {} }
+          if (/^image\//.test(fileObj.type)) { try { fileObj = await compressImage(fileObj, 0.85, 1280); } catch { } }
           const b64 = await fileToBase64(fileObj);
           arr.push({ filename: fileObj.name || "upload", type: fileObj.type || "application/octet-stream", data_b64: b64 });
           if (arr.length >= 10) break;
@@ -1526,7 +1524,7 @@ export default function AnunciosCriarML() {
     const sanitizedVariations = hasVariations ? (variations || []).map((v: any) => {
       let combos = Array.isArray(v?.attribute_combinations) ? (v.attribute_combinations as any[]).filter((c: any) => !!c?.id && (!!c?.value_id || !!c?.value_name)) : [];
       if (String(categoryId).toUpperCase() === 'MLB33388') {
-        const bad = new Set(['GTIN','DETAILED_MODEL','MAIN_COLOR','SELLER_SKU']);
+        const bad = new Set(['GTIN', 'DETAILED_MODEL', 'MAIN_COLOR', 'SELLER_SKU']);
         combos = combos.filter((c: any) => !bad.has(String(c?.id || '').toUpperCase()));
       }
       const qty = Number(v?.available_quantity) || 0;
@@ -1542,8 +1540,8 @@ export default function AnunciosCriarML() {
     }) : [];
     if (hasVariations) {
       const invalid = (variations || []).find((v: any) => !Array.isArray(v?.attribute_combinations) || v.attribute_combinations.length === 0 || typeof v?.available_quantity !== "number" || v.available_quantity <= 0 || !(Array.isArray(v?.pictureFiles) && v.pictureFiles.length > 0));
-      if (invalid) { setErrorSteps(Array.from(new Set([ ...errorSteps, 4 ]))); setCurrentStep(4); toast({ title: "Dados de variação inválidos", description: "Cada variação precisa de atributos, quantidade e ao menos uma foto.", variant: "destructive" }); return; }
-      if (!priceNum) { setErrorSteps(Array.from(new Set([ ...errorSteps, 6 ]))); setCurrentStep(6); toast({ title: "Preço obrigatório", description: "Informe o preço para variações.", variant: "destructive" }); return; }
+      if (invalid) { setErrorSteps(Array.from(new Set([...errorSteps, 4]))); setCurrentStep(4); toast({ title: "Dados de variação inválidos", description: "Cada variação precisa de atributos, quantidade e ao menos uma foto.", variant: "destructive" }); return; }
+      if (!priceNum) { setErrorSteps(Array.from(new Set([...errorSteps, 6]))); setCurrentStep(6); toast({ title: "Preço obrigatório", description: "Informe o preço para variações.", variant: "destructive" }); return; }
       if (Array.isArray(variationRequiredIds) && variationRequiredIds.length > 0) {
         const missingAny = sanitizedVariations.find((vv: any) => {
           const idsSet = new Set((vv?.attribute_combinations || []).map((c: any) => String(c?.id || "").toUpperCase()));
@@ -1553,7 +1551,7 @@ export default function AnunciosCriarML() {
           const namesMap = new Map<string, string>();
           variationAttrs.forEach((a: any) => { namesMap.set(String(a?.id || "").toUpperCase(), String(a?.name || String(a?.id || ""))); });
           const reqNames = variationRequiredIds.map((id) => namesMap.get(String(id).toUpperCase()) || String(id)).join(", ");
-          setErrorSteps(Array.from(new Set([ ...errorSteps, 4 ])));
+          setErrorSteps(Array.from(new Set([...errorSteps, 4])));
           setCurrentStep(4);
           toast({ title: "Atributos de variação obrigatórios", description: `Informe: ${reqNames}`, variant: "destructive" });
           return;
@@ -1578,14 +1576,14 @@ export default function AnunciosCriarML() {
       attributes: [],
       pictures: pictureUrls.slice(0, 6).map((url) => ({ source: url })),
     };
-    const supportedConditions = new Set(["new","used","not_specified","refurbished"]);
+    const supportedConditions = new Set(["new", "used", "not_specified", "refurbished"]);
     if (normalizedCondition && supportedConditions.has(normalizedCondition)) {
       payload.condition = normalizedCondition;
       payload.attributes = [
         ...((attributes || []).filter((x: any) => String(x?.id || "").toUpperCase() !== "ITEM_CONDITION"))
       ];
     } else {
-      payload.attributes = [ ...(attributes || []) ];
+      payload.attributes = [...(attributes || [])];
     }
     if (sanitizedVariations.length > 0) payload.variations = sanitizedVariations;
     if (variations.length === 0 && availableQuantity) payload.available_quantity = Number(availableQuantity);
@@ -1608,12 +1606,12 @@ export default function AnunciosCriarML() {
       if (ig > 0) sellerAttrs.push({ id: "SELLER_PACKAGE_WEIGHT", value_name: `${ig} g` });
       if (sellerAttrs.length > 0) {
         const baseAttrs = (payload.attributes || []).filter((x: any) => !/^(SELLER_PACKAGE_HEIGHT|SELLER_PACKAGE_LENGTH|SELLER_PACKAGE_WIDTH|SELLER_PACKAGE_WEIGHT)$/i.test(String(x?.id || "")));
-        payload.attributes = [ ...baseAttrs, ...sellerAttrs ];
+        payload.attributes = [...baseAttrs, ...sellerAttrs];
       }
       const isMe2 = String((shipping as any)?.mode || "").toLowerCase() === "me2";
       if (isMe2) {
         if (!(ih > 0 && il > 0 && iw > 0 && ig > 0)) {
-          setErrorSteps(Array.from(new Set([ ...errorSteps, 7 ])));
+          setErrorSteps(Array.from(new Set([...errorSteps, 7])));
           setCurrentStep(7);
           toast({ title: "Dimensões do pacote obrigatórias", description: "Informe altura, comprimento, largura e peso do pacote em inteiros (cm/g).", variant: "destructive" });
           return;
@@ -1746,7 +1744,7 @@ export default function AnunciosCriarML() {
         else if (find(/price|pre[cç]o|listing[_-]?type/i)) { stepId = 6; field = "Preço/Publicação"; }
         else if (find(/shipping|envio|dimensions|dimens[oõ]es|weight|peso|me2|mercado\s*envios/i)) { stepId = 7; field = "Envio e dimensões"; }
         else if (find(/available[_-]?quantity|estoque/i)) { stepId = isShopeeMode ? 5 : 4; field = "Estoque da variação"; }
-        setErrorSteps(Array.from(new Set([ ...errorSteps, stepId ])));
+        setErrorSteps(Array.from(new Set([...errorSteps, stepId])));
         setCurrentStep(stepId);
         toast({ title: "Corrija o campo", description: `${field} no passo ${getStepTitle(stepId)}`, variant: "destructive" });
         return;
@@ -1759,7 +1757,7 @@ export default function AnunciosCriarML() {
             .delete()
             .eq('id', currentDraftId)
             .eq('organizations_id', organizationId);
-        } catch {}
+        } catch { }
       }
       setConfirmExit(false);
       allowNavRef.current = true;
@@ -1778,12 +1776,12 @@ export default function AnunciosCriarML() {
       console.log("params", { organizationId, isShopeeMode, title });
       setHasSearchedCategory(true);
       if (isShopeeMode) {
-          const { data, error } = await invokeFn("shopee-categories-predict", { organizationId, title: title.trim(), action: "recommend", language: "pt-br" });
-          if (error) { toast({ title: "Falha no preditor", description: error.message || String(error), variant: "destructive" }); setCategorySuggestions([]); setDomainSuggestions([]); console.groupEnd(); return; }
-          const ok = !!((data as any)?.ok);
-          const correlationId = (data as any)?.correlationId;
-          const api = (data as any)?.data || (data as any);
-          const resp = (api as any)?.response || api;
+        const { data, error } = await invokeFn("shopee-categories-predict", { organizationId, title: title.trim(), action: "recommend", language: "pt-br" });
+        if (error) { toast({ title: "Falha no preditor", description: error.message || String(error), variant: "destructive" }); setCategorySuggestions([]); setDomainSuggestions([]); console.groupEnd(); return; }
+        const ok = !!((data as any)?.ok);
+        const correlationId = (data as any)?.correlationId;
+        const api = (data as any)?.data || (data as any);
+        const resp = (api as any)?.response || api;
         let preds: any[] = [];
         if (Array.isArray((resp as any)?.category_list)) preds = (resp as any).category_list;
         else if (Array.isArray((resp as any)?.data?.category_list)) preds = (resp as any).data.category_list;
@@ -1966,7 +1964,7 @@ export default function AnunciosCriarML() {
                           </button>
                         </div>
                       </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4" />
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4" />
                       <div className="space-y-2">
                         {isLoadingPredict ? (
                           <div className="text-sm text-gray-600 flex items-center gap-2">
@@ -2043,7 +2041,7 @@ export default function AnunciosCriarML() {
                           </DialogHeader>
                           <div className="space-y-4">
                             <Input placeholder="Buscar" value={dumpQuery} onChange={(e) => setDumpQuery(e.target.value)} />
-                            
+
                             <div className="flex items-center flex-wrap gap-2 text-sm text-novura-primary">
                               {(() => {
                                 const lastSel = dumpSelected[dumpSelected.length - 1];
@@ -2150,7 +2148,7 @@ export default function AnunciosCriarML() {
                                       const fullPath = pathArr.map((p: any) => String(p?.name || "")).filter(Boolean).join(" › ");
                                       if (fullPath) setPathsByCategoryId((prev) => ({ ...prev, [pendingCategoryId]: fullPath }));
                                     }
-                                  } catch {}
+                                  } catch { }
                                   setCategoryId(pendingCategoryId);
                                   setDomainSuggestions([]);
                                 }
@@ -2184,7 +2182,7 @@ export default function AnunciosCriarML() {
                             selectedImages={(pictures as any)}
                             onImagesChange={(imgs) => setPictures(imgs as any)}
                             maxImages={isShopeeMode ? 9 : 8}
-                            allowedMimeTypes={["image/jpeg","image/png"]}
+                            allowedMimeTypes={["image/jpeg", "image/png"]}
                             label=""
                             showCoverBadge
                             addLabel={`Adicionar Imagem (${isShopeeMode ? `${Math.min((pictures || []).length, 9)}/${9}` : `${Math.min((pictures || []).length, 8)}/${8}`})`}
@@ -2202,85 +2200,135 @@ export default function AnunciosCriarML() {
                         </div>
                       </div>
                       {!isShopeeMode && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {filteredAttrs.required.map((a: any) => {
-                          const id = String(a?.id || "");
-                          const name = String(a?.name || id || "Atributo");
-                          const hasValues = Array.isArray(a?.values) && a.values.length > 0;
-                          const current = (attributes || []).find((x: any) => String(x?.id) === id);
-                          const tags = (a?.tags || {}) as any;
-                          const isRequired = Array.isArray(tags) ? tags.includes("required") : !!(tags?.required);
-                          const isNA = String((current as any)?.value_id || "") === "-1" && ((current as any)?.value_name ?? null) === null;
-                          const canNA = !isRequired && String(id).toUpperCase() !== "SELLER_SKU";
-                          const isString = String(a?.value_type || "").toLowerCase() === "string";
-                          const isMulti = Array.isArray(tags) ? (tags.includes("multivalued") || tags.includes("repeated")) : (!!(tags?.multivalued) || !!(tags?.repeated));
-                          if (String(a?.value_type || "").toLowerCase() === "number_unit") {
-                            const allowed = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
-                            const defUnit = String((a as any)?.default_unit || "");
-                            const currNum = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "");
-                            const currUnit = typeof (current as any)?.value_struct?.unit === "string" ? String((current as any).value_struct.unit) : (String((current as any)?.value_name || "").split(" ")[1] || defUnit);
-                            return (
-                              <div key={id}>
-                                <RequiredLabel text={name} required={isRequired} />
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
-                                  <Input value={String(currNum || "")} placeholder={name} onChange={(e) => {
-                                  const num = Number(e.target.value) || 0;
-                                  const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
-                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                  const vname = unit ? `${num} ${unit}` : String(num);
-                                  setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
-                                }} />
-                                  <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
-                                  const unit = String(val || defUnit || "");
-                                  const numStr = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "0");
-                                  const num = Number(numStr) || 0;
-                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                  const vname = unit ? `${num} ${unit}` : String(num);
-                                  setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
-                                }}>
-                                    <SelectTrigger><SelectValue placeholder="Unidade" /></SelectTrigger>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          {filteredAttrs.required.map((a: any) => {
+                            const id = String(a?.id || "");
+                            const name = String(a?.name || id || "Atributo");
+                            const hasValues = Array.isArray(a?.values) && a.values.length > 0;
+                            const current = (attributes || []).find((x: any) => String(x?.id) === id);
+                            const tags = (a?.tags || {}) as any;
+                            const isRequired = Array.isArray(tags) ? tags.includes("required") : !!(tags?.required);
+                            const isNA = String((current as any)?.value_id || "") === "-1" && ((current as any)?.value_name ?? null) === null;
+                            const canNA = !isRequired && String(id).toUpperCase() !== "SELLER_SKU";
+                            const isString = String(a?.value_type || "").toLowerCase() === "string";
+                            const isMulti = Array.isArray(tags) ? (tags.includes("multivalued") || tags.includes("repeated")) : (!!(tags?.multivalued) || !!(tags?.repeated));
+                            if (String(a?.value_type || "").toLowerCase() === "number_unit") {
+                              const allowed = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
+                              const defUnit = String((a as any)?.default_unit || "");
+                              const currNum = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "");
+                              const currUnit = typeof (current as any)?.value_struct?.unit === "string" ? String((current as any).value_struct.unit) : (String((current as any)?.value_name || "").split(" ")[1] || defUnit);
+                              return (
+                                <div key={id}>
+                                  <RequiredLabel text={name} required={isRequired} />
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+                                    <Input value={String(currNum || "")} placeholder={name} onChange={(e) => {
+                                      const num = Number(e.target.value) || 0;
+                                      const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      const vname = unit ? `${num} ${unit}` : String(num);
+                                      setAttributes([...next, { id, name, value_name: vname, value_struct: { number: num, unit } }]);
+                                    }} />
+                                    <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
+                                      const unit = String(val || defUnit || "");
+                                      const numStr = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "0");
+                                      const num = Number(numStr) || 0;
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      const vname = unit ? `${num} ${unit}` : String(num);
+                                      setAttributes([...next, { id, name, value_name: vname, value_struct: { number: num, unit } }]);
+                                    }}>
+                                      <SelectTrigger><SelectValue placeholder="Unidade" /></SelectTrigger>
+                                      <SelectContent>
+                                        {(allowed || []).map((u: any, idx: number) => {
+                                          const uid = String((u as any)?.id || u || idx);
+                                          const uname = String((u as any)?.name || (u as any)?.id || u || uid);
+                                          return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
+                                        })}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            if (isString) {
+                              const suggestions = (Array.isArray(a?.values) ? a.values : []).map((v: any) => ({ id: String(v?.id || ""), name: String(v?.name || v?.value || v?.id || "") }));
+                              return (
+                                <div key={id}>
+                                  <RequiredLabel text={name} required={isRequired} />
+                                  {isMulti ? (
+                                    <MultiValuedBadgeInput
+                                      id={id}
+                                      name={name}
+                                      current={current}
+                                      suggestions={suggestions}
+                                      disabled={isNA}
+                                      onChange={(obj) => {
+                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                        setAttributes([...next, obj]);
+                                      }}
+                                    />
+                                  ) : (
+                                    <StringSuggestInput
+                                      id={id}
+                                      name={name}
+                                      current={current}
+                                      suggestions={suggestions}
+                                      disabled={isNA}
+                                      onChange={(obj) => {
+                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                        setAttributes([...next, obj]);
+                                      }}
+                                    />
+                                  )}
+                                  {canNA && (
+                                    <div className="mt-1 flex items-center gap-2">
+                                      <Checkbox
+                                        className="h-[16px] w-[16px]"
+                                        checked={isNA}
+                                        onCheckedChange={(checked) => {
+                                          const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                          const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                          setAttributes(naAttr ? [...next, naAttr] : next);
+                                        }}
+                                      />
+                                      <span className="text-xs text-gray-600">Não se aplica</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
+                            if (hasValues) {
+                              return (
+                                <div key={id}>
+                                  <RequiredLabel text={name} required={isRequired} />
+                                  <Select value={String(current?.value_id || "")} onValueChange={(val) => {
+                                    const vname = a.values.find((v: any) => String(v?.id || "") === String(val))?.name || "";
+                                    const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                    setAttributes([...next, { id, name, value_id: val, value_name: vname }]);
+                                  }}>
+                                    <SelectTrigger className="mt-2"><SelectValue placeholder={name} /></SelectTrigger>
                                     <SelectContent>
-                                      {(allowed || []).map((u: any, idx: number) => {
-                                        const uid = String((u as any)?.id || u || idx);
-                                        const uname = String((u as any)?.name || (u as any)?.id || u || uid);
-                                        return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
-                                      })}
+                                      {a.values.map((v: any) => (
+                                        <SelectItem key={String(v?.id || v?.name || Math.random())} value={String(v?.id || "")}>{String(v?.name || v?.value || v?.id || "")}</SelectItem>
+                                      ))}
                                     </SelectContent>
                                   </Select>
                                 </div>
-                              </div>
-                            );
-                          }
-                          if (isString) {
-                            const suggestions = (Array.isArray(a?.values) ? a.values : []).map((v: any) => ({ id: String(v?.id || ""), name: String(v?.name || v?.value || v?.id || "") }));
+                              );
+                            }
                             return (
                               <div key={id}>
                                 <RequiredLabel text={name} required={isRequired} />
-                                {isMulti ? (
-                                  <MultiValuedBadgeInput
-                                    id={id}
-                                    name={name}
-                                    current={current}
-                                    suggestions={suggestions}
-                                    disabled={isNA}
-                                    onChange={(obj) => {
-                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                      setAttributes([ ...next, obj ]);
-                                    }}
-                                  />
-                                ) : (
-                                  <StringSuggestInput
-                                    id={id}
-                                    name={name}
-                                    current={current}
-                                    suggestions={suggestions}
-                                    disabled={isNA}
-                                    onChange={(obj) => {
-                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                      setAttributes([ ...next, obj ]);
-                                    }}
-                                  />
-                                )}
+                                <StringSuggestInput
+                                  id={id}
+                                  name={name}
+                                  current={current}
+                                  suggestions={[]}
+                                  disabled={isNA}
+                                  onChange={(obj) => {
+                                    const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                    setAttributes([...next, obj]);
+                                  }}
+                                />
                                 {canNA && (
                                   <div className="mt-1 flex items-center gap-2">
                                     <Checkbox
@@ -2289,7 +2337,7 @@ export default function AnunciosCriarML() {
                                       onCheckedChange={(checked) => {
                                         const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
                                         const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                        setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                        setAttributes(naAttr ? [...next, naAttr] : next);
                                       }}
                                     />
                                     <span className="text-xs text-gray-600">Não se aplica</span>
@@ -2297,58 +2345,8 @@ export default function AnunciosCriarML() {
                                 )}
                               </div>
                             );
-                          }
-                          if (hasValues) {
-                            return (
-                              <div key={id}>
-                                <RequiredLabel text={name} required={isRequired} />
-                                <Select value={String(current?.value_id || "")} onValueChange={(val) => {
-                                const vname = a.values.find((v: any) => String(v?.id || "") === String(val))?.name || "";
-                                const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                setAttributes([ ...next, { id, name, value_id: val, value_name: vname } ]);
-                              }}>
-                                  <SelectTrigger className="mt-2"><SelectValue placeholder={name} /></SelectTrigger>
-                                  <SelectContent>
-                                    {a.values.map((v: any) => (
-                                      <SelectItem key={String(v?.id || v?.name || Math.random())} value={String(v?.id || "")}>{String(v?.name || v?.value || v?.id || "")}</SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                            );
-                          }
-                          return (
-                            <div key={id}>
-                              <RequiredLabel text={name} required={isRequired} />
-                              <StringSuggestInput
-                                id={id}
-                                name={name}
-                                current={current}
-                                suggestions={[]}
-                                disabled={isNA}
-                                onChange={(obj) => {
-                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                  setAttributes([ ...next, obj ]);
-                                }}
-                              />
-                              {canNA && (
-                                <div className="mt-1 flex items-center gap-2">
-                                  <Checkbox
-                                    className="h-[16px] w-[16px]"
-                                    checked={isNA}
-                                    onCheckedChange={(checked) => {
-                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                      const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                      setAttributes(naAttr ? [ ...next, naAttr ] : next);
-                                    }}
-                                  />
-                                  <span className="text-xs text-gray-600">Não se aplica</span>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
+                          })}
+                        </div>
                       )}
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="md:col-span-1">
@@ -2393,287 +2391,287 @@ export default function AnunciosCriarML() {
                         </Button>
                       </div>
                       {variationsEnabled && (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-3">
-                          <div className="text-sm text-gray-700">Configure ao menos uma variação</div>
-                          <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => {
-                            const next = [...(variations || []), { attribute_combinations: [], available_quantity: 0, pictureFiles: [], price: "" }];
-                            setVariations(next);
-                            if (primaryVariationIndex === null && next.length === 1) setPrimaryVariationIndex(0);
-                          }}>
-                            <Plus className="w-4 h-4 mr-1" /> Adicionar variação
-                          </Button>
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-3">
+                            <div className="text-sm text-gray-700">Configure ao menos uma variação</div>
+                            <Button variant="link" className="text-novura-primary p-0 h-auto" onClick={() => {
+                              const next = [...(variations || []), { attribute_combinations: [], available_quantity: 0, pictureFiles: [], price: "" }];
+                              setVariations(next);
+                              if (primaryVariationIndex === null && next.length === 1) setPrimaryVariationIndex(0);
+                            }}>
+                              <Plus className="w-4 h-4 mr-1" /> Adicionar variação
+                            </Button>
+                          </div>
                         </div>
-                      </div>
                       )}
                       {variationsEnabled && (
-                      <Accordion type="multiple" className="mt-3">
-                        {(variations || []).map((v: any, idx: number) => (
-                          <AccordionItem key={idx} value={`var-${idx}`} className="border rounded-lg bg-white">
-                            <AccordionTrigger className="px-4 text-novura-primary">
-                              <div className="flex items-center justify-between w-full">
-                                <div className="flex items-center gap-2">
-                                  {(() => {
-                                    const combos = Array.isArray(v?.attribute_combinations) ? v.attribute_combinations : [];
-                                    const colorCombo = combos.find((c: any) => {
-                                      const cid = String(c?.id || "").toUpperCase();
-                                      const cname = String(c?.name || "");
-                                      return cid === "COLOR" || cid === "MAIN_COLOR" || /\bcor\b/i.test(cname);
-                                    });
-                                    const valName = String(colorCombo?.value_name || "");
-                                    if (valName) return <span>{valName}</span>;
-                                    return <span>Variação {idx + 1}</span>;
-                                  })()}
-                                  {primaryVariationIndex === idx && (
-                                    <span className="inline-flex items-center rounded-md bg-novura-primary text-white px-2 py-0.5 text-xs">Variação principal</span>
-                                  )}
-                                </div>
-                                <span
-                                  role="button"
-                                  tabIndex={0}
-                                  className="cursor-pointer text-novura-primary hover:text-red-600 transition-colors mr-4"
-                                  title="Remover variação"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    const buf = [...variations];
-                                    buf.splice(idx, 1);
-                                    setVariations(buf);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' || e.key === ' ') {
+                        <Accordion type="multiple" className="mt-3">
+                          {(variations || []).map((v: any, idx: number) => (
+                            <AccordionItem key={idx} value={`var-${idx}`} className="border rounded-lg bg-white">
+                              <AccordionTrigger className="px-4 text-novura-primary">
+                                <div className="flex items-center justify-between w-full">
+                                  <div className="flex items-center gap-2">
+                                    {(() => {
+                                      const combos = Array.isArray(v?.attribute_combinations) ? v.attribute_combinations : [];
+                                      const colorCombo = combos.find((c: any) => {
+                                        const cid = String(c?.id || "").toUpperCase();
+                                        const cname = String(c?.name || "");
+                                        return cid === "COLOR" || cid === "MAIN_COLOR" || /\bcor\b/i.test(cname);
+                                      });
+                                      const valName = String(colorCombo?.value_name || "");
+                                      if (valName) return <span>{valName}</span>;
+                                      return <span>Variação {idx + 1}</span>;
+                                    })()}
+                                    {primaryVariationIndex === idx && (
+                                      <span className="inline-flex items-center rounded-md bg-novura-primary text-white px-2 py-0.5 text-xs">Variação principal</span>
+                                    )}
+                                  </div>
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
+                                    className="cursor-pointer text-novura-primary hover:text-red-600 transition-colors mr-4"
+                                    title="Remover variação"
+                                    onClick={(e) => {
                                       e.preventDefault();
                                       e.stopPropagation();
                                       const buf = [...variations];
                                       buf.splice(idx, 1);
                                       setVariations(buf);
-                                    }
-                                  }}
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </span>
-                              </div>
-                            </AccordionTrigger>
-                            <AccordionContent className="px-4">
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                {variationAttrs.map((a: any) => {
-                                  const id = String(a?.id || "");
-                                  const name = String(a?.name || id || "Atributo");
-                                  const hasValues = Array.isArray(a?.values) && a.values.length > 0;
-                                  const currentCombo = (v?.attribute_combinations || []).find((c: any) => String(c?.id) === id);
-                                  if (hasValues && String(a?.value_type || "").toLowerCase() !== "string") {
-                                    return (
-                                      <Select key={id} value={String(currentCombo?.value_id || "")} onValueChange={(val) => {
-                                        const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
-                                        const combos = (v?.attribute_combinations || []).filter((c: any) => String(c?.id) !== id);
-                                        const nextVar = { ...v, attribute_combinations: [ ...combos, { id, name, value_id: val, value_name: vname } ] };
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
                                         const buf = [...variations];
-                                        buf[idx] = nextVar;
+                                        buf.splice(idx, 1);
                                         setVariations(buf);
-                                      }}>
-                                        <SelectTrigger><SelectValue placeholder={name} /></SelectTrigger>
-                                        <SelectContent>
-                                          {a.values.map((vv: any) => (
-                                            <SelectItem key={String(vv?.id || vv?.name || Math.random())} value={String(vv?.id || "")}>{String(vv?.name || vv?.value || vv?.id || "")}</SelectItem>
-                                          ))}
-                                        </SelectContent>
-                                      </Select>
-                                    );
-                                  }
-                                  return (
-                                    <div key={id}>
-                                      <Label>{name}</Label>
-                                      <StringSuggestInput
-                                        id={id}
-                                        name={name}
-                                        current={currentCombo}
-                                        suggestions={(Array.isArray(a?.values) ? a.values : []).map((vv: any) => ({ id: String(vv?.id || ""), name: String(vv?.name || vv?.value || vv?.id || "") }))}
-                                        disabled={false}
-                                        onChange={(obj) => {
+                                      }
+                                    }}
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </span>
+                                </div>
+                              </AccordionTrigger>
+                              <AccordionContent className="px-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                  {variationAttrs.map((a: any) => {
+                                    const id = String(a?.id || "");
+                                    const name = String(a?.name || id || "Atributo");
+                                    const hasValues = Array.isArray(a?.values) && a.values.length > 0;
+                                    const currentCombo = (v?.attribute_combinations || []).find((c: any) => String(c?.id) === id);
+                                    if (hasValues && String(a?.value_type || "").toLowerCase() !== "string") {
+                                      return (
+                                        <Select key={id} value={String(currentCombo?.value_id || "")} onValueChange={(val) => {
+                                          const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
                                           const combos = (v?.attribute_combinations || []).filter((c: any) => String(c?.id) !== id);
-                                          const nextVar = { ...v, attribute_combinations: [ ...combos, obj ] };
+                                          const nextVar = { ...v, attribute_combinations: [...combos, { id, name, value_id: val, value_name: vname }] };
                                           const buf = [...variations];
                                           buf[idx] = nextVar;
                                           setVariations(buf);
-                                        }}
-                                      />
-                                    </div>
-                                  );
-                                })}
-                                {allowVariationAttrs.map((a: any) => {
-                                  const id = String(a?.id || "");
-                                  const name = String(a?.name || id || "Atributo");
-                                  const hasValues = Array.isArray(a?.values) && a.values.length > 0;
-                                  const currentAttr = (v?.attributes || []).find((x: any) => String(x?.id) === id);
-                                  const tags = (a?.tags || {}) as any;
-                                  const isRequired = Array.isArray(tags) ? tags.includes("required") : !!(tags?.required);
-                                  const isNA = String((currentAttr as any)?.value_id || "") === "-1" && ((currentAttr as any)?.value_name ?? null) === null;
-                                  const canNA = !isRequired && String(id).toUpperCase() !== "SELLER_SKU";
-                                  if (String(id).toUpperCase() === "MAIN_COLOR") {
-                                    return (
-                                      <div key={id} className="flex items-center gap-2 md:col-span-2">
-                                        <Checkbox
-                                          checked={primaryVariationIndex === idx}
-                                          onCheckedChange={(checked) => {
-                                            setPrimaryVariationIndex(checked ? idx : null);
-                                          }}
-                                        />
-                                        <span className="text-sm">Definir como principal</span>
-                                      </div>
-                                    );
-                                  }
-                                  if (String(id).toUpperCase() === "GTIN") {
-                                    const isNAAttr = String((currentAttr as any)?.value_id || "") === "-1";
-                                    return (
-                                      <div key={id}>
-                                        <Label>{name}</Label>
-                                        {hasValues ? (
-                                          <Select value={String((currentAttr as any)?.value_id || "")} onValueChange={(val) => {
-                                            if (isNAAttr) return;
-                                            const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
-                                            const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                            const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_id: val, value_name: vname } ] };
-                                            const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
-                                          }}>
-                                            <SelectTrigger className={`mt-2 ${isNAAttr ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder={name} /></SelectTrigger>
-                                            <SelectContent>
-                                              {a.values.map((vv: any) => (
-                                                <SelectItem key={String(vv?.id || vv?.name || Math.random())} value={String(vv?.id || "")}>{String(vv?.name || vv?.value || vv?.id || "")}</SelectItem>
-                                              ))}
-                                            </SelectContent>
-                                          </Select>
-                                        ) : (
-                                          <Input className="mt-2" placeholder={name} disabled={isNAAttr} value={String((currentAttr as any)?.value_name || "")} onChange={(e) => {
-                                            if (isNAAttr) return;
-                                            const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                            const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_name: e.target.value } ] };
-                                            const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
-                                          }} />
-                                        )}
-                                        <div className="mt-1 flex items-center gap-2">
-                                          <Checkbox
-                                            className="h-[16px] w-[16px]"
-                                            checked={isNAAttr}
-                                            onCheckedChange={(checked) => {
-                                              const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                              const nextAttr = checked ? { id, name, value_id: "-1", value_name: isRequired ? String((currentAttr as any)?.value_name || "") : null } : undefined;
-                                              const nextVar = { ...v, attributes: nextAttr ? [ ...attrs, nextAttr ] : attrs };
-                                              const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
-                                            }}
-                                          />
-                                          <span className="text-xs text-gray-600">Não possui código de barras</span>
-                                        </div>
-                                        {(isRequired && isNAAttr) && (
-                                          <Input
-                                            className="mt-1"
-                                            placeholder="Motivo de GTIN vazio"
-                                            value={String((currentAttr as any)?.value_name || "")}
-                                            onChange={(e) => {
-                                              const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                              const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_id: "-1", value_name: e.target.value } ] };
-                                              const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
-                                            }}
-                                          />
-                                        )}
-                                      </div>
-                                    );
-                                  }
-                                  if (String(a?.value_type || "").toLowerCase() === "number_unit") {
-                                    const allowed = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
-                                    const defUnit = String((a as any)?.default_unit || "");
-                                    const currNum = typeof (currentAttr as any)?.value_struct?.number === "number" ? String((currentAttr as any).value_struct.number) : (String((currentAttr as any)?.value_name || "").split(" ")[0] || "");
-                                    const currUnit = typeof (currentAttr as any)?.value_struct?.unit === "string" ? String((currentAttr as any).value_struct.unit) : (String((currentAttr as any)?.value_name || "").split(" ")[1] || defUnit);
-                                    return (
-                                      <div key={id}>
-                                        <Label>{name}</Label>
-                                        <div className="relative mt-2">
-                                          <Input value={String(currNum || "")} placeholder={name} className="pr-24" disabled={isNA} onChange={(e) => {
-                                            const num = Number(e.target.value) || 0;
-                                            const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
-                                            const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                            const vname = unit ? `${num} ${unit}` : String(num);
-                                            const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_name: vname, value_struct: { number: num, unit } } ] };
-                                            const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
-                                          }} />
-                                          <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
-                                            const unit = String(val || defUnit || "");
-                                            const numStr = typeof (currentAttr as any)?.value_struct?.number === "number" ? String((currentAttr as any).value_struct.number) : (String((currentAttr as any)?.value_name || "").split(" ")[0] || "0");
-                                            const num = Number(numStr) || 0;
-                                            const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                            const vname = unit ? `${num} ${unit}` : String(num);
-                                            const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_name: vname, value_struct: { number: num, unit } } ] };
-                                            const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
-                                          }}>
-                                            <SelectTrigger className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-20 border-none bg-transparent shadow-none text-novura-primary hover:text-novura-primary/80 focus-visible:ring-0 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder="Un" /></SelectTrigger>
-                                            <SelectContent>
-                                              {(allowed || []).map((u: any, i2: number) => {
-                                                const uid = String((u as any)?.id || u || i2);
-                                                const uname = String((u as any)?.name || (u as any)?.id || u || uid);
-                                                return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
-                                              })}
-                                            </SelectContent>
-                                          </Select>
-                                        </div>
-                                        {canNA && (
-                                          <div className="mt-1 flex items-center gap-2">
-                                            <Checkbox
-                                              className="h-[16px] w-[16px]"
-                                              checked={isNA}
-                                              onCheckedChange={(checked) => {
-                                                const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                                const nextAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                                const nextVar = { ...v, attributes: nextAttr ? [ ...attrs, nextAttr ] : attrs };
-                                                const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
-                                              }}
-                                            />
-                                            <span className="text-xs text-gray-600">Não se aplica</span>
-                                          </div>
-                                        )}
-                                      </div>
-                                    );
-                                  }
-                                  if (hasValues) {
-                                    return (
-                                      <div key={id}>
-                                        <Label>{name}</Label>
-                                        <Select value={String((currentAttr as any)?.value_id || "")} onValueChange={(val) => {
-                                          if (isNA) return;
-                                          const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
-                                          const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                          const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_id: val, value_name: vname } ] };
-                                          const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
                                         }}>
-                                          <SelectTrigger className={`mt-2 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder={name} /></SelectTrigger>
+                                          <SelectTrigger><SelectValue placeholder={name} /></SelectTrigger>
                                           <SelectContent>
                                             {a.values.map((vv: any) => (
                                               <SelectItem key={String(vv?.id || vv?.name || Math.random())} value={String(vv?.id || "")}>{String(vv?.name || vv?.value || vv?.id || "")}</SelectItem>
                                             ))}
                                           </SelectContent>
                                         </Select>
-                                        {canNA && (
+                                      );
+                                    }
+                                    return (
+                                      <div key={id}>
+                                        <Label>{name}</Label>
+                                        <StringSuggestInput
+                                          id={id}
+                                          name={name}
+                                          current={currentCombo}
+                                          suggestions={(Array.isArray(a?.values) ? a.values : []).map((vv: any) => ({ id: String(vv?.id || ""), name: String(vv?.name || vv?.value || vv?.id || "") }))}
+                                          disabled={false}
+                                          onChange={(obj) => {
+                                            const combos = (v?.attribute_combinations || []).filter((c: any) => String(c?.id) !== id);
+                                            const nextVar = { ...v, attribute_combinations: [...combos, obj] };
+                                            const buf = [...variations];
+                                            buf[idx] = nextVar;
+                                            setVariations(buf);
+                                          }}
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                  {allowVariationAttrs.map((a: any) => {
+                                    const id = String(a?.id || "");
+                                    const name = String(a?.name || id || "Atributo");
+                                    const hasValues = Array.isArray(a?.values) && a.values.length > 0;
+                                    const currentAttr = (v?.attributes || []).find((x: any) => String(x?.id) === id);
+                                    const tags = (a?.tags || {}) as any;
+                                    const isRequired = Array.isArray(tags) ? tags.includes("required") : !!(tags?.required);
+                                    const isNA = String((currentAttr as any)?.value_id || "") === "-1" && ((currentAttr as any)?.value_name ?? null) === null;
+                                    const canNA = !isRequired && String(id).toUpperCase() !== "SELLER_SKU";
+                                    if (String(id).toUpperCase() === "MAIN_COLOR") {
+                                      return (
+                                        <div key={id} className="flex items-center gap-2 md:col-span-2">
+                                          <Checkbox
+                                            checked={primaryVariationIndex === idx}
+                                            onCheckedChange={(checked) => {
+                                              setPrimaryVariationIndex(checked ? idx : null);
+                                            }}
+                                          />
+                                          <span className="text-sm">Definir como principal</span>
+                                        </div>
+                                      );
+                                    }
+                                    if (String(id).toUpperCase() === "GTIN") {
+                                      const isNAAttr = String((currentAttr as any)?.value_id || "") === "-1";
+                                      return (
+                                        <div key={id}>
+                                          <Label>{name}</Label>
+                                          {hasValues ? (
+                                            <Select value={String((currentAttr as any)?.value_id || "")} onValueChange={(val) => {
+                                              if (isNAAttr) return;
+                                              const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
+                                              const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                              const nextVar = { ...v, attributes: [...attrs, { id, name, value_id: val, value_name: vname }] };
+                                              const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                            }}>
+                                              <SelectTrigger className={`mt-2 ${isNAAttr ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder={name} /></SelectTrigger>
+                                              <SelectContent>
+                                                {a.values.map((vv: any) => (
+                                                  <SelectItem key={String(vv?.id || vv?.name || Math.random())} value={String(vv?.id || "")}>{String(vv?.name || vv?.value || vv?.id || "")}</SelectItem>
+                                                ))}
+                                              </SelectContent>
+                                            </Select>
+                                          ) : (
+                                            <Input className="mt-2" placeholder={name} disabled={isNAAttr} value={String((currentAttr as any)?.value_name || "")} onChange={(e) => {
+                                              if (isNAAttr) return;
+                                              const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                              const nextVar = { ...v, attributes: [...attrs, { id, name, value_name: e.target.value }] };
+                                              const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                            }} />
+                                          )}
                                           <div className="mt-1 flex items-center gap-2">
                                             <Checkbox
                                               className="h-[16px] w-[16px]"
-                                              checked={isNA}
+                                              checked={isNAAttr}
                                               onCheckedChange={(checked) => {
                                                 const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                                const nextAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                                const nextVar = { ...v, attributes: nextAttr ? [ ...attrs, nextAttr ] : attrs };
+                                                const nextAttr = checked ? { id, name, value_id: "-1", value_name: isRequired ? String((currentAttr as any)?.value_name || "") : null } : undefined;
+                                                const nextVar = { ...v, attributes: nextAttr ? [...attrs, nextAttr] : attrs };
                                                 const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
                                               }}
                                             />
-                                            <span className="text-xs text-gray-600">Não se aplica</span>
+                                            <span className="text-xs text-gray-600">Não possui código de barras</span>
                                           </div>
-                                        )}
-                                      </div>
-                                    );
-                                  }
-                                  return (
+                                          {(isRequired && isNAAttr) && (
+                                            <Input
+                                              className="mt-1"
+                                              placeholder="Motivo de GTIN vazio"
+                                              value={String((currentAttr as any)?.value_name || "")}
+                                              onChange={(e) => {
+                                                const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                                const nextVar = { ...v, attributes: [...attrs, { id, name, value_id: "-1", value_name: e.target.value }] };
+                                                const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                              }}
+                                            />
+                                          )}
+                                        </div>
+                                      );
+                                    }
+                                    if (String(a?.value_type || "").toLowerCase() === "number_unit") {
+                                      const allowed = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
+                                      const defUnit = String((a as any)?.default_unit || "");
+                                      const currNum = typeof (currentAttr as any)?.value_struct?.number === "number" ? String((currentAttr as any).value_struct.number) : (String((currentAttr as any)?.value_name || "").split(" ")[0] || "");
+                                      const currUnit = typeof (currentAttr as any)?.value_struct?.unit === "string" ? String((currentAttr as any).value_struct.unit) : (String((currentAttr as any)?.value_name || "").split(" ")[1] || defUnit);
+                                      return (
+                                        <div key={id}>
+                                          <Label>{name}</Label>
+                                          <div className="relative mt-2">
+                                            <Input value={String(currNum || "")} placeholder={name} className="pr-24" disabled={isNA} onChange={(e) => {
+                                              const num = Number(e.target.value) || 0;
+                                              const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
+                                              const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                              const vname = unit ? `${num} ${unit}` : String(num);
+                                              const nextVar = { ...v, attributes: [...attrs, { id, name, value_name: vname, value_struct: { number: num, unit } }] };
+                                              const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                            }} />
+                                            <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
+                                              const unit = String(val || defUnit || "");
+                                              const numStr = typeof (currentAttr as any)?.value_struct?.number === "number" ? String((currentAttr as any).value_struct.number) : (String((currentAttr as any)?.value_name || "").split(" ")[0] || "0");
+                                              const num = Number(numStr) || 0;
+                                              const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                              const vname = unit ? `${num} ${unit}` : String(num);
+                                              const nextVar = { ...v, attributes: [...attrs, { id, name, value_name: vname, value_struct: { number: num, unit } }] };
+                                              const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                            }}>
+                                              <SelectTrigger className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-20 border-none bg-transparent shadow-none text-novura-primary hover:text-novura-primary/80 focus-visible:ring-0 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder="Un" /></SelectTrigger>
+                                              <SelectContent>
+                                                {(allowed || []).map((u: any, i2: number) => {
+                                                  const uid = String((u as any)?.id || u || i2);
+                                                  const uname = String((u as any)?.name || (u as any)?.id || u || uid);
+                                                  return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
+                                                })}
+                                              </SelectContent>
+                                            </Select>
+                                          </div>
+                                          {canNA && (
+                                            <div className="mt-1 flex items-center gap-2">
+                                              <Checkbox
+                                                className="h-[16px] w-[16px]"
+                                                checked={isNA}
+                                                onCheckedChange={(checked) => {
+                                                  const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                                  const nextAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                                  const nextVar = { ...v, attributes: nextAttr ? [...attrs, nextAttr] : attrs };
+                                                  const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                                }}
+                                              />
+                                              <span className="text-xs text-gray-600">Não se aplica</span>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    }
+                                    if (hasValues) {
+                                      return (
+                                        <div key={id}>
+                                          <Label>{name}</Label>
+                                          <Select value={String((currentAttr as any)?.value_id || "")} onValueChange={(val) => {
+                                            if (isNA) return;
+                                            const vname = a.values.find((vv: any) => String(vv?.id || "") === String(val))?.name || "";
+                                            const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                            const nextVar = { ...v, attributes: [...attrs, { id, name, value_id: val, value_name: vname }] };
+                                            const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                          }}>
+                                            <SelectTrigger className={`mt-2 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder={name} /></SelectTrigger>
+                                            <SelectContent>
+                                              {a.values.map((vv: any) => (
+                                                <SelectItem key={String(vv?.id || vv?.name || Math.random())} value={String(vv?.id || "")}>{String(vv?.name || vv?.value || vv?.id || "")}</SelectItem>
+                                              ))}
+                                            </SelectContent>
+                                          </Select>
+                                          {canNA && (
+                                            <div className="mt-1 flex items-center gap-2">
+                                              <Checkbox
+                                                className="h-[16px] w-[16px]"
+                                                checked={isNA}
+                                                onCheckedChange={(checked) => {
+                                                  const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
+                                                  const nextAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                                  const nextVar = { ...v, attributes: nextAttr ? [...attrs, nextAttr] : attrs };
+                                                  const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
+                                                }}
+                                              />
+                                              <span className="text-xs text-gray-600">Não se aplica</span>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    }
+                                    return (
                                       <div key={id}>
                                         <Label>{name}</Label>
                                         <Input className="mt-2" placeholder={name} disabled={isNA} value={String((currentAttr as any)?.value_name || "")} onChange={(e) => {
                                           const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
-                                          const nextVar = { ...v, attributes: [ ...attrs, { id, name, value_name: e.target.value } ] };
+                                          const nextVar = { ...v, attributes: [...attrs, { id, name, value_name: e.target.value }] };
                                           const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
                                         }} />
                                         {canNA && (
@@ -2684,7 +2682,7 @@ export default function AnunciosCriarML() {
                                               onCheckedChange={(checked) => {
                                                 const attrs = (v?.attributes || []).filter((x: any) => String(x?.id) !== id);
                                                 const nextAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                                const nextVar = { ...v, attributes: nextAttr ? [ ...attrs, nextAttr ] : attrs };
+                                                const nextVar = { ...v, attributes: nextAttr ? [...attrs, nextAttr] : attrs };
                                                 const buf = [...variations]; buf[idx] = nextVar; setVariations(buf);
                                               }}
                                             />
@@ -2693,41 +2691,41 @@ export default function AnunciosCriarML() {
                                         )}
                                       </div>
                                     );
-                                })}
-                                <div>
-                                  <Label>Preço</Label>
-                                  <div className="relative mt-2">
-                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">R$</span>
-                                    <Input value={String(v?.price ?? "")} placeholder="Preço da variação" className="pl-10" onChange={(e) => {
+                                  })}
+                                  <div>
+                                    <Label>Preço</Label>
+                                    <div className="relative mt-2">
+                                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">R$</span>
+                                      <Input value={String(v?.price ?? "")} placeholder="Preço da variação" className="pl-10" onChange={(e) => {
+                                        const buf = [...variations];
+                                        buf[idx] = { ...v, price: e.target.value };
+                                        setVariations(buf);
+                                      }} />
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <Label>Estoque</Label>
+                                    <Input value={String(v?.available_quantity ?? "")} placeholder="Estoque" onChange={(e) => {
                                       const buf = [...variations];
-                                      buf[idx] = { ...v, price: e.target.value };
+                                      buf[idx] = { ...v, available_quantity: Number(e.target.value) };
                                       setVariations(buf);
                                     }} />
                                   </div>
+                                  <div className="md:col-span-2">
+                                    <ImageUpload
+                                      selectedImages={Array.isArray(v?.pictureFiles) ? v.pictureFiles : []}
+                                      onImagesChange={(files) => {
+                                        const buf = [...variations];
+                                        buf[idx] = { ...v, pictureFiles: files };
+                                        setVariations(buf);
+                                      }}
+                                    />
+                                  </div>
                                 </div>
-                                <div>
-                                  <Label>Estoque</Label>
-                                  <Input value={String(v?.available_quantity ?? "")} placeholder="Estoque" onChange={(e) => {
-                                    const buf = [...variations];
-                                    buf[idx] = { ...v, available_quantity: Number(e.target.value) };
-                                    setVariations(buf);
-                                  }} />
-                                </div>
-                                <div className="md:col-span-2">
-                                  <ImageUpload
-                                    selectedImages={Array.isArray(v?.pictureFiles) ? v.pictureFiles : []}
-                                    onImagesChange={(files) => {
-                                      const buf = [...variations];
-                                      buf[idx] = { ...v, pictureFiles: files };
-                                      setVariations(buf);
-                                    }}
-                                  />
-                                </div>
-                              </div>
-                            </AccordionContent>
-                          </AccordionItem>
-                        ))}
-                      </Accordion>
+                              </AccordionContent>
+                            </AccordionItem>
+                          ))}
+                        </Accordion>
                       )}
                     </div>
                   )}
@@ -2742,139 +2740,204 @@ export default function AnunciosCriarML() {
                             return !isBoolean;
                           });
                           return others.map((a: any) => {
-                          const id = String(a?.id || "");
-                          const idUp = id.toUpperCase();
-                          const name = String(a?.name || id || "Atributo");
-                          const hasValues = Array.isArray(a?.values) && a.values.length > 0;
-                          const current = (attributes || []).find((x: any) => String(x?.id) === id);
-                          const tags = (a?.tags || {}) as any;
-                          const isRequired = Array.isArray(tags) ? tags.includes("required") : !!(tags?.required);
-                          const isNA = String((current as any)?.value_id || "") === "-1" && ((current as any)?.value_name ?? null) === null;
-                          const canNA = !isRequired;
-                          const isString = String(a?.value_type || "").toLowerCase() === "string";
-                          const isMulti = Array.isArray(tags) ? (tags.includes("multivalued") || tags.includes("repeated")) : (!!(tags?.multivalued) || !!(tags?.repeated));
-                          const isBoolean = String(a?.value_type || "").toLowerCase() === "boolean" || (hasValues && a.values.some((v: any) => /^(yes|no|sim|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || ""))));
-                          if (isBoolean) {
-                            const yesVal = hasValues ? ((a.values || []).find((v: any) => /^(yes|sim)$/i.test(String((v as any)?.id || (v as any)?.name || "")))) : null;
-                            const noVal = hasValues ? ((a.values || []).find((v: any) => /^(no|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || "")))) : null;
-                            const currentValue = (() => {
-                              const vid = String((current as any)?.value_id || "").toLowerCase();
-                              const vname = String((current as any)?.value_name || "").toLowerCase();
-                              if (vid) return /^(yes|sim)$/i.test(vid) ? "yes" : (/^(no|não|nao)$/i.test(vid) ? "no" : "");
-                              if (vname) return /^(yes|sim)$/i.test(vname) ? "yes" : (/^(no|não|nao)$/i.test(vname) ? "no" : "");
-                              return "";
-                            })();
-                            return (
-                              <div key={id}>
-                                <RequiredLabel text={name} required={isRequired} />
-                                <div className="mt-2">
-                                  <ToggleGroup type="single" value={currentValue} onValueChange={(val) => {
-                                    if (!val) return;
-                                    const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                    if (val === "yes") {
-                                      if (yesVal) setAttributes([ ...next, { id, name, value_id: String((yesVal as any)?.id || "yes"), value_name: String((yesVal as any)?.name || "Sim") } ]);
-                                      else setAttributes([ ...next, { id, name, value_name: "Sim" } ]);
-                                    } else if (val === "no") {
-                                      if (noVal) setAttributes([ ...next, { id, name, value_id: String((noVal as any)?.id || "no"), value_name: String((noVal as any)?.name || "Não") } ]);
-                                      else setAttributes([ ...next, { id, name, value_name: "Não" } ]);
-                                    }
-                                  }}>
-                                    <ToggleGroupItem value="yes" className="rounded-l-md border border-gray-300 data-[state=on]:bg-novura-primary data-[state=on]:text-white">Sim</ToggleGroupItem>
-                                    <ToggleGroupItem value="no" className="rounded-r-md border border-gray-300 data-[state=on]:bg-novura-primary data-[state=on]:text-white">Não</ToggleGroupItem>
-                                  </ToggleGroup>
+                            const id = String(a?.id || "");
+                            const idUp = id.toUpperCase();
+                            const name = String(a?.name || id || "Atributo");
+                            const hasValues = Array.isArray(a?.values) && a.values.length > 0;
+                            const current = (attributes || []).find((x: any) => String(x?.id) === id);
+                            const tags = (a?.tags || {}) as any;
+                            const isRequired = Array.isArray(tags) ? tags.includes("required") : !!(tags?.required);
+                            const isNA = String((current as any)?.value_id || "") === "-1" && ((current as any)?.value_name ?? null) === null;
+                            const canNA = !isRequired;
+                            const isString = String(a?.value_type || "").toLowerCase() === "string";
+                            const isMulti = Array.isArray(tags) ? (tags.includes("multivalued") || tags.includes("repeated")) : (!!(tags?.multivalued) || !!(tags?.repeated));
+                            const isBoolean = String(a?.value_type || "").toLowerCase() === "boolean" || (hasValues && a.values.some((v: any) => /^(yes|no|sim|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || ""))));
+                            if (isBoolean) {
+                              const yesVal = hasValues ? ((a.values || []).find((v: any) => /^(yes|sim)$/i.test(String((v as any)?.id || (v as any)?.name || "")))) : null;
+                              const noVal = hasValues ? ((a.values || []).find((v: any) => /^(no|não|nao)$/i.test(String((v as any)?.id || (v as any)?.name || "")))) : null;
+                              const currentValue = (() => {
+                                const vid = String((current as any)?.value_id || "").toLowerCase();
+                                const vname = String((current as any)?.value_name || "").toLowerCase();
+                                if (vid) return /^(yes|sim)$/i.test(vid) ? "yes" : (/^(no|não|nao)$/i.test(vid) ? "no" : "");
+                                if (vname) return /^(yes|sim)$/i.test(vname) ? "yes" : (/^(no|não|nao)$/i.test(vname) ? "no" : "");
+                                return "";
+                              })();
+                              return (
+                                <div key={id}>
+                                  <RequiredLabel text={name} required={isRequired} />
+                                  <div className="mt-2">
+                                    <ToggleGroup type="single" value={currentValue} onValueChange={(val) => {
+                                      if (!val) return;
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      if (val === "yes") {
+                                        if (yesVal) setAttributes([...next, { id, name, value_id: String((yesVal as any)?.id || "yes"), value_name: String((yesVal as any)?.name || "Sim") }]);
+                                        else setAttributes([...next, { id, name, value_name: "Sim" }]);
+                                      } else if (val === "no") {
+                                        if (noVal) setAttributes([...next, { id, name, value_id: String((noVal as any)?.id || "no"), value_name: String((noVal as any)?.name || "Não") }]);
+                                        else setAttributes([...next, { id, name, value_name: "Não" }]);
+                                      }
+                                    }}>
+                                      <ToggleGroupItem value="yes" className="rounded-l-md border border-gray-300 data-[state=on]:bg-novura-primary data-[state=on]:text-white">Sim</ToggleGroupItem>
+                                      <ToggleGroupItem value="no" className="rounded-r-md border border-gray-300 data-[state=on]:bg-novura-primary data-[state=on]:text-white">Não</ToggleGroupItem>
+                                    </ToggleGroup>
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          }
-                          if (String(a?.value_type || "").toLowerCase() === "number_unit") {
-                            const allowed = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
-                            const defUnit = String((a as any)?.default_unit || "");
-                            const currNum = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "");
-                            const currUnit = typeof (current as any)?.value_struct?.unit === "string" ? String((current as any).value_struct.unit) : (String((current as any)?.value_name || "").split(" ")[1] || defUnit);
-                            return (
-                              <div key={id}>
-                                <RequiredLabel text={name} required={isRequired} />
-                                <div className="relative mt-2">
-                                  <Input value={String(currNum || "")} placeholder={name} className="pr-24" disabled={isNA} onChange={(e) => {
-                                    const num = Number(e.target.value) || 0;
-                                    const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
+                              );
+                            }
+                            if (String(a?.value_type || "").toLowerCase() === "number_unit") {
+                              const allowed = Array.isArray(a?.allowed_units) ? a.allowed_units : [];
+                              const defUnit = String((a as any)?.default_unit || "");
+                              const currNum = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "");
+                              const currUnit = typeof (current as any)?.value_struct?.unit === "string" ? String((current as any).value_struct.unit) : (String((current as any)?.value_name || "").split(" ")[1] || defUnit);
+                              return (
+                                <div key={id}>
+                                  <RequiredLabel text={name} required={isRequired} />
+                                  <div className="relative mt-2">
+                                    <Input value={String(currNum || "")} placeholder={name} className="pr-24" disabled={isNA} onChange={(e) => {
+                                      const num = Number(e.target.value) || 0;
+                                      const unit = currUnit || defUnit || (allowed[0]?.id || allowed[0] || "");
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      const vname = unit ? `${num} ${unit}` : String(num);
+                                      setAttributes([...next, { id, name, value_name: vname, value_struct: { number: num, unit } }]);
+                                    }} />
+                                    <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
+                                      const unit = String(val || defUnit || "");
+                                      const numStr = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "0");
+                                      const num = Number(numStr) || 0;
+                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                      const vname = unit ? `${num} ${unit}` : String(num);
+                                      setAttributes([...next, { id, name, value_name: vname, value_struct: { number: num, unit } }]);
+                                    }}>
+                                      <SelectTrigger className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-20 border-none bg-transparent shadow-none text-novura-primary hover:text-novura-primary/80 focus-visible:ring-0 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder="Un" /></SelectTrigger>
+                                      <SelectContent>
+                                        {(allowed || []).map((u: any, idx: number) => {
+                                          const uid = String((u as any)?.id || u || idx);
+                                          const uname = String((u as any)?.name || (u as any)?.id || u || uid);
+                                          return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
+                                        })}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  {canNA && (
+                                    <div className="mt-1 flex items-center gap-2">
+                                      <Checkbox
+                                        className="h-[16px] w-[16px]"
+                                        checked={isNA}
+                                        onCheckedChange={(checked) => {
+                                          const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                          const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                          setAttributes(naAttr ? [...next, naAttr] : next);
+                                        }}
+                                      />
+                                      <span className="text-xs text-gray-600">Não se aplica</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
+                            if (isString) {
+                              const baseSug = (Array.isArray(a?.values) ? a.values : []).map((v: any) => ({ id: String(v?.id || ""), name: String(v?.name || v?.value || v?.id || "") }));
+                              const extraBrand = (idUp === "BRAND" ? (Array.isArray(shopeeBrandList) ? shopeeBrandList : []) : []);
+                              const seen = new Set<string>();
+                              const suggestions = [...baseSug, ...extraBrand].filter((s) => {
+                                const key = `${String(s.id)}|${String(s.name).toLowerCase()}`;
+                                if (seen.has(key)) return false;
+                                seen.add(key);
+                                return true;
+                              });
+                              return (
+                                <div key={id}>
+                                  <RequiredLabel text={name} required={isRequired} />
+                                  {isMulti ? (
+                                    <MultiValuedBadgeInput
+                                      id={id}
+                                      name={name}
+                                      current={current}
+                                      suggestions={suggestions}
+                                      disabled={isNA}
+                                      onChange={(obj) => {
+                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                        setAttributes([...next, obj]);
+                                      }}
+                                    />
+                                  ) : (
+                                    <StringSuggestInput
+                                      id={id}
+                                      name={name}
+                                      current={current}
+                                      suggestions={suggestions}
+                                      disabled={isNA}
+                                      onChange={(obj) => {
+                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                        setAttributes([...next, obj]);
+                                      }}
+                                    />
+                                  )}
+                                  {canNA && (
+                                    <div className="mt-1 flex items-center gap-2">
+                                      <Checkbox
+                                        className="h-[16px] w-[16px]"
+                                        checked={isNA}
+                                        onCheckedChange={(checked) => {
+                                          const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                          const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                          setAttributes(naAttr ? [...next, naAttr] : next);
+                                        }}
+                                      />
+                                      <span className="text-xs text-gray-600">Não se aplica</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
+                            if (hasValues) {
+                              return (
+                                <div key={id}>
+                                  <RequiredLabel text={name} required={isRequired} />
+                                  <Select value={String(current?.value_id || "")} onValueChange={(val) => {
+                                    if (isNA) return;
+                                    const vname = a.values.find((v: any) => String(v?.id || "") === String(val))?.name || "";
                                     const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                    const vname = unit ? `${num} ${unit}` : String(num);
-                                    setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
-                                  }} />
-                                  <Select value={String(currUnit || defUnit || "")} onValueChange={(val) => {
-                                    const unit = String(val || defUnit || "");
-                                    const numStr = typeof (current as any)?.value_struct?.number === "number" ? String((current as any).value_struct.number) : (String((current as any)?.value_name || "").split(" ")[0] || "0");
-                                    const num = Number(numStr) || 0;
-                                    const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                    const vname = unit ? `${num} ${unit}` : String(num);
-                                    setAttributes([ ...next, { id, name, value_name: vname, value_struct: { number: num, unit } } ]);
+                                    setAttributes([...next, { id, name, value_id: val, value_name: vname }]);
                                   }}>
-                                    <SelectTrigger className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-20 border-none bg-transparent shadow-none text-novura-primary hover:text-novura-primary/80 focus-visible:ring-0 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder="Un" /></SelectTrigger>
+                                    <SelectTrigger className={`mt-2 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder={name} /></SelectTrigger>
                                     <SelectContent>
-                                      {(allowed || []).map((u: any, idx: number) => {
-                                        const uid = String((u as any)?.id || u || idx);
-                                        const uname = String((u as any)?.name || (u as any)?.id || u || uid);
-                                        return <SelectItem key={uid} value={uid}>{uname}</SelectItem>;
-                                      })}
+                                      {a.values.map((v: any) => (
+                                        <SelectItem key={String(v?.id || v?.name || Math.random())} value={String(v?.id || "")}>{String(v?.name || v?.value || v?.id || "")}</SelectItem>
+                                      ))}
                                     </SelectContent>
                                   </Select>
+                                  {canNA && (
+                                    <div className="mt-1 flex items-center gap-2">
+                                      <Checkbox
+                                        className="h-[16px] w-[16px]"
+                                        checked={isNA}
+                                        onCheckedChange={(checked) => {
+                                          const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                          const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
+                                          setAttributes(naAttr ? [...next, naAttr] : next);
+                                        }}
+                                      />
+                                      <span className="text-xs text-gray-600">Não se aplica</span>
+                                    </div>
+                                  )}
                                 </div>
-                                {canNA && (
-                                  <div className="mt-1 flex items-center gap-2">
-                                    <Checkbox
-                                      className="h-[16px] w-[16px]"
-                                      checked={isNA}
-                                      onCheckedChange={(checked) => {
-                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                        const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                        setAttributes(naAttr ? [ ...next, naAttr ] : next);
-                                      }}
-                                    />
-                                    <span className="text-xs text-gray-600">Não se aplica</span>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          }
-                          if (isString) {
-                            const baseSug = (Array.isArray(a?.values) ? a.values : []).map((v: any) => ({ id: String(v?.id || ""), name: String(v?.name || v?.value || v?.id || "") }));
-                            const extraBrand = (idUp === "BRAND" ? (Array.isArray(shopeeBrandList) ? shopeeBrandList : []) : []);
-                            const seen = new Set<string>();
-                            const suggestions = [...baseSug, ...extraBrand].filter((s) => {
-                              const key = `${String(s.id)}|${String(s.name).toLowerCase()}`;
-                              if (seen.has(key)) return false;
-                              seen.add(key);
-                              return true;
-                            });
+                              );
+                            }
                             return (
                               <div key={id}>
                                 <RequiredLabel text={name} required={isRequired} />
-                                {isMulti ? (
-                                  <MultiValuedBadgeInput
-                                    id={id}
-                                    name={name}
-                                    current={current}
-                                    suggestions={suggestions}
-                                    disabled={isNA}
-                                    onChange={(obj) => {
-                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                      setAttributes([ ...next, obj ]);
-                                    }}
-                                  />
-                                ) : (
-                                  <StringSuggestInput
-                                    id={id}
-                                    name={name}
-                                    current={current}
-                                    suggestions={suggestions}
-                                    disabled={isNA}
-                                    onChange={(obj) => {
-                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                      setAttributes([ ...next, obj ]);
-                                    }}
-                                  />
-                                )}
+                                <StringSuggestInput
+                                  id={id}
+                                  name={name}
+                                  current={current}
+                                  suggestions={[]}
+                                  disabled={isNA}
+                                  onChange={(obj) => {
+                                    const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
+                                    setAttributes([...next, obj]);
+                                  }}
+                                />
                                 {canNA && (
                                   <div className="mt-1 flex items-center gap-2">
                                     <Checkbox
@@ -2883,7 +2946,7 @@ export default function AnunciosCriarML() {
                                       onCheckedChange={(checked) => {
                                         const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
                                         const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                        setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                        setAttributes(naAttr ? [...next, naAttr] : next);
                                       }}
                                     />
                                     <span className="text-xs text-gray-600">Não se aplica</span>
@@ -2891,71 +2954,6 @@ export default function AnunciosCriarML() {
                                 )}
                               </div>
                             );
-                          }
-                          if (hasValues) {
-                            return (
-                              <div key={id}>
-                                <RequiredLabel text={name} required={isRequired} />
-                                <Select value={String(current?.value_id || "")} onValueChange={(val) => {
-                                  if (isNA) return;
-                                  const vname = a.values.find((v: any) => String(v?.id || "") === String(val))?.name || "";
-                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                  setAttributes([ ...next, { id, name, value_id: val, value_name: vname } ]);
-                                }}>
-                                  <SelectTrigger className={`mt-2 ${isNA ? "pointer-events-none opacity-50" : ""}`}><SelectValue placeholder={name} /></SelectTrigger>
-                                  <SelectContent>
-                                    {a.values.map((v: any) => (
-                                      <SelectItem key={String(v?.id || v?.name || Math.random())} value={String(v?.id || "")}>{String(v?.name || v?.value || v?.id || "")}</SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                                {canNA && (
-                                  <div className="mt-1 flex items-center gap-2">
-                                    <Checkbox
-                                      className="h-[16px] w-[16px]"
-                                      checked={isNA}
-                                      onCheckedChange={(checked) => {
-                                        const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                        const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                        setAttributes(naAttr ? [ ...next, naAttr ] : next);
-                                      }}
-                                    />
-                                    <span className="text-xs text-gray-600">Não se aplica</span>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          }
-                          return (
-                            <div key={id}>
-                              <RequiredLabel text={name} required={isRequired} />
-                              <StringSuggestInput
-                                id={id}
-                                name={name}
-                                current={current}
-                                suggestions={[]}
-                                disabled={isNA}
-                                onChange={(obj) => {
-                                  const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                  setAttributes([ ...next, obj ]);
-                                }}
-                              />
-                              {canNA && (
-                                <div className="mt-1 flex items-center gap-2">
-                                  <Checkbox
-                                    className="h-[16px] w-[16px]"
-                                    checked={isNA}
-                                    onCheckedChange={(checked) => {
-                                      const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
-                                      const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                      setAttributes(naAttr ? [ ...next, naAttr ] : next);
-                                    }}
-                                  />
-                                  <span className="text-xs text-gray-600">Não se aplica</span>
-                                </div>
-                              )}
-                            </div>
-                          );
                           });
                         })()}
                       </div>
@@ -2991,11 +2989,11 @@ export default function AnunciosCriarML() {
                                       if (!val) return;
                                       const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
                                       if (val === "yes") {
-                                        if (yesVal) setAttributes([ ...next, { id, name, value_id: String((yesVal as any)?.id || "yes"), value_name: String((yesVal as any)?.name || "Sim") } ]);
-                                        else setAttributes([ ...next, { id, name, value_name: "Sim" } ]);
+                                        if (yesVal) setAttributes([...next, { id, name, value_id: String((yesVal as any)?.id || "yes"), value_name: String((yesVal as any)?.name || "Sim") }]);
+                                        else setAttributes([...next, { id, name, value_name: "Sim" }]);
                                       } else if (val === "no") {
-                                        if (noVal) setAttributes([ ...next, { id, name, value_id: String((noVal as any)?.id || "no"), value_name: String((noVal as any)?.name || "Não") } ]);
-                                        else setAttributes([ ...next, { id, name, value_name: "Não" } ]);
+                                        if (noVal) setAttributes([...next, { id, name, value_id: String((noVal as any)?.id || "no"), value_name: String((noVal as any)?.name || "Não") }]);
+                                        else setAttributes([...next, { id, name, value_name: "Não" }]);
                                       }
                                     }} className="gap-0">
                                       <ToggleGroupItem value="yes" className="rounded-l-md px-3 py-1 text-sm border border-gray-300 data-[state=on]:bg-novura-primary data-[state=on]:text-white">Sim</ToggleGroupItem>
@@ -3014,7 +3012,7 @@ export default function AnunciosCriarML() {
                                           onCheckedChange={(checked) => {
                                             const next = (attributes || []).filter((x: any) => String(x?.id) !== id);
                                             const naAttr = checked ? { id, name, value_id: "-1", value_name: null } : undefined;
-                                            setAttributes(naAttr ? [ ...next, naAttr ] : next);
+                                            setAttributes(naAttr ? [...next, naAttr] : next);
                                           }}
                                         />
                                         <span className="text-xs text-gray-600">Não se aplica</span>
@@ -3023,9 +3021,9 @@ export default function AnunciosCriarML() {
                                   })()}
                                 </div>
                               );
-                        })}
-                        
-                      </div>
+                            })}
+
+                          </div>
                         );
                       })()}
                       {!isShopeeMode && (!showAllTechAttrs && filteredAttrs.tech.length > 6) && (
@@ -3042,7 +3040,7 @@ export default function AnunciosCriarML() {
                           </Button>
                         </div>
                       )}
-                      
+
                       {techSpecsOutput && (
                         <div className="border rounded-lg p-4 bg-white">
                           {Array.isArray((techSpecsOutput as any)?.sections) ? (
@@ -3164,7 +3162,7 @@ export default function AnunciosCriarML() {
                                         const nextBase = (saleTerms || []).filter((s: any) => String(s?.id || "") !== "WARRANTY_TYPE" && String(s?.id || "") !== "WARRANTY_TIME");
                                         if (isC) {
                                           const obj = { id: "WARRANTY_TYPE", value_id: vid, value_name: vname } as any;
-                                          setSaleTerms([ ...nextBase, obj ]);
+                                          setSaleTerms([...nextBase, obj]);
                                         } else {
                                           setSaleTerms(nextBase);
                                         }
@@ -3180,7 +3178,7 @@ export default function AnunciosCriarML() {
                                             const n = Number(num) || 0;
                                             const name = unit ? `${n} ${unit}` : String(n);
                                             const base = (saleTerms || []).filter((s: any) => String(s?.id || "") !== "WARRANTY_TIME");
-                                            setSaleTerms([ ...base, { id: "WARRANTY_TIME", value_name: name, value_struct: { number: n, unit } } ]);
+                                            setSaleTerms([...base, { id: "WARRANTY_TIME", value_name: name, value_struct: { number: n, unit } }]);
                                           }} />
                                           <Select value={String(currentTimeUnit || (wTime as any)?.default_unit || "")} onValueChange={(val) => {
                                             const unit = String(val || (wTime as any)?.default_unit || "");
@@ -3189,7 +3187,7 @@ export default function AnunciosCriarML() {
                                             const n = Number(numStr) || 0;
                                             const name = unit ? `${n} ${unit}` : String(n);
                                             const base = (saleTerms || []).filter((s: any) => String(s?.id || "") !== "WARRANTY_TIME");
-                                            setSaleTerms([ ...base, { id: "WARRANTY_TIME", value_name: name, value_struct: { number: n, unit } } ]);
+                                            setSaleTerms([...base, { id: "WARRANTY_TIME", value_name: name, value_struct: { number: n, unit } }]);
                                           }}>
                                             <SelectTrigger className="border-0 rounded-none text-novura-primary px-2 w-[120px]"><SelectValue placeholder="Unidade" /></SelectTrigger>
                                             <SelectContent>
@@ -3215,44 +3213,44 @@ export default function AnunciosCriarML() {
                       <div className="space-y-2">
                         <div className="text-sm text-gray-700">Tipos de logística disponíveis</div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {(availableLogisticTypes || []).map((t) => {
-              if (String(t || "") === "self_service") return null;
-              const singlePrincipal = (availableLogisticTypes || []).filter((x) => x !== "self_service").length <= 1;
-              const clickable = !singlePrincipal;
-              const label = (
-                t === "drop_off" ? "Correios" :
-                t === "xd_drop_off" ? "Mercado Envios" :
-                String(t || "").toUpperCase()
-              );
-              const selected = String(selectedLogisticType || "") === String(t || "");
-              return (
-                <div
-                  key={String(t || "")}
-                  className={`border-2 rounded-3xl p-5 bg-white ${clickable ? "cursor-pointer transition-all" : "cursor-default"} ${selected ? "border-novura-primary" : (clickable ? "border-gray-300 hover:border-novura-primary hover:bg-novura-light" : "border-gray-300")} shadow-md`}
-                  onClick={clickable ? () => { setSelectedLogisticType(String(t || "")); } : undefined}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="text-2xl font-bold text-novura-primary">{label}</div>
-                    {selected && !clickable ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-novura-primary text-white">Selecionado automaticamente</span>
-                    ) : null}
-                  </div>
-                  <ul className="mt-3 space-y-1">
-                    {[
-                      "O custo de entrega é igual ao definido pelo Envios no Mercado Livre.",
-                      "Se você oferece frete grátis, o custo do frete é por sua conta.",
-                      "Se você não oferecer frete grátis, vai receber até R$15,90 por envio."
-                    ].map((tip, i) => (
-                      <li key={i} className="flex items-start text-sm text-gray-700">
-                        <span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span>
-                        {tip}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              );
-            })}
-          </div>
+                          {(availableLogisticTypes || []).map((t) => {
+                            if (String(t || "") === "self_service") return null;
+                            const singlePrincipal = (availableLogisticTypes || []).filter((x) => x !== "self_service").length <= 1;
+                            const clickable = !singlePrincipal;
+                            const label = (
+                              t === "drop_off" ? "Correios" :
+                                t === "xd_drop_off" ? "Mercado Envios" :
+                                  String(t || "").toUpperCase()
+                            );
+                            const selected = String(selectedLogisticType || "") === String(t || "");
+                            return (
+                              <div
+                                key={String(t || "")}
+                                className={`border-2 rounded-3xl p-5 bg-white ${clickable ? "cursor-pointer transition-all" : "cursor-default"} ${selected ? "border-novura-primary" : (clickable ? "border-gray-300 hover:border-novura-primary hover:bg-novura-light" : "border-gray-300")} shadow-md`}
+                                onClick={clickable ? () => { setSelectedLogisticType(String(t || "")); } : undefined}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="text-2xl font-bold text-novura-primary">{label}</div>
+                                  {selected && !clickable ? (
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-novura-primary text-white">Selecionado automaticamente</span>
+                                  ) : null}
+                                </div>
+                                <ul className="mt-3 space-y-1">
+                                  {[
+                                    "O custo de entrega é igual ao definido pelo Envios no Mercado Livre.",
+                                    "Se você oferece frete grátis, o custo do frete é por sua conta.",
+                                    "Se você não oferecer frete grátis, vai receber até R$15,90 por envio."
+                                  ].map((tip, i) => (
+                                    <li key={i} className="flex items-start text-sm text-gray-700">
+                                      <span className="mt-1 mr-2 inline-block w-2 h-2 rounded-full bg-novura-primary"></span>
+                                      {tip}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
 
                       <div className="space-y-2">
@@ -3270,7 +3268,7 @@ export default function AnunciosCriarML() {
                             <span className="text-sm">Retirada local</span>
                           </label>
                         </div>
-                        
+
                       </div>
 
                       <div className="space-y-2">
@@ -3393,22 +3391,22 @@ export default function AnunciosCriarML() {
                 </CardContent>
               </Card>
               <div className="mt-4">
-              {currentStep !== 8 && (
-              <NavigationButtons
-                currentStep={currentStep}
-                maxSteps={maxSteps}
-                productType={"ml" as any}
-                variationEtapa={"" as any}
-                canProceedVariation={() => true}
-                loading={false}
-                onNext={currentStep === maxSteps ? handlePublish : nextStep}
-                onBack={backStep}
-                kitEtapa={"" as any}
-                onSave={currentStep === maxSteps ? () => navigate('/anuncios') : nextStep}
-                canProceedExternal={canProceed}
-                saveLabel={currentStep === 7 ? "Avançar" : (currentStep === 8 ? "Fazer depois" : undefined)}
-              />
-              )}
+                {currentStep !== 8 && (
+                  <NavigationButtons
+                    currentStep={currentStep}
+                    maxSteps={maxSteps}
+                    productType={"ml" as any}
+                    variationEtapa={"" as any}
+                    canProceedVariation={() => true}
+                    loading={false}
+                    onNext={currentStep === maxSteps ? handlePublish : nextStep}
+                    onBack={backStep}
+                    kitEtapa={"" as any}
+                    onSave={currentStep === maxSteps ? () => navigate('/anuncios') : nextStep}
+                    canProceedExternal={canProceed}
+                    saveLabel={currentStep === 7 ? "Avançar" : (currentStep === 8 ? "Fazer depois" : undefined)}
+                  />
+                )}
               </div>
             </div>
           </main>

@@ -11,7 +11,7 @@ interface EstoqueFiltersProps {
   setSelectedGalpao: (value: string) => void;
 }
 
-export function EstoqueFilters({
+export function InventoryFilters({
   searchTerm,
   setSearchTerm,
   selectedGalpao,

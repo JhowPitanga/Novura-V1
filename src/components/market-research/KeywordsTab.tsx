@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tag, Search, TrendingUp } from "lucide-react";
 
-export function PalavrasChaveTab() {
+export function KeywordsTab() {
   return (
     <div className="space-y-6">
       <Card>

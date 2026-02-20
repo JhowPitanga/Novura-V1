@@ -42,7 +42,7 @@ interface ConfiguracoesUsuariosProps {
   onClose?: () => void;
 }
 
-export function ConfiguracoesUsuarios({ onClose }: ConfiguracoesUsuariosProps = {}) {
+export function UserSettings({ onClose }: ConfiguracoesUsuariosProps = {}) {
   const [users, setUsers] = useState<OrganizationMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddUserModal, setShowAddUserModal] = useState(false);

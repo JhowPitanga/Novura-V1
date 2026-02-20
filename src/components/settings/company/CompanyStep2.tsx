@@ -19,7 +19,7 @@ interface EmpresaStep2Props {
   verifyStatus?: "idle" | "checking" | "valid" | "invalid";
 }
 
-export function EmpresaStep2({ data, updateData, onPfxSelected, onCertPasswordChange, onVerifyPassword, verifyStatus = "idle" }: EmpresaStep2Props) {
+export function CompanyStep2({ data, updateData, onPfxSelected, onCertPasswordChange, onVerifyPassword, verifyStatus = "idle" }: EmpresaStep2Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {

@@ -6,7 +6,7 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { CleanNavigation } from "@/components/CleanNavigation";
-import { ChatTab } from "@/components/equipe/ChatTab";
+import { ChatTab } from "@/components/team/ChatTab";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,10 +16,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // Importações para Task Management
-import { CreateTaskModal } from "@/components/equipe/CreateTaskModal";
-import { TaskBoard } from "@/components/equipe/TaskBoard"; // ATUALIZADO (Kanban)
+import { CreateTaskModal } from "@/components/team/CreateTaskModal";
+import { TaskBoard } from "@/components/team/TaskBoard"; // ATUALIZADO (Kanban)
 // Removido: Backlog, Roadmap e Views (não será utilizado)
-import { TaskDetailModal } from "@/components/equipe/TaskDetailModal"; // NOVO
+import { TaskDetailModal } from "@/components/team/TaskDetailModal"; // NOVO
 import LoadingOverlay from "@/components/LoadingOverlay";
 import { useChatChannels, useOrgMemberSearch } from "@/hooks/useChat";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
@@ -29,7 +29,7 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 
 // --- INTERFACE DE TAREFA ---
 // Usar o tipo compartilhado do CreateTaskModal para garantir compatibilidade
-import type { Task, TaskPriority, TaskType, TaskStatus } from "@/components/equipe/CreateTaskModal";
+import type { Task, TaskPriority, TaskType, TaskStatus } from "@/components/team/CreateTaskModal";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 

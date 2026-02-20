@@ -109,7 +109,7 @@ const categoriasMock: Categoria[] = [
   }
 ];
 
-export function BuscarCategoriasTab() {
+export function SearchCategoriesTab() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedMarketplace, setSelectedMarketplace] = useState("todos");
   const [expandedCategories, setExpandedCategories] = useState<string[]>([]);

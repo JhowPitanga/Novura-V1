@@ -8,11 +8,9 @@ import { CleanNavigation } from "@/components/CleanNavigation";
 import { Card } from "@/components/ui/card";
 
 // Community module components
-import { FeedTab } from "@/components/comunidade/FeedTab";
-// Removido: import { EventosTab } from "@/components/comunidade/EventosTab";
-// Removido: import { GruposTab } from "@/components/comunidade/GruposTab";
-import { ComposerModal } from "@/components/comunidade/ComposerModal";
-import { PerfilTab } from "@/components/comunidade/PerfilTab";
+import { FeedTab } from "@/components/community/FeedTab";
+import { ComposerModal } from "@/components/community/ComposerModal";
+import { ProfileTab } from "@/components/community/ProfileTab";
 
 const navigationItems = [
   { title: "Perfil", path: "/perfil", description: "Perfil da comunidade" },
@@ -26,7 +24,7 @@ export default function Comunidade() {
   const renderContent = () => {
     switch (currentPath) {
       case "/perfil":
-        return <PerfilTab />;
+        return <ProfileTab />;
       default:
         return <FeedTab onOpenCreatePost={() => setIsCreatePostModalOpen(true)} />;
     }

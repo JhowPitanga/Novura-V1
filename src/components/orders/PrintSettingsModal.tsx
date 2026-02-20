@@ -13,7 +13,7 @@ interface ConfiguracoesImpressaoModalProps {
   onSettingsSaved: () => void;
 }
 
-export function ConfiguracoesImpressaoModal({ open, onClose, onSettingsSaved }: ConfiguracoesImpressaoModalProps) {
+export function PrintSettingsModal({ open, onClose, onSettingsSaved }: ConfiguracoesImpressaoModalProps) {
   const { toast } = useToast();
   const [printType, setPrintType] = useState<string>("Impressão comum PDF");
   const [labelFormat, setLabelFormat] = useState<string>("Imprimir etiqueta com DANFE SIMPLIFICADA");

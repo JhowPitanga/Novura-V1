@@ -1,5 +1,5 @@
 
-import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
+import { StepIndicator } from "@/components/products/create/StepIndicator";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerFooter, DrawerClose } from "@/components/ui/drawer";

@@ -4,10 +4,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { MoreHorizontal, PackageCheck, Eye } from "lucide-react";
-import { recebimentoData } from "@/data/estoqueData";
-import { getStatusBadge } from "@/utils/estoqueUtils";
+import { recebimentoData } from "@/data/inventoryData";
+import { getStatusBadge } from "@/utils/inventoryUtils";
 
-export function RecebimentoTab() {
+export function ReceivingTab() {
   return (
     <Card>
       <CardContent className="p-0">

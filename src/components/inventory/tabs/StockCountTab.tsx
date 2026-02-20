@@ -2,7 +2,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-export function InventarioTab() {
+export function StockCountTab() {
   return (
     <>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">

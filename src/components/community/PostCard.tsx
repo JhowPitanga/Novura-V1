@@ -9,7 +9,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { User as UserIcon } from 'lucide-react';
 // Importe as tipagens que definimos
-import { Post, User } from '@/components/comunidade/types'; 
+import { Post, User } from '@/components/community/types'; 
 
 interface PostCardProps {
     post: Post;

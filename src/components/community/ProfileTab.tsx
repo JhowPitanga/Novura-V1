@@ -5,7 +5,7 @@ import { Card } from '@/components/ui/card';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { Check, ShieldCheck, Sparkles, Award } from 'lucide-react';
 
-export const PerfilTab: React.FC = () => {
+export const ProfileTab: React.FC = () => {
   const profile = {
     name: 'Novura ERP',
     role: 'ERP Oficial',

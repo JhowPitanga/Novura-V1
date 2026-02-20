@@ -41,7 +41,7 @@ interface VincularPedidoModalProps {
   anunciosParaVincular: AnuncioParaVincular[];
 }
 
-export function VincularPedidoModal({ isOpen, onClose, onSave, pedidoId, anunciosParaVincular }: VincularPedidoModalProps) {
+export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosParaVincular }: VincularPedidoModalProps) {
   const [isProductPickerOpen, setProductPickerOpen] = useState(false);
   const [didProductFetch, setDidProductFetch] = useState(false);
   const enabledProductsFetch = isProductPickerOpen && !didProductFetch;

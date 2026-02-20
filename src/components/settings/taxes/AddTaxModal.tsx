@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
-import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
+import { StepIndicator } from "@/components/products/create/StepIndicator";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -53,7 +53,7 @@ const steps = [
 // Catálogo de regras tributárias é carregado dinamicamente do banco (tax_rules_catalog).
 // Removidos arrays estáticos (CSOSN ICMS, CST IPI, CST PIS/COFINS) e geração de ID local.
 
-export function AdicionarImpostoModal({ open, onOpenChange, companies, initialData, onSave }: AdicionarImpostoModalProps) {
+export function AddTaxModal({ open, onOpenChange, companies, initialData, onSave }: AdicionarImpostoModalProps) {
   const [currentStep, setCurrentStep] = useState(1);
   const { organizationId, user } = useAuth();
 

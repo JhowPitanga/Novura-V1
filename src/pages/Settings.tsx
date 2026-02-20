@@ -1,9 +1,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ConfiguracoesFiscais } from "@/components/configuracoes/ConfiguracoesFiscais";
-import { ConfiguracoesUsuarios } from "@/components/configuracoes/ConfiguracoesUsuarios";
-import { ConfiguracoesPessoais } from "@/components/configuracoes/ConfiguracoesPessoais";
+import { FiscalSettings } from "@/components/settings/FiscalSettings";
+import { UserSettings } from "@/components/settings/UserSettings";
+import { PersonalSettings } from "@/components/settings/PersonalSettings";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
@@ -55,16 +55,16 @@ export default function Configuracoes() {
               <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full mt-6">
                 {userRole === 'member' ? (
                   <TabsContent value="pessoais">
-                    <ConfiguracoesPessoais />
+                    <PersonalSettings />
                   </TabsContent>
                 ) : (
                   <>
                     <TabsContent value="usuarios">
-                      <ConfiguracoesUsuarios />
+                      <UserSettings />
                     </TabsContent>
 
                     <TabsContent value="fiscais">
-                      <ConfiguracoesFiscais />
+                      <FiscalSettings />
                     </TabsContent>
                   </>
                 )}
