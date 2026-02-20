@@ -1,9 +1,9 @@
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { ProductForm } from "@/components/produtos/criar/ProductForm";
-import { ImageUpload } from "@/components/produtos/criar/ImageUpload";
-import { KitForm } from "@/components/produtos/criar/KitForm";
+import { ProductForm } from "@/components/products/create/ProductForm";
+import { ImageUpload } from "@/components/products/create/ImageUpload";
+import { KitForm } from "@/components/products/create/KitForm";
 import { Button } from "@/components/ui/button";
 
 interface EditKitAccordionProps {
