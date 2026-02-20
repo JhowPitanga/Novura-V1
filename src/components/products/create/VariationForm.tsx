@@ -1,13 +1,13 @@
 
 import { useState } from "react";
 import { ProductVariation, VariationType, VariationStep } from "@/types/products";
-import { VariationTypeSelector } from "@/components/produtos/criar/VariationTypeSelector";
-import { VariationOptionsForm } from "@/components/produtos/criar/VariationOptionsForm";
-import { VariationDetailsForm } from "@/components/produtos/criar/VariationDetailsForm";
-import { BulkVariationStockDrawer } from "@/components/produtos/criar/BulkVariationStockDrawer";
+import { VariationTypeSelector } from "@/components/products/create/VariationTypeSelector";
+import { VariationOptionsForm } from "@/components/products/create/VariationOptionsForm";
+import { VariationDetailsForm } from "@/components/products/create/VariationDetailsForm";
+import { BulkVariationStockDrawer } from "@/components/products/create/BulkVariationStockDrawer";
 import { Button } from "@/components/ui/button";
 import { Package } from "lucide-react";
-import { VariationImageUpload } from "@/components/produtos/criar/VariationImageUpload";
+import { VariationImageUpload } from "@/components/products/create/VariationImageUpload";
 
 interface VariationFormProps {
   variations: ProductVariation[];

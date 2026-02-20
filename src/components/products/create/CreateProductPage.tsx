@@ -6,23 +6,23 @@ import { useNavigate } from "react-router-dom";
 import { useState } from "react";
 
 // Import components
-import { StepIndicator } from "@/components/produtos/criar/StepIndicator";
+import { StepIndicator } from "@/components/products/create/StepIndicator";
 import { ProductTypeSelector } from "./ProductTypeSelector";
-import { ProductForm } from "@/components/produtos/criar/ProductForm";
-import { ImageUpload } from "@/components/produtos/criar/ImageUpload";
+import { ProductForm } from "@/components/products/create/ProductForm";
+import { ImageUpload } from "@/components/products/create/ImageUpload";
 import { VariationForm } from "./VariationForm";
 import { KitForm } from "./KitForm";
 import { VariationDimensionsForm } from "./VariationDimensionsForm";
 import { VariationTaxForm } from "./VariationTaxForm";
 import { ProductLinkingSection } from "./ProductLinkingSection";
-import { StockForm } from "@/components/produtos/criar/StockForm";
-import { DimensionsForm } from "@/components/produtos/criar/DimensionsForm";
-import { TaxForm } from "@/components/produtos/criar/TaxForm";
-import { NavigationButtons } from "@/components/produtos/criar/NavigationButtons";
-import { CloseConfirmationDialog } from "@/components/produtos/criar/CloseConfirmationDialog";
+import { StockForm } from "@/components/products/create/StockForm";
+import { DimensionsForm } from "@/components/products/create/DimensionsForm";
+import { TaxForm } from "@/components/products/create/TaxForm";
+import { NavigationButtons } from "@/components/products/create/NavigationButtons";
+import { CloseConfirmationDialog } from "@/components/products/create/CloseConfirmationDialog";
 
 // Import constants and hooks
-import { stepsUnico, stepsVariacoes, stepsKit } from "@/components/produtos/criar/constants";
+import { stepsUnico, stepsVariacoes, stepsKit } from "@/components/products/create/constants";
 import { useProductForm } from "@/hooks/useProductForm";
 import { useProducts } from "@/hooks/useProducts";
 

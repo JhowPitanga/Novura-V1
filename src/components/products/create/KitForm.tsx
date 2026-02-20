@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ProductFormData, KitItem, KitStep } from "@/types/products";
-import { ProductForm } from "@/components/produtos/criar/ProductForm";
-import { ImageUpload } from "@/components/produtos/criar/ImageUpload";
+import { ProductForm } from "@/components/products/create/ProductForm";
+import { ImageUpload } from "@/components/products/create/ImageUpload";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Plus, Trash2, X } from "lucide-react";
