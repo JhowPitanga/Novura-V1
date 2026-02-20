@@ -1,11 +1,41 @@
 import { useAuth } from './useAuth';
-import { useEffect, useState } from 'react';
+import { useMemo } from 'react';
+
+type PermissionValue = boolean | Record<string, boolean> | string[];
+
+/**
+ * Core permission resolver — handles all permission formats
+ * (boolean, object with action keys, string array).
+ */
+function resolvePermission(
+    mod: PermissionValue | undefined,
+    action: string | null
+): boolean {
+    if (!mod) return false;
+
+    if (typeof mod === 'boolean') {
+        return action ? mod : mod;
+    }
+
+    if (Array.isArray(mod)) {
+        return action ? mod.includes(action) : mod.length > 0;
+    }
+
+    if (typeof mod === 'object' && mod !== null) {
+        if (action) return (mod as Record<string, boolean>)[action] === true;
+        if (Object.prototype.hasOwnProperty.call(mod, 'view')) {
+            return (mod as Record<string, boolean>).view === true;
+        }
+        return Object.values(mod).some((v) => v === true);
+    }
+
+    return false;
+}
 
 export function usePermissions() {
     const { permissions, userRole, organizationId, moduleSwitches, globalRole } = useAuth();
-    const [activeMap, setActiveMap] = useState<Record<string, boolean> | null>(null);
 
-    useEffect(() => {
+    const activeMap = useMemo(() => {
         const raw = moduleSwitches || {};
         const global = (raw && typeof raw === 'object') ? (raw as any).global || {} : {};
         const map: Record<string, boolean> = {};
@@ -13,141 +43,59 @@ export function usePermissions() {
             const v = (global as any)[key];
             map[key] = Boolean(v?.active);
         }
-        setActiveMap(map);
+        return map;
     }, [moduleSwitches]);
 
     const hasPermission = (module: string, action: string): boolean => {
-        if (module === 'novura_admin') {
-            return globalRole === 'nv_superadmin';
-        }
+        if (module === 'novura_admin') return globalRole === 'nv_superadmin';
 
+        const mod = (permissions as any)?.[module] as PermissionValue | undefined;
+
+        // Module switch is disabled — only superadmin or view-only access
         if (activeMap && module in activeMap && activeMap[module] === false) {
             if (globalRole === 'nv_superadmin') return true;
             if (!permissions || !organizationId) return false;
-            const mod = (permissions as any)[module];
-            if (!mod) return false;
-            if (typeof mod === 'object' && mod !== null && !Array.isArray(mod)) {
-                if (action === 'view') return (mod as Record<string, boolean>)['view'] === true;
-                return false;
-            }
-            if (typeof mod === 'boolean') {
-                return action === 'view' && mod === true;
-            }
-            if (Array.isArray(mod)) {
-                return action === 'view' && (mod as string[]).includes('view');
-            }
-            return false;
+            return action === 'view' && resolvePermission(mod, 'view');
         }
 
         if (!permissions || !organizationId) return false;
-
         if (userRole === 'owner') return true;
 
-        const mod = (permissions as any)[module];
-        if (!mod) return false;
-
-        if (typeof mod === 'object' && mod !== null && !Array.isArray(mod)) {
-            return (mod as Record<string, boolean>)[action] === true;
-        }
-        if (typeof mod === 'boolean') {
-            return mod === true;
-        }
-        if (Array.isArray(mod)) {
-            return (mod as string[]).includes(action);
-        }
-        return false;
+        return resolvePermission(mod, action);
     };
 
     const hasModuleAccess = (module: string): boolean => {
-        if (module === 'novura_admin') {
-            return globalRole === 'nv_superadmin';
-        }
+        if (module === 'novura_admin') return globalRole === 'nv_superadmin';
+
+        const mod = (permissions as any)?.[module] as PermissionValue | undefined;
 
         if (activeMap && module in activeMap && activeMap[module] === false) {
             if (globalRole === 'nv_superadmin') return true;
             if (!permissions || !organizationId) return false;
-            const mod = (permissions as any)[module];
-            if (!mod) return false;
-            if (typeof mod === 'object' && mod !== null && !Array.isArray(mod)) {
-                const obj = mod as Record<string, boolean>;
-                if (Object.prototype.hasOwnProperty.call(obj, 'view')) {
-                    return obj.view === true;
-                }
-                return false;
-            }
-            if (typeof mod === 'boolean') return mod === true;
-            if (Array.isArray(mod)) {
-                return (mod as string[]).includes('view');
-            }
-            return false;
+            return resolvePermission(mod, 'view');
         }
 
         if (!permissions || !organizationId) return false;
-
         if (userRole === 'owner') return true;
 
-        const mod = (permissions as any)[module];
-        if (!mod) return false;
-
-        if (typeof mod === 'boolean') return mod === true;
-
-        if (typeof mod === 'object' && mod !== null && !Array.isArray(mod)) {
-            const obj = mod as Record<string, boolean>;
-            if (Object.prototype.hasOwnProperty.call(obj, 'view')) {
-                return obj.view === true;
-            }
-            return Object.values(obj).some((v) => v === true);
-        }
-
-        if (Array.isArray(mod)) {
-            return (mod as any[]).length > 0;
-        }
-        return false;
+        return resolvePermission(mod, null);
     };
 
     const hasAnyPermission = (module: string, actions: string[]): boolean => {
-        if (module === 'novura_admin') {
-            return globalRole === 'nv_superadmin';
-        }
+        if (module === 'novura_admin') return globalRole === 'nv_superadmin';
+
+        const mod = (permissions as any)?.[module] as PermissionValue | undefined;
 
         if (activeMap && module in activeMap && activeMap[module] === false) {
             if (globalRole === 'nv_superadmin') return true;
             if (!permissions || !organizationId) return false;
-            const mod = (permissions as any)[module];
-            if (!mod) return false;
-            if (typeof mod === 'object' && mod !== null && !Array.isArray(mod)) {
-                const obj = mod as Record<string, boolean>;
-                if (actions.includes('view')) {
-                    return obj.view === true;
-                }
-                return false;
-            }
-            if (typeof mod === 'boolean') return actions.includes('view') && mod === true;
-            if (Array.isArray(mod)) {
-                const list = mod as string[];
-                return actions.includes('view') && list.includes('view');
-            }
-            return false;
+            return actions.includes('view') && resolvePermission(mod, 'view');
         }
 
         if (!permissions || !organizationId) return false;
-
         if (userRole === 'owner') return true;
 
-        const mod = (permissions as any)[module];
-        if (!mod) return false;
-
-        if (typeof mod === 'boolean') return mod === true;
-
-        if (typeof mod === 'object' && mod !== null && !Array.isArray(mod)) {
-            return actions.some((action) => (mod as Record<string, boolean>)[action] === true);
-        }
-
-        if (Array.isArray(mod)) {
-            const list = mod as string[];
-            return actions.some((a) => list.includes(a));
-        }
-        return false;
+        return actions.some((action) => resolvePermission(mod, action));
     };
 
     const canManageUsers = (): boolean => {
