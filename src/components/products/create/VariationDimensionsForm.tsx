@@ -1,6 +1,6 @@
 
 import { ProductVariation } from "@/types/products";
-import { VariationDimensionsForm as OriginalVariationDimensionsForm } from "@/components/produtos/criar/VariationDimensionsForm";
+import { VariationDimensionsForm as OriginalVariationDimensionsForm } from "@/components/products/create/VariationDimensionsForm";
 
 interface VariationDimensionsFormProps {
   variations: ProductVariation[];

@@ -1,7 +1,7 @@
 
 import { ProductFormData, KitItem, KitStep } from "@/types/products";
-import { ProductForm } from "@/components/produtos/criar/ProductForm";
-import { ImageUpload } from "@/components/produtos/criar/ImageUpload";
+import { ProductForm } from "@/components/products/create/ProductForm";
+import { ImageUpload } from "@/components/products/create/ImageUpload";
 
 interface KitFormProps {
   formData: ProductFormData;

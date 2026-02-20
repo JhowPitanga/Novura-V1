@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ProductFormData, ProductVariation, VariationType, VariationStep } from "@/types/products";
 
 // Import form components
-import { ProductForm } from "@/components/produtos/criar/ProductForm";
+import { ProductForm } from "@/components/products/create/ProductForm";
 import { VariationForm } from "@/components/products/create/VariationForm";
 import { VariationDimensionsForm } from "@/components/products/create/VariationDimensionsForm";
 import { VariationTaxForm } from "@/components/products/create/VariationTaxForm";
