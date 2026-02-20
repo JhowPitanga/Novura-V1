@@ -35,7 +35,7 @@ interface NfeEmitirListaProps {
   onRefreshPedidos: () => void;
 }
 
-export function NfeEmitirLista({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEmitirListaProps) {
+export function NfeEmissionList({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEmitirListaProps) {
   const [pedidos, setPedidos] = useState<OrderData[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchParams] = useSearchParams();

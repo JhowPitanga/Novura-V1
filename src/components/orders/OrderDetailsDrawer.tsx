@@ -1,19 +1,19 @@
-import { Pedido } from "@/types/Pedidos";
+import { Pedido } from "@/types/orders";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerDescription, DrawerFooter, DrawerClose } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useEffect, useRef, useId, useState } from "react";
-import { PedidoDetails } from "@/components/pedidos/PedidoDetails";
+import { OrderDetails } from "@/components/orders/OrderDetails";
 import { Copy } from "lucide-react";
 
-export interface PedidoDetailsDrawerProps {
+export interface OrderDetailsDrawerProps {
     pedido: Pedido | null;
     onOpenChange: (open: boolean) => void;
     open: boolean;
     onArrangeShipment?: (pedido: Pedido) => void;
 }
 
-export function PedidoDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipment }: PedidoDetailsDrawerProps) {
+export function OrderDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipment }: OrderDetailsDrawerProps) {
     if (!pedido) return null;
 
     const contentRef = useRef<HTMLDivElement | null>(null);
@@ -107,7 +107,7 @@ export function PedidoDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipm
                         <DrawerDescription id={descriptionId}>Informações detalhadas sobre o pedido e seus itens.</DrawerDescription>
                     </DrawerHeader>
                     <div className="p-4 space-y-6">
-                        <PedidoDetails pedido={pedido} />
+                        <OrderDetails pedido={pedido} />
                     </div>
                     <DrawerFooter>
                         {String(pedido.marketplace || '').toLowerCase().includes('shopee') && (
