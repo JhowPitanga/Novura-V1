@@ -1,6 +1,6 @@
 
 import { ProductVariation } from "@/types/products";
-import { VariationTaxForm as OriginalVariationTaxForm } from "@/components/produtos/criar/VariationTaxForm";
+import { VariationTaxForm as OriginalVariationTaxForm } from "@/components/products/create/VariationTaxForm";
 
 interface VariationTaxFormProps {
   variations: ProductVariation[];
