@@ -30,6 +30,9 @@ echo ""
 echo "[1/4] Creating refactor/01-test-infra-auth..."
 git checkout -B refactor/01-test-infra-auth "$BASE"
 
+# Ensure .gitignore is up-to-date (BASE may lack coverage/ rule)
+git checkout refactor/backup -- .gitignore
+
 # Test infrastructure
 git checkout refactor/backup -- vitest.config.ts
 git checkout refactor/backup -- package.json
