@@ -22,7 +22,7 @@ const EditListingML = lazy(() => import("./pages/EditListingML"));
 const SellerResources = lazy(() => import("./pages/SellerResources"));
 const Apps = lazy(() => import("./pages/Apps"));
 const Inventory = lazy(() => import("./pages/Inventory"));
-const NotasFiscais = lazy(() => import("./pages/NotasFiscais"));
+const Invoices = lazy(() => import("./pages/Invoices"));
 const Orders = lazy(() => import("./pages/Orders"));
 const Team = lazy(() => import("./pages/Team"));
 const Landing = lazy(() => import("./pages/Landing"));
@@ -371,7 +371,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="notas_fiscais" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <NotasFiscais />
+                      <Invoices />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
