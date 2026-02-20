@@ -20,11 +20,15 @@ git add -A
 git commit -m "backup: complete refactoring state" --no-verify || true
 git branch -f refactor/backup HEAD
 
-# ── Step 1: refactor/01-test-infra-auth ──────────────────────────────────────
+# BASE = the clean commit BEFORE the backup (origin/master).
+# Each partial branch is created from here, so each one only adds its own files.
+BASE=$(git merge-base HEAD origin/master 2>/dev/null || git rev-parse HEAD~1)
+echo "  Base commit for partial branches: $(git log --oneline -1 $BASE)"
+
+# ── Step 1: refactor/01-test-infra-auth (from BASE) ─────────────────────────
 echo ""
 echo "[1/4] Creating refactor/01-test-infra-auth..."
-git checkout master
-git checkout -b refactor/01-test-infra-auth
+git checkout -B refactor/01-test-infra-auth "$BASE"
 
 # Test infrastructure
 git checkout refactor/backup -- vitest.config.ts
@@ -63,7 +67,7 @@ echo "  ✓ refactor/01-test-infra-auth created"
 # ── Step 2: refactor/02-module-renames ───────────────────────────────────────
 echo ""
 echo "[2/4] Creating refactor/02-module-renames..."
-git checkout -b refactor/02-module-renames
+git checkout -B refactor/02-module-renames
 
 # ---- Remove old page files (except Pedidos.tsx and NotasFiscais.tsx) ----
 git rm -f \
@@ -190,7 +194,7 @@ echo "  ✓ refactor/02-module-renames created"
 # ── Step 3: refactor/03-orders-refactor ──────────────────────────────────────
 echo ""
 echo "[3/4] Creating refactor/03-orders-refactor..."
-git checkout -b refactor/03-orders-refactor
+git checkout -B refactor/03-orders-refactor
 
 # ---- Remove old orders files ----
 git rm -f src/pages/Pedidos.tsx
@@ -247,7 +251,7 @@ echo "  ✓ refactor/03-orders-refactor created"
 # ── Step 4: refactor/04-invoices-refactor ────────────────────────────────────
 echo ""
 echo "[4/4] Creating refactor/04-invoices-refactor..."
-git checkout -b refactor/04-invoices-refactor
+git checkout -B refactor/04-invoices-refactor
 
 # ---- Remove old invoices page ----
 git rm -f src/pages/NotasFiscais.tsx
@@ -302,3 +306,6 @@ echo "  git push"
 echo ""
 echo "And so on for branches 3 and 4."
 echo ""
+
+# Return to master so we don't leave the user on the last branch
+git checkout master 2>/dev/null || true
