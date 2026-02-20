@@ -97,6 +97,11 @@ function Pedidos() {
         }
     }, [location.search, activeStatus]);
     const [processingIdsLocal, setProcessingIdsLocal] = useState<string[]>([]);
+    const processingIdsSet = useMemo(() => {
+        const s = new Set<string>();
+        for (const id of processingIdsLocal) s.add(String(id));
+        return s;
+    }, [processingIdsLocal]);
     const [scannerTab, setScannerTab] = useState("nao-impressos");
     const [scannedSku, setScannedSku] = useState("");
     const [nfeAuthorizedByPedidoId, setNfeAuthorizedByPedidoId] = useState<Record<string, boolean>>({});
@@ -876,11 +881,6 @@ function Pedidos() {
     const activeMarketplaceFilter = marketplaceFilters[activeStatus] ?? 'all';
     const activeShippingTypeFilter = shippingTypeFilters[activeStatus] ?? 'all';
 
-    const processingIdsSet = useMemo(() => {
-        const s = new Set<string>();
-        for (const id of processingIdsLocal) s.add(String(id));
-        return s;
-    }, [processingIdsLocal]);
     const norm = (v: any) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
     const nfePedidosAll = pedidos.filter(p => p && (norm(p.status_interno) === 'emissao nf' || norm(p.status_interno) === 'falha na emissao' || norm(p.status_interno) === 'subir xml'));
     const badgeCountFalha = nfePedidosAll.filter(p => norm(p.status_interno) === 'falha na emissao').length;
