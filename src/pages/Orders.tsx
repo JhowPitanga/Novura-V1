@@ -29,6 +29,9 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { toast } from "@/components/ui/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { useNfeStatus } from "@/hooks/useNfeStatus";
+import { matchStatus, normStatus } from "@/hooks/useOrderFiltering";
+import { useOrderFiltering } from "@/hooks/useOrderFiltering";
 import { usePrintingSettings } from "@/hooks/usePrintingSettings";
 import { supabase } from "@/integrations/supabase/client";
 import { calendarEndOfDaySPEpochMs, calendarStartOfDaySPEpochMs, eventToSPEpochMs, formatDateTimeSP } from "@/lib/datetime";
@@ -104,10 +107,7 @@ function Pedidos() {
     }, [processingIdsLocal]);
     const [scannerTab, setScannerTab] = useState("nao-impressos");
     const [scannedSku, setScannedSku] = useState("");
-    const [nfeAuthorizedByPedidoId, setNfeAuthorizedByPedidoId] = useState<Record<string, boolean>>({});
-    const [nfeFocusStatusByPedidoId, setNfeFocusStatusByPedidoId] = useState<Record<string, string>>({});
-    const [nfeXmlPendingByPedidoId, setNfeXmlPendingByPedidoId] = useState<Record<string, boolean>>({});
-    const [nfeErrorMessageByPedidoId, setNfeErrorMessageByPedidoId] = useState<Record<string, string>>({});
+    // NFe status maps provided by useNfeStatus hook below
     const [scannedPedido, setScannedPedido] = useState<any>(null);
     const [isCompleteModalOpen, setIsCompleteModalOpen] = useState(false);
     const [activePrintTab, setActivePrintTab] = useState("label");
@@ -168,6 +168,21 @@ function Pedidos() {
         companyIdRef.current = await getCompanyIdForOrg(organizationId);
         return companyIdRef.current;
     }, [organizationId]);
+
+    const {
+        nfeAuthorizedByPedidoId,
+        nfeFocusStatusByPedidoId,
+        nfeXmlPendingByPedidoId,
+        nfeErrorMessageByPedidoId,
+        refreshNfeAuthorizedMapForList,
+    } = useNfeStatus({
+        organizationId,
+        pedidos,
+        emitEnvironment,
+        activeStatus,
+        nfBadgeFilter,
+        getCompanyId,
+    });
 
     useEffect(() => {
         if (isColumnsDrawerOpen) {
@@ -375,110 +390,7 @@ function Pedidos() {
 
     // Não atualizar ao alternar quadro para evitar remoções e telas de recarga
 
-    const refreshNfeAuthorizedMapForList = useCallback(async () => {
-        try {
-            if (!organizationId) return;
-            const pedidosAtivos = pedidos.filter(p => {
-                const si = String(p?.status_interno || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-                return si === 'emissao nf' || si === 'subir xml' || si === 'falha na emissao';
-            });
-            if (pedidosAtivos.length === 0) { setNfeAuthorizedByPedidoId({}); setNfeFocusStatusByPedidoId({}); setNfeXmlPendingByPedidoId({}); setNfeErrorMessageByPedidoId({}); return; }
-            const idsToCheck = pedidosAtivos.map(p => String(p.id));
-            const mkIdsToCheck = pedidosAtivos
-                .map(p => String((p as any)?.marketplace_order_id || (p as any)?.idPlataforma || ''))
-                .filter((v) => !!v);
-            const idByOrderId = new Map<string, string>();
-            const idByMarketplaceId = new Map<string, string>();
-            for (const p of pedidosAtivos) {
-                const pid = String(p.id);
-                idByOrderId.set(pid, pid);
-                const mk = String((p as any)?.marketplace_order_id || (p as any)?.idPlataforma || '');
-                if (mk) idByMarketplaceId.set(mk, pid);
-            }
-            const companyId = await getCompanyId();
-            if (!companyId) return;
-            const nfRows = await fetchNfeStatusRows(companyId, idsToCheck, mkIdsToCheck);
-            const envSel = emitEnvironment;
-            const byMarketId: Record<string, boolean> = {};
-            const byMarketStatus: Record<string, string> = {};
-            const byXmlPending: Record<string, boolean> = {};
-            const byErrorMessage: Record<string, string> = {};
-            (Array.isArray(nfRows) ? nfRows : []).forEach((r: any) => {
-                const orderIdRaw = String(r?.order_id || '');
-                const mkIdRaw = String(r?.marketplace_order_id || '');
-                let pid: string | undefined = undefined;
-                if (orderIdRaw && idByOrderId.has(orderIdRaw)) {
-                    pid = idByOrderId.get(orderIdRaw);
-                } else if (mkIdRaw && idByMarketplaceId.has(mkIdRaw)) {
-                    pid = idByMarketplaceId.get(mkIdRaw);
-                }
-                const mk = String(pid || orderIdRaw || mkIdRaw || '');
-                const st = String(r?.status_focus || '').toLowerCase();
-                const amb = String(r?.emissao_ambiente || '').toLowerCase();
-                const xmlHas = !!(r?.xml_base64 || r?.xml_url);
-                const marketplace = String(r?.marketplace || '');
-                const mlSub = String(r?.marketplace_submission_status || '').toLowerCase();
-                if (!mk) return;
-                const okAmb = amb ? (envSel === 'producao' ? amb === 'producao' : amb === 'homologacao') : true;
-                if (st === 'autorizado' && okAmb) byMarketId[mk] = true;
-                if (okAmb) byMarketStatus[mk] = st;
-                if (okAmb) byXmlPending[mk] = (st === 'autorizado') && marketplace.toLowerCase().includes('mercado') && xmlHas && mlSub !== 'sent';
-                if (r?.error_details) {
-                    try {
-                        let rawStr: string | null = null;
-                        if (typeof r.error_details === 'string') {
-                            const s = r.error_details as string;
-                            const si = s.indexOf('{');
-                            const sj = s.lastIndexOf('}');
-                            if (si !== -1 && sj !== -1 && sj > si) {
-                                const slice = s.slice(si, sj + 1);
-                                rawStr = slice;
-                            } else {
-                                rawStr = s;
-                            }
-                        }
-                        const ed = rawStr ? JSON.parse(rawStr) : r.error_details;
-                        const raw = String(ed?.mensagem_sefaz || '');
-                        const msg = raw ? raw.replace(/\s*\[.*$/s, '').trim() : '';
-                        if (msg) byErrorMessage[mk] = msg;
-                    } catch {
-                        const s = String(r.error_details || '');
-                        let extracted = '';
-                        const m = s.match(/"mensagem_sefaz"\s*:\s*"([^"]+)"/);
-                        if (m && m[1]) extracted = m[1];
-                        const msg = extracted ? extracted.replace(/\s*\[.*$/s, '').trim() : '';
-                        if (msg) byErrorMessage[mk] = msg;
-                    }
-                }
-            });
-            const nextMap: Record<string, boolean> = {};
-            const nextStatusMap: Record<string, string> = {};
-            const nextXmlMap: Record<string, boolean> = {};
-            const nextErrMap: Record<string, string> = {};
-            for (const p of pedidosAtivos) {
-                const mk = String(p.id);
-                nextMap[mk] = byMarketId[mk] === true;
-                nextStatusMap[mk] = byMarketStatus[mk] || '';
-                nextXmlMap[mk] = byXmlPending[mk] === true;
-                if (byErrorMessage[mk]) nextErrMap[mk] = byErrorMessage[mk];
-            }
-            setNfeAuthorizedByPedidoId(nextMap);
-            setNfeFocusStatusByPedidoId(nextStatusMap);
-            setNfeXmlPendingByPedidoId(nextXmlMap);
-            setNfeErrorMessageByPedidoId(nextErrMap);
-        } catch { }
-    }, [organizationId, pedidos, emitEnvironment]);
-
-    useEffect(() => {
-        if (activeStatus === 'emissao-nf') {
-            refreshNfeAuthorizedMapForList();
-        }
-    }, [activeStatus, refreshNfeAuthorizedMapForList]);
-    useEffect(() => {
-        if (activeStatus === 'emissao-nf' && nfBadgeFilter === 'falha') {
-            refreshNfeAuthorizedMapForList();
-        }
-    }, [nfBadgeFilter, activeStatus, refreshNfeAuthorizedMapForList]);
+    // NFe status logic extracted to useNfeStatus hook
 
 
 
@@ -845,166 +757,51 @@ function Pedidos() {
         link.click();
     };
 
-    const pedidosImpressao = pedidos.filter(p => matchStatus(p, 'impressao'));
-    const pedidosNaoImpressos = pedidosImpressao.filter(p => !p.impressoEtiqueta || !p.impressoLista);
-    const pedidosImpressos = pedidosImpressao.filter(p => p.impressoEtiqueta && p.impressoLista);
-
-    // Intervalo na timezone de São Paulo (dias do calendário em SP)
-    const effectiveFromMs = dateRange?.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
-    const effectiveToMs = dateRange?.to
-        ? calendarEndOfDaySPEpochMs(dateRange.to as Date)
-        : (dateRange?.from ? calendarEndOfDaySPEpochMs(dateRange.from as Date) : undefined);
-
-    const baseFiltered = pedidos.filter(p => {
-        const baseDateStr = p.dataPagamento || p.data;
-        const eventMs = baseDateStr ? eventToSPEpochMs(baseDateStr) : null;
-        const inDate = effectiveFromMs === undefined
-            ? true
-            : (eventMs !== null && eventMs >= effectiveFromMs && (effectiveToMs === undefined || eventMs <= effectiveToMs));
-
-        const term = (searchTerm || "").toLowerCase();
-        const searchTermMatch = term === "" ||
-            p.id?.toLowerCase?.().includes(term) ||
-            String(p.marketplace_order_id || '').toLowerCase().includes(term) ||
-            String(p.pack_id || '').toLowerCase().includes(term) ||
-            p.cliente?.toLowerCase?.().includes(term) ||
-            (p.sku && p.sku.toLowerCase().includes(term)) ||
-            (Array.isArray(p.itens) && p.itens.some((it: any) =>
-                (it?.nome && String(it.nome).toLowerCase().includes(term)) ||
-                (it?.product_name && String(it.product_name).toLowerCase().includes(term)) ||
-                String(it?.pack_id || '').toLowerCase().includes(term)
-            ));
-        return inDate && searchTermMatch;
+    const {
+        baseFiltered,
+        filteredPedidos,
+        sortedPedidos,
+        paginatedPedidos,
+        totalFiltered,
+        totalPages,
+        safeCurrentPage,
+        showingFrom,
+        showingTo,
+        pedidosImpressao,
+        pedidosNaoImpressos,
+        pedidosImpressos,
+        nfePedidosAll,
+        badgeCountEmitir,
+        badgeCountFalha,
+        badgeCountProcessando,
+        badgeCountSubirXml,
+    } = useOrderFiltering({
+        pedidos,
+        searchTerm,
+        dateRange,
+        activeStatus,
+        sortKey,
+        sortDir,
+        marketplaceFilters,
+        shippingTypeFilters,
+        nfBadgeFilter,
+        vincularBadgeFilter,
+        processingIdsSet,
+        nfeFocusStatusByPedidoId,
+        pageSize,
+        currentPage,
+        totalPedidosCount,
+        statusCountsGlobal,
     });
-
-    let filteredPedidos = baseFiltered.filter(p => matchStatus(p, activeStatus));
-    const activeMarketplaceFilter = marketplaceFilters[activeStatus] ?? 'all';
-    const activeShippingTypeFilter = shippingTypeFilters[activeStatus] ?? 'all';
-
-    const norm = (v: any) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-    const nfePedidosAll = pedidos.filter(p => p && (norm(p.status_interno) === 'emissao nf' || norm(p.status_interno) === 'falha na emissao' || norm(p.status_interno) === 'subir xml'));
-    const badgeCountFalha = nfePedidosAll.filter(p => norm(p.status_interno) === 'falha na emissao').length;
-    const badgeCountProcessando = pedidos.filter(p => norm(p.status_interno) === 'processando nf').length;
-    const badgeCountEmitir = nfePedidosAll.filter(p => {
-        const st = String(nfeFocusStatusByPedidoId[String(p.id)] || '').toLowerCase();
-        return norm(p.status_interno) === 'emissao nf' &&
-            norm(p.subStatus) !== 'falha na emissao' &&
-            !processingIdsSet.has(p.id) &&
-            st !== 'processando_autorizacao' &&
-            st !== 'pendente' &&
-            st !== 'erro_autorizacao' &&
-            st !== 'rejeitado' &&
-            st !== 'denegado';
-    }).length;
-    const badgeCountSubirXml = nfePedidosAll.filter(p => norm(p.status_interno) === 'subir xml').length;
-
-    // Filtros adicionais por quadro (Marketplace e Tipo de Envio)
-    if (activeStatus === 'impressao' || activeStatus === 'enviado' || activeStatus === 'cancelado') {
-        if (activeMarketplaceFilter !== 'all') {
-            filteredPedidos = filteredPedidos.filter(p => normalizeMarketplaceId(String(p.marketplace || '')) === activeMarketplaceFilter);
-        }
-        if (activeStatus !== 'cancelado' && activeShippingTypeFilter !== 'all') {
-            filteredPedidos = filteredPedidos.filter(p => normalizeShippingType(String(p.tipoEnvio ?? '')) === activeShippingTypeFilter);
-        }
-    }
-
-    if (activeStatus === "emissao-nf") {
-        if (nfBadgeFilter === "falha") {
-            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'falha na emissao');
-        } else if (nfBadgeFilter === "processando") {
-            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'processando nf');
-        } else if (nfBadgeFilter === "subir_xml") {
-            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'subir xml');
-        } else {
-            filteredPedidos = filteredPedidos.filter(p => {
-                const st = String(nfeFocusStatusByPedidoId[String(p.id)] || '').toLowerCase();
-                return (norm(p.status_interno) === 'emissao nf') &&
-                    norm(p.subStatus) !== "falha na emissao" &&
-                    norm(p.subStatus) !== "falha ao enviar" &&
-                    !processingIdsSet.has(p.id) &&
-                    st !== "processando_autorizacao" &&
-                    st !== "pendente" &&
-                    st !== "erro_autorizacao" &&
-                    st !== "rejeitado" &&
-                    st !== "denegado";
-            });
-        }
-    }
-
-    if (activeStatus === "a-vincular") {
-        if (vincularBadgeFilter === "sem_estoque") {
-            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'sem estoque');
-        } else {
-            filteredPedidos = baseFiltered.filter(p => norm(p.status_interno) === 'a vincular');
-        }
-    }
-
-    // Ordenação antes da paginação
-    const sortedPedidos = [...filteredPedidos].sort((a, b) => {
-        const dir = sortDir === 'desc' ? -1 : 1;
-        if (sortKey === 'sku') {
-            const as = String(a?.sku ?? '').toLowerCase();
-            const bs = String(b?.sku ?? '').toLowerCase();
-            return as.localeCompare(bs) * dir;
-        }
-        if (sortKey === 'items') {
-            const av = Number(a?.quantidadeTotal ?? 0);
-            const bv = Number(b?.quantidadeTotal ?? 0);
-            if (av === bv) return 0;
-            return av > bv ? dir : -dir;
-        }
-        if (sortKey === 'shipping') {
-            const order = ['full', 'flex', 'envios', 'correios', 'no_shipping', ''];
-            const as = normalizeShippingType(String(a?.tipoEnvio ?? ''));
-            const bs = normalizeShippingType(String(b?.tipoEnvio ?? ''));
-            const ai = order.indexOf(as);
-            const bi = order.indexOf(bs);
-            if (ai === bi) return 0;
-            return ai > bi ? dir : -dir;
-        }
-        if (sortKey === 'sla') {
-            const aExp = a?.slaDespacho?.expected_date ? new Date(a.slaDespacho.expected_date).getTime() : Number.POSITIVE_INFINITY;
-            const bExp = b?.slaDespacho?.expected_date ? new Date(b.slaDespacho.expected_date).getTime() : Number.POSITIVE_INFINITY;
-            if (aExp === bExp) return 0;
-            return aExp > bExp ? dir : -dir;
-        }
-        // 'recent' por padrão: usa dataPagamento ou data (ordenado por horário em SP)
-        const ad = a?.dataPagamento || a?.data;
-        const bd = b?.dataPagamento || b?.data;
-        const at = ad ? (eventToSPEpochMs(ad) ?? 0) : 0;
-        const bt = bd ? (eventToSPEpochMs(bd) ?? 0) : 0;
-        if (at === bt) return 0;
-        return at > bt ? dir : -dir;
-    });
-
-    // Paginação baseada na lista ordenada (suporta paginação no servidor)
-    const isServerPaged = totalPedidosCount !== null;
-    const totalFiltered = (() => {
-        const hasLocalFilterImpact = (activeMarketplaceFilter !== 'all' || activeShippingTypeFilter !== 'all');
-        if (!isServerPaged || hasLocalFilterImpact) return sortedPedidos.length;
-        if (activeStatus === 'todos') return (totalPedidosCount ?? sortedPedidos.length);
-        const gs = statusCountsGlobal?.[activeStatus];
-        return typeof gs === 'number' ? gs : sortedPedidos.length;
-    })();
-    const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
-    const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
-    const startIndex = (safeCurrentPage - 1) * pageSize;
-    const paginatedPedidos = isServerPaged ? sortedPedidos : sortedPedidos.slice(startIndex, startIndex + pageSize);
-    const showingFrom = totalFiltered === 0 ? 0 : startIndex + 1;
-    const showingTo = Math.min(startIndex + paginatedPedidos.length, totalFiltered);
 
     // Resetar página ao mudar filtros principais
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchTerm, activeStatus, dateRange, nfBadgeFilter, vincularBadgeFilter, sortKey, sortDir, activeMarketplaceFilter, activeShippingTypeFilter]);
+    }, [searchTerm, activeStatus, dateRange, nfBadgeFilter, vincularBadgeFilter, sortKey, sortDir, marketplaceFilters, shippingTypeFilters]);
 
     useEffect(() => {
         if (activeStatus === 'a-vincular') setVincularBadgeFilter('para_vincular');
     }, [activeStatus]);
-
-    useEffect(() => { }, [currentPage, pageSize]);
-
-    useEffect(() => { }, [searchTerm, dateRange, nfBadgeFilter, sortKey, sortDir, activeMarketplaceFilter, activeShippingTypeFilter]);
 
     // Carregar imediatamente ao entrar no módulo após preparar contagens globais (evitar múltiplas chamadas)
     const initialLoadDoneRef = useRef(false);
@@ -1028,7 +825,7 @@ function Pedidos() {
             const offset = Math.max(0, Math.round(tr.bottom - cr.top));
             setListTopOffset(offset);
         }
-    }, [isLoading, activeStatus, sortKey, sortDir, activeMarketplaceFilter, activeShippingTypeFilter]);
+    }, [isLoading, activeStatus, sortKey, sortDir, marketplaceFilters, shippingTypeFilters]);
 
 
     // Garantir que a página atual seja válida quando total de páginas mudar
@@ -1039,16 +836,6 @@ function Pedidos() {
             setCurrentPage(newTotalPages);
         }
     }, [totalPedidosCount, filteredPedidos.length, pageSize, currentPage]);
-
-    useEffect(() => { }, [activeStatus, filteredPedidos, processedConsume]);
-
-    useEffect(() => { }, [activeStatus, filteredPedidos, processedReserve]);
-
-    useEffect(() => { }, [filteredPedidos, processedRefund]);
-
-    useEffect(() => { }, [activeStatus, filteredPedidos, processedEnsure]);
-
-
 
 
     const handleSelectAll = (list: string[], setList: (list: string[]) => void) => {
@@ -1109,28 +896,6 @@ function Pedidos() {
 
 
 
-    function matchStatus(p: any, id: string): boolean {
-        if (id === 'todos') return true;
-        const base = (p?.status_interno ?? p?.status ?? '').toString();
-        const s = base.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-        const target = String(id || '').toLowerCase().trim();
-        if (!s && target !== 'a-vincular') return false;
-        if (target === 'impressao') return s === 'impressao';
-        if (target === 'aguardando-coleta') return s === 'aguardando coleta';
-        if (target === 'a-vincular') return s === 'a vincular';
-        if (target === 'cancelado') return s === 'cancelado' || s === 'devolucao';
-        if (target === 'emissao-nf') return s === 'emissao nf';
-        if (target === 'enviado') return s === 'enviado';
-        const normalized = s.replace(/ /g, '-');
-        return normalized === target;
-    }
-
-    const marketplaceOkLocal = (p: any) => {
-        return true;
-    };
-    const shippingOkLocal = (p: any) => true;
-    const baseForCounts = baseFiltered;
-
     const isPedidoAtrasado = (p: any) => {
         const shipmentStatusLower = String(p?.shipment_status || '').toLowerCase();
         const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
@@ -1144,17 +909,17 @@ function Pedidos() {
     const allowedTooltipBlocks = new Set(['a-vincular', 'emissao-nf', 'impressao', 'aguardando-coleta']);
     const hasDelayedByBlock = (blockId: string) => {
         if (!allowedTooltipBlocks.has(blockId)) return false;
-        return listReady ? baseForCounts.some(p => matchStatus(p, blockId) && isPedidoAtrasado(p)) : false;
+        return listReady ? baseFiltered.some(p => matchStatus(p, blockId) && isPedidoAtrasado(p)) : false;
     };
 
     const statusBlocks = [
-        { id: 'todos', title: 'Todos os Pedidos', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['todos'] === 'number') ? statusCountsGlobal['todos'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'todos')).length : 0)), description: 'Sincronizados com marketplaces' },
-        { id: 'a-vincular', title: 'A Vincular', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['a-vincular'] === 'number') ? statusCountsGlobal['a-vincular'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'a-vincular')).length : 0)), description: 'Pedidos sem vínculo de SKU' },
-        { id: 'emissao-nf', title: 'Emissão de NFe', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['emissao-nf'] === 'number') ? statusCountsGlobal['emissao-nf'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'emissao-nf')).length : 0)), description: 'Aguardando emissão' },
-        { id: 'impressao', title: 'Impressão', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['impressao'] === 'number') ? statusCountsGlobal['impressao'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'impressao')).length : 0)), description: 'NF e etiqueta' },
-        { id: 'aguardando-coleta', title: 'Coleta', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['aguardando-coleta'] === 'number') ? statusCountsGlobal['aguardando-coleta'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'aguardando-coleta')).length : 0)), description: 'Prontos para envio' },
-        { id: 'enviado', title: 'Enviado', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['enviado'] === 'number') ? statusCountsGlobal['enviado'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'enviado')).length : 0)), description: 'Pedidos em trânsito' },
-        { id: 'cancelado', title: 'Cancelados', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['cancelado'] === 'number') ? statusCountsGlobal['cancelado'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'cancelado')).length : 0)), description: 'Pedidos cancelados/devolvidos' },
+        { id: 'todos', title: 'Todos os Pedidos', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['todos'] === 'number') ? statusCountsGlobal['todos'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'todos')).length : 0)), description: 'Sincronizados com marketplaces' },
+        { id: 'a-vincular', title: 'A Vincular', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['a-vincular'] === 'number') ? statusCountsGlobal['a-vincular'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'a-vincular')).length : 0)), description: 'Pedidos sem vínculo de SKU' },
+        { id: 'emissao-nf', title: 'Emissão de NFe', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['emissao-nf'] === 'number') ? statusCountsGlobal['emissao-nf'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'emissao-nf')).length : 0)), description: 'Aguardando emissão' },
+        { id: 'impressao', title: 'Impressão', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['impressao'] === 'number') ? statusCountsGlobal['impressao'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'impressao')).length : 0)), description: 'NF e etiqueta' },
+        { id: 'aguardando-coleta', title: 'Coleta', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['aguardando-coleta'] === 'number') ? statusCountsGlobal['aguardando-coleta'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'aguardando-coleta')).length : 0)), description: 'Prontos para envio' },
+        { id: 'enviado', title: 'Enviado', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['enviado'] === 'number') ? statusCountsGlobal['enviado'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'enviado')).length : 0)), description: 'Pedidos em trânsito' },
+        { id: 'cancelado', title: 'Cancelados', count: ((countsReady && statusCountsGlobal && typeof statusCountsGlobal['cancelado'] === 'number') ? statusCountsGlobal['cancelado'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'cancelado')).length : 0)), description: 'Pedidos cancelados/devolvidos' },
     ];
 
     const handlePrintPickingList = () => {
@@ -1251,7 +1016,7 @@ function Pedidos() {
         handleSyncNfeForPedido,
         handleArrangeShipmentForPedido,
         addProcessingId: (id: string) => setProcessingIdsLocal(prev => Array.from(new Set([...prev, id]))),
-        norm,
+        norm: normStatus,
     };
 
     const rowSelection = {
@@ -1321,8 +1086,8 @@ function Pedidos() {
                                 <LinkFilterBar
                                     vincularBadgeFilter={vincularBadgeFilter}
                                     onVincularBadgeFilterChange={setVincularBadgeFilter}
-                                    paraVincularCount={(countsReady && statusCountsGlobal && typeof statusCountsGlobal['a-vincular'] === 'number') ? statusCountsGlobal['a-vincular'] : (listReady ? baseForCounts.filter(p => matchStatus(p, 'a-vincular')).length : 0)}
-                                    semEstoqueCount={(countsReady && statusCountsGlobal && typeof statusCountsGlobal['sem-estoque'] === 'number') ? statusCountsGlobal['sem-estoque'] : (listReady ? baseForCounts.filter(p => String(p?.status_interno || '') === 'Sem estoque').length : 0)}
+                                    paraVincularCount={(countsReady && statusCountsGlobal && typeof statusCountsGlobal['a-vincular'] === 'number') ? statusCountsGlobal['a-vincular'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'a-vincular')).length : 0)}
+                                    semEstoqueCount={(countsReady && statusCountsGlobal && typeof statusCountsGlobal['sem-estoque'] === 'number') ? statusCountsGlobal['sem-estoque'] : (listReady ? baseFiltered.filter(p => String(p?.status_interno || '') === 'Sem estoque').length : 0)}
                                 />
                             )}
 
