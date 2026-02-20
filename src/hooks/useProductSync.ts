@@ -1,43 +1,31 @@
-import { useState, useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { useState, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
+import { inventoryKeys } from "@/services/query-keys";
+import { productKeys } from "@/services/query-keys";
 
-
-// Hook para sincronizar dados entre produtos e estoque
 export function useProductSync() {
   const [lastUpdate, setLastUpdate] = useState<number>(Date.now());
+  const queryClient = useQueryClient();
 
-  // Função para forçar atualização de todos os componentes
   const triggerSync = () => {
     setLastUpdate(Date.now());
+    queryClient.invalidateQueries({ queryKey: inventoryKeys.all });
+    queryClient.invalidateQueries({ queryKey: productKeys.all });
   };
 
-  // Setup realtime listeners for products_stock updates
   useEffect(() => {
     const channel = supabase
-      .channel('products-stock-sync')
+      .channel("products-stock-sync-legacy")
       .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'products_stock'
-        },
-        () => {
-          // Trigger sync when stock changes
-          triggerSync();
-        }
+        "postgres_changes",
+        { event: "*", schema: "public", table: "products_stock" },
+        () => triggerSync()
       )
       .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'products'
-        },
-        () => {
-          // Trigger sync when products change
-          triggerSync();
-        }
+        "postgres_changes",
+        { event: "*", schema: "public", table: "products" },
+        () => triggerSync()
       )
       .subscribe();
 
