@@ -143,7 +143,7 @@ interface PedidoDetailsProps {
     pedido: Pedido;
 }
 
-export function PedidoDetails({ pedido }: PedidoDetailsProps) {
+export function OrderDetails({ pedido }: PedidoDetailsProps) {
     const [geralExpanded, setGeralExpanded] = useState(false);
     const [itensExpanded, setItensExpanded] = useState(false); 
     const [historicoExpanded, setHistoricoExpanded] = useState(false);

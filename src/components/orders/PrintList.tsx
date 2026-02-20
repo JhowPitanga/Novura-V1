@@ -40,7 +40,7 @@ interface ImpressaoListaProps {
   onOpenDetalhesPedido: (pedidoId: string) => void;
 }
 
-export function ImpressaoLista({ onOpenDetalhesPedido }: ImpressaoListaProps) {
+export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
   const [pedidos, setPedidos] = useState<OrderData[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchParams] = useSearchParams();

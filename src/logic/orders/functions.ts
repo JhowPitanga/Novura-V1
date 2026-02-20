@@ -1,4 +1,4 @@
-import { Pedido } from "../../types/Pedidos";
+import { Pedido } from "../../types/orders";
 
 export const filterPedidosByStatus = (pedidos: Pedido[], status: string) => {
     if (status === "Todos") {
