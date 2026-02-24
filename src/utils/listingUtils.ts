@@ -1,5 +1,34 @@
 import type { ListingItem, ShippingCaps } from "@/types/listings";
 
+// ─── Marketplace slug / display name ────────────────────────────────────────
+
+export function marketplaceSlugify(name: string): string {
+  const raw = String(name || "").trim().toLowerCase();
+  const normalized = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[_\s]+/g, "-")
+    .replace(/[^a-z0-9-]/g, "");
+  if (normalized === "mercado_livre") return "mercado-livre";
+  return normalized;
+}
+
+export function marketplaceDisplayNameFromSlug(slug: string): string {
+  const s = String(slug || "").trim().toLowerCase();
+  if (s === "mercado-livre" || s === "mercado_livre" || s === "mercado") return "Mercado Livre";
+  if (s === "shopee") return "Shopee";
+  return s.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// ─── Price parsing ─────────────────────────────────────────────────────────
+
+/** Parses a price string (pt-BR or plain number) to a number. */
+export function parsePriceToNumber(price: string): number {
+  const s = String(price || "").replace(/\./g, "").replace(/,/g, ".");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
 // ─── Quality Helpers ───────────────────────────────────────────────────────
 
 export function getQualityStrokeColor(level?: any): string {

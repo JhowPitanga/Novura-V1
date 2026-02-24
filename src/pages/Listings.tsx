@@ -360,7 +360,7 @@ export default function Anuncios() {
                                                             selectedDraftIds={selectedDraftIds}
                                                             onToggleSelect={(id) => setSelectedDraftIds(prev => {
                                                                 const s = new Set(prev);
-                                                                s.has(id) ? s.delete(id) : s.add(id);
+                                                                if (s.has(id)) { s.delete(id); } else { s.add(id); }
                                                                 return s;
                                                             })}
                                                             onDeleteDraft={handleDeleteDraft}
@@ -379,12 +379,12 @@ export default function Anuncios() {
                                                                     confirmPauseFor={confirmPauseFor}
                                                                     onToggleSelect={() => setSelectedItems(prev => {
                                                                         const s = new Set(prev);
-                                                                        s.has(ad.id) ? s.delete(ad.id) : s.add(ad.id);
+                                                                        if (s.has(ad.id)) { s.delete(ad.id); } else { s.add(ad.id); }
                                                                         return s;
                                                                     })}
                                                                     onToggleExpansion={() => setExpandedVariations(prev => {
                                                                         const s = new Set(prev);
-                                                                        s.has(ad.id) ? s.delete(ad.id) : s.add(ad.id);
+                                                                        if (s.has(ad.id)) { s.delete(ad.id); } else { s.add(ad.id); }
                                                                         return s;
                                                                     })}
                                                                     onToggleStatus={handleToggleStatus}
