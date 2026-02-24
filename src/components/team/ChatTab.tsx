@@ -160,7 +160,7 @@ const saveChannelName = async () => {
                 if (error) throw error;
                 let title = (data as any)?.name || '';
                 const type = (data as any)?.type as 'dm' | 'team' | undefined;
-                let subtitle = type === 'team' ? 'Equipe' : 'Privado';
+                const subtitle = type === 'team' ? 'Equipe' : 'Privado';
                 if (active) setChannelMemberIds(Array.isArray((data as any)?.member_ids) ? (data as any).member_ids : []);
                 if (type === 'dm') {
                     const members: string[] = Array.isArray((data as any)?.member_ids) ? (data as any).member_ids : [];

@@ -216,3 +216,6 @@ export function getShipmentStatusColor(status: string): string {
       return 'bg-gray-500 hover:bg-gray-500 text-white';
   }
 }
+
+export const formatCurrency = (value: number): string =>
+  value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
