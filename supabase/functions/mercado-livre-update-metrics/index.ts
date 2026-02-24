@@ -1,14 +1,9 @@
 // @ts-nocheck
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-
-// AES helpers (DEFINIÇÃO ÚNICA E CORRETA)
-function uint8ToB64(bytes: Uint8Array): string { return btoa(String.fromCharCode(...bytes)); }
-function b64ToUint8(b64: string): Uint8Array { return new Uint8Array(atob(b64).split('').map(c => c.charCodeAt(0))); }
-async function importAesGcmKey(b64Key: string): Promise<CryptoKey> { const keyBytes = b64ToUint8(b64Key); return await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']); }
-async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> { const parts = encStr.split(":"); if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); const iv = b64ToUint8(parts[2]); const ct = b64ToUint8(parts[3]); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); return new TextDecoder().decode(pt); }
-async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext)); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(new Uint8Array(ct))}`; }
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { importAesGcmKey, aesGcmDecryptFromString } from "../_shared/adapters/token-utils.ts";
 
 type UpdateBody = {
   organizationId?: string; // pass '*' to update all orgs
@@ -17,20 +12,9 @@ type UpdateBody = {
 };
 
 serve(async (req) => {
-  // Handle CORS preflight requests
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, apikey',
-        'Access-Control-Max-Age': '86400',
-      },
-    });
-  }
+  if (req.method === 'OPTIONS') return handleOptions();
 
-  try {
+  try {
     const rid = (crypto as any)?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     const contentType = req.headers.get('content-type') || '';
     const raw = await req.text();
@@ -45,48 +29,32 @@ serve(async (req) => {
     console.log('[ml-metrics]', rid, 'raw', raw?.slice(0, 500));
     console.log('[ml-metrics]', rid, 'body', { organizationId, itemIdsCount: itemIds?.length || 0, providedToken: !!meliAccessToken });
 
-    if (!organizationId) {
-      return new Response(JSON.stringify({ error: "organizationId required", rid, note: "Send JSON body: { organizationId: '...' } with content-type application/json" }), {
-        status: 400,
-        headers: { 
-          'Access-Control-Allow-Origin': '*',
-          'Content-Type': 'application/json'
-        }
-      });
-    }
+    if (!organizationId) {
+      return jsonResponse({ error: "organizationId required", rid, note: "Send JSON body: { organizationId: '...' } with content-type application/json" }, 400);
+    }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || '';
-    const ML_CLIENT_ID = Deno.env.get("ML_CLIENT_ID") || '';
-    const ML_CLIENT_SECRET = Deno.env.get("ML_CLIENT_SECRET") || '';
-    const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
-    const authHeader = req.headers.get("Authorization") || undefined;
+    const ML_CLIENT_ID = Deno.env.get("ML_CLIENT_ID") || '';
+    const ML_CLIENT_SECRET = Deno.env.get("ML_CLIENT_SECRET") || '';
+    const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
 
-    // Import AES key for token decryption
-    let aesKey: CryptoKey | null = null;
-    if (ENC_KEY_B64) {
-      try {
-        aesKey = await importAesGcmKey(ENC_KEY_B64);
-      } catch (e) {
-        console.warn('[ml-metrics]', rid, 'failed to import AES key:', (e as any)?.message || e);
-      }
-    }
+    let aesKey: CryptoKey | null = null;
+    if (ENC_KEY_B64) {
+      try {
+        aesKey = await importAesGcmKey(ENC_KEY_B64);
+      } catch (e) {
+        console.warn('[ml-metrics]', rid, 'failed to import AES key:', (e as any)?.message || e);
+      }
+    }
 
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: authHeader ? { Authorization: authHeader } : {} },
-    });
-    const admin = createClient(supabaseUrl, (supabaseServiceKey || supabaseAnonKey), {});
+    const admin = createAdminClient();
     
-    // Sanity check on DB connectivity
-    try {
-      const ping = await admin.from('marketplace_items').select('id').limit(1);
-      console.log('[ml-metrics]', rid, 'db ping ok?', !ping.error);
-      if (ping.error) console.warn('[ml-metrics]', rid, 'db ping error', ping.error.message);
-    } catch (e) {
-      console.warn('[ml-metrics]', rid, 'db ping exception', (e as any)?.message || e);
-    }
-    console.log('[ml-metrics]', rid, 'auth header present?', !!authHeader, 'hasServiceKey?', !!supabaseServiceKey);
+    try {
+      const ping = await admin.from('marketplace_items').select('id').limit(1);
+      console.log('[ml-metrics]', rid, 'db ping ok?', !ping.error);
+      if (ping.error) console.warn('[ml-metrics]', rid, 'db ping error', ping.error.message);
+    } catch (e) {
+      console.warn('[ml-metrics]', rid, 'db ping exception', (e as any)?.message || e);
+    }
 
     const orgIds: string[] = [];
     if (organizationId === '*') {
@@ -434,21 +402,9 @@ serve(async (req) => {
       console.log('[ml-metrics]', rid, 'finished processing org', orgId);
     }
 
-    return new Response(JSON.stringify({ ok: true, updated, rid }), { 
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Content-Type': 'application/json',
-      },
-    });
-  } catch (e: any) {
-    console.error('[ml-metrics] fatal', e?.message, e?.stack || e);
-    return new Response(JSON.stringify({ error: e?.message || "Unknown error", hint: "Check headers, body JSON and marketplace_integrations token", rid: (crypto as any)?.randomUUID?.() || '' }), { 
-      status: 500,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Content-Type': 'application/json',
-      },
-    });
-  }
+    return jsonResponse({ ok: true, updated, rid });
+  } catch (e: any) {
+    console.error('[ml-metrics] fatal', e?.message, e?.stack || e);
+    return jsonResponse({ error: e?.message || "Unknown error", hint: "Check headers, body JSON and marketplace_integrations token", rid: (crypto as any)?.randomUUID?.() || '' }, 500);
+  }
 });

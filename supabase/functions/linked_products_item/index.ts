@@ -1,33 +1,12 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-request-id, x-correlation-id, x-origin, x-internal-call",
-    },
-  });
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { getStr } from "../_shared/adapters/object-utils.ts";
 
 function tryParseJson(text: string): unknown {
   try { return JSON.parse(text); } catch (_) { return null; }
 }
 
-function getStr(obj: unknown, path: string[]): string | null {
-  let cur: unknown = obj;
-  for (const k of path) {
-    if (!cur || typeof cur !== "object" || !(k in (cur as any))) return null;
-    cur = (cur as any)[k];
-  }
-  const v = cur;
-  if (typeof v === "string" && v.trim()) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return null;
-}
 
 async function blockAndReserveOnFailure(admin: any, orderId: string, orgId: string | null, correlationId: string, msg?: string) {
   try { console.error("linked-products-item failure_handling_start", { correlationId, orderId, error: msg || null }); } catch (_) {}
@@ -80,13 +59,7 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return jsonResponse(null, 200);
   if (req.method !== "POST") return jsonResponse({ ok: false, error: "Method not allowed" }, 405);
 
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
-    try { console.error("linked-products-item config_missing", { SUPABASE_URL_present: !!SUPABASE_URL, SERVICE_ROLE_KEY_present: !!SERVICE_ROLE_KEY }); } catch (_) {}
-    return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
-  }
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+  const admin = createAdminClient() as any;
 
   let lastOrderId: string | null = null;
   let lastOrgId: string | null = null;

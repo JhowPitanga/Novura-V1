@@ -1,18 +1,10 @@
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "npm:@supabase/supabase-js@2";
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type"
-    }
-  });
-}
-function htmlPostMessageSuccess(siteUrl, payload) {
-  const origin = (()=>{
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { importAesGcmKey, aesGcmEncryptToString } from "../_shared/adapters/token-utils.ts";
+
+function htmlPostMessageSuccess(siteUrl: string, payload: any) {
+  const origin = (() => {
     try {
       return new URL(siteUrl).origin;
     } catch (_) {
@@ -27,22 +19,9 @@ function htmlPostMessageSuccess(siteUrl, payload) {
     }
   });
 }
-// Helpers para criptografia AES-GCM (armazenamento seguro dos tokens)
-function strToUint8(str: string): Uint8Array { return new TextEncoder().encode(str); }
-function uint8ToB64(bytes: Uint8Array): string { const bin = Array.from(bytes).map((b: number)=>String.fromCharCode(b)).join(""); return btoa(bin); }
-function b64ToUint8(b64: string): Uint8Array { const bin = atob(b64); const bytes = new Uint8Array(bin.length); for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
-async function importAesGcmKey(src: string): Promise<CryptoKey> { let keyMaterial: BufferSource; try { const b = b64ToUint8(src); if (b.length === 16 || b.length === 24 || b.length === 32) { keyMaterial = b as BufferSource; } else { keyMaterial = await crypto.subtle.digest("SHA-256", strToUint8(src) as BufferSource); } } catch (_) { keyMaterial = await crypto.subtle.digest("SHA-256", strToUint8(src) as BufferSource); } return crypto.subtle.importKey("raw", keyMaterial, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); }
-async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, strToUint8(plaintext) as BufferSource); const ctBytes = new Uint8Array(ct); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`; }
-Deno.serve(async (req)=>{
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, POST, OPTIONS",
-        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type"
-      }
-    });
-  }
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return handleOptions();
   try {
     const url = new URL(req.url);
     const method = req.method;
@@ -65,7 +44,7 @@ Deno.serve(async (req)=>{
     if (!code || !stateStr) return jsonResponse({
       error: "Missing code or state"
     }, 400);
-    let state;
+    let state: any;
     try {
       state = JSON.parse(atob(stateStr));
       console.log("[meli-callback] state parsed", {
@@ -89,13 +68,9 @@ Deno.serve(async (req)=>{
     if (!organizationId) return jsonResponse({
       error: "Missing organizationId in state"
     }, 400);
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({
-      error: "Missing service configuration"
-    }, 500);
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-    // Chave de criptografia obrigatória para armazenamento seguro dos tokens
+
+    const admin = createAdminClient();
+
     const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
     if (!ENC_KEY_B64) return jsonResponse({
       error: "Missing TOKENS_ENCRYPTION_KEY"
@@ -169,7 +144,6 @@ Deno.serve(async (req)=>{
       connectedByUserId: connectedByUserId ?? null,
       connectedAt: now.toISOString()
     };
-    // Criptografa tokens antes de salvar
     const access_token_enc = await aesGcmEncryptToString(aesKey, access_token);
     const refresh_token_enc = await aesGcmEncryptToString(aesKey, refresh_token);
     const { error: insertError } = await admin.from("marketplace_integrations").insert([
@@ -196,7 +170,6 @@ Deno.serve(async (req)=>{
       companyId: company.id,
       marketplaceName
     });
-    // Resposta: JSON para POST (rota front-end), HTML para GET (popup)
     if (method === "POST") {
       return jsonResponse({
         ok: true

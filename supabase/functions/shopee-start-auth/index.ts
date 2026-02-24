@@ -1,47 +1,16 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { hmacSha256Hex } from "../_shared/adapters/token-utils.ts";
 
 function sanitizeRedirect(raw: string | null): string | null {
   if (!raw) return null;
-  // Remove espaços em branco e backticks indesejados
   const s = String(raw).trim().replace(/^`+|`+$/g, "");
   return s;
 }
 
-// Assinatura HMAC-SHA256 (Retorna minúsculas conforme doc Shopee)
-async function hmacSha256Hex(key: string, message: string): Promise<string> {
-  const enc = new TextEncoder();
-  const rawKey = enc.encode(key);
-  const cryptoKey = await crypto.subtle.importKey("raw", rawKey, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
-  const bytes = new Uint8Array(sig);
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex; // Retorna em minúsculas
-}
-
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, POST, OPTIONS",
-        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-      },
-    });
-  }
+  if (req.method === "OPTIONS") return handleOptions();
 
   try {
     const correlationId = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
@@ -56,10 +25,7 @@ serve(async (req) => {
     const connectedByUserId = body?.connectedByUserId || null;
     const redirectOverride = sanitizeRedirect(body?.redirect_uri || null);
 
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    const admin = createAdminClient();
 
     // Busca Credenciais do App Shopee (Tabela APPS)
     const { data: appRow, error: appErr } = await admin

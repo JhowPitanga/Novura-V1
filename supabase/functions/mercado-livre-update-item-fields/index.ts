@@ -1,7 +1,8 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString, checkAndRefreshToken } from "./local-token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { importAesGcmKey, aesGcmDecryptFromString, checkAndRefreshToken } from "../_shared/adapters/token-utils.ts";
 
 type Pic = string | { source?: string; url?: string };
 type Updates = {
@@ -41,27 +42,13 @@ function toNumberBRL(v: unknown): number {
   return isFinite(n) ? n : 0;
 }
 
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
-
 serve(async (req) => {
-  if (req.method === "OPTIONS") return jsonResponse({}, 200);
+  if (req.method === "OPTIONS") return handleOptions();
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 
   try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY") || "";
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    const admin = createAdminClient();
 
     const bodyText = await req.text();
     let body: { organizationId?: string; itemId?: string; updates?: Updates } = {};

@@ -1,54 +1,14 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { getStr, getNum } from "../_shared/adapters/object-utils.ts";
+import { hmacSha256Hex } from "../_shared/adapters/token-utils.ts";
 
 function sanitizeRedirect(raw: string | null): string | null {
   if (!raw) return null;
   // Remove espaços em branco e backticks indesejados
   const s = String(raw).trim().replace(/^`+|`+$/g, "");
   return s;
-}
-
-// Assinatura HMAC-SHA256 (Retorna minúsculas conforme doc Shopee)
-async function hmacSha256Hex(key: string, message: string): Promise<string> {
-  const enc = new TextEncoder();
-  const rawKey = enc.encode(key);
-  const cryptoKey = await crypto.subtle.importKey("raw", rawKey, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
-  const bytes = new Uint8Array(sig);
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex; // Retorna em minúsculas
-}
-
-function getField(obj: unknown, key: string): unknown {
-  if (obj && typeof obj === "object" && key in (obj as Record<string, unknown>)) {
-    return (obj as Record<string, unknown>)[key];
-  }
-  return undefined;
-}
-
-function getStr(obj: unknown, path: string[]): string | null {
-  let cur: unknown = obj;
-  for (const k of path) {
-    if (!cur || typeof cur !== "object" || !(k in (cur as Record<string, unknown>))) return null;
-    cur = (cur as Record<string, unknown>)[k];
-  }
-  const v = cur as unknown;
-  if (typeof v === "string" && v.trim()) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return null;
 }
 
 function detectOrderSn(payload: unknown): string | null {
@@ -125,15 +85,7 @@ function detectItemId(payload: unknown): string | null {
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, POST, OPTIONS",
-        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-      },
-    });
-  }
+  if (req.method === "OPTIONS") return handleOptions();
 
   try {
     const correlationId = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
@@ -193,15 +145,7 @@ serve(async (req) => {
     const connectedByUserId = (body as any)?.connectedByUserId || null;
     const redirectOverride = sanitizeRedirect((body as any)?.redirect_uri || null);
 
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-    const getNum = (o: unknown, p: string[]): number | null => {
-      const s = getStr(o, p);
-      if (s && /^\d+$/.test(String(s))) return Number(s);
-      return null;
-    };
+    const admin = createAdminClient();
     const pushCode =
       getNum(body || {}, ["code"]) ||
       getNum(body || {}, ["data","code"]) ||

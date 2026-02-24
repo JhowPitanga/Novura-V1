@@ -1,32 +1,9 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function jsonResponse(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
-
-function onlyDigits(s: string | null | undefined): string {
-  return String(s || "").replace(/\D/g, "");
-}
-
-function mapTributacaoToFocus(v: string | null | undefined): number | null {
-  const s = String(v || "").trim().toLowerCase();
-  if (!s) return null;
-  if (s === "simples nacional") return 1;
-  if (s.includes("excesso") || s.includes("sublimite")) return 2;
-  if (s === "regime normal" || s === "normal") return 3;
-  if (s === "mei") return 4;
-  return null;
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { digits as onlyDigits } from "../_shared/domain/focus-status.ts";
+import { mapTributacaoToFocus } from "../_shared/domain/focus-tributacao.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -44,14 +21,12 @@ serve(async (req) => {
   }
 
   try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const FOCUS_TOKEN = Deno.env.get("FOCUS_API_TOKEN");
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !FOCUS_TOKEN) {
+    if (!FOCUS_TOKEN) {
       return jsonResponse({ error: "Missing service configuration" }, 500);
     }
 
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+    const admin = createAdminClient() as any;
     const authHeader = req.headers.get("Authorization") || "";
     const token = authHeader.replace("Bearer ", "");
     const { data: userRes, error: userErr } = await (admin as any).auth.getUser(token);

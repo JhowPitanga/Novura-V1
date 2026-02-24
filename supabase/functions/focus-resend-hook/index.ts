@@ -1,17 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function json(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
+import { jsonResponse as json, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
 
 const RID = crypto.randomUUID();
 function log(step: string, context?: any) {
@@ -25,13 +14,7 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return json({}, 200);
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
-    log("config_missing", { hasUrl: !!SUPABASE_URL, hasKey: !!SERVICE_ROLE_KEY });
-    return json({ error: "Missing service configuration" }, 500);
-  }
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+  const admin = createAdminClient() as any;
 
   try {
     const authHeader = req.headers.get("Authorization") || "";

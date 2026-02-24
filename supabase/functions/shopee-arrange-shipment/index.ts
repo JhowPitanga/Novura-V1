@@ -1,56 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-request-id, x-correlation-id",
-    },
-  });
-}
-
-async function hmacSha256Hex(key: string, message: string): Promise<string> {
-  const enc = new TextEncoder();
-  const rawKey = enc.encode(key);
-  const cryptoKey = await crypto.subtle.importKey("raw", rawKey, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
-  const bytes = new Uint8Array(sig);
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex.toUpperCase();
-}
-
-function b64ToUint8(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-async function importAesGcmKey(base64Key: string): Promise<CryptoKey> {
-  const keyBytes = b64ToUint8(base64Key);
-  const keyBuf = keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength);
-  return crypto.subtle.importKey("raw", keyBuf as ArrayBuffer, { name: "AES-GCM" }, false, ["encrypt","decrypt"]);
-}
-
-async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> {
-  try {
-    const parts = encStr.split(":");
-    if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") return encStr;
-    const iv = b64ToUint8(parts[2]);
-    const ct = b64ToUint8(parts[3]);
-    const ivBuf = iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer;
-    const ctBuf = ct.buffer.slice(ct.byteOffset, ct.byteOffset + ct.byteLength) as ArrayBuffer;
-    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBuf }, key, ctBuf);
-    return new TextDecoder().decode(pt);
-  } catch {
-    return encStr;
-  }
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { getStr } from "../_shared/adapters/object-utils.ts";
+import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString, hmacSha256Hex } from "../_shared/adapters/token-utils.ts";
 
 function get(obj: unknown, path: string[]): unknown {
   let cur: unknown = obj;
@@ -61,24 +13,14 @@ function get(obj: unknown, path: string[]): unknown {
   return cur;
 }
 
-function getStr(obj: unknown, path: string[]): string | null {
-  const v = get(obj, path);
-  if (typeof v === "string" && v.trim()) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return null;
-}
-
 function arr(obj: unknown): any[] {
   return Array.isArray(obj) ? obj as any[] : [];
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return jsonResponse(null, 200);
+  if (req.method === "OPTIONS") return handleOptions();
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+  const admin = createAdminClient() as any;
   try {
     const correlationId = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || crypto.randomUUID();
     const rawText = await req.text();
@@ -186,11 +128,8 @@ serve(async (req) => {
               const encKey2 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
               if (encKey2) {
                 const aesKey2 = await importAesGcmKey(encKey2);
-                const iv = crypto.getRandomValues(new Uint8Array(12));
-                const ctAcc = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey2, new TextEncoder().encode(accessToken));
-                const ctRef = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey2, new TextEncoder().encode(newRefresh));
-                const accEnc = `enc:gcm:${btoa(String.fromCharCode(...iv))}:${btoa(String.fromCharCode(...new Uint8Array(ctAcc)))}`;
-                const refEnc = `enc:gcm:${btoa(String.fromCharCode(...iv))}:${btoa(String.fromCharCode(...new Uint8Array(ctRef)))}`;
+                const accEnc = await aesGcmEncryptToString(aesKey2, accessToken);
+                const refEnc = await aesGcmEncryptToString(aesKey2, newRefresh);
                 await admin.from("marketplace_integrations").update({ access_token: accEnc, refresh_token: refEnc, expires_in: expiresAtIso }).eq("id", (integ as any)?.id);
               } else {
                 await admin.from("marketplace_integrations").update({ access_token: accessToken, refresh_token: newRefresh, expires_in: expiresAtIso }).eq("id", (integ as any)?.id);

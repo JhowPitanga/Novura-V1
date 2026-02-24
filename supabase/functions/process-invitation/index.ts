@@ -1,6 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
 
 
 async function createCompleteUser(
@@ -104,16 +105,7 @@ async function createCompleteUser(
   }
   
 
-function jsonResponse(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
+
 }
 
 serve(async (req) => {
@@ -135,14 +127,7 @@ serve(async (req) => {
     const body = await req.json();
     const { token, password, name, invitation_id } = body || {};
 
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
-      return jsonResponse({ error: "Missing service configuration" }, 500);
-    }
-
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    const admin = createAdminClient();
 
     // New path: accept Supabase Auth invitation after email click/redirect
     // Client is expected to be authenticated already (exchangeCodeForSession ran)
