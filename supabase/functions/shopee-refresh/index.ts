@@ -1,88 +1,24 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
-
-function b64ToUint8(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-function strToUint8(str: string): Uint8Array {
-  return new TextEncoder().encode(str);
-}
-
-function uint8ToB64(bytes: Uint8Array): string {
-  const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join("");
-  return btoa(bin);
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString, hmacSha256Hex } from "../_shared/adapters/token-utils.ts";
 
 function maskToken(v: string): string {
-  if (!v) return "";
-  const s = String(v);
-  const n = s.length;
-  if (n <= 8) return "*".repeat(n);
-  const left = s.slice(0, 4);
-  const right = s.slice(-4);
-  return `${left}${"*".repeat(n - 8)}${right}`;
+  if (!v) return "";
+  const s = String(v);
+  const n = s.length;
+  if (n <= 8) return "*".repeat(n);
+  const left = s.slice(0, 4);
+  const right = s.slice(-4);
+  return `${left}${"*".repeat(n - 8)}${right}`;
 }
 
 function shortHash(v: string): string {
-  if (!v) return "";
-  const s = String(v);
-  if (s.length <= 16) return s;
-  return `${s.slice(0, 8)}...${s.slice(-8)}`;
-}
-
-async function importAesGcmKey(base64Key: string): Promise<CryptoKey> {
-  const keyBytes = b64ToUint8(base64Key);
-  const keyBuf = keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength);
-  return crypto.subtle.importKey("raw", keyBuf as ArrayBuffer, { name: "AES-GCM" }, false, ["encrypt","decrypt"]);
-}
-
-async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ptBytes = strToUint8(plaintext);
-  const ptBuf = ptBytes.buffer.slice(ptBytes.byteOffset, ptBytes.byteOffset + ptBytes.byteLength) as ArrayBuffer;
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, ptBuf);
-  const ctBytes = new Uint8Array(ct);
-  return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`;
-}
-
-async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> {
-  const parts = encStr.split(":");
-  if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format");
-  const iv = b64ToUint8(parts[2]);
-  const ct = b64ToUint8(parts[3]);
-  const ivBuf = iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer;
-  const ctBuf = ct.buffer.slice(ct.byteOffset, ct.byteOffset + ct.byteLength) as ArrayBuffer;
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBuf }, key, ctBuf);
-  return new TextDecoder().decode(pt);
-}
-
-async function hmacSha256Hex(key: string, message: string): Promise<string> {
-  const enc = new TextEncoder();
-  const rawKey = enc.encode(key);
-  const cryptoKey = await crypto.subtle.importKey("raw", rawKey, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
-  const bytes = new Uint8Array(sig);
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex.toUpperCase();
+  if (!v) return "";
+  const s = String(v);
+  if (s.length <= 16) return s;
+  return `${s.slice(0, 8)}...${s.slice(-8)}`;
 }
 
 serve(async (req) => {
@@ -94,15 +30,7 @@ serve(async (req) => {
   };
   
 
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "POST, OPTIONS",
-        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-      },
-    });
-  }
+  if (req.method === "OPTIONS") return handleOptions();
 
   if (req.method !== "POST") {
     log("method_not_allowed", { method: req.method });
@@ -110,15 +38,13 @@ serve(async (req) => {
   }
   
   try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ENC_KEY_B64) {
-      log("missing_service_config", { hasUrl: !!SUPABASE_URL, hasRole: !!SERVICE_ROLE_KEY, hasEncKey: !!ENC_KEY_B64 });
-      return jsonResponse({ error: "Missing service configuration" }, 500);
-    }
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
-    const aesKey = await importAesGcmKey(ENC_KEY_B64);
+    const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
+    if (!ENC_KEY_B64) {
+      log("missing_service_config", { hasEncKey: !!ENC_KEY_B64 });
+      return jsonResponse({ error: "Missing service configuration" }, 500);
+    }
+    const admin = createAdminClient() as any;
+    const aesKey = await importAesGcmKey(ENC_KEY_B64);
 
     let integrationId: string | undefined;
     try {

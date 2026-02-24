@@ -1,52 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function json(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
-
-function strToUint8(str: string): Uint8Array { return new TextEncoder().encode(str); }
-function uint8ToB64(bytes: Uint8Array): string { const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join(""); return btoa(bin); }
-function b64ToUint8(b64: string): Uint8Array { const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
-async function importAesGcmKey(base64OrHexKey: string): Promise<CryptoKey> {
-  const cleaned = base64OrHexKey.trim().replace(/^0x/i, "").replace(/[\s-]/g, "");
-  let keyBytes: Uint8Array | null = null;
-  try {
-    const b64Bytes = b64ToUint8(cleaned);
-    if (b64Bytes.length === 16 || b64Bytes.length === 24 || b64Bytes.length === 32) keyBytes = b64Bytes;
-  } catch { keyBytes = null; }
-  if (!keyBytes) {
-    const isHex = /^[0-9a-fA-F]+$/.test(cleaned) && cleaned.length % 2 === 0;
-    if (!isHex) throw new Error("Invalid key format");
-    const bytes = new Uint8Array(cleaned.length / 2);
-    for (let i = 0; i < cleaned.length; i += 2) bytes[i / 2] = parseInt(cleaned.slice(i, i + 2), 16);
-    if (!(bytes.length === 16 || bytes.length === 24 || bytes.length === 32)) throw new Error("Invalid key length");
-    keyBytes = bytes;
-  }
-  return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt","decrypt"]);
-}
-async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, strToUint8(plaintext));
-  const ctBytes = new Uint8Array(ct);
-  return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`;
-}
-async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> {
-  const parts = encStr.split(":");
-  if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format");
-  const iv = b64ToUint8(parts[2]);
-  const ct = b64ToUint8(parts[3]);
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return new TextDecoder().decode(pt);
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString } from "../_shared/adapters/token-utils.ts";
+import { normalizeFocusUrl } from "../_shared/domain/focus-url.ts";
 
 function extractXmlMeta(xml: string): { nfeNumber: string | null; nfeKey: string | null } {
   let nfeNumber: string | null = null;
@@ -69,14 +25,12 @@ function extractXmlMeta(xml: string): { nfeNumber: string | null; nfeKey: string
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return json({}, 200);
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (req.method === "OPTIONS") return handleOptions();
+  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 
   try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY")!;
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+    const admin = createAdminClient() as any;
     const rid = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
 
     const authHeader = req.headers.get("Authorization") || "";
@@ -90,7 +44,7 @@ serve(async (req) => {
       userErr = u?.error;
     }
     const userMode = !!userRes?.user && !userErr;
-    if (!userMode && !internalWorker) return json({ error: "Unauthorized" }, 401);
+    if (!userMode && !internalWorker) return jsonResponse({ error: "Unauthorized" }, 401);
 
     const raw = await req.text();
     let body: any = {};
@@ -114,9 +68,9 @@ serve(async (req) => {
     const nfeKey: string | undefined = body?.nfeKey || body?.nfe_key;
     console.log("[ML-SUBMIT-XML] params", { rid, organizationId, companyId, notaFiscalId, nfeKey });
 
-    if (!organizationId) return json({ error: "organizationId is required" }, 400);
-    if (!companyId) return json({ error: "companyId is required" }, 400);
-    if (!notaFiscalId && !nfeKey) return json({ error: "notaFiscalId or nfeKey is required" }, 400);
+    if (!organizationId) return jsonResponse({ error: "organizationId is required" }, 400);
+    if (!companyId) return jsonResponse({ error: "companyId is required" }, 400);
+    if (!notaFiscalId && !nfeKey) return jsonResponse({ error: "notaFiscalId or nfeKey is required" }, 400);
 
     if (userMode) {
       const { data: isMemberData, error: isMemberErr } = await (admin as any).rpc("is_org_member", {
@@ -124,12 +78,12 @@ serve(async (req) => {
         p_org_id: organizationId,
       });
       const isMember = (Array.isArray(isMemberData) ? isMemberData?.[0] : isMemberData) === true;
-      if (isMemberErr || !isMember) return json({ error: "Forbidden" }, 403);
+      if (isMemberErr || !isMember) return jsonResponse({ error: "Forbidden" }, 403);
     }
 
     const { data: company, error: compErr } = await admin.from("companies").select("id, organization_id, focus_token_producao, focus_token_homologacao").eq("id", companyId).single();
-    if (compErr || !company) return json({ error: compErr?.message || "Company not found" }, 404);
-    if (String(company.organization_id || "") !== String(organizationId)) return json({ error: "Company not in organization" }, 403);
+    if (compErr || !company) return jsonResponse({ error: compErr?.message || "Company not found" }, 404);
+    if (String(company.organization_id || "") !== String(organizationId)) return jsonResponse({ error: "Company not in organization" }, 403);
 
     let nfRow: any = null;
     {
@@ -140,7 +94,7 @@ serve(async (req) => {
       } else {
         sel = await q.eq("nfe_key", nfeKey!).limit(1).maybeSingle();
       }
-      if (sel.error || !sel.data) return json({ error: sel.error?.message || "Nota fiscal não encontrada" }, 404);
+      if (sel.error || !sel.data) return jsonResponse({ error: sel.error?.message || "Nota fiscal não encontrada" }, 404);
       nfRow = sel.data;
     }
     console.log("[ML-SUBMIT-XML] nfRow", {
@@ -175,16 +129,16 @@ serve(async (req) => {
     console.log("[ML-SUBMIT-XML] presented_xml", { rid, has_xml_to_submit: !!xmlToSubmit, xml_to_submit_is_url: !!(xmlToSubmit && (/^(https?:\/\/|\/)/.test(xmlToSubmit))) });
 
     if (!marketplaceName || marketplaceName.toLowerCase().includes("mercado") === false) {
-      return json({ error: "Marketplace não suportado para envio de XML" }, 400);
+      return jsonResponse({ error: "Marketplace não suportado para envio de XML" }, 400);
     }
     if (!marketplaceOrderId) {
-      return json({ error: "Marketplace Order ID ausente para envio de XML" }, 400);
+      return jsonResponse({ error: "Marketplace Order ID ausente para envio de XML" }, 400);
     }
     if (!xmlB64 && !xmlUrlRaw && !xmlToSubmit) {
-      return json({ error: "XML não disponível (xml_to_submit ausente, xml_url ausente e xml_base64 vazio)" }, 400);
+      return jsonResponse({ error: "XML não disponível (xml_to_submit ausente, xml_url ausente e xml_base64 vazio)" }, 400);
     }
     if (String(statusFocus).toLowerCase() !== "autorizado") {
-      return json({ error: "NF-e não está autorizada para envio de XML" }, 400);
+      return jsonResponse({ error: "NF-e não está autorizada para envio de XML" }, 400);
     }
 
     const { data: integration, error: integErr } = await admin
@@ -193,7 +147,7 @@ serve(async (req) => {
       .eq("organizations_id", organizationId)
       .eq("marketplace_name", "Mercado Livre")
       .single();
-    if (integErr || !integration) return json({ error: integErr?.message || "Integração Mercado Livre não encontrada" }, 404);
+    if (integErr || !integration) return jsonResponse({ error: integErr?.message || "Integração Mercado Livre não encontrada" }, 404);
 
     const aesKey = await importAesGcmKey(ENC_KEY_B64);
     let accessToken: string = String(integration.access_token || "");
@@ -211,18 +165,7 @@ serve(async (req) => {
       has_refresh_token: !!integration.refresh_token,
     });
 
-    function normalizeFocusUrl(path: string | null): string | null {
-      if (!path) return null;
-      const p = String(path);
-      if (p.startsWith("http://") || p.startsWith("https://")) return p;
-      try {
-        const base = new URL("https://api.focusnfe.com.br/");
-        return new URL(p, base).toString();
-      } catch {
-        return p;
-      }
-    }
-
+    const FOCUS_API_BASE = "https://api.focusnfe.com.br";
     let xmlText: string | null = null;
     let xmlUrlCandidate: string | null = null;
     let xmlSource: string | null = null;
@@ -236,7 +179,7 @@ serve(async (req) => {
         xmlSource = "xml_to_submit_url";
       }
     }
-    const xmlUrl = normalizeFocusUrl(xmlUrlCandidate || xmlUrlRaw);
+    const xmlUrl = normalizeFocusUrl(FOCUS_API_BASE, xmlUrlCandidate || xmlUrlRaw);
     if (!xmlSource) {
       if (xmlUrlCandidate) xmlSource = "xml_to_submit_url";
       else if (xmlUrlRaw) xmlSource = "xml_url_field";
@@ -270,14 +213,14 @@ serve(async (req) => {
     if (!xmlText && xmlB64) {
       try { xmlText = atob(xmlB64!); xmlSource = xmlSource || "xml_base64"; } catch {}
     }
-    if (!xmlText) return json({ error: "XML não disponível (xml_url ausente/indisponível e xml_base64 vazio)" }, 400);
+    if (!xmlText) return jsonResponse({ error: "XML não disponível (xml_url ausente/indisponível e xml_base64 vazio)" }, 400);
     const modMatch = xmlText.match(/<mod>(\d+)<\/mod>/);
     const cStatMatch = xmlText.match(/<cStat>(\d+)<\/cStat>/);
     const rootNfeProc = /<nfeProc[\s>]/.test(xmlText);
     const rootNFe = /<NFe[\s>]/.test(xmlText);
     console.log("[ML-SUBMIT-XML] xml_inspect", { rid, root_nfeProc: rootNfeProc, root_NFe: rootNFe, xml_mod: (modMatch && modMatch[1]) ? modMatch[1] : null, xml_cStat: (cStatMatch && cStatMatch[1]) ? cStatMatch[1] : null, xml_source: xmlSource });
     if (modMatch && modMatch[1] && modMatch[1] !== "55") {
-      return json({ error: "Somente NFe modelo 55 é suportada", xml_mod: modMatch[1] }, 400);
+      return jsonResponse({ error: "Somente NFe modelo 55 é suportada", xml_mod: modMatch[1] }, 400);
     }
     const meta = extractXmlMeta(xmlText);
     const xmlFileName = meta.nfeNumber ? `nfe_${meta.nfeNumber}.xml` : (meta.nfeKey ? `nfe_${meta.nfeKey}.xml` : "nfe.xml");
@@ -369,7 +312,7 @@ serve(async (req) => {
 
     const shipmentId = await resolveShipmentId(accessToken);
     if (!shipmentId) {
-      return json({ error: "Shipment ID não encontrado para o pedido. Sincronize pedidos/envios antes de enviar NF.", marketplace_order_id: marketplaceOrderId }, 400);
+      return jsonResponse({ error: "Shipment ID não encontrado para o pedido. Sincronize pedidos/envios antes de enviar NF.", marketplace_order_id: marketplaceOrderId }, 400);
     }
     console.log("[ML-SUBMIT-XML] shipment_resolved", { rid, shipmentId, marketplace_order_id: marketplaceOrderId });
 
@@ -380,7 +323,7 @@ serve(async (req) => {
         .select("client_id, client_secret")
         .eq("name", integration.marketplace_name === "mercado_livre" ? "Mercado Livre" : integration.marketplace_name)
         .single();
-      if (!appRow || appErr) return json({ error: "App credentials not found" }, 500);
+      if (!appRow || appErr) return jsonResponse({ error: "App credentials not found" }, 500);
       const refreshTokenPlain = await aesGcmDecryptFromString(aesKey, integration.refresh_token);
       const tokenResp = await fetch("https://api.mercadolibre.com/oauth/token", {
         method: "POST",
@@ -395,7 +338,7 @@ serve(async (req) => {
       const tokenJson = await tokenResp.json();
       console.log("[ML-SUBMIT-XML] token_refresh_resp", { rid, ok: tokenResp.ok, status: tokenResp.status, json_preview: JSON.stringify(tokenJson).slice(0, 512) });
       if (!tokenResp.ok || !tokenJson?.access_token) {
-        return json({ error: "Token refresh failed", meli_response: tokenJson }, 200);
+        return jsonResponse({ error: "Token refresh failed", meli_response: tokenJson }, 200);
       }
       const newAccessEnc = await aesGcmEncryptToString(aesKey, tokenJson.access_token);
       const newRefreshEnc = await aesGcmEncryptToString(aesKey, tokenJson.refresh_token);
@@ -485,10 +428,10 @@ serve(async (req) => {
         marketplace_fiscal_document_id: fiscalId,
       })
       .eq("id", nfRow.id);
-    if (updErr) return json({ ok: false, error: updErr.message, meli: js }, 200);
+    if (updErr) return jsonResponse({ ok: false, error: updErr.message, meli: js }, 200);
     console.log("[ML-SUBMIT-XML] db_update_ok", { rid, nf_id: nfRow.id, status: statusFinal, http_status: resp.status, fiscal_document_id: fiscalId });
 
-    return json({
+    return jsonResponse({
       ok: true,
       status: statusFinal,
       meli: js,
@@ -506,6 +449,6 @@ serve(async (req) => {
   } catch (e: any) {
     const msg = e?.message || "Unknown error";
     console.error("[ML-SUBMIT-XML] error", { message: msg });
-    return json({ error: msg }, 500);
+    return jsonResponse({ error: msg }, 500);
   }
 });

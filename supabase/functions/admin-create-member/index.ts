@@ -1,7 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.50.3";
-
-type Permissions = Record<string, Record<string, boolean>>;
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { buildLimitedPermissions, type Permissions } from "../_shared/domain/user-permissions.ts";
 
 interface CreateMemberPayload {
   email: string;
@@ -18,15 +17,6 @@ interface JsonResponse {
   message?: string;
   data?: any;
   error?: any;
-}
-
-function buildLimitedPermissions(modules: string[] = ["desempenho", "pedidos"]): Permissions {
-  const perms: Permissions = {};
-  for (const m of modules) {
-    // Grant only 'view' action by default
-    perms[m] = { view: true };
-  }
-  return perms;
 }
 
 function toJson(status: number, body: JsonResponse): Response {
@@ -117,11 +107,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   try {
-    const supabaseUrl = envOrThrow("SUPABASE_URL");
-    const serviceRole = envOrThrow("SUPABASE_SERVICE_ROLE_KEY");
-    const supabaseAdmin = createClient(supabaseUrl, serviceRole, {
-      auth: { persistSession: false },
-    });
+    const supabaseAdmin = createAdminClient();
 
     const organizationId = await pickTargetOrganization(supabaseAdmin, organization_id);
     const permissions = buildLimitedPermissions(modules ?? ["desempenho", "pedidos"]);

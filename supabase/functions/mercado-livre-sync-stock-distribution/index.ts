@@ -1,31 +1,16 @@
 // deno-lint-ignore-file no-explicit-any
-import { createClient } from "npm:@supabase/supabase-js@2";
-console.info('server started');
-Deno.serve(async (req)=>{
-  function jsonResponse(body, status = 200) {
-    return new Response(JSON.stringify(body), {
-      status,
-      headers: {
-        "content-type": "application/json",
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, POST, OPTIONS",
-        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type"
-      }
-    });
-  }
-  // AES-GCM helpers (same format as other ML functions)
-  function strToUint8(str) { return new TextEncoder().encode(str); }
-  function uint8ToB64(bytes) { const bin = Array.from(bytes).map((b)=>String.fromCharCode(b)).join(""); return btoa(bin); }
-  function b64ToUint8(b64) { const bin = atob(b64); const bytes = new Uint8Array(bin.length); for(let i = 0; i < bin.length; i++)bytes[i] = bin.charCodeAt(i); return bytes; }
-  async function importAesGcmKey(base64Key) { const keyBytes = b64ToUint8(base64Key); return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, [ "encrypt", "decrypt" ]); }
-  async function aesGcmEncryptToString(key, plaintext) { const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, strToUint8(plaintext)); const ctBytes = new Uint8Array(ct); return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`; }
-  async function aesGcmDecryptFromString(key, encStr) { const parts = encStr.split(":"); if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); const iv = b64ToUint8(parts[2]); const ct = b64ToUint8(parts[3]); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); return new TextDecoder().decode(pt); }
-  function b64UrlToUint8(b64url) { let b64 = b64url.replace(/-/g, "+").replace(/_/g, "/"); const pad = b64.length % 4; if (pad) b64 += "=".repeat(4 - pad); const bin = atob(b64); const bytes = new Uint8Array(bin.length); for(let i = 0; i < bin.length; i++)bytes[i] = bin.charCodeAt(i); return bytes; }
-  function decodeJwtSub(jwt) { try { const parts = jwt.split("."); if (parts.length < 2) return null; const payloadBytes = b64UrlToUint8(parts[1]); const payload = JSON.parse(new TextDecoder().decode(payloadBytes)); return payload?.sub || payload?.user_id || null; } catch  { return null; } }
-  function createLimiter(maxConcurrent) { let active = 0; const queue = []; const next = ()=>{ if (active >= maxConcurrent || queue.length === 0) return; active++; const fn = queue.shift(); fn(); }; const run = async (task)=>{ return await new Promise((resolve, reject)=>{ const start = ()=>{ task().then((v)=>{ active--; next(); resolve(v); }).catch((e)=>{ active--; next(); reject(e); }); }; queue.push(start); next(); }); }; return { run }; }
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString } from "../_shared/adapters/token-utils.ts";
 
+function b64UrlToUint8(b64url: string): Uint8Array { let b64 = b64url.replace(/-/g, "+").replace(/_/g, "/"); const pad = b64.length % 4; if (pad) b64 += "=".repeat(4 - pad); const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
+function decodeJwtSub(jwt: string): string | null { try { const parts = jwt.split("."); if (parts.length < 2) return null; const payloadBytes = b64UrlToUint8(parts[1]); const payload = JSON.parse(new TextDecoder().decode(payloadBytes)); return payload?.sub || payload?.user_id || null; } catch { return null; } }
+function createLimiter(maxConcurrent: number) { let active = 0; const queue: (() => void)[] = []; const next = () => { if (active >= maxConcurrent || queue.length === 0) return; active++; const fn = queue.shift()!; fn(); }; const run = async <T>(task: () => Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => { const start = () => { task().then((v) => { active--; next(); resolve(v); }).catch((e) => { active--; next(); reject(e); }); }; queue.push(start); next(); }); return { run }; }
+
+console.info('server started');
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, x-client-info, apikey, content-type" } });
+    return handleOptions();
   }
   if (req.method !== "POST" && req.method !== "GET") {
     return jsonResponse({ error: "Method not allowed" }, 405);
@@ -40,7 +25,7 @@ Deno.serve(async (req)=>{
     const apiKeyHeader = req.headers.get("apikey") || "";
     const isInternalCall = req.headers.get("x-internal-call") === "1" && !!apiKeyHeader && apiKeyHeader === SERVICE_ROLE_KEY;
     if (!authHeader && !isInternalCall) return jsonResponse({ error: "Missing Authorization header" }, 401);
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    const admin = createAdminClient();
     const url = new URL(req.url);
     let body = null;
     if (req.method === "POST") {

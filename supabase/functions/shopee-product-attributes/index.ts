@@ -1,87 +1,20 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-request-id, x-correlation-id, x-supabase-api-version",
-    },
-  });
-}
-function b64ToUint8(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-async function importAesGcmKey(base64Key: string): Promise<CryptoKey> {
-  const keyBytes = b64ToUint8(base64Key);
-  const keyBuf = keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength);
-  return crypto.subtle.importKey("raw", keyBuf as ArrayBuffer, { name: "AES-GCM" }, false, ["encrypt","decrypt"]);
-}
-async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> {
-  const parts = encStr.split(":");
-  if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format");
-  const iv = b64ToUint8(parts[2]);
-  const ct = b64ToUint8(parts[3]);
-  const ivBuf = iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer;
-  const ctBuf = ct.buffer.slice(ct.byteOffset, ct.byteOffset + ct.byteLength) as ArrayBuffer;
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBuf }, key, ctBuf);
-  return new TextDecoder().decode(pt);
-}
-async function tryDecryptToken(key: CryptoKey, encStr: string): Promise<string> {
-  const s = String(encStr || "");
-  if (!s) return "";
-  try {
-    if (s.startsWith("enc:gcm:")) return await aesGcmDecryptFromString(key, s);
-  } catch (_) {}
-  return s;
-}
-async function hmacSha256Hex(key: string, message: string): Promise<string> {
-  const enc = new TextEncoder();
-  const rawKey = enc.encode(key);
-  const cryptoKey = await crypto.subtle.importKey("raw", rawKey, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
-  const bytes = new Uint8Array(sig);
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex.toUpperCase();
-}
-function getField(obj: unknown, key: string): unknown {
-  if (obj && typeof obj === "object" && key in (obj as Record<string, unknown>)) {
-    return (obj as Record<string, unknown>)[key];
-  }
-  return undefined;
-}
-function getStr(obj: unknown, path: string[]): string | null {
-  let cur: unknown = obj;
-  for (const k of path) {
-    if (!cur || typeof cur !== "object" || !(k in (cur as Record<string, unknown>))) return null;
-    cur = (cur as Record<string, unknown>)[k];
-  }
-  const v = cur as unknown;
-  if (typeof v === "string" && v.trim()) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return null;
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { getField, getStr } from "../_shared/adapters/object-utils.ts";
+import { importAesGcmKey, tryDecryptToken, hmacSha256Hex, aesGcmEncryptToString } from "../_shared/adapters/token-utils.ts";
+import { normalizeLanguage as normalizeLanguageShared } from "../_shared/domain/shopee-language.ts";
+
 function normalizeLanguage(input: string | null): string | null {
-  if (!input) return "pt-BR";
-  const s = String(input).trim().toLowerCase().replace(/_/g, "-");
-  if (s === "pt" || s === "pt-br" || s === "ptbr" || s === "pt-b" || s === "br") return "pt-BR";
-  if (s === "en") return "en";
+  const s = normalizeLanguageShared(input);
   return s === "pt-br" ? "pt-BR" : s;
 }
 serve(async (req) => {
-  if (req.method === "OPTIONS") return jsonResponse(null, 200);
+  if (req.method === "OPTIONS") return handleOptions();
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY");
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ENC_KEY_B64) return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+  if (!ENC_KEY_B64) return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
+  const admin = createAdminClient() as any;
   const aesKey = await importAesGcmKey(ENC_KEY_B64);
   try {
     const correlationId = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || crypto.randomUUID();
@@ -156,11 +89,8 @@ serve(async (req) => {
             accessToken = String(json.access_token);
             refreshTokenPlain = String(json.refresh_token || refreshTokenPlain);
             try {
-              const iv = crypto.getRandomValues(new Uint8Array(12));
-              const ctA = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey, new TextEncoder().encode(accessToken));
-              const ctB = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey, new TextEncoder().encode(refreshTokenPlain));
-              const accEnc = `enc:gcm:${btoa(String.fromCharCode(...iv))}:${btoa(String.fromCharCode(...new Uint8Array(ctA)))}`;
-              const refEnc = `enc:gcm:${btoa(String.fromCharCode(...iv))}:${btoa(String.fromCharCode(...new Uint8Array(ctB)))}`;
+              const accEnc = await aesGcmEncryptToString(aesKey, accessToken);
+              const refEnc = await aesGcmEncryptToString(aesKey, refreshTokenPlain);
               const expiresAtIso = new Date(Date.now() + (Number(json.expire_in) || 14400) * 1000).toISOString();
               await admin.from("marketplace_integrations").update({ access_token: accEnc, refresh_token: refEnc, expires_in: expiresAtIso }).eq("id", integrationId);
             } catch (_) {}

@@ -1,24 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-request-id, x-correlation-id, x-origin",
-    },
-  });
-}
-
-function getField(obj: unknown, key: string): unknown {
-  if (obj && typeof obj === "object" && key in (obj as Record<string, unknown>)) {
-    return (obj as Record<string, unknown>)[key];
-  }
-  return undefined;
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { getStr, getNum } from "../_shared/adapters/object-utils.ts";
+import { parseBrAddress, toIsoFromEpochSec } from "../_shared/domain/shopee-address.ts";
 
 function get(obj: unknown, path: string[]): unknown {
   let cur: unknown = obj;
@@ -27,59 +11,6 @@ function get(obj: unknown, path: string[]): unknown {
     cur = (cur as Record<string, unknown>)[k];
   }
   return cur;
-}
-
-function getStr(obj: unknown, path: string[]): string | null {
-  const v = get(obj, path);
-  if (typeof v === "string" && v.trim()) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return null;
-}
-
-function getNum(obj: unknown, path: string[]): number | null {
-  const v = get(obj, path);
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string") {
-    const s = v.trim();
-    if (!s) return null;
-    const cleaned = s.replace(/[^0-9.,-]+/g, "").replace(",", ".");
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
-function parseBrAddress(addr: string | null): { street_name: string | null; street_number: string | null; neighborhood_name: string | null } {
-  if (!addr) return { street_name: null, street_number: null, neighborhood_name: null };
-  const s = addr.trim();
-  let street_name: string | null = null;
-  let street_number: string | null = null;
-  let neighborhood_name: string | null = null;
-  const cepMatch = s.match(/\b\d{5}-?\d{3}\b/);
-  const cleaned = (cepMatch ? s.replace(cepMatch[0], "") : s).trim();
-  const parts = cleaned.split(/\s*-\s*/);
-  const firstSeg = (parts[0] || cleaned).trim();
-  const m = firstSeg.match(/^(.+?)[, ]+(\d+\w*)/);
-  if (m) {
-    street_name = m[1].trim();
-    street_number = m[2].trim();
-  } else {
-    const m2 = firstSeg.match(/^(.+?)(?:,|$)/);
-    if (m2) street_name = m2[1].trim();
-    const m3 = firstSeg.match(/(\d+\w*)/);
-    if (m3) street_number = m3[1].trim();
-  }
-  const neighSeg = parts.length > 1 ? parts[1] : null;
-  if (neighSeg) neighborhood_name = String(neighSeg).trim();
-  if (neighborhood_name && /\b(cidade|estado|uf)\b/i.test(neighborhood_name)) neighborhood_name = null;
-  return { street_name: street_name || null, street_number: street_number || null, neighborhood_name: neighborhood_name || null };
-}
-
-function toIsoFromEpochSec(s: string | null): string | null {
-  if (!s) return null;
-  const n = Number(s);
-  if (!Number.isFinite(n)) return null;
-  return new Date(n * 1000).toISOString();
 }
 
 function tryParseJson(text: string): unknown {
@@ -143,13 +74,10 @@ function brUfFromState(s: string | null): string | null {
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return jsonResponse(null, 200);
+  if (req.method === "OPTIONS") return handleOptions();
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+  const admin = createAdminClient() as any;
 
   try {
     const correlationId = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || crypto.randomUUID();

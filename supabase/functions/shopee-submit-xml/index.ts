@@ -1,72 +1,26 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString, hmacSha256Hex, b64ToUint8, strToUint8 } from "../_shared/adapters/token-utils.ts";
+
 const SHOPEE_HOST = "https://openplatform.shopee.com.br";
-function json(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
-async function hmacSha256Hex(key: string, data: string): Promise<string> {
-  const enc = new TextEncoder();
-  const k = await crypto.subtle.importKey("raw", enc.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", k, enc.encode(data));
-  const arr = Array.from(new Uint8Array(sig));
-  return arr.map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+
 async function sha256Hex(input: string): Promise<string> {
   const enc = new TextEncoder();
   const buf = await crypto.subtle.digest("SHA-256", enc.encode(input));
   const arr = Array.from(new Uint8Array(buf));
   return arr.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-function b64ToUint8(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-function strToUint8(str: string): Uint8Array { return new TextEncoder().encode(str); }
-function uint8ToB64(bytes: Uint8Array): string { const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join(""); return btoa(bin); }
-async function importAesGcmKey(base64Key: string): Promise<CryptoKey> {
-  const keyBytes = b64ToUint8(base64Key);
-  const keyBuf = keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength);
-  return crypto.subtle.importKey("raw", keyBuf as ArrayBuffer, { name: "AES-GCM" }, false, ["encrypt","decrypt"]);
-}
-async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, strToUint8(plaintext));
-  const ctBytes = new Uint8Array(ct);
-  return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`;
-}
-async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> {
-  const parts = encStr.split(":");
-  if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format");
-  const iv = b64ToUint8(parts[2]);
-  const ct = b64ToUint8(parts[3]);
-  const ivBuf = iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer;
-  const ctBuf = ct.buffer.slice(ct.byteOffset, ct.byteOffset + ct.byteLength) as ArrayBuffer;
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBuf }, key, ctBuf);
-  return new TextDecoder().decode(pt);
-}
 serve(async (req) => {
-  if (req.method === "OPTIONS") return json({}, 200);
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (req.method === "OPTIONS") return handleOptions();
+  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
   try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return json({ error: "Missing service configuration" }, 500);
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+    const admin = createAdminClient() as any;
     const rid = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
     const internalWorker = (req.headers.get("x-internal-worker") || "").toLowerCase() === "queue-consume";
     const authHeaderPresent = !!req.headers.get("Authorization");
     if (!internalWorker && !authHeaderPresent) {
-      return json({ code: 401, message: "Missing authorization header" }, 401);
+      return jsonResponse({ code: 401, message: "Missing authorization header" }, 401);
     }
     const raw = await req.text();
     let body: any = {};
@@ -86,7 +40,7 @@ serve(async (req) => {
     const organizationId: string = String(body?.organizationId || "");
     const companyId: string = String(body?.companyId || "");
     const notaFiscalId: string = String(body?.notaFiscalId || "");
-    if (!organizationId || !companyId || !notaFiscalId) return json({ error: "Missing required fields" }, 200);
+    if (!organizationId || !companyId || !notaFiscalId) return jsonResponse({ error: "Missing required fields" }, 200);
     const { data: nf } = await admin
       .from("notas_fiscais")
       .select("id, marketplace, marketplace_order_id, xml_url, xml_base64, pdf_url, pdf_base64, nfe_number, emissao_ambiente")
@@ -94,11 +48,11 @@ serve(async (req) => {
       .eq("company_id", companyId)
       .limit(1)
       .maybeSingle();
-    if (!nf) return json({ error: "Nota fiscal not found" }, 200);
+    if (!nf) return jsonResponse({ error: "Nota fiscal not found" }, 200);
     const marketplace = String(nf?.marketplace || "").toLowerCase();
-    if (!marketplace.includes("shopee")) return json({ error: "Not a Shopee invoice" }, 200);
+    if (!marketplace.includes("shopee")) return jsonResponse({ error: "Not a Shopee invoice" }, 200);
     const orderSn = String(nf?.marketplace_order_id || "");
-    if (!orderSn) return json({ error: "Missing Shopee order_sn" }, 200);
+    if (!orderSn) return jsonResponse({ error: "Missing Shopee order_sn" }, 200);
     console.log("[SHOPEE-SUBMIT-XML] nf", {
       rid,
       notaFiscalId,
@@ -117,7 +71,7 @@ serve(async (req) => {
       .eq("organizations_id", organizationId)
       .limit(1)
       .maybeSingle();
-    if (!integ) return json({ error: "Shopee integration not found" }, 200);
+    if (!integ) return jsonResponse({ error: "Shopee integration not found" }, 200);
     const shopId = Number(integ?.meli_user_id || 0);
     let accessToken = String(integ?.access_token || "");
     let expiresStr: string | undefined = (integ as any)?.expires_in as string | undefined;
@@ -203,7 +157,7 @@ serve(async (req) => {
         access_token: !accessToken,
       };
       console.warn("[SHOPEE-SUBMIT-XML] missing_credentials", { rid, integration_id: integ?.id || null, organizations_id: integ?.organizations_id || null, missing });
-      return json({ error: "Missing Shopee credentials", rid }, 200);
+      return jsonResponse({ error: "Missing Shopee credentials", rid }, 200);
     }
     console.log("[SHOPEE-SUBMIT-XML] integration", {
       rid,
@@ -288,7 +242,7 @@ serve(async (req) => {
         useFileType = 1;
       }
     }
-    if (!uploadFile) return json({ ok: false, error: "Invoice file not available or exceeds 1MB", rid }, 200);
+    if (!uploadFile) return jsonResponse({ ok: false, error: "Invoice file not available or exceeds 1MB", rid }, 200);
     const form = new FormData();
     form.append("order_sn", orderSn);
     form.append("file_type", String(useFileType));
@@ -348,27 +302,27 @@ serve(async (req) => {
             let retryJson: any = {};
             try { retryJson = retryText ? JSON.parse(retryText) : {}; } catch { retryJson = { raw: retryText }; }
             console.log("[SHOPEE-SUBMIT-XML] retry_response", { rid, status: retryResp.status, ok: retryResp.ok, request_id: (retryJson && retryJson.request_id) || null, body_preview: (retryText || "").slice(0, 512) });
-            if (!retryResp.ok) return json({ ok: false, error: retryJson?.message || retryJson?.error || `HTTP ${retryResp.status}`, error_code: retryJson?.error || null, rid }, 200);
+            if (!retryResp.ok) return jsonResponse({ ok: false, error: retryJson?.message || retryJson?.error || `HTTP ${retryResp.status}`, error_code: retryJson?.error || null, rid }, 200);
             await admin
               .from("notas_fiscais")
               .update({ marketplace_submission_status: "sent" })
               .eq("id", notaFiscalId);
             console.log("[SHOPEE-SUBMIT-XML] success", { rid, order_sn: orderSn });
-            return json({ ok: true, status: "sent", order_sn: orderSn, rid }, 200);
+            return jsonResponse({ ok: true, status: "sent", order_sn: orderSn, rid }, 200);
           }
         } catch (_) {}
       }
-      return json({ ok: false, error: jsonResp?.message || jsonResp?.error || `HTTP ${resp.status}`, error_code: jsonResp?.error || null, rid }, 200);
+      return jsonResponse({ ok: false, error: jsonResp?.message || jsonResp?.error || `HTTP ${resp.status}`, error_code: jsonResp?.error || null, rid }, 200);
     }
     await admin
       .from("notas_fiscais")
       .update({ marketplace_submission_status: "sent" })
       .eq("id", notaFiscalId);
     console.log("[SHOPEE-SUBMIT-XML] success", { rid, order_sn: orderSn });
-    return json({ ok: true, status: "sent", order_sn: orderSn, rid }, 200);
+    return jsonResponse({ ok: true, status: "sent", order_sn: orderSn, rid }, 200);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[SHOPEE-SUBMIT-XML] exception", { error: msg });
-    return json({ ok: false, error: msg }, 500);
+    return jsonResponse({ ok: false, error: msg }, 500);
   }
 });

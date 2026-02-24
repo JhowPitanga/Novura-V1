@@ -1,44 +1,9 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function jsonResponse(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-request-id, x-correlation-id, x-origin, x-meli-signature",
-    },
-  });
-}
-
-function b64ToUint8(b64: string): Uint8Array { 
-  const bin = atob(b64); 
-  const bytes = new Uint8Array(bin.length); 
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); 
-  return bytes; 
-}
-
-function uint8ToB64(bytes: Uint8Array): string { 
-  const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join(""); 
-  return btoa(bin); 
-}
-
-async function importAesGcmKey(base64Key: string): Promise<CryptoKey> { 
-  const keyBytes = b64ToUint8(base64Key); 
-  return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt","decrypt"]); 
-}
-
-async function aesGcmDecryptFromString(key: CryptoKey, encStr: string): Promise<string> { 
-  const parts = encStr.split(":"); 
-  if (parts.length !== 4 || parts[0] !== "enc" || parts[1] !== "gcm") throw new Error("Invalid token format"); 
-  const iv = b64ToUint8(parts[2]); 
-  const ct = b64ToUint8(parts[3]); 
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); 
-  return new TextDecoder().decode(pt); 
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString, uint8ToB64 } from "../_shared/adapters/token-utils.ts";
+import { normalizeOrderNumbers } from "../_shared/domain/mercado-livre-orders.ts";
 
 // Utilitário: extrair ID de recurso (robusto para variações de caminho)
 function extractResourceId(resource: string, kind: "items" | "orders"): string | null {
@@ -60,39 +25,8 @@ function extractResourceId(resource: string, kind: "items" | "orders"): string |
   return null;
 }
 
-// Utilitário: cifrar texto com AES-GCM para armazenar tokens atualizados
-async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext));
-  const ivStr = btoa(String.fromCharCode(...iv));
-  const ctStr = btoa(String.fromCharCode(...new Uint8Array(ct)));
-  return `enc:gcm:${ivStr}:${ctStr}`;
-}
-
-function normalizeOrderNumbers(order: any): any {
-  try {
-    const o = JSON.parse(JSON.stringify(order));
-    const toNumOrDelete = (obj: any, key: string) => {
-      if (!obj || typeof obj !== "object" || !(key in obj)) return;
-      const v = obj[key];
-      if (typeof v === "number" && Number.isFinite(v)) return;
-      if (typeof v === "string" && /^\d+$/.test(v)) { obj[key] = Number(v); return; }
-      try { delete obj[key]; } catch {}
-    };
-    if (o && o.buyer) toNumOrDelete(o.buyer, "id");
-    toNumOrDelete(o, "pack_id");
-    if (o && o.data) {
-      toNumOrDelete(o.data, "pack_id");
-      if (o.data.buyer) toNumOrDelete(o.data.buyer, "id");
-    }
-    return o;
-  } catch (_) {
-    return order;
-  }
-}
-
 serve(async (req) => {
-  if (req.method === "OPTIONS") return jsonResponse(null, 200);
+  if (req.method === "OPTIONS") return handleOptions();
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
@@ -103,7 +37,7 @@ serve(async (req) => {
     return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
   }
 
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+  const admin = createAdminClient();
   const aesKey = await importAesGcmKey(ENC_KEY_B64);
 
   try {

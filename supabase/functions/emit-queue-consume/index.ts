@@ -1,5 +1,6 @@
-import { serve } from "https://deno.land/std@0.223.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.46.1";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { jsonResponse as json, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
 
 type QueueRow = {
   id: string;
@@ -26,17 +27,6 @@ type ConsumeRequest = {
 
 const BATCH_SIZE_DEFAULT = 80;
 
-function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -49,9 +39,8 @@ serve(async (req) => {
   const rid = crypto.randomUUID();
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
   const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-  const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY);
+  const admin = createAdminClient();
 
   try {
     const body = (await req.json().catch(() => ({}))) as ConsumeRequest;

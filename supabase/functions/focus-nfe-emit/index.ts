@@ -1,21 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function json(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
-
-function digits(s: string | null | undefined): string {
-  return String(s || "").replace(/\D/g, "");
-}
+import { jsonResponse as json, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { digits, mapDomainStatus } from "../_shared/domain/focus-status.ts";
 
 function toNumberOrNull(v: any): number | null {
   const n = Number(v);
@@ -30,16 +16,6 @@ function isCpf(s: string | null | undefined): boolean {
 function isCnpj(s: string | null | undefined): boolean {
   const v = digits(s);
   return v.length === 14;
-}
-
-function mapDomainStatus(s: string | null | undefined): string {
-  const v = String(s || "").trim().toLowerCase();
-  const norm = v.replace(/[^a-z]/g, "");
-  if (norm === "autorizado" || norm === "autorizada") return "autorizada";
-  if (norm === "rejeitado" || norm === "rejeitada") return "rejeitada";
-  if (norm === "denegado" || norm === "denegada") return "denegada";
-  if (norm === "cancelado" || norm === "cancelada") return "cancelada";
-  return "pendente";
 }
 
 function arrayBufferToBase64(ab: ArrayBuffer): string {
@@ -93,15 +69,13 @@ serve(async (req) => {
         console.log(JSON.stringify(entry));
       } catch (_) {}
     };
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const FOCUS_TOKEN = Deno.env.get("FOCUS_API_TOKEN");
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !FOCUS_TOKEN) {
+    if (!FOCUS_TOKEN) {
       log("config_error");
       return json({ error: "Missing service configuration" }, 500);
     }
 
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+    const admin = createAdminClient() as any;
     const authHeader = req.headers.get("Authorization") || "";
     const token = authHeader.replace("Bearer ", "");
     let user: any = null;

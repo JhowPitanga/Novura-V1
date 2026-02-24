@@ -1,53 +1,10 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-request-id, x-correlation-id, x-origin, x-internal-call",
-    },
-  });
-}
-
-function get(obj: unknown, path: string[]): unknown {
-  let cur: unknown = obj;
-  for (const k of path) {
-    if (!cur || typeof cur !== "object" || !(k in (cur as Record<string, unknown>))) return undefined;
-    cur = (cur as Record<string, unknown>)[k];
-  }
-  return cur;
-}
-
-function getStr(obj: unknown, path: string[]): string | null {
-  const v = get(obj, path);
-  if (typeof v === "string" && v.trim()) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return null;
-}
-
-function getNum(obj: unknown, path: string[]): number | null {
-  const v = get(obj, path);
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string") {
-    const s = v.trim();
-    if (!s) return null;
-    const cleaned = s.replace(/[^0-9.,-]+/g, "").replace(",", ".");
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { getField, getStr, getNum, getArr } from "../_shared/adapters/object-utils.ts";
 
 function tryParseJson(text: string): unknown {
   try { return JSON.parse(text); } catch (_) { return null; }
-}
-
-function arr(obj: unknown): any[] {
-  return Array.isArray(obj) ? obj as any[] : [];
 }
 
 function sanitizeUrl(u: string | null): string | null {
@@ -97,16 +54,10 @@ serve(async (req) => {
     };
     try { console.log("mercado-livre-process-presented inbound", { correlationId: preCorrId, method: req.method, url: req.url, headers: hdrLog }); } catch (_) {}
   } catch (_) {}
-  if (req.method === "OPTIONS") return jsonResponse(null, 200);
+  if (req.method === "OPTIONS") return handleOptions();
   if (req.method !== "POST" && req.method !== "GET") return jsonResponse({ ok: false, error: "Method not allowed" }, 405);
 
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
-    try { console.error("mercado-livre-process-presented config_missing", { SUPABASE_URL_present: !!SUPABASE_URL, SERVICE_ROLE_KEY_present: !!SERVICE_ROLE_KEY }); } catch (_) {}
-    return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
-  }
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
+  const admin = createAdminClient() as any;
 
   try {
     const correlationId = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || crypto.randomUUID();
@@ -201,7 +152,7 @@ serve(async (req) => {
       if (varId) hasVariations = true;
       if (getStr(oi, ["bundle"])) hasBundle = true;
       if (getStr(oi, ["kit_instance_id"])) hasKit = true;
-      const vAttrs = arr(get(oi, ["item","variation_attributes"]));
+      const vAttrs = getArr(oi, ["item","variation_attributes"]) || [];
       for (const va of vAttrs) {
         const name = getStr(va, ["name"]) || "";
         const val = getStr(va, ["value_name"]) || "";
@@ -305,7 +256,7 @@ serve(async (req) => {
       if (st === "cancelled") isCancelled = true;
       if (st === "refunded") isRefunded = true;
     }
-    const refundedAmount = getNum(get(data, ["refunds"]) as any, ["0","amount"]) ?? null;
+    const refundedAmount = getNum(data, ["refunds","0","amount"]) ?? null;
 
     const printedLabel = shipmentSubstatus === "printed";
     const printedSchedule = null;
@@ -385,20 +336,20 @@ serve(async (req) => {
     const lastUpdatedIso = rec.last_updated || null;
     const orderTotal = getNum(data, ["total_amount"]) ?? null;
 
-    const receiverObj = (get(rec.billing_info, ["receiver"]) as any) || null;
-    const shipmentsBil = arr(get(rec.billing_info, ["shipments"]));
+    const receiverObj = (getField(rec.billing_info, "receiver") as any) || null;
+    const shipmentsBil = getArr(rec.billing_info, ["shipments"]) || [];
     const receiverFallback = (() => {
       for (const bi of shipmentsBil) {
-        const r1 = get(bi, ["receiver"]);
+        const r1 = getField(bi, "receiver");
         if (r1 && typeof r1 === "object") return r1;
-        const r2 = get(bi, ["receiver_tax"]);
+        const r2 = getField(bi, "receiver_tax");
         if (r2 && typeof r2 === "object") return r2;
       }
       return null;
     })();
     const receiver = receiverObj || receiverFallback;
     const billingDocumentObj = (() => {
-      const d = get(receiver, ["document"]);
+      const d = getField(receiver, "document");
       return d && typeof d === "object" ? (d as any) : null;
     })();
     const billingDocNumber =
@@ -436,7 +387,7 @@ serve(async (req) => {
       customerName ||
       null;
     const billingAddressObj = (() => {
-      const a = get(receiver, ["address"]);
+      const a = getField(receiver, "address");
       return a && typeof a === "object" ? a as any : null;
     })();
 
@@ -572,7 +523,7 @@ serve(async (req) => {
           model_sku_externo: (getStr(oi, ["item","seller_sku"]) || getStr(oi, ["seller_sku"]) || "").trim() || null,
           model_id_externo: (getStr(oi, ["item","variation_id"]) || getStr(oi, ["item","id"]) || getStr(oi, ["item_id"]) || getStr(oi, ["id"]) || "").trim() || null,
           variation_name: (() => {
-            const vAttrs = arr(get(oi, ["item","variation_attributes"]));
+            const vAttrs = getArr(oi, ["item","variation_attributes"]) || [];
             const cor = vAttrs.find((v: any) => (getStr(v, ["name"]) || "").toLowerCase() === "cor");
             return cor ? (getStr(cor, ["value_name"]) || null) : null;
           })(),
@@ -592,7 +543,7 @@ serve(async (req) => {
           model_sku_externo: (getStr(oi, ["item","seller_sku"]) || getStr(oi, ["seller_sku"]) || "").trim() || null,
           model_id_externo: (getStr(oi, ["item","variation_id"]) || getStr(oi, ["item","id"]) || getStr(oi, ["item_id"]) || getStr(oi, ["id"]) || "").trim() || null,
           variation_name: (() => {
-            const vAttrs = arr(get(oi, ["item","variation_attributes"]));
+            const vAttrs = getArr(oi, ["item","variation_attributes"]) || [];
             const cor = vAttrs.find((v: any) => (getStr(v, ["name"]) || "").toLowerCase() === "cor");
             return cor ? (getStr(cor, ["value_name"]) || null) : null;
           })(),

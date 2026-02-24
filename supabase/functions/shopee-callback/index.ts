@@ -1,19 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-// --- Utilitários ---
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { getField } from "../_shared/adapters/object-utils.ts";
+import { importAesGcmKey, aesGcmEncryptToString, hmacSha256Hex } from "../_shared/adapters/token-utils.ts";
 
 function htmlPostMessageSuccess(siteUrl: string, payload: unknown) {
   const origin = (() => { try { return new URL(siteUrl).origin; } catch (_) { return "*"; } })();
@@ -21,72 +10,8 @@ function htmlPostMessageSuccess(siteUrl: string, payload: unknown) {
   return new Response(html, { status: 200, headers: { "content-type": "text/html" } });
 }
 
-function b64ToUint8(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-function strToUint8(str: string): Uint8Array {
-  return new TextEncoder().encode(str);
-}
-
-function uint8ToB64(bytes: Uint8Array): string {
-  const bin = Array.from(bytes).map((b) => String.fromCharCode(b)).join("");
-  return btoa(bin);
-}
-
-// Criptografia AES-GCM
-async function importAesGcmKey(base64Key: string): Promise<CryptoKey> {
-  const keyBytes = b64ToUint8(base64Key);
-  const keyBuf = keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength);
-  return crypto.subtle.importKey("raw", keyBuf as ArrayBuffer, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-}
-
-async function aesGcmEncryptToString(key: CryptoKey, plaintext: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ptBytes = strToUint8(plaintext);
-  const ptBuf = ptBytes.buffer.slice(ptBytes.byteOffset, ptBytes.byteOffset + ptBytes.byteLength) as ArrayBuffer;
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, ptBuf);
-  const ctBytes = new Uint8Array(ct);
-  return `enc:gcm:${uint8ToB64(iv)}:${uint8ToB64(ctBytes)}`;
-}
-
-// Assinatura HMAC-SHA256 (Retorna minúsculas conforme doc Shopee)
-async function hmacSha256Hex(key: string, message: string): Promise<string> {
-  const enc = new TextEncoder();
-  const rawKey = enc.encode(key);
-  const cryptoKey = await crypto.subtle.importKey("raw", rawKey, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
-  const bytes = new Uint8Array(sig);
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) {
-    const h = bytes[i].toString(16).padStart(2, "0");
-    hex += h;
-  }
-  return hex;
-}
-
-function getField(obj: unknown, key: string): unknown {
-  if (obj && typeof obj === "object" && key in (obj as Record<string, unknown>)) {
-    return (obj as Record<string, unknown>)[key];
-  }
-  return undefined;
-}
-
-// --- Servidor Principal ---
-
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, POST, OPTIONS",
-        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-      },
-    });
-  }
+  if (req.method === "OPTIONS") return handleOptions();
 
   try {
     const correlationId = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
@@ -123,14 +48,8 @@ serve(async (req) => {
     const storeName: string | null = state?.storeName ?? null;
     const connectedByUserId: string | null = state?.connectedByUserId ?? null;
 
-    // Configuração Supabase
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
+    const admin = createAdminClient() as any;
 
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY) as any;
-
-    // Configuração Criptografia
     const ENC_KEY = Deno.env.get("TOKENS_ENCRYPTION_KEY") || "";
     if (!ENC_KEY) return jsonResponse({ error: "Missing TOKENS_ENCRYPTION_KEY" }, 500);
     const aesKey = await importAesGcmKey(ENC_KEY);

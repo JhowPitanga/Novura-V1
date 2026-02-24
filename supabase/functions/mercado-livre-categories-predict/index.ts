@@ -1,27 +1,12 @@
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { importAesGcmKey, aesGcmDecryptFromString } from "../_shared/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { importAesGcmKey, aesGcmDecryptFromString } from "../_shared/adapters/token-utils.ts";
 
-function jsonResponse(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    },
-  });
-}
-
-serve(async (req) => {
-  if (req.method === "OPTIONS") return jsonResponse(null, 200);
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return handleOptions();
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY") || undefined;
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return jsonResponse({ error: "Missing service configuration" }, 500);
 
   try {
     const body = await req.json();
@@ -30,7 +15,7 @@ serve(async (req) => {
     const title: string = body?.title || "";
     if (!organizationId || !title) return jsonResponse({ error: "organizationId and title required" }, 400);
 
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    const admin = createAdminClient();
     let aesKey: CryptoKey | null = null;
     if (ENC_KEY_B64) {
       try { aesKey = await importAesGcmKey(ENC_KEY_B64); } catch { aesKey = null; }
@@ -79,7 +64,7 @@ serve(async (req) => {
       }
       domainResults = Array.isArray(ddJson) ? ddJson : [];
     } catch {}
-    // Fallback sem Authorization e caminho alternativo com site_id
+    // Fallback without Authorization and alternative path with site_id
     if (!domainResults || domainResults.length === 0) {
       try {
         const ddUrl2 = `https://api.mercadolibre.com/domain_discovery/search?q=${encodeURIComponent(title)}&site_id=${encodeURIComponent(siteId)}&limit=6`;
