@@ -95,6 +95,14 @@ const App = () => (
               }
             />
             <Route
+              path="/login"
+              element={
+                <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                  <Login />
+                </Suspense>
+              }
+            />
+            <Route
               path="/cadastro"
               element={
                 <Suspense fallback={<div className="p-6">Carregando...</div>}>
