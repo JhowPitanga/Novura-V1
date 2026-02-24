@@ -420,7 +420,7 @@ export function parseOrderRow(o: any): any {
 
 /** Fetch all orders for an organization. Returns raw parsed order objects. */
 export async function fetchAllOrders(orgId: string): Promise<any[]> {
-  let q = (supabase as any)
+  const q = (supabase as any)
     .from("marketplace_orders_presented_new")
     .select(ORDERS_SELECT_FIELDS)
     .eq('organizations_id', orgId);

@@ -95,7 +95,7 @@ export function useLinkOrderStorage(
                 anunciosParaVincular.forEach((anuncio) => {
                     const pid = vinculacoes[anuncio.id];
                     if (!pid) return;
-                    const available = stockMap.hasOwnProperty(pid) ? stockMap[pid] : null;
+                    const available = Object.hasOwn(stockMap, pid) ? stockMap[pid] : null;
                     next[anuncio.id] = { available, required: anuncio.quantidade };
                 });
                 setInsufficientMap(next);

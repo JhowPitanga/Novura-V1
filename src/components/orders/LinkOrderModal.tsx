@@ -211,7 +211,7 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
             try {
                 const { data: orgResX } = await supabase.rpc('get_current_user_organization_id');
                 const orgIdX = Array.isArray(orgResX) ? orgResX?.[0] : orgResX;
-                let resolvedOrgId: string | null = orgIdX ? String(orgIdX) : null;
+                const resolvedOrgId: string | null = orgIdX ? String(orgIdX) : null;
 
                 const { data: authUserData } = await supabase.auth.getUser();
                 const uid = authUserData?.user?.id;

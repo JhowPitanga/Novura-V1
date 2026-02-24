@@ -14,21 +14,10 @@ export interface OrderDetailsDrawerProps {
 }
 
 export function OrderDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipment }: OrderDetailsDrawerProps) {
-    if (!pedido) return null;
-
     const contentRef = useRef<HTMLDivElement | null>(null);
     const titleId = useId();
     const descriptionId = useId();
     const [copiadoPedido, setCopiadoPedido] = useState(false);
-    const shippingLabel = (() => {
-        const s = String((pedido as any)?.tipoEnvio || '').toLowerCase();
-        if (s === 'full') return 'Full';
-        if (s === 'flex') return 'Flex';
-        if (s === 'envios') return 'Envios';
-        if (s === 'correios') return 'Correios';
-        if (s === 'no_shipping') return 'Sem Envio';
-        return s ? s : '—';
-    })();
 
     useEffect(() => {
         if (open) {
@@ -36,7 +25,11 @@ export function OrderDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipme
             if (activeEl && !contentRef.current?.contains(activeEl)) {
                 activeEl.blur();
             }
-            try { contentRef.current && (contentRef.current.scrollTop = 0); } catch {}
+            try {
+                if (contentRef.current) {
+                    contentRef.current.scrollTop = 0;
+                }
+            } catch {}
             setTimeout(() => {
                 const autofocusEl = contentRef.current?.querySelector<HTMLElement>("[data-autofocus]");
                 const firstFocusable =
@@ -52,6 +45,18 @@ export function OrderDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipme
             }, 0);
         }
     }, [open]);
+
+    if (!pedido) return null;
+
+    const shippingLabel = (() => {
+        const s = String((pedido as any)?.tipoEnvio || '').toLowerCase();
+        if (s === 'full') return 'Full';
+        if (s === 'flex') return 'Flex';
+        if (s === 'envios') return 'Envios';
+        if (s === 'correios') return 'Correios';
+        if (s === 'no_shipping') return 'Sem Envio';
+        return s ? s : '—';
+    })();
 
     // Os cálculos financeiros agora são realizados dentro de PedidoDetails usando pedido.financeiro
 
