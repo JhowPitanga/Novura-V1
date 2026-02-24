@@ -1,57 +1,56 @@
-import { useState, useEffect, useCallback } from "react";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { supabase } from '@/integrations/supabase/client';
-import { useToast } from "@/hooks/use-toast";
-import { Paginacao } from "./Paginacao";
-import { formatDateSP } from "@/lib/datetime";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useSearchParams } from "react-router-dom";
-import { Printer, Settings } from "lucide-react";
-import { ConfiguracoesImpressaoModal } from './ConfiguracoesImpressaoModal';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useToast } from "@/hooks/use-toast";
 import { usePrintingSettings } from "@/hooks/usePrintingSettings";
+import { formatDateSP } from "@/lib/datetime";
+import { Printer, Settings } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { ConfiguracoesImpressaoModal } from './ConfiguracoesImpressaoModal';
+import { Paginacao } from "./Paginacao";
 
 interface OrderItem {
-  product_name: string;
-  quantity: number;
-  sku: string;
+  product_name: string;
+  quantity: number;
+  sku: string;
 }
 
 interface NfeData {
-  nfe_number: string;
-  nfe_key: string;
-  nfe_xml_url: string;
+  nfe_number: string;
+  nfe_key: string;
+  nfe_xml_url: string;
 }
 
 interface OrderData {
-  id: string;
-  marketplace_order_id: string;
-  customer_name: string;
-  order_total: number;
-  status: string;
-  created_at: string;
-  order_items: OrderItem[];
-  marketplace: string;
-  nfe_data: NfeData;
+  id: string;
+  marketplace_order_id: string;
+  customer_name: string;
+  order_total: number;
+  status: string;
+  created_at: string;
+  order_items: OrderItem[];
+  marketplace: string;
+  nfe_data: NfeData;
 }
 
 interface ImpressaoListaProps {
-  onOpenDetalhesPedido: (pedidoId: string) => void;
+  onOpenDetalhesPedido: (pedidoId: string) => void;
 }
 
 export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
-  const [pedidos, setPedidos] = useState<OrderData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [searchParams] = useSearchParams();
-  const { toast } = useToast();
-  const { settings, loading: settingsLoading, refetch: refetchSettings } = usePrintingSettings();
+  const [pedidos, setPedidos] = useState<OrderData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchParams] = useSearchParams();
+  const { toast } = useToast();
+  const { settings, loading: settingsLoading, refetch: refetchSettings } = usePrintingSettings();
 
-  const page = parseInt(searchParams.get('page') || '1');
-  const limit = 10;
-  const offset = (page - 1) * limit;
+  const page = parseInt(searchParams.get('page') || '1');
+  const limit = 10;
+  const offset = (page - 1) * limit;
 
-  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
 
   const fetchPedidos = useCallback(async () => {
     setLoading(true);
@@ -94,7 +93,7 @@ export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
           }
         }
       ];
-      
+
       setPedidos(mockData);
     } catch (error: any) {
       console.error("Erro ao buscar pedidos para impressão:", error);
@@ -109,23 +108,23 @@ export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
     }
   }, [limit, offset, toast]);
 
-  useEffect(() => {
-    fetchPedidos();
-  }, [fetchPedidos]);
+  useEffect(() => {
+    fetchPedidos();
+  }, [fetchPedidos]);
 
   const handleImprimir = async (pedido: OrderData) => {
     console.log('>>> Botão "Imprimir" clicado para o pedido:', pedido.id);
     console.log('>>> Estado das configurações:', settings);
     console.log('>>> Estado de carregamento das configurações:', settingsLoading);
-    
+
     if (settingsLoading) {
       toast({ title: "Aguarde", description: "Carregando configurações de impressão...", variant: "default" });
       return;
     }
 
     if (!settings) {
-        toast({ title: "Erro", description: "Configurações de impressão não carregadas.", variant: "destructive" });
-        return;
+      toast({ title: "Erro", description: "Configurações de impressão não carregadas.", variant: "destructive" });
+      return;
     }
 
     toast({
@@ -136,7 +135,7 @@ export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
     // Generate PDF content based on print type
     const isZebraPrint = settings.print_type === 'Impressão Zebra';
     const isDanfeSimplificada = settings.label_format === 'Imprimir etiqueta com DANFE SIMPLIFICADA';
-    
+
     const pdfContent = `
       <!DOCTYPE html>
       <html>
@@ -317,7 +316,7 @@ export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
     if (newWindow) {
       newWindow.document.write(pdfContent);
       newWindow.document.close();
-      
+
       // Auto-trigger print dialog after content loads
       newWindow.onload = () => {
         setTimeout(() => {
@@ -350,10 +349,10 @@ export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
     }
   };
 
-  const totalPedidos = 8;
+  const totalPedidos = 8;
 
-  return (
-    <div className="space-y-4">
+  return (
+    <div className="space-y-4">
       <div className="flex justify-end space-x-2">
         <Button
           variant="outline"
@@ -365,60 +364,60 @@ export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
         </Button>
       </div>
 
-      {loading || settingsLoading ? (
-        <div className="space-y-4">
-          {[...Array(limit)].map((_, index) => (
-            <div key={index} className="bg-background rounded-lg p-4 shadow-sm flex items-center space-x-4">
-              <Skeleton className="h-16 w-16 rounded-full" />
-              <div className="flex-1 space-y-2">
-                <Skeleton className="h-4 w-[250px]" />
-                <Skeleton className="h-4 w-[200px]" />
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : pedidos.length === 0 ? (
-        <div className="text-center text-muted-foreground py-10">
-          Nenhum pedido encontrado para impressão.
-        </div>
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[100px]">ID Pedido</TableHead>
-              <TableHead>Itens</TableHead>
-              <TableHead>Marketplace</TableHead>
-              <TableHead>NF-e</TableHead>
-              <TableHead>Ações</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {pedidos.map((pedido) => (
-              <TableRow key={pedido.id}>
-                <TableCell className="font-medium">
-                  <span className="block text-sm font-bold text-foreground">{pedido.marketplace_order_id}</span>
+      {loading || settingsLoading ? (
+        <div className="space-y-4">
+          {[...Array(limit)].map((_, index) => (
+            <div key={index} className="bg-background rounded-lg p-4 shadow-sm flex items-center space-x-4">
+              <Skeleton className="h-16 w-16 rounded-full" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-4 w-[250px]" />
+                <Skeleton className="h-4 w-[200px]" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : pedidos.length === 0 ? (
+        <div className="text-center text-muted-foreground py-10">
+          Nenhum pedido encontrado para impressão.
+        </div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-[100px]">ID Pedido</TableHead>
+              <TableHead>Itens</TableHead>
+              <TableHead>Marketplace</TableHead>
+              <TableHead>NF-e</TableHead>
+              <TableHead>Ações</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {pedidos.map((pedido) => (
+              <TableRow key={pedido.id}>
+                <TableCell className="font-medium">
+                  <span className="block text-sm font-bold text-foreground">{pedido.marketplace_order_id}</span>
                   <span className="block text-xs text-muted-foreground">{formatDateSP(pedido.created_at)}</span>
-                </TableCell>
-                <TableCell>
-                  {pedido.order_items?.map((item, index) => (
-                    <div key={index} className="text-sm">
-                      {item.quantity}x {item.product_name} ({item.sku})
-                    </div>
-                  ))}
-                </TableCell>
-                <TableCell>
-                  <Badge variant="secondary">{pedido.marketplace}</Badge>
-                </TableCell>
-                <TableCell>
-                    {pedido.nfe_data ? (
-                        <div className="text-sm">
-                            <span className="block font-bold">NF-e: #{pedido.nfe_data.nfe_number}</span>
-                            <span className="block text-xs text-muted-foreground">Chave: {pedido.nfe_data.nfe_key}</span>
-                        </div>
-                    ) : (
-                        <span className="text-sm text-destructive">NF não encontrada</span>
-                    )}
-                </TableCell>
+                </TableCell>
+                <TableCell>
+                  {pedido.order_items?.map((item, index) => (
+                    <div key={index} className="text-sm">
+                      {item.quantity}x {item.product_name} ({item.sku})
+                    </div>
+                  ))}
+                </TableCell>
+                <TableCell>
+                  <Badge variant="secondary">{pedido.marketplace}</Badge>
+                </TableCell>
+                <TableCell>
+                  {pedido.nfe_data ? (
+                    <div className="text-sm">
+                      <span className="block font-bold">NF-e: #{pedido.nfe_data.nfe_number}</span>
+                      <span className="block text-xs text-muted-foreground">Chave: {pedido.nfe_data.nfe_key}</span>
+                    </div>
+                  ) : (
+                    <span className="text-sm text-destructive">NF não encontrada</span>
+                  )}
+                </TableCell>
                 <TableCell>
                   <div className="flex space-x-2">
                     <Button
@@ -435,21 +434,21 @@ export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
                   </div>
                 </TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-      <Paginacao
-        totalItems={totalPedidos}
-        limit={limit}
-        currentPage={page}
-      />
+            ))}
+          </TableBody>
+        </Table>
+      )}
+      <Paginacao
+        totalItems={totalPedidos}
+        limit={limit}
+        currentPage={page}
+      />
 
-      <ConfiguracoesImpressaoModal
-        open={isConfigModalOpen}
-        onClose={() => setIsConfigModalOpen(false)}
-        onSettingsSaved={refetchSettings}
-      />
-    </div>
-  );
+      <ConfiguracoesImpressaoModal
+        open={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        onSettingsSaved={refetchSettings}
+      />
+    </div>
+  );
 }

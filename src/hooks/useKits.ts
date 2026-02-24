@@ -81,7 +81,7 @@ export function useKits() {
 
       const kitsWithItems = await Promise.all(
         (kitProducts || []).map(async (kit) => {
-          let kitItemsQuery = supabase
+          const kitItemsQuery = supabase
             .from('product_kits')
             .select(`
               id,
@@ -120,7 +120,7 @@ export function useKits() {
               }
             }));
           } else {
-            let fallbackQuery = supabase
+            const fallbackQuery = supabase
               .from('product_kit_items')
               .select(`
                 id,

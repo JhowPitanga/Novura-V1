@@ -65,7 +65,7 @@ export function StorageManagementDrawer({
       // Sync isDefault with localStorage
       try {
         const lsId = typeof window !== "undefined" ? localStorage.getItem("defaultStorageId") : null;
-        setIsDefault(!!lsId && (!!existingStorage ? lsId === existingStorage.id : false));
+        setIsDefault(!!lsId && (existingStorage ? lsId === existingStorage.id : false));
       } catch (_) {
         setIsDefault(false);
       }
