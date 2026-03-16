@@ -262,9 +262,10 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
             let marketplaceName: string | null = null;
             let marketplaceOrderIdStr: string | null = null;
 
+            // Resolve order from orders table (by id or marketplace_order_id)
             {
                 const { data: pres1 } = await (supabase as any)
-                    .from('marketplace_orders_presented_new')
+                    .from('orders')
                     .select('id, marketplace, marketplace_order_id')
                     .eq('id', pedidoId)
                     .maybeSingle();
@@ -274,7 +275,7 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                     marketplaceOrderIdStr = String(pres1.marketplace_order_id || '');
                 } else {
                     const { data: pres2 } = await (supabase as any)
-                        .from('marketplace_orders_presented_new')
+                        .from('orders')
                         .select('id, marketplace, marketplace_order_id')
                         .eq('marketplace_order_id', pedidoId)
                         .maybeSingle();
@@ -286,55 +287,37 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                 }
             }
 
+            // Update order_items.product_id (order_items has order_id, marketplace_item_id; no has_unlinked_items)
             const ops = linkedItems.map((li) => {
                 const ref = anunciosParaVincular.find((a) => a.id === li.anuncioId);
                 return (async () => {
                     let updErrMsg: string | null = null;
-                    if (ref?.rowId) {
+                    if (ref?.rowId && presentedNewId) {
                         const upd = await (supabase as any)
-                            .from('marketplace_order_items')
-                            .update({ linked_products: li.productId, has_unlinked_items: false })
-                            .eq('row_id', ref.rowId)
-                            .select('row_id, id, linked_products, has_unlinked_items')
+                            .from('order_items')
+                            .update({ product_id: li.productId })
+                            .eq('id', ref.rowId)
+                            .select('id, product_id')
                             .maybeSingle();
-                        if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por row_id');
+                        if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por id');
                     } else if (li.variationId && presentedNewId) {
                         const upd = await (supabase as any)
-                            .from('marketplace_order_items')
-                            .update({ linked_products: li.productId, has_unlinked_items: false })
-                            .eq('id', presentedNewId)
-                            .eq('model_id_externo', li.variationId)
-                            .select('row_id, id, linked_products, has_unlinked_items')
-                            .maybeSingle();
+                            .from('order_items')
+                            .update({ product_id: li.productId })
+                            .eq('order_id', presentedNewId)
+                            .eq('marketplace_item_id', li.variationId)
+                            .select('id, product_id');
                         if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por variation_id');
                     } else {
                         updErrMsg = 'Item sem referência para atualização';
                     }
                     if (updErrMsg) {
                         toast({ title: 'Falha na vinculação', description: updErrMsg, variant: 'destructive' });
-                        await (supabase as any)
-                            .from('marketplace_orders_presented_new')
-                            .update({ has_unlinked_items: true })
-                            .or(`id.eq.${presentedNewId || pedidoId},marketplace_order_id.eq.${pedidoId}`);
                     }
                 })();
             }).filter(Boolean) as Promise<any>[];
 
             if (ops.length > 0) await Promise.all(ops);
-
-            if (presentedNewId) {
-                const { data: aggRows } = await (supabase as any)
-                    .from('marketplace_order_items')
-                    .select('linked_products, has_unlinked_items')
-                    .eq('id', presentedNewId);
-                const orderHasUnlinked = Array.isArray(aggRows)
-                    ? aggRows.some((r: any) => r?.has_unlinked_items === true || !String(r?.linked_products || '').trim())
-                    : false;
-                await (supabase as any)
-                    .from('marketplace_orders_presented_new')
-                    .update({ has_unlinked_items: orderHasUnlinked })
-                    .eq('id', presentedNewId);
-            }
 
             if (presentedNewId) {
                 const itemsForRpc = linkedItems.map((li) => ({

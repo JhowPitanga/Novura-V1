@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { getStr } from "../_shared/adapters/object-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { getStr } from "../_shared/adapters/infra/object-utils.ts";
 
 function tryParseJson(text: string): unknown {
   try { return JSON.parse(text); } catch (_) { return null; }

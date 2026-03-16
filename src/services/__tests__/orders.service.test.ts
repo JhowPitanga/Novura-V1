@@ -264,8 +264,8 @@ describe("updateOrdersInternalStatus", () => {
 
     await updateOrdersInternalStatus(["order-1"], "Processando NF");
 
-    expect(mockFrom).toHaveBeenCalledWith("marketplace_orders_presented_new");
-    expect(mockUpdate).toHaveBeenCalledWith({ status_interno: "Processando NF" });
+    expect(mockFrom).toHaveBeenCalledWith("orders");
+    expect(mockUpdate).toHaveBeenCalledWith({ status: "Processando NF" });
   });
 
   it("does nothing for empty array", async () => {

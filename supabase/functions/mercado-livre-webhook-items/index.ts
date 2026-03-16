@@ -1,8 +1,8 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString } from "../_shared/adapters/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString } from "../_shared/adapters/infra/token-utils.ts";
 
 // Utilitário: extrair ID de recurso (robusto para variações de caminho)
 function extractResourceId(resource: string, kind: "items" | "orders"): string | null {

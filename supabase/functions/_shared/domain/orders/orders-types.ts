@@ -1,0 +1,75 @@
+/**
+ * Canonical order types for Cycle 0. Used by _shared/orders-normalize (ML/Shopee) and orders-upsert.
+ * status = internal (seller workflow). marketplace_status = marketplace canonical status.
+ */
+
+export type MarketplaceType = "mercado_livre" | "shopee";
+
+export interface NormalizedOrderItem {
+  marketplace_item_id: string;
+  sku: string | null;
+  title: string;
+  quantity: number;
+  unit_price: number;
+  variation_name: string | null;
+  image_url: string | null;
+}
+
+export interface NormalizedOrderShipping {
+  shipment_id: string | null;
+  logistic_type: string | null;
+  tracking_number: string | null;
+  carrier: string | null;
+  status: string | null;
+  substatus: string | null;
+  street_name: string | null;
+  street_number: string | null;
+  complement: string | null;
+  neighborhood: string | null;
+  city: string | null;
+  state_uf: string | null;
+  zip_code: string | null;
+  sla_expected_date: string | null;
+  sla_status: string | null;
+  estimated_delivery: string | null;
+}
+
+export interface NormalizedOrder {
+  marketplace: MarketplaceType;
+  marketplace_order_id: string;
+  pack_id: string | null;
+  /** Internal seller workflow status (e.g. printed | picked | linked | dispatched). */
+  status: string | null;
+  /** Marketplace canonical status (ML/Shopee as-is). */
+  marketplace_status: string;
+  payment_status: string | null;
+  gross_amount: number;
+  marketplace_fee: number;
+  shipping_cost: number;
+  shipping_subsidy: number;
+  net_amount: number;
+  buyer_name: string | null;
+  buyer_document: string | null;
+  buyer_email: string | null;
+  buyer_phone: string | null;
+  buyer_state: string | null;
+  created_at: string;
+  shipped_at: string | null;
+  delivered_at: string | null;
+  canceled_at: string | null;
+  items: NormalizedOrderItem[];
+  shipping: NormalizedOrderShipping | null;
+}
+
+export interface UpsertOrderInput {
+  organization_id: string;
+  order: NormalizedOrder;
+  source: "webhook" | "sync";
+}
+
+export interface UpsertOrderResult {
+  success: boolean;
+  order_id: string | null;
+  created: boolean;
+  error?: string;
+}

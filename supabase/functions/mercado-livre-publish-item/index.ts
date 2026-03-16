@@ -1,7 +1,10 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { importAesGcmKey, aesGcmDecryptFromString, checkAndRefreshToken, b64ToUint8 } from "../_shared/adapters/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { getMlAccessToken } from "../_shared/adapters/tokens/ml-token.ts";
+import { SupabaseMarketplaceIntegrationsAdapter } from "../_shared/adapters/integrations/marketplace-integrations-adapter.ts";
+import { SupabaseAppCredentialsAdapter } from "../_shared/adapters/integrations/app-credentials-adapter.ts";
+import { b64ToUint8 } from "../_shared/adapters/infra/token-utils.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return handleOptions();
@@ -23,7 +26,8 @@ serve(async (req) => {
     if (!organizationId) return jsonResponse({ error: "organizationId required", rid }, 400);
 
     const admin = createAdminClient();
-    const aesKey = await importAesGcmKey(ENC_KEY_B64);
+    const integrations = new SupabaseMarketplaceIntegrationsAdapter(admin);
+    const appCredentials = new SupabaseAppCredentialsAdapter(admin);
 
     let integration: any = null;
     if (integrationId) {
@@ -47,18 +51,8 @@ serve(async (req) => {
       integration = data;
     }
 
-    let accessToken: string | null = null;
-    const initial = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
-    if (initial.success && initial.accessToken) {
-      accessToken = initial.accessToken;
-    } else {
-      try {
-        accessToken = await aesGcmDecryptFromString(aesKey, integration.access_token);
-      } catch (e) {
-        const raw = integration.access_token;
-        if (typeof raw === "string" && !raw.startsWith("enc:")) accessToken = raw; else return jsonResponse({ error: `Failed to decrypt access token: ${String(e)}`, rid }, 500);
-      }
-    }
+    const getToken = () => getMlAccessToken(integrations, appCredentials, String(integration.id), ENC_KEY_B64);
+    let accessToken: string = (await getToken()).accessToken;
 
     const buildHeaders = (token: string) => ({ Authorization: `Bearer ${token}`, "content-type": "application/json", Accept: "application/json" });
     let variationPictureIds: string[][] = [];
@@ -75,11 +69,9 @@ serve(async (req) => {
             let upResp = await fetch("https://api.mercadolibre.com/pictures/items/upload", { method: "POST", headers: { Authorization: `Bearer ${String(accessToken)}` }, body: fd });
             let upJson = await upResp.json();
             if (!upResp.ok && (upResp.status === 401 || upResp.status === 403)) {
-              const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
-              if (refreshed.success && refreshed.accessToken) {
-                upResp = await fetch("https://api.mercadolibre.com/pictures/items/upload", { method: "POST", headers: { Authorization: `Bearer ${refreshed.accessToken}` }, body: fd });
-                upJson = await upResp.json();
-              }
+              const refreshed = await getToken();
+              upResp = await fetch("https://api.mercadolibre.com/pictures/items/upload", { method: "POST", headers: { Authorization: `Bearer ${refreshed.accessToken}` }, body: fd });
+              upJson = await upResp.json();
             }
             const picId = upJson?.id ? String(upJson.id) : null;
             if (picId) ids.push(picId);
@@ -130,11 +122,9 @@ serve(async (req) => {
     let createResp = await fetch("https://api.mercadolibre.com/items", { method: "POST", headers: buildHeaders(String(accessToken)), body: JSON.stringify(payload || {}) });
     let createJson = await createResp.json();
     if (!createResp.ok && (createResp.status === 401 || createResp.status === 403)) {
-      const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
-      if (refreshed.success && refreshed.accessToken) {
-        createResp = await fetch("https://api.mercadolibre.com/items", { method: "POST", headers: buildHeaders(refreshed.accessToken), body: JSON.stringify(payload || {}) });
-        createJson = await createResp.json();
-      }
+      const refreshed = await getToken();
+      createResp = await fetch("https://api.mercadolibre.com/items", { method: "POST", headers: buildHeaders(refreshed.accessToken), body: JSON.stringify(payload || {}) });
+      createJson = await createResp.json();
     }
     if (!createResp.ok) return jsonResponse({ error: "Failed to publish item", rid, meli: createJson }, createResp.status || 400);
 
@@ -182,11 +172,9 @@ serve(async (req) => {
             let catResp = await fetch(`https://api.mercadolibre.com/categories/${categoryId}/shipping_preferences`, { headers: { Authorization: `Bearer ${String(accessToken)}`, Accept: "application/json" } });
             let catJson: any = null; try { catJson = await catResp.json(); } catch { catJson = {}; }
             if (!catResp.ok && (catResp.status === 401 || catResp.status === 403)) {
-              const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
-              if (refreshed.success && refreshed.accessToken) {
-                catResp = await fetch(`https://api.mercadolibre.com/categories/${categoryId}/shipping_preferences`, { headers: { Authorization: `Bearer ${refreshed.accessToken}`, Accept: "application/json" } });
-                try { catJson = await catResp.json(); } catch { catJson = {}; }
-              }
+              const refreshed = await getToken();
+              catResp = await fetch(`https://api.mercadolibre.com/categories/${categoryId}/shipping_preferences`, { headers: { Authorization: `Bearer ${refreshed.accessToken}`, Accept: "application/json" } });
+              try { catJson = await catResp.json(); } catch { catJson = {}; }
             }
             const logisticsArr = Array.isArray(catJson?.logistics) ? catJson.logistics : [];
             const typesSet = new Set<string>((logisticsArr.flatMap((e: any) => Array.isArray(e?.types) ? e.types : []) || []).map((t: any) => String(t?.type || t)));
@@ -198,11 +186,9 @@ serve(async (req) => {
           let chkResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { headers: { Authorization: `Bearer ${String(accessToken)}`, Accept: "application/json" } });
           let chkJson: any = null; try { chkJson = await chkResp.json(); } catch { chkJson = {}; }
           if (!chkResp.ok && (chkResp.status === 401 || chkResp.status === 403)) {
-            const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
-            if (refreshed.success && refreshed.accessToken) {
-              chkResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { headers: { Authorization: `Bearer ${refreshed.accessToken}`, Accept: "application/json" } });
-              try { chkJson = await chkResp.json(); } catch { chkJson = {}; }
-            }
+            const refreshed = await getToken();
+            chkResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { headers: { Authorization: `Bearer ${refreshed.accessToken}`, Accept: "application/json" } });
+            try { chkJson = await chkResp.json(); } catch { chkJson = {}; }
           }
           hasFlex = !!chkJson?.has_flex;
         } catch {}
@@ -211,10 +197,8 @@ serve(async (req) => {
             try {
               let actResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "POST", headers: { Authorization: `Bearer ${String(accessToken)}` } });
               if (!actResp.ok && (actResp.status === 401 || actResp.status === 403)) {
-                const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
-                if (refreshed.success && refreshed.accessToken) {
-                  actResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "POST", headers: { Authorization: `Bearer ${refreshed.accessToken}` } });
-                }
+                const refreshed = await getToken();
+                actResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "POST", headers: { Authorization: `Bearer ${refreshed.accessToken}` } });
               }
               if (actResp.status === 204) flexAction = "enabled"; else { flexError = { status: actResp.status }; }
             } catch (e) { flexError = String(e); }
@@ -226,10 +210,8 @@ serve(async (req) => {
             try {
               let delResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "DELETE", headers: { Authorization: `Bearer ${String(accessToken)}` } });
               if (!delResp.ok && (delResp.status === 401 || delResp.status === 403)) {
-                const refreshed = await checkAndRefreshToken(admin as any, aesKey, String(integration.id));
-                if (refreshed.success && refreshed.accessToken) {
-                  delResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "DELETE", headers: { Authorization: `Bearer ${refreshed.accessToken}` } });
-                }
+                const refreshed = await getToken();
+                delResp = await fetch(`https://api.mercadolibre.com/flex/sites/${siteId}/items/${itemId}/v2`, { method: "DELETE", headers: { Authorization: `Bearer ${refreshed.accessToken}` } });
               }
               if (delResp.status === 204) flexAction = "disabled"; else { flexError = { status: delResp.status }; }
             } catch (e) { flexError = String(e); }
