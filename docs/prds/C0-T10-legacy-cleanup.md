@@ -62,19 +62,51 @@ From `docs/DATABASE_TRIGGERS.md` and `docs/TRIGGER_MIGRATION_PLAN.md`:
 before executing any database command.**
 
 The agent's role in this task is:
-1. Read the relevant files and produce the SQL commands to run
-2. Present the SQL to the human for review
-3. Wait for explicit confirmation
-4. Only execute after confirmation
+1. Read the relevant files and verify current state
+2. Produce the exact SQL commands to run
+3. Present the SQL to the human for review
+4. Wait for explicit confirmation ("yes, run it")
+5. Only execute after confirmation
 
 Do NOT auto-execute DROP TRIGGER or DROP TABLE commands. Present them first.
+
+### 🚨 STOP FIRST — Verify Prerequisites and Current State
+
+```bash
+# Confirm frontend no longer references old table
+grep -r "marketplace_orders_presented_new" src/
+# Expected: zero results. If any found → C0-T9 is incomplete. Stop here.
+
+# Check which of the 6 target triggers actually exist (some may already be dropped)
+# Run in Supabase SQL editor:
+```
+```sql
+SELECT trigger_name, event_object_table
+FROM information_schema.triggers
+WHERE trigger_name IN (
+  'on_marketplace_orders_raw_change_new',
+  'trg_presented_new_items_refresh_insert',
+  'trg_presented_new_linked_products_refresh',
+  'trg_marketplace_orders_presented_new_stock_flow',
+  'trg_marketplace_orders_presented_new_inventory_on_cancel',
+  'trg_mipl_refresh_presented'
+);
+```
+
+Present this list to the human reviewer. Only include triggers that **exist** in the migration SQL —
+remove `DROP TRIGGER IF EXISTS` entries for triggers already gone (this makes the migration diff cleaner).
+
+```bash
+# Check if any DROP TRIGGER migration already exists for these targets
+grep -r "DROP TRIGGER" supabase/migrations/ | grep -E "on_marketplace_orders_raw|trg_presented_new|trg_mipl_refresh"
+```
 
 **Before doing anything:**
 - [ ] Confirm C0-T9 is complete — `grep -r "marketplace_orders_presented_new" src/` returns zero results
 - [ ] Read `docs/DATABASE_TRIGGERS.md` in full
 - [ ] Read `docs/TRIGGER_MIGRATION_PLAN.md` in full
 - [ ] Read all migrations in `supabase/migrations/` that contain "DROP TRIGGER" — confirm none of the targets below have already been dropped
-- [ ] Verify the new pipeline is working in production:
+- [ ] Verify the new pipeline is working in production (run in Supabase SQL editor):
   - `SELECT COUNT(*) FROM orders` > 0
   - `SELECT COUNT(*) FROM order_items` > 0
   - Orders list in the app is loading from new tables (confirmed in C0-T9)

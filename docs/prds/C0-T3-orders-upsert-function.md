@@ -55,6 +55,25 @@ from the wrong folder: `../orders-upsert/orders-upsert-adapter.ts`.
 
 ## 3. ⚠️ Agent: Mandatory Code Review Before Writing Any Code
 
+### 🚨 STOP FIRST — Check If This Is Already Done
+
+```bash
+# Check if the import path in the facade already points to _shared
+grep "orders-upsert-adapter" supabase/functions/orders-upsert/upsert-order.ts
+```
+
+- If output is `../orders-upsert/orders-upsert-adapter.ts` → C0-T2 is not done yet. **Do C0-T2 first.**
+- If output is `../_shared/adapters/orders-upsert/` (or similar) → Section A is already done. Check Section B (tests) and C (smoke test) only.
+- If `upsert-order.ts` doesn't exist → the whole function needs review; read `index.ts` first.
+
+Also confirm C0-T2 delivered the file:
+```bash
+ls supabase/functions/_shared/adapters/orders-upsert/orders-upsert-adapter.ts
+```
+If that file does NOT exist: **stop here and complete C0-T2 first**. This task depends on it.
+
+---
+
 - [ ] Confirm C0-T2 is complete — `_shared/adapters/orders-upsert/orders-upsert-adapter.ts` must exist before touching this task.
 - [ ] Read `orders-upsert/upsert-order.ts` — confirm it imports `OrdersUpsertAdapter` from `../orders-upsert/orders-upsert-adapter.ts` (the old path).
 - [ ] Read `orders-upsert/index.ts` — confirm it calls `upsertOrder()` from `./upsert-order.ts`.
@@ -137,8 +156,10 @@ import { OrdersUpsertAdapter } from '../_shared/adapters/orders-upsert/index.ts'
 
 Then delete `orders-upsert/orders-upsert-adapter.ts` (the original file).
 
-> **Check before deleting:** Confirm no other file imports from `orders-upsert/orders-upsert-adapter.ts`
-> by grepping the entire `supabase/functions/` directory. Only delete after all references are updated.
+> **Check before deleting:** Run `grep -r "orders-upsert/orders-upsert-adapter" supabase/functions/`
+> and confirm zero results. Only delete after all references are updated. Also run
+> `deno check supabase/functions/orders-upsert/index.ts` and confirm zero errors
+> before deleting — this confirms the new import path resolves correctly.
 
 #### Definition of Done — Section A
 - [ ] `orders-upsert/upsert-order.ts` imports `OrdersUpsertAdapter` from `_shared`
@@ -198,8 +219,28 @@ curl -X POST https://<your-project>.supabase.co/functions/v1/orders-upsert \
       "shipping_cost": 8.00,
       "shipping_subsidy": 0,
       "net_amount": 80.00,
-      "items": [{ "title": "Test Product", "quantity": 1, "unit_price": 100.00 }],
-      "shipping": null
+      "buyer_name": "João Silva",
+      "buyer_document": "123.456.789-00",
+      "buyer_email": "joao@example.com",
+      "buyer_state": "SP",
+      "items": [
+        {
+          "title": "Test Product",
+          "sku": "SKU-001",
+          "quantity": 1,
+          "unit_price": 100.00,
+          "unit_cost": null
+        }
+      ],
+      "shipping": {
+        "tracking_number": null,
+        "carrier": null,
+        "state_uf": "SP",
+        "city": "São Paulo",
+        "zip_code": "01310-100",
+        "street": "Av. Paulista",
+        "number": "1000"
+      }
     }
   }'
 

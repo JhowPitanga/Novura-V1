@@ -55,6 +55,26 @@ From reading `supabase/functions/orders-webhook/index.ts`:
 
 ## 3. ⚠️ Agent: Mandatory Code Review Before Writing Any Code
 
+### 🚨 STOP FIRST — Check What's Missing
+
+```bash
+# Check which type files the webhook is trying to import
+grep "import" supabase/functions/orders-webhook/index.ts | grep "_shared/domain"
+
+# Check if the type files exist
+ls supabase/functions/_shared/domain/ml/ml-order-notification.types.ts 2>/dev/null && echo "ML TYPES: EXISTS" || echo "ML TYPES: MISSING"
+ls supabase/functions/_shared/domain/shopee/shopee-order-push.types.ts 2>/dev/null && echo "SHOPEE TYPES: EXISTS" || echo "SHOPEE TYPES: MISSING"
+```
+
+Then run the type checker to see ALL missing imports at once:
+```bash
+deno check supabase/functions/orders-webhook/index.ts
+```
+
+Any `error[ERR_MODULE_NOT_FOUND]` lines in the output = files you need to create. Note them before writing anything.
+
+---
+
 - [ ] Confirm C0-T2 and C0-T3 are done.
 - [ ] Read `orders-webhook/index.ts` in full.
 - [ ] Run `deno check supabase/functions/orders-webhook/index.ts`.
@@ -259,6 +279,9 @@ After Section A:
 - [ ] Confirm the function handles CORS preflight (`OPTIONS` → 204 with correct headers)
 - [ ] Confirm Shopee signature validation uses `SHOPEE_LIVE_PUSH_PARTNER_KEY` from env
       and is skipped (accept all) when the env var is absent (development mode)
+      > ⚠️ **Security check:** The dev-mode bypass (skip validation when env var absent) must
+      > NEVER reach production. Confirm `SHOPEE_LIVE_PUSH_PARTNER_KEY` is set in Supabase project
+      > secrets before deploying. If it's missing in production, anyone can POST fake Shopee webhooks.
 
 ---
 

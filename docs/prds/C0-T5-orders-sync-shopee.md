@@ -56,6 +56,23 @@ From reading `supabase/functions/orders-sync-shopee/index.ts`:
 
 ## 3. ⚠️ Agent: Mandatory Code Review Before Writing Any Code
 
+### 🚨 STOP FIRST — Check Current State
+
+```bash
+# Check if the main blocker already exists
+ls supabase/functions/_shared/adapters/shopee/shopee-fetch-orders.ts 2>/dev/null && echo "EXISTS" || echo "MISSING"
+```
+
+- If `EXISTS` → read it in full; check which methods are implemented; run `deno check`. May only need Section B (import fix) and tests.
+- If `MISSING` → Section A is the main build. Continue reading below.
+
+```bash
+# Check for any import errors in the main function
+grep "shopee-fetch-orders\|ShopeeFetchOrdersAdapter" supabase/functions/orders-sync-shopee/index.ts
+```
+
+---
+
 Complete ALL of these before writing anything:
 
 - [ ] Confirm C0-T2 and C0-T3 are done.
@@ -209,9 +226,12 @@ into private helpers.
 
 #### Signature Helper (reference)
 
+`hmacSha256Hex` uses the WebCrypto API and is **async** — always `await` it:
+
 ```typescript
 // Build the HMAC signature required by all Shopee API calls
-private buildSignature(
+// Note: async because hmacSha256Hex uses WebCrypto (async in Deno)
+private async buildSignature(
   partnerId: string,
   apiPath: string,
   timestamp: number,
@@ -220,9 +240,13 @@ private buildSignature(
   partnerKey: string
 ): Promise<string> {
   const baseString = `${partnerId}${apiPath}${timestamp}${accessToken}${shopId}`
-  return hmacSha256Hex(partnerKey, baseString)
+  return await hmacSha256Hex(partnerKey, baseString)
 }
 ```
+
+> ⚠️ **Failure mode:** If you forget `await` on `hmacSha256Hex`, the signature will be a
+> `Promise` object instead of a hex string. The Shopee API will reject all requests with a
+> signature error. Always `await` async crypto operations.
 
 #### Definition of Done — Section A
 - [ ] `_shared/adapters/shopee/shopee-fetch-orders.ts` exists

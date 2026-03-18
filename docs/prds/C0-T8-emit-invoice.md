@@ -55,6 +55,24 @@ built on top of the new `invoices` table.
 
 ## 3. ⚠️ Agent: Mandatory Code Review Before Writing Any Code
 
+### 🚨 STOP FIRST — Verify Prerequisites
+
+```bash
+# Confirm the invoices table migration exists
+ls supabase/migrations/*invoices* 2>/dev/null || echo "MISSING invoices migration"
+
+# Confirm focus-nfe-emit exists (you will call this, not rewrite it)
+ls supabase/functions/focus-nfe-emit/index.ts 2>/dev/null && echo "EXISTS" || echo "MISSING"
+
+# Confirm the _shared invoices adapter doesn't already exist
+ls supabase/functions/_shared/adapters/invoices/ 2>/dev/null && echo "EXISTS" || echo "MISSING"
+```
+
+If `_shared/adapters/invoices/` already exists: read the files before building anything.
+You may only need to write the `emit-invoice/index.ts` handler.
+
+---
+
 - [ ] Confirm C0-T3 is complete (the `invoices` table must exist).
 - [ ] Read `supabase/migrations/20260301_000005_create_invoices_table.sql` in full.
       Record: column names, the idempotency key format, the status CHECK constraint values.
@@ -125,10 +143,15 @@ Step 3: UPSERT invoices row with status = 'queued'
   (onConflict: idempotency_key → update payload_sent, updated_at only)
   NEVER call Focus before this step succeeds.
 
-Step 4: Call focus-nfe-emit with the NFe payload
-  → On success: UPDATE invoices SET status = 'processing', focus_id = result.ref
-  → On error: UPDATE invoices SET status = 'error', error_message = ...,
-              retry_count = retry_count + 1
+Step 4: Call focus-nfe-emit via HTTP (internal Supabase function-to-function call)
+  DO NOT import it — call it via fetch() to the internal function URL.
+  The URL pattern: Deno.env.get('SUPABASE_URL') + '/functions/v1/focus-nfe-emit'
+  Use service role key as Authorization: Bearer token.
+  → On success (HTTP 200 with { ok: true, ref }):
+      UPDATE invoices SET status = 'processing', focus_id = result.ref
+  → On HTTP error or { ok: false }:
+      UPDATE invoices SET status = 'error', error_message = ...,
+      retry_count = retry_count + 1
   → On error AND retry_count was already 4 (now 5): SET status = 'error' (final)
 
 Step 5: Return response
@@ -174,7 +197,7 @@ export interface InvoiceRow {
   emission_environment: 'producao' | 'homologacao'
   retry_count: number
   error_message: string | null
-  payload_sent: unknown
+  payload_sent: FocusNfePayload | null  // typed — import FocusNfePayload from its definition file
 }
 
 export interface CreateInvoiceInput {
@@ -186,7 +209,7 @@ export interface CreateInvoiceInput {
   marketplace: string | null
   marketplace_order_id: string | null
   total_value: number | null
-  payload_sent: unknown
+  payload_sent: FocusNfePayload   // typed — import from the Focus payload types file
 }
 
 export interface InvoicesPort {
@@ -249,17 +272,34 @@ export { InvoicesAdapter } from './invoices-adapter.ts'
 **File:** `supabase/functions/emit-invoice/index.ts`
 
 ```typescript
+// NFe payload shape expected by the Focus API (read focus-nfe-emit/index.ts to confirm all fields)
+// Add or adjust fields after reading that function — do NOT guess the shape.
+interface FocusNfePayload {
+  natureza_operacao: string       // e.g. "Venda de mercadoria"
+  data_emissao: string            // ISO8601 date
+  tipo_documento: number          // 1 = NF-e
+  finalidade_emissao: number      // 1 = Normal
+  local_destino: number           // 1 = intrastate, 2 = interstate
+  cfop: string                    // e.g. "5.102" or "6.102"
+  emitente: FocusEmitente         // company data — define after reading focus-nfe-emit
+  destinatario: FocusDestinatario // buyer data — define after reading focus-nfe-emit
+  items: FocusNfeItem[]           // line items — define after reading focus-nfe-emit
+  // ... additional fields documented in focus-nfe-emit/index.ts
+}
+
 // Input
 interface EmitInvoiceInput {
   organization_id: string
   order_id: string
   company_id: string
   emission_environment: 'producao' | 'homologacao'
-  payload: object        // the full NFe payload to send to Focus
+  payload: FocusNfePayload        // typed — read focus-nfe-emit/index.ts to complete the interface
   marketplace?: string
   marketplace_order_id?: string
   total_value?: number
 }
+// ⚠️ Complete FocusNfePayload, FocusEmitente, FocusDestinatario, FocusNfeItem interfaces
+// by reading supabase/functions/focus-nfe-emit/index.ts before implementing. Do not use `any`.
 
 // Output (HTTP 200 always — even on business error — to prevent retry loops)
 interface EmitInvoiceResult {

@@ -3,7 +3,7 @@
 **Cycle:** 0 — Plataforma de Pedidos
 **Status:** 🟡 In Progress — code exists, one import path issue + edge cases to verify
 **Depends on:** [C0-T3 — `orders-upsert`](./C0-T3-orders-upsert-function.md)
-**Blocks:** [C0-T9 — Legacy Cleanup](./C0-T9-legacy-cleanup.md)
+**Blocks:** [C0-T7 — Queue Worker](./C0-T7-orders-queue-worker.md), [C0-T9 — Legacy Cleanup](./C0-T9-legacy-cleanup.md)
 
 ---
 
@@ -56,6 +56,25 @@ import { OrdersUpsertAdapter } from '../_shared/adapters/orders-upsert/index.ts'
 ---
 
 ## 3. ⚠️ Agent: Mandatory Code Review Before Writing Any Code
+
+### 🚨 STOP FIRST — Check If This Is Already Done
+
+```bash
+# Check if the import path issue still exists
+grep "orders-upsert/orders-upsert-adapter" supabase/functions/orders-sync-ml/index.ts
+```
+
+- If the grep returns a match → Section A still needs to be done.
+- If the grep returns nothing → import path is already fixed. Check `deno check` passes and move on to Sections B and C.
+
+```bash
+# Confirm _shared adapter exists (prerequisite from C0-T2)
+ls supabase/functions/_shared/adapters/orders-upsert/orders-upsert-adapter.ts
+```
+
+If C0-T2 is not done, the correct import path doesn't exist yet. **Do C0-T2 and C0-T3 first.**
+
+---
 
 - [ ] Confirm C0-T2 and C0-T3 are complete first.
 - [ ] Read `orders-sync-ml/index.ts` in full.

@@ -55,25 +55,62 @@ folder, but it belongs in `_shared` so that it can be reused and tested in isola
 **Do not write a single line of code until you have done all of the following.**
 Update the checkboxes as you complete each step.
 
+### 🚨 STOP FIRST — Check If This Is Already Done
+
+Run this check BEFORE reading anything else:
+
+```bash
+ls supabase/functions/_shared/adapters/orders-upsert/
+```
+
+- **If the directory exists with `orders-upsert-adapter.ts` inside:** Read the file.
+  If it correctly implements `OrdersUpsertPort` with the 4-step algorithm — mark this task 🟢 Done and stop.
+  Do not rewrite working code. Proceed to C0-T3.
+- **If the directory does not exist:** Continue with the full code review below.
+- **If the directory exists but the implementation is incomplete or in the wrong location:** Note what is missing, then implement only the gaps.
+
+**The goal of this task is to MOVE existing code to the right place, not to rewrite it from scratch.**
+If `orders-upsert/orders-upsert-adapter.ts` exists and implements the correct algorithm,
+your job is to move it — not write a new implementation.
+
 ### 3.1 — Read the Interface Contract
 
 - [ ] Read `supabase/functions/_shared/ports/orders-upsert-port.ts` in full.
       Record: what method signatures are declared? What types does it expect?
 - [ ] Read `supabase/functions/_shared/domain/orders/orders-types.ts` in full.
       Record: what does `NormalizedOrder`, `UpsertOrderInput`, `UpsertOrderResult` look like?
+      **Important:** The adapter MUST use these exact types — do not define local duplicates.
 - [ ] Read `supabase/functions/_shared/adapters/infra/supabase-client.ts`.
-      Record: how are admin Supabase clients created? Use the same pattern — do not invent a new one.
+      Record: how are admin Supabase clients created? The adapter needs an ADMIN client (bypasses RLS).
+      Regular clients (with user JWT) will fail with permission errors on most tables.
+      Use the pattern in this file — do not import from `@supabase/supabase-js` directly.
 
 ### 3.2 — Find What Already Exists
 
-- [ ] Check if `supabase/functions/_shared/adapters/orders-upsert/` exists.
+- [ ] Check if `supabase/functions/_shared/adapters/orders-upsert/` exists:
+      ```bash
+      ls supabase/functions/_shared/adapters/orders-upsert/ 2>/dev/null || echo "DOES NOT EXIST"
+      ```
       If it does, read every file inside it. Note what is implemented and what is missing.
-- [ ] Read `supabase/functions/orders-upsert/orders-upsert-adapter.ts` (if it exists).
-      Note: this file may contain the implementation we need to MOVE to `_shared`, not rewrite.
+
+- [ ] Check `supabase/functions/orders-upsert/orders-upsert-adapter.ts`:
+      ```bash
+      ls supabase/functions/orders-upsert/
+      ```
+      If `orders-upsert-adapter.ts` exists there, read it fully.
+      **This is likely the code to MOVE to `_shared`, not a file to leave in place.**
+
 - [ ] Read `supabase/functions/orders-upsert/index.ts`.
-      Note: what does the edge function currently do? Does it call a shared adapter or inline the logic?
+      Note: does it import from `./orders-upsert-adapter.ts` or from `../_shared/`?
+
 - [ ] Read `supabase/functions/orders-upsert/upsert-order.ts` (if it exists).
-      Note: is this the core logic? Can it be promoted to `_shared`?
+      Note: is this a facade that calls the adapter? If so, it stays — only the adapter moves.
+
+- [ ] Check for any other files importing from the old path:
+      ```bash
+      grep -r "orders-upsert/orders-upsert-adapter" supabase/functions/
+      ```
+      Every file returned by this grep will need its import updated after you move the adapter.
 
 ### 3.3 — Check the Database
 
@@ -86,11 +123,13 @@ Update the checkboxes as you complete each step.
 - [ ] Read `docs/ENGINEERING_STANDARDS.md` sections 1 (Size Limits), 2 (SOLID), 4 (OOP), 6 (Edge Function Rules).
 - [ ] Read `docs/CYCLE_0_ORDERS_PLATFORM.md` section "Function 3: orders-upsert" (lines ~557–622).
       This contains the exact algorithm required — do not deviate from it.
+- [ ] Read `supabase/functions/_shared/adapters/orders-raw/marketplace-orders-raw.ts` as the
+      reference implementation showing how adapter classes are structured in this codebase.
 
 ### 3.5 — Update the Status
 
 After completing the review, update section 2 above with what you actually found.
-If the implementation already exists and is correct, mark this task 🟢 Done and stop.
+If the implementation already exists in `_shared` and is correct, mark this task 🟢 Done and stop.
 Do not rewrite working code.
 
 ---

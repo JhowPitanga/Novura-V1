@@ -59,6 +59,26 @@ import { OrdersUpsertAdapter } from '../_shared/adapters/orders-upsert/index.ts'
 
 ## 3. ⚠️ Agent: Mandatory Code Review Before Writing Any Code
 
+### 🚨 STOP FIRST — Check Current State
+
+```bash
+# Check if import path issue still exists
+grep "orders-upsert/orders-upsert-adapter" supabase/functions/orders-queue-worker/index.ts
+
+# Check if fetchOneOrderDetail exists (needed by Shopee branch)
+grep "fetchOneOrderDetail" supabase/functions/_shared/adapters/shopee/shopee-fetch-orders.ts 2>/dev/null || echo "METHOD MISSING or FILE MISSING"
+
+# Check if pg_cron job already exists
+# (run in Supabase SQL editor, not bash)
+# SELECT jobname FROM cron.job WHERE jobname = 'orders-queue-worker';
+```
+
+- If `grep` returns nothing for import path → Section A is already done. Move to B.
+- If `fetchOneOrderDetail` is missing → C0-T5 is incomplete; complete it before this task.
+- Check `supabase/migrations/` for any existing cron migration before creating a new one.
+
+---
+
 - [ ] Confirm C0-T2, C0-T3, C0-T5, C0-T6 are done.
 - [ ] Read `orders-queue-worker/index.ts` in full. Confirm the import path issue on line 29.
 - [ ] Read `_shared/adapters/shopee/shopee-fetch-orders.ts` — confirm `fetchOneOrderDetail()` exists.

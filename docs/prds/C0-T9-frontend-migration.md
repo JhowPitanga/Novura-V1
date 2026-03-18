@@ -43,6 +43,39 @@ The frontend currently reads from `marketplace_orders_presented_new` through:
 
 ## 3. ⚠️ Agent: Mandatory Code Review Before Writing Any Code
 
+### 🚨 STOP FIRST — Verify New Tables Have Data
+
+Before changing any frontend code, confirm the new tables are populated:
+
+```bash
+# Find all references to the old table in frontend code
+grep -r "marketplace_orders_presented_new" src/
+```
+
+The number of results is your work queue — fix every one of them.
+
+Also check the migration file to understand ALL columns in the old table
+(the field mapping in Section 4 is a starting point, not complete):
+```bash
+ls supabase/migrations/*materialize*presented* 2>/dev/null || \
+  ls supabase/migrations/*presented_new* 2>/dev/null
+```
+
+Read that migration file to find columns not covered in the Section 4 mapping below.
+Build a complete mapping before writing any service code.
+
+**Database verification** (run in Supabase SQL editor, not in bash):
+```sql
+SELECT COUNT(*) FROM orders;         -- must be > 0
+SELECT COUNT(*) FROM order_items;    -- must be > 0
+SELECT COUNT(*) FROM order_shipping; -- must be > 0
+```
+
+If any count is 0: the sync functions (C0-T4, C0-T5) have not run yet.
+Do NOT start this task until the new tables have data.
+
+---
+
 This task involves changing production data queries. Read everything first.
 
 - [ ] Confirm C0-T3, C0-T4, C0-T5 are complete and the `orders` table is populated.
@@ -206,10 +239,17 @@ components clean — they never see the JOIN structure.
 
 Rewrite the methods that query `marketplace_orders_presented_new` to query the new tables.
 
-**Approach:**
-1. Add new methods alongside the existing ones (`fetchAll_v2()` naming while transitioning)
-2. Test the new method returns the same data as the old one
-3. Rename to final name, delete old method
+**Approach — parallel method strategy:**
+1. Add new methods alongside the existing ones (`fetchAll_v2()` naming during transition)
+2. In the component/hook that calls the old method, temporarily call BOTH and compare results
+   in a `console.log` to confirm parity before switching
+3. Switch the calling code to the new method
+4. Confirm the screen renders correctly (manual test)
+5. Only then: delete the old `_v2`-prefixed method and rename the new one to the final name
+
+> ⚠️ **Do NOT switch all methods at once.** Migrate one method, test it, then move to the next.
+> The risk of breaking the orders screen silently (TypeScript won't catch data shape mismatches
+> at runtime) is real. Test each method in isolation.
 
 Do NOT delete old methods until the calling components are confirmed to use the new ones.
 
