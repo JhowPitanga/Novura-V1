@@ -31,7 +31,13 @@ async function validateShopeeSignature(
   key: string | undefined,
   sig: string | null,
 ): Promise<boolean> {
-  if (!key || !sig) return true; // no key = dev mode, accept all
+  if (!key) {
+    console.warn(
+      "[orders-webhook] SHOPEE_LIVE_PUSH_PARTNER_KEY not set — skipping signature validation (dev mode)",
+    );
+    return true;
+  }
+  if (!sig) return true; // no signature header = accept (partner key present but no sig means non-push call)
   const computed = await hmacSha256Hex(key, bodyText);
   return sig === computed || sig.toLowerCase() === computed.toLowerCase();
 }
