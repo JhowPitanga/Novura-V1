@@ -83,7 +83,7 @@ Deno.test("MlOrderSyncProcessor processOneOrder: returns ok true when fetch and 
   assertEquals(params?.marketplaceName, "Mercado Livre");
 });
 
-Deno.test("MlOrderSyncProcessor processOneOrder: returns ok false and 403 message when fetch returns 403", async () => {
+Deno.test("MlOrderSyncProcessor processOneOrder: returns ok true and skipped true when fetch returns 403 (not counted as failed)", async () => {
   const fetchAdapter: MlOrderFetchPort = {
     fetchFullOrder: () => Promise.resolve({ ok: false, reason: "http", status: 403 }),
   };
@@ -110,8 +110,8 @@ Deno.test("MlOrderSyncProcessor processOneOrder: returns ok false and 403 messag
   };
   const processor = new MlOrderSyncProcessor(ctx, fetchAdapter, upsertAdapter, rawAdapter, normalizer);
   const result = await processor.processOneOrder("999");
-  assertEquals(result.ok, false);
-  assertEquals(result.error, "403 (cancelled/confidential)");
+  assertEquals(result.ok, true);
+  assertEquals(result.skipped, true);
 });
 
 Deno.test("MlOrderSyncProcessor processOneOrder: returns ok false when fetch returns parse error", async () => {

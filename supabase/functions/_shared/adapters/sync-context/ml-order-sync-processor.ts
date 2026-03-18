@@ -20,7 +20,7 @@ export interface MlOrderSyncContext {
   nowIso: string;
 }
 
-export type ProcessOneOrderResult = { ok: boolean; error?: string };
+export type ProcessOneOrderResult = { ok: boolean; skipped?: boolean; error?: string };
 
 /**
  * Orchestrates one ML order: fetch full order → validate → normalize → upsert orders/items/shipping/status_history → upsert raw.
@@ -39,7 +39,8 @@ export class MlOrderSyncProcessor {
     const fetchResult = await this.fetchOrderAdapter.fetchFullOrder(this.ctx.accessToken, orderId);
     if (isFetchFullOrderError(fetchResult)) {
       if (fetchResult.reason === "http" && fetchResult.status === 403) {
-        return { ok: false, error: "403 (cancelled/confidential)" };
+        console.warn(`[MlOrderSyncProcessor] Skipping order ${orderId}: 403 (cancelled/confidential)`);
+        return { ok: true, skipped: true };
       }
       return { ok: false, error: "Invalid or empty order response" };
     }
