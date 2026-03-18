@@ -4,6 +4,8 @@
 
 const PAGE_SIZE = 50;
 const DELAY_MS = 100;
+/** Hard cap: return at most this many order IDs per invocation to avoid edge-function timeout. */
+const MAX_ORDERS_PER_SYNC = 200;
 
 export async function fetchOrderIds(
   accessToken: string,
@@ -34,6 +36,7 @@ export async function fetchOrderIds(
     const batchIds = results.map((o: { id?: string }) => String(o?.id ?? "")).filter(Boolean);
     ids.push(...batchIds);
     offset += batchIds.length;
+    if (ids.length >= MAX_ORDERS_PER_SYNC) return ids.slice(0, MAX_ORDERS_PER_SYNC);
     if (batchIds.length === 0 || offset >= Number(json?.paging?.total ?? 0)) break;
     await new Promise((r) => setTimeout(r, DELAY_MS));
   }
