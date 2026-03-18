@@ -28,11 +28,16 @@ import {
 } from "../_shared/orders-normalize/index.ts";
 import { OrdersUpsertAdapter } from "../_shared/adapters/orders-upsert/index.ts";
 import { isFetchFullOrderError } from "../_shared/domain/ml/ml-order-api-fetch.ts";
+import type { FetchFullOrderResult } from "../_shared/domain/ml/ml-order-api-fetch.ts";
 import {
   isMlOrderQueueMessage,
   isShopeeOrderQueueMessage,
   type QueueEnvelope,
+  type MlOrderQueueMessage,
+  type ShopeeOrderQueueMessage,
 } from "../_shared/domain/orders/order-queue-message.types.ts";
+import type { IntegrationRow } from "../_shared/domain/integration-types.ts";
+import type { ShopeeDetailParams } from "../_shared/adapters/shopee/shopee-fetch-orders.ts";
 
 const BATCH_SIZE = 10;
 const VISIBILITY_TIMEOUT_SEC = 120; // message invisible to other workers for 120s; retry if not archived
@@ -48,94 +53,66 @@ const upsertAdapter = new OrdersUpsertAdapter();
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
-async function processML(
-  envelope: QueueEnvelope,
-  encKeyB64: string,
-  queue: SupabaseOrdersQueueAdapter,
+// ─── ML helpers ────────────────────────────────────────────────────────────
+
+async function resolveMLIntegration(
   admin: AdminClient,
-): Promise<void> {
-  const msg = envelope.message;
-  if (!isMlOrderQueueMessage(msg)) return;
-
+  meliUserId: string,
+): Promise<IntegrationRow> {
   const integrations = new SupabaseMarketplaceIntegrationsAdapter(admin);
-  const appCredentials = new SupabaseAppCredentialsAdapter(admin);
-
   const integration = await integrations.getIntegrationByMeliUserId(
-    msg.meli_user_id,
+    meliUserId,
     ML_MARKETPLACE_NAME,
   );
   if (!integration) {
-    throw new Error(
-      `Integration not found for meli_user_id=${msg.meli_user_id}`,
-    );
+    throw new Error(`Integration not found for meli_user_id=${meliUserId}`);
   }
-
-  let accessToken: string;
-  try {
-    accessToken = (
-      await getMlAccessToken(
-        integrations,
-        appCredentials,
-        integration.id,
-        encKeyB64,
-      )
-    ).accessToken;
-  } catch (e) {
-    throw new Error(
-      `Token error: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-
-  let fetchResult = await mlFetcher.fetchFullOrder(
-    accessToken,
-    msg.marketplace_order_id,
-  );
-  if (
-    isFetchFullOrderError(fetchResult) &&
-    fetchResult.reason === "http" &&
-    (fetchResult.status === 401 || fetchResult.status === 403)
-  ) {
-    const refreshed = await forceRefreshMlToken(
-      integrations,
-      appCredentials,
-      integration.id,
-      encKeyB64,
-    );
-    if (refreshed) {
-      fetchResult = await mlFetcher.fetchFullOrder(
-        refreshed,
-        msg.marketplace_order_id,
-      );
-    }
-  }
-  if (isFetchFullOrderError(fetchResult)) {
-    throw new Error(
-      `ML order fetch failed: ${fetchResult.reason} status=${fetchResult.status ?? "?"}`,
-    );
-  }
-
-  const order = mlNormalizer.normalize(fetchResult.order);
-  const result = await upsertAdapter.upsert(admin, {
-    organization_id: String(integration.organizations_id),
-    order,
-    source: "webhook",
-  });
-  if (!result.success) {
-    throw new Error(`Upsert failed: ${result.error}`);
-  }
-
-  await queue.archive(envelope.msg_id);
+  return integration;
 }
 
-async function processShopee(
-  envelope: QueueEnvelope,
-  encKeyB64: string,
-  queue: SupabaseOrdersQueueAdapter,
+async function fetchMLAccessToken(
   admin: AdminClient,
-): Promise<void> {
-  const msg = envelope.message;
-  if (!isShopeeOrderQueueMessage(msg)) return;
+  integrationId: string,
+  encKeyB64: string,
+): Promise<string> {
+  const integrations = new SupabaseMarketplaceIntegrationsAdapter(admin);
+  const appCredentials = new SupabaseAppCredentialsAdapter(admin);
+  try {
+    return (await getMlAccessToken(integrations, appCredentials, integrationId, encKeyB64))
+      .accessToken;
+  } catch (e) {
+    throw new Error(`Token error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
 
+async function fetchMLOrderWithRetry(
+  admin: AdminClient,
+  accessToken: string,
+  integrationId: string,
+  orderId: string,
+  encKeyB64: string,
+): Promise<FetchFullOrderResult> {
+  let result = await mlFetcher.fetchFullOrder(accessToken, orderId);
+  if (
+    isFetchFullOrderError(result) &&
+    result.reason === "http" &&
+    (result.status === 401 || result.status === 403)
+  ) {
+    const integrations = new SupabaseMarketplaceIntegrationsAdapter(admin);
+    const appCredentials = new SupabaseAppCredentialsAdapter(admin);
+    const refreshed = await forceRefreshMlToken(integrations, appCredentials, integrationId, encKeyB64);
+    if (refreshed) result = await mlFetcher.fetchFullOrder(refreshed, orderId);
+  }
+  return result;
+}
+
+// ─── Shopee helpers ─────────────────────────────────────────────────────────
+
+async function resolveShopeeDetailParams(
+  admin: AdminClient,
+  msg: ShopeeOrderQueueMessage,
+  encKeyB64: string,
+): Promise<{ params: ShopeeDetailParams; organizationId: string }> {
   const integrations = new SupabaseMarketplaceIntegrationsAdapter(admin);
   const appCredentials = new SupabaseAppCredentialsAdapter(admin);
 
@@ -154,36 +131,83 @@ async function processShopee(
     encKeyB64,
   );
   const appRow = await appCredentials.getByName(SHOPEE_MARKETPLACE_NAME);
-  if (!appRow) {
-    throw new Error("Shopee app credentials not found");
+  if (!appRow) throw new Error("Shopee app credentials not found");
+
+  return {
+    params: {
+      partnerId: appRow.client_id,
+      partnerKey: appRow.client_secret,
+      accessToken: tokenResult.accessToken,
+      shopId: tokenResult.shopId,
+    },
+    organizationId: tokenResult.organizationId,
+  };
+}
+
+// ─── Process functions ───────────────────────────────────────────────────────
+
+async function processML(
+  envelope: QueueEnvelope,
+  encKeyB64: string,
+  queue: SupabaseOrdersQueueAdapter,
+  admin: AdminClient,
+): Promise<void> {
+  const msg = envelope.message;
+  if (!isMlOrderQueueMessage(msg)) return;
+
+  const integration = await resolveMLIntegration(admin, msg.meli_user_id);
+  const accessToken = await fetchMLAccessToken(admin, integration.id, encKeyB64);
+  const fetchResult = await fetchMLOrderWithRetry(
+    admin,
+    accessToken,
+    integration.id,
+    msg.marketplace_order_id,
+    encKeyB64,
+  );
+  if (isFetchFullOrderError(fetchResult)) {
+    throw new Error(
+      `ML order fetch failed: ${fetchResult.reason} status=${fetchResult.status ?? "?"}`,
+    );
   }
 
-  const detailParams = {
-    partnerId: appRow.client_id,
-    partnerKey: appRow.client_secret,
-    accessToken: tokenResult.accessToken,
-    shopId: tokenResult.shopId,
-  };
-  const orderDetail = await shopeeFetcher.fetchOneOrderDetail(
-    msg.order_sn,
-    detailParams,
-  );
+  const order = mlNormalizer.normalize(fetchResult.order);
+  const result = await upsertAdapter.upsert(admin, {
+    organization_id: String(integration.organizations_id),
+    order,
+    source: "webhook",
+  });
+  if (!result.success) throw new Error(`Upsert failed: ${result.error}`);
+
+  await queue.archive(envelope.msg_id);
+}
+
+async function processShopee(
+  envelope: QueueEnvelope,
+  encKeyB64: string,
+  queue: SupabaseOrdersQueueAdapter,
+  admin: AdminClient,
+): Promise<void> {
+  const msg = envelope.message;
+  if (!isShopeeOrderQueueMessage(msg)) return;
+
+  const { params, organizationId } = await resolveShopeeDetailParams(admin, msg, encKeyB64);
+  const orderDetail = await shopeeFetcher.fetchOneOrderDetail(msg.order_sn, params);
   if (!orderDetail) {
     throw new Error(`Shopee order fetch returned null for ${msg.order_sn}`);
   }
 
   const order = shopeeNormalizer.normalize(orderDetail);
   const result = await upsertAdapter.upsert(admin, {
-    organization_id: tokenResult.organizationId,
+    organization_id: organizationId,
     order,
     source: "webhook",
   });
-  if (!result.success) {
-    throw new Error(`Upsert failed: ${result.error}`);
-  }
+  if (!result.success) throw new Error(`Upsert failed: ${result.error}`);
 
   await queue.archive(envelope.msg_id);
 }
+
+// ─── Main handler ────────────────────────────────────────────────────────────
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return handleOptions();
@@ -238,4 +262,3 @@ serve(async (req) => {
 
   return jsonResponse({ ok: true, processed, failed, errors }, 200);
 });
-
