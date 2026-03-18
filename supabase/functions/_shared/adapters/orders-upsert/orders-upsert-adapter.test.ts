@@ -186,6 +186,66 @@ Deno.test("upsertOrder: valid Shopee order (new) returns success=true and create
   assertEquals(result.created, true);
 });
 
+Deno.test("upsertOrder: valid Shopee order (new) returns success=true and created=true", async () => {
+  const { mock } = createMockClient(null);
+  const input: UpsertOrderInput = {
+    organization_id: "org-1",
+    order: minimalOrder({ marketplace: "shopee", marketplace_order_id: "SHOPEE-001" }),
+    source: "sync",
+  };
+
+  const result = await adapter.upsert(mock, input);
+
+  assertEquals(result.success, true);
+  assertEquals(result.order_id, "new-order-id");
+  assertEquals(result.created, true);
+});
+
+Deno.test("upsertOrder: valid Shopee order (new) returns success=true and created=true", async () => {
+  const { mock } = createMockClient(null);
+  const input: UpsertOrderInput = {
+    organization_id: "org-1",
+    order: minimalOrder({ marketplace: "shopee", marketplace_order_id: "SHOPEE-001" }),
+    source: "sync",
+  };
+
+  const result = await adapter.upsert(mock, input);
+
+  assertEquals(result.success, true);
+  assertEquals(result.order_id, "new-order-id");
+  assertEquals(result.created, true);
+});
+
+Deno.test("upsertOrder: valid Shopee order (new) returns success=true and created=true", async () => {
+  const { mock } = createMockClient(null);
+  const input: UpsertOrderInput = {
+    organization_id: "org-1",
+    order: minimalOrder({ marketplace: "shopee", marketplace_order_id: "SHOPEE-001" }),
+    source: "sync",
+  };
+
+  const result = await adapter.upsert(mock, input);
+
+  assertEquals(result.success, true);
+  assertEquals(result.order_id, "new-order-id");
+  assertEquals(result.created, true);
+});
+
+Deno.test("upsertOrder: valid Shopee order (new) returns success=true and created=true", async () => {
+  const { mock } = createMockClient(null);
+  const input: UpsertOrderInput = {
+    organization_id: "org-1",
+    order: minimalOrder({ marketplace: "shopee", marketplace_order_id: "SHOPEE-001" }),
+    source: "sync",
+  };
+
+  const result = await adapter.upsert(mock, input);
+
+  assertEquals(result.success, true);
+  assertEquals(result.order_id, "new-order-id");
+  assertEquals(result.created, true);
+});
+
 Deno.test("OrdersUpsertAdapter.upsert: inserts into order_status_history when status changes", async () => {
   const adapter = new OrdersUpsertAdapter();
   const { mock, historyInserts } = createMockClient({
