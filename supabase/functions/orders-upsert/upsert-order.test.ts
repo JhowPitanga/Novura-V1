@@ -124,11 +124,26 @@ function createMockClient(initialOrder: { id: string; marketplace_status: string
   };
 }
 
-Deno.test("upsertOrder: returns success and order_id when upsert succeeds", async () => {
+Deno.test("upsertOrder: valid ML order (new) returns success=true and created=true", async () => {
   const { mock } = createMockClient(null);
   const input: UpsertOrderInput = {
     organization_id: "org-1",
     order: minimalOrder(),
+    source: "sync",
+  };
+
+  const result = await upsertOrder(mock, input);
+
+  assertEquals(result.success, true);
+  assertEquals(result.order_id, "new-order-id");
+  assertEquals(result.created, true);
+});
+
+Deno.test("upsertOrder: valid Shopee order (new) returns success=true and created=true", async () => {
+  const { mock } = createMockClient(null);
+  const input: UpsertOrderInput = {
+    organization_id: "org-1",
+    order: minimalOrder({ marketplace: "shopee", marketplace_order_id: "SHOPEE-001" }),
     source: "sync",
   };
 
