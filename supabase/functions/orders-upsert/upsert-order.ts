@@ -5,7 +5,7 @@
 
 import type { SupabaseClient } from "../_shared/adapters/infra/supabase-client.ts";
 import type { UpsertOrderInput, UpsertOrderResult } from "../_shared/domain/orders/orders-types.ts";
-import { OrdersUpsertAdapter } from "./orders-upsert-adapter.ts";
+import { OrdersUpsertAdapter } from "../_shared/adapters/orders-upsert/index.ts";
 
 export async function upsertOrder(
   supabase: SupabaseClient,

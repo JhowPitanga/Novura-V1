@@ -14,7 +14,7 @@ import {
 } from "../_shared/adapters/sync-context/ml-sync-context.ts";
 import { MlOrderSyncProcessor } from "../_shared/adapters/sync-context/ml-order-sync-processor.ts";
 import { MlOrderNormalizeService } from "../_shared/orders-normalize/index.ts";
-import { OrdersUpsertAdapter } from "../orders-upsert/orders-upsert-adapter.ts";
+import { OrdersUpsertAdapter } from "../_shared/adapters/orders-upsert/index.ts";
 
 const mlNormalizer = new MlOrderNormalizeService();
 
