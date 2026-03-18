@@ -13,7 +13,7 @@ import {
 import {
   ShopeeFetchOrdersAdapter,
   type ShopeeFetchParams,
-} from "../_shared/adapters/shopee/shopee-fetch-orders.ts";
+} from "../_shared/adapters/shopee/index.ts";
 import {
   isShopeeOrderDetailItem,
   ShopeeOrderNormalizeService,
