@@ -18,7 +18,7 @@ import {
   isShopeeOrderDetailItem,
   ShopeeOrderNormalizeService,
 } from "../_shared/orders-normalize/index.ts";
-import { upsertOrder } from "../orders-upsert/upsert-order.ts";
+import { upsertOrder } from "../_shared/adapters/orders-upsert/index.ts";
 import { getShopeeAccessToken } from "../_shared/adapters/tokens/shopee-token.ts";
 
 const shopeeNormalizer = new ShopeeOrderNormalizeService();

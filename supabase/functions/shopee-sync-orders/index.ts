@@ -10,7 +10,7 @@ import { SupabaseMarketplaceOrdersRawAdapter } from "../_shared/adapters/orders-
 import { getField, getStr } from "../_shared/adapters/infra/object-utils.ts";
 import { importAesGcmKey, aesGcmEncryptToString, tryDecryptToken, hmacSha256Hex } from "../_shared/adapters/infra/token-utils.ts";
 import { ShopeeOrderNormalizeService } from "../_shared/orders-normalize/index.ts";
-import { upsertOrder } from "../orders-upsert/upsert-order.ts";
+import { upsertOrder } from "../_shared/adapters/orders-upsert/index.ts";
 
 const shopeeNormalizer = new ShopeeOrderNormalizeService();
 
