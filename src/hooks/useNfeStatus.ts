@@ -36,7 +36,7 @@ export function useNfeStatus({
       if (!organizationId) return;
       const norm = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
       const pedidosAtivos = pedidos.filter(p => {
-        const si = norm(String(p?.status_interno || ''));
+        const si = norm(String(p?.internalStatus || ''));
         return si === 'emissao nf' || si === 'subir xml' || si === 'falha na emissao';
       });
       if (pedidosAtivos.length === 0) {
@@ -48,14 +48,14 @@ export function useNfeStatus({
       }
       const idsToCheck = pedidosAtivos.map(p => String(p.id));
       const mkIdsToCheck = pedidosAtivos
-        .map(p => String(p?.marketplace_order_id || p?.idPlataforma || ''))
+        .map(p => String(p?.marketplaceOrderId || ''))
         .filter(Boolean);
       const idByOrderId = new Map<string, string>();
       const idByMarketplaceId = new Map<string, string>();
       for (const p of pedidosAtivos) {
         const pid = String(p.id);
         idByOrderId.set(pid, pid);
-        const mk = String(p?.marketplace_order_id || p?.idPlataforma || '');
+        const mk = String(p?.marketplaceOrderId || '');
         if (mk) idByMarketplaceId.set(mk, pid);
       }
       const companyId = await getCompanyId();
@@ -78,7 +78,7 @@ export function useNfeStatus({
         const mk = String(pid || orderIdRaw || mkIdRaw || '');
         const st = String(r?.status_focus || '').toLowerCase();
         const amb = String(r?.emissao_ambiente || '').toLowerCase();
-        const xmlHas = !!(r?.xml_base64 || r?.xml_url);
+        const xmlHas = !!(r?.xml_url);
         const marketplace = String(r?.marketplace || '');
         const mlSub = String(r?.marketplace_submission_status || '').toLowerCase();
         if (!mk) return;

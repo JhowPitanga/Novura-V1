@@ -1,5 +1,5 @@
-import { supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
-import type { Order, OrderItem, OrderFinancialInfo } from "@/types/orders";
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL, supabase } from "@/integrations/supabase/client";
+import type { Order, OrderFinancialInfo, OrderItem } from "@/types/orders";
 import { buildFinancials, buildLabelInfo, ensureHttpUrl, normalizeShippingType, resolveLinkedSku } from "@/utils/orderUtils";
 
 async function getAuthToken(): Promise<string> {
@@ -104,24 +104,24 @@ export async function submitXmlSend(
   organizationId: string,
   companyId: string,
   marketplaceOrderId: string,
-): Promise<{ notaFiscalId: string; nfeKey: string; marketplace: string }> {
-  const { data: nfSel, error: nfErr } = await (supabase as any)
-    .from("notas_fiscais")
+): Promise<{ invoiceId: string; nfeKey: string; marketplace: string }> {
+  const { data: inv, error: invErr } = await (supabase as any)
+    .from("invoices")
     .select("id, nfe_key, marketplace, marketplace_order_id")
     .eq("company_id", companyId)
     .eq("marketplace_order_id", marketplaceOrderId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (nfErr || !nfSel) {
-    throw new Error(nfErr?.message || "Nota fiscal não encontrada para este pedido.");
+  if (invErr || !inv) {
+    throw new Error(invErr?.message || "Invoice não encontrada para este pedido.");
   }
-  const marketplace = String((nfSel as any)?.marketplace || "");
-  const queueMessage: any = {
+  const marketplace = String((inv as any)?.marketplace || "");
+  const queueMessage: Record<string, unknown> = {
     organizations_id: organizationId,
     company_id: companyId,
-    nota_fiscal_id: String((nfSel as any)?.id || ""),
-    nfe_key: String((nfSel as any)?.nfe_key || ""),
+    invoice_id: String((inv as any)?.id || ""),
+    nfe_key: String((inv as any)?.nfe_key || ""),
     marketplace,
   };
   const { error: sendErr } = await (supabase as any).rpc("q_submit_xml_send", {
@@ -129,8 +129,8 @@ export async function submitXmlSend(
   } as any);
   if (sendErr) throw sendErr;
   return {
-    notaFiscalId: String(nfSel.id),
-    nfeKey: String(nfSel.nfe_key || ""),
+    invoiceId: String(inv.id),
+    nfeKey: String(inv.nfe_key || ""),
     marketplace,
   };
 }
@@ -215,14 +215,43 @@ export async function updateOrdersInternalStatus(
     .in("id", orderIds);
 }
 
+/** Row shape returned by fetchNfeStatusRows. */
+export interface NfeStatusRow {
+  order_id: string | null;
+  marketplace_order_id: string | null;
+  /** Normalised status (was status_focus in notas_fiscais). */
+  status_focus: string | null;
+  /** Emission environment (was emissao_ambiente in notas_fiscais). */
+  emissao_ambiente: string | null;
+  marketplace: string | null;
+  xml_url: string | null;
+  marketplace_submission_status: string | null;
+  /** Plain-text error message (was error_details jsonb in notas_fiscais). */
+  error_details: string | null;
+}
+
+/** Maps an invoices row to the NfeStatusRow shape consumed by useNfeStatus. */
+function normalizeInvoiceToNfeRow(row: Record<string, unknown>): NfeStatusRow {
+  return {
+    order_id: row.order_id != null ? String(row.order_id) : null,
+    marketplace_order_id: row.marketplace_order_id != null ? String(row.marketplace_order_id) : null,
+    status_focus: row.status != null ? String(row.status) : null,
+    emissao_ambiente: row.emission_environment != null ? String(row.emission_environment) : null,
+    marketplace: row.marketplace != null ? String(row.marketplace) : null,
+    xml_url: row.xml_url != null ? String(row.xml_url) : null,
+    marketplace_submission_status: row.marketplace_submission_status != null ? String(row.marketplace_submission_status) : null,
+    error_details: row.error_message != null ? String(row.error_message) : null,
+  };
+}
+
 export async function fetchNfeStatusRows(
   companyId: string,
   orderIds: string[],
   marketplaceOrderIds: string[],
-): Promise<any[]> {
+): Promise<NfeStatusRow[]> {
   let q: any = (supabase as any)
-    .from("notas_fiscais")
-    .select("order_id, marketplace_order_id, status_focus, emissao_ambiente, marketplace, xml_base64, xml_url, marketplace_submission_status, error_details")
+    .from("invoices")
+    .select("order_id, marketplace_order_id, status, emission_environment, marketplace, xml_url, marketplace_submission_status, error_message")
     .eq("company_id", companyId);
   if (orderIds.length > 0 && marketplaceOrderIds.length > 0) {
     const a = orderIds.join(",");
@@ -234,7 +263,8 @@ export async function fetchNfeStatusRows(
     q = q.in("marketplace_order_id", marketplaceOrderIds);
   }
   const { data } = await q;
-  return Array.isArray(data) ? data : [];
+  const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
+  return rows.map(normalizeInvoiceToNfeRow);
 }
 
 export async function fetchOrderByInternalId(
@@ -465,4 +495,65 @@ export async function resolveOrgId(userId: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/** Fetch the 10 most recent orders — used by the chat module picker. */
+export async function fetchRecentOrdersSummary(): Promise<Array<{
+  id: string;
+  marketplace_order_id: string | null;
+  buyer_name: string | null;
+  created_at: string;
+  gross_amount: number | null;
+}>> {
+  const { data, error } = await (supabase as any)
+    .from('orders')
+    .select('id, marketplace_order_id, buyer_name, created_at, gross_amount')
+    .order('created_at', { ascending: false })
+    .limit(10);
+
+  if (error) {
+    console.error('[orders.service] fetchRecentOrdersSummary error:', error.message);
+    return [];
+  }
+  const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
+  return rows.map((r) => ({
+    id: String(r.id ?? ''),
+    marketplace_order_id: r.marketplace_order_id != null ? String(r.marketplace_order_id) : null,
+    buyer_name: r.buyer_name != null ? String(r.buyer_name) : null,
+    created_at: String(r.created_at ?? ''),
+    gross_amount: r.gross_amount != null ? Number(r.gross_amount) : null,
+  }));
+}
+
+/** Minimal order + first-item row needed to build a marketplace item link. */
+interface OrderItemLinkRow {
+  marketplace: string;
+  firstItemPermalink: string | null;
+  firstItemId: string | null;
+  firstItemTitle: string | null;
+}
+
+/** Fetch the data required to build a marketplace product link for a given order. */
+export async function fetchOrderItemLinkData(orderId: string): Promise<OrderItemLinkRow | null> {
+  if (!orderId) return null;
+
+  const { data, error } = await (supabase as any)
+    .from('orders')
+    .select('marketplace, order_items ( marketplace_item_id, title )')
+    .eq('id', orderId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[orders.service] fetchOrderItemLinkData error:', error.message);
+    return null;
+  }
+  if (!data) return null;
+
+  const firstItem = Array.isArray(data.order_items) ? data.order_items[0] ?? null : null;
+  return {
+    marketplace: String(data.marketplace ?? ''),
+    firstItemPermalink: null, // order_items does not store a permalink
+    firstItemId: firstItem ? String(firstItem.marketplace_item_id ?? '') : null,
+    firstItemTitle: firstItem ? String(firstItem.title ?? '') : null,
+  };
 }
