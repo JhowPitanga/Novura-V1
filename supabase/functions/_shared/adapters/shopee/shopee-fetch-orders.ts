@@ -201,41 +201,48 @@ export class ShopeeFetchOrdersAdapter {
 
   /**
    * Fetch escrow detail for one order_sn (for marketplace_fee / commission_fee in normalize).
+   * NEVER throws — returns null on any error (escrow is optional financial enrichment).
    */
   async fetchEscrowDetail(
     orderSn: string,
     params: ShopeeDetailParams,
     onRefresh?: () => Promise<boolean>,
   ): Promise<ShopeeEscrowDetailPayload | null> {
+    try {
+      return await this.fetchEscrowDetailOrThrow(orderSn, params, onRefresh, true);
+    } catch (e) {
+      console.warn(
+        `[ShopeeFetchOrdersAdapter] fetchEscrowDetail null for ${orderSn}:`,
+        e instanceof Error ? e.message : String(e),
+      );
+      return null;
+    }
+  }
+
+  private async fetchEscrowDetailOrThrow(
+    orderSn: string,
+    params: ShopeeDetailParams,
+    onRefresh: (() => Promise<boolean>) | undefined,
+    allowRefresh: boolean,
+  ): Promise<ShopeeEscrowDetailPayload | null> {
     const { partnerId, partnerKey, accessToken, shopId } = params;
     const timestamp = Math.floor(Date.now() / 1000);
     const baseString = signBase(partnerId, ESCROW_PATH, timestamp, accessToken, shopId);
     const sign = await hmacSha256Hex(partnerKey, baseString);
-
-    const tryOnce = async (
-      allowRefresh: boolean,
-    ): Promise<ShopeeEscrowDetailPayload | null> => {
-      try {
-        const url = `${SHOPEE_HOST}${ESCROW_PATH}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&access_token=${encodeURIComponent(accessToken)}&shop_id=${encodeURIComponent(String(shopId))}&sign=${sign}&order_sn=${encodeURIComponent(orderSn)}`;
-        const resp = await fetch(url, {
-          method: "GET",
-          headers: { "content-type": "application/json" },
-        });
-        const json = await resp.json().catch(() => null);
-        if (!resp.ok) {
-          if ((resp.status === 401 || resp.status === 403) && allowRefresh && onRefresh) {
-            const ok = await onRefresh();
-            if (ok) return tryOnce(false);
-          }
-          const apiMsg = json?.message ?? json?.error ?? resp.statusText;
-          throw new Error(`Shopee get_escrow_detail HTTP ${resp.status}: ${apiMsg}`);
-        }
-        return (json?.response ?? null) as ShopeeEscrowDetailPayload | null;
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        throw new Error(`Shopee get_escrow_detail failed: ${msg}`);
+    const url = `${SHOPEE_HOST}${ESCROW_PATH}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&access_token=${encodeURIComponent(accessToken)}&shop_id=${encodeURIComponent(String(shopId))}&sign=${sign}&order_sn=${encodeURIComponent(orderSn)}`;
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+    });
+    const json = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      if ((resp.status === 401 || resp.status === 403) && allowRefresh && onRefresh) {
+        const ok = await onRefresh();
+        if (ok) return this.fetchEscrowDetailOrThrow(orderSn, params, onRefresh, false);
       }
-    };
-    return tryOnce(true);
+      const apiMsg = json?.message ?? json?.error ?? resp.statusText;
+      throw new Error(`Shopee get_escrow_detail HTTP ${resp.status}: ${apiMsg}`);
+    }
+    return (json?.response ?? null) as ShopeeEscrowDetailPayload | null;
   }
 }
