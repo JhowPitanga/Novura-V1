@@ -2,8 +2,6 @@
  * Normalizer adapter: implements OrdersUpsertPort. All order upsert logic (orders, order_items, order_shipping, order_status_history) in one place.
  */
 
-import type { OrdersUpsertPort } from "../../ports/orders-upsert-port.ts";
-import type { SupabaseClient } from "../infra/supabase-client.ts";
 import type {
   NormalizedOrder,
   NormalizedOrderItem,
@@ -14,6 +12,8 @@ import type {
   UpsertOrderInput,
   UpsertOrderResult,
 } from "../../domain/orders/orders-types.ts";
+import type { OrdersUpsertPort } from "../../ports/orders-upsert-port.ts";
+import type { SupabaseClient } from "../infra/supabase-client.ts";
 
 const ORDERS_CONFLICT = "organization_id,marketplace,marketplace_order_id";
 
