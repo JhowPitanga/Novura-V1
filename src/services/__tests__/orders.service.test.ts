@@ -272,9 +272,9 @@ describe("updateOrdersInternalStatus", () => {
 });
 
 describe("fetchNfeStatusRows", () => {
-  it("queries invoices table with order and marketplace ids", async () => {
+  it("queries invoices with order and marketplace ids", async () => {
     const mockOr = vi.fn().mockResolvedValue({
-      data: [{ order_id: "o1", status: "autorizado", emission_environment: "producao", marketplace: "mercado_livre", xml_url: null, marketplace_submission_status: null, error_message: null, marketplace_order_id: "mk1" }],
+      data: [{ order_id: "o1", status: "autorizado", emission_environment: "producao" }],
     });
     const mockEq = vi.fn().mockReturnValue({ or: mockOr });
     mockFrom.mockReturnValue({

@@ -8,7 +8,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useLinkOrderStorage } from '@/hooks/useLinkOrderStorage';
 import { useBindableProducts } from '@/hooks/useProducts';
 import { SUPABASE_PUBLISHABLE_KEY, supabase } from "@/integrations/supabase/client";
-import { getCompanyIdForOrg } from '@/services/orders.service';
+import { getCompanyIdForOrg } from "@/services/orders.service";
 import { Check } from "lucide-react";
 import { useEffect, useState } from 'react';
 import { ProductPickerDialog } from './ProductPickerDialog';
@@ -520,4 +520,3 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
         </>
     );
 }
->>>>>>> 2c9f066 (C0-T9: rewire orders frontend to new tables)
