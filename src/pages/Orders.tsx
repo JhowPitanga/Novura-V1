@@ -34,27 +34,16 @@ import { matchStatus, normStatus, useOrderFiltering } from "@/hooks/useOrderFilt
 import { usePrintingSettings } from "@/hooks/usePrintingSettings";
 import { supabase } from "@/integrations/supabase/client";
 import { calendarEndOfDaySPEpochMs, calendarStartOfDaySPEpochMs, eventToSPEpochMs, formatDateTimeSP } from "@/lib/datetime";
-import { arrangeShopeeShipment, emitNfeQueue, fetchAllOrders, fetchOrderById, fetchOrderByInternalId, fetchShopeeShops as fetchShopeeShopsSvc, getCompanyIdForOrg, markOrdersPrinted, resolveOrgId, submitXmlSend, syncMercadoLivreOrders, syncNfeForOrder, syncShopeeOrders, updateOrdersInternalStatus } from "@/services/orders.service";
+import { arrangeShopeeShipment, emitNfeQueue, fetchAllOrders, fetchOrderByInternalId, fetchShopeeShops as fetchShopeeShopsSvc, getCompanyIdForOrg, markOrdersPrinted, resolveOrgId, submitXmlSend, syncMercadoLivreOrders, syncNfeForOrder, syncShopeeOrders, updateOrdersInternalStatus } from "@/services/orders.service";
+import type { Order } from "@/types/orders";
 import { isAbortLikeError, mapTipoEnvioLabel } from "@/utils/orderUtils";
 import { generateFunctionalPickingListPDF } from "@/utils/pdfGenerators";
 import { DateRange } from "react-day-picker";
-import type { Order } from "@/types/orders";
 
 
 
 
-type OrdersListOrder = Order & {
-    status_interno?: string;
-    itens?: any[];
-    slaDespacho?: {
-        status?: string | null;
-        expected_date?: string | null;
-    } | null;
-    shipment_status?: string | null;
-    marketplace_order_id?: string | null;
-    idPlataforma?: string | null;
-    impressoEtiqueta?: boolean;
-};
+type OrdersListOrder = Order;
 
 function Pedidos() {
     const [activeStatus, setActiveStatus] = useState("todos");
@@ -426,7 +415,7 @@ function Pedidos() {
             if (!organizationId) throw new Error('Organização não encontrada.');
             const companyId = await getCompanyId();
             if (!companyId) throw new Error('Nenhuma empresa ativa encontrada.');
-            await submitXmlSend(organizationId, companyId, String(pedido.marketplace_order_id || ''));
+            await submitXmlSend(organizationId, companyId, String(pedido.marketplaceOrderId || ''));
             toast({ title: "XML enfileirado", description: "Envio agendado para processamento." });
         } catch (e: any) {
             toast({ title: "Erro no envio", description: e?.message || String(e), variant: "destructive" });
