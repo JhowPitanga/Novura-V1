@@ -51,9 +51,10 @@ export async function getSalesByState(range?: DateRange, marketplace?: string): 
   const fromISO = new Date(calendarStartOfDaySPEpochMs(from)).toISOString();
   const toISO = new Date(calendarEndOfDaySPEpochMs(to)).toISOString();
 
+  // orders + order_shipping (state in order_shipping)
   let query = supabase
-    .from("marketplace_orders_presented_new")
-    .select("created_at, order_total, marketplace, shipping_state_name, shipping_state_uf")
+    .from("orders")
+    .select("created_at, gross_amount, marketplace, order_shipping(state_uf)")
     .gte("created_at", fromISO)
     .lte("created_at", toISO);
 
@@ -70,11 +71,11 @@ export async function getSalesByState(range?: DateRange, marketplace?: string): 
   const mapState = new Map<string, number>();
   let total = 0;
   (data || []).forEach((o: any) => {
-    const val = typeof o.order_total === "number" ? o.order_total : Number(o.order_total) || 0;
+    const val = typeof o.gross_amount === "number" ? o.gross_amount : Number(o.gross_amount) || 0;
     total += val;
-    const ufRaw = o?.shipping_state_uf || null;
-    const nameRaw = o?.shipping_state_name || null;
-    const uf = ufRaw ? normalizeState(ufRaw) : normalizeState(nameRaw);
+    const shipping = Array.isArray(o?.order_shipping) ? o.order_shipping[0] : o?.order_shipping;
+    const ufRaw = shipping?.state_uf ?? null;
+    const uf = ufRaw ? normalizeState(ufRaw) : "Desconhecido";
     mapState.set(uf, (mapState.get(uf) || 0) + val);
   });
 

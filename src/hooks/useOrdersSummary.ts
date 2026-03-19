@@ -33,10 +33,10 @@ export function useOrdersSummary(range?: DateRange, marketplace?: string) {
         const fromISO = new Date(calendarStartOfDaySPEpochMs(from)).toISOString();
         const toISO = new Date(calendarEndOfDaySPEpochMs(to)).toISOString();
 
-        // Consultar resumo a partir da view apresentada (new)
+        // Query orders table (gross_amount = order total)
         let query = supabase
-          .from("marketplace_orders_presented_new")
-          .select("marketplace, order_total, created_at")
+          .from("orders")
+          .select("marketplace, gross_amount, created_at")
           .gte("created_at", fromISO)
           .lte("created_at", toISO);
 
@@ -51,7 +51,7 @@ export function useOrdersSummary(range?: DateRange, marketplace?: string) {
         const map = new Map<string, number>();
         (data || []).forEach((o: any) => {
           const m = o.marketplace || "Desconhecido";
-          const val = typeof o.order_total === "number" ? o.order_total : Number(o.order_total) || 0;
+          const val = typeof o.gross_amount === "number" ? o.gross_amount : Number(o.gross_amount) || 0;
           map.set(m, (map.get(m) || 0) + val);
         });
 

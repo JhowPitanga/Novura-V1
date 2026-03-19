@@ -1,15 +1,17 @@
-import { useState, useEffect } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Check } from "lucide-react";
-import { useBindableProducts } from '@/hooks/useProducts';
 import { toast } from '@/components/ui/use-toast';
-import { supabase, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { ProductPickerDialog } from './ProductPickerDialog';
 import { useLinkOrderStorage } from '@/hooks/useLinkOrderStorage';
+import { useBindableProducts } from '@/hooks/useProducts';
+import { SUPABASE_PUBLISHABLE_KEY, supabase } from "@/integrations/supabase/client";
+import { getCompanyIdForOrg } from "@/services/orders.service";
+import { Check } from "lucide-react";
+import { useEffect, useState } from 'react';
+import { ProductPickerDialog } from './ProductPickerDialog';
 
 interface Product {
     id: string;
@@ -152,27 +154,10 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
             const organizationId: string | null = orgIdFromAuth ? String(orgIdFromAuth) : null;
 
             let companyId: string | null = null;
-            if (pedidoId) {
+            if (organizationId) {
                 try {
-                    const { data: ord1, error: err1 } = await (supabase as any)
-                        .from('marketplace_orders_presented')
-                        .select('id, company_id, marketplace_order_id')
-                        .eq('marketplace_order_id', pedidoId)
-                        .maybeSingle();
-                    if (!err1 && ord1?.company_id) {
-                        companyId = String(ord1.company_id);
-                    }
-                    if (!companyId) {
-                        const { data: ord2, error: err2 } = await (supabase as any)
-                            .from('marketplace_orders_presented')
-                            .select('id, company_id')
-                            .eq('id', pedidoId)
-                            .maybeSingle();
-                        if (!err2 && ord2?.company_id) {
-                            companyId = String(ord2.company_id);
-                        }
-                    }
-                } catch {}
+                    companyId = await getCompanyIdForOrg(organizationId);
+                } catch { }
             }
 
             const rowsToPersist = linkedItems
@@ -224,11 +209,11 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                         .maybeSingle();
                     storageId = (userOrgSettings as any)?.default_storage_id ?? null;
                 }
-            } catch {}
+            } catch { }
         }
 
         if (!storageId && typeof window !== 'undefined') {
-            try { storageId = localStorage.getItem('defaultStorageId') || null; } catch {}
+            try { storageId = localStorage.getItem('defaultStorageId') || null; } catch { }
         }
 
         if (!storageId) {
@@ -242,7 +227,7 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                 if (orgIdFromAuth) q = (q as any).eq('organizations_id', orgIdFromAuth);
                 const { data } = await q;
                 if (data && data.length > 0) storageId = String(data[0].id);
-            } catch {}
+            } catch { }
         }
 
         if (!storageId) {
@@ -262,9 +247,10 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
             let marketplaceName: string | null = null;
             let marketplaceOrderIdStr: string | null = null;
 
+            // Resolve order from orders table (by id or marketplace_order_id)
             {
                 const { data: pres1 } = await (supabase as any)
-                    .from('marketplace_orders_presented_new')
+                    .from('orders')
                     .select('id, marketplace, marketplace_order_id')
                     .eq('id', pedidoId)
                     .maybeSingle();
@@ -274,7 +260,7 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                     marketplaceOrderIdStr = String(pres1.marketplace_order_id || '');
                 } else {
                     const { data: pres2 } = await (supabase as any)
-                        .from('marketplace_orders_presented_new')
+                        .from('orders')
                         .select('id, marketplace, marketplace_order_id')
                         .eq('marketplace_order_id', pedidoId)
                         .maybeSingle();
@@ -286,55 +272,37 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                 }
             }
 
+            // Update order_items.product_id (order_items has order_id, marketplace_item_id; no has_unlinked_items)
             const ops = linkedItems.map((li) => {
                 const ref = anunciosParaVincular.find((a) => a.id === li.anuncioId);
                 return (async () => {
                     let updErrMsg: string | null = null;
-                    if (ref?.rowId) {
+                    if (ref?.rowId && presentedNewId) {
                         const upd = await (supabase as any)
-                            .from('marketplace_order_items')
-                            .update({ linked_products: li.productId, has_unlinked_items: false })
-                            .eq('row_id', ref.rowId)
-                            .select('row_id, id, linked_products, has_unlinked_items')
+                            .from('order_items')
+                            .update({ product_id: li.productId })
+                            .eq('id', ref.rowId)
+                            .select('id, product_id')
                             .maybeSingle();
-                        if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por row_id');
+                        if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por id');
                     } else if (li.variationId && presentedNewId) {
                         const upd = await (supabase as any)
-                            .from('marketplace_order_items')
-                            .update({ linked_products: li.productId, has_unlinked_items: false })
-                            .eq('id', presentedNewId)
-                            .eq('model_id_externo', li.variationId)
-                            .select('row_id, id, linked_products, has_unlinked_items')
-                            .maybeSingle();
+                            .from('order_items')
+                            .update({ product_id: li.productId })
+                            .eq('order_id', presentedNewId)
+                            .eq('marketplace_item_id', li.variationId)
+                            .select('id, product_id');
                         if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por variation_id');
                     } else {
                         updErrMsg = 'Item sem referência para atualização';
                     }
                     if (updErrMsg) {
                         toast({ title: 'Falha na vinculação', description: updErrMsg, variant: 'destructive' });
-                        await (supabase as any)
-                            .from('marketplace_orders_presented_new')
-                            .update({ has_unlinked_items: true })
-                            .or(`id.eq.${presentedNewId || pedidoId},marketplace_order_id.eq.${pedidoId}`);
                     }
                 })();
             }).filter(Boolean) as Promise<any>[];
 
             if (ops.length > 0) await Promise.all(ops);
-
-            if (presentedNewId) {
-                const { data: aggRows } = await (supabase as any)
-                    .from('marketplace_order_items')
-                    .select('linked_products, has_unlinked_items')
-                    .eq('id', presentedNewId);
-                const orderHasUnlinked = Array.isArray(aggRows)
-                    ? aggRows.some((r: any) => r?.has_unlinked_items === true || !String(r?.linked_products || '').trim())
-                    : false;
-                await (supabase as any)
-                    .from('marketplace_orders_presented_new')
-                    .update({ has_unlinked_items: orderHasUnlinked })
-                    .eq('id', presentedNewId);
-            }
 
             if (presentedNewId) {
                 const itemsForRpc = linkedItems.map((li) => ({
@@ -384,7 +352,7 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                     await (supabase as any).functions.invoke(fnName, { body, headers } as any);
                 }
             }
-        } catch {}
+        } catch { }
 
         onSave(payload);
         onClose();

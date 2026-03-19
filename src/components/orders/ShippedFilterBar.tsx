@@ -59,7 +59,7 @@ export function ShippedFilterBar({
   const shippingTypeOptions = (() => {
     const shSet = new Set<string>();
     enviadoPedidos.forEach(p => {
-      const id = normalizeShippingType(String(p?.tipoEnvio ?? ''));
+      const id = normalizeShippingType(String(p?.shippingType ?? ''));
       if (id) shSet.add(id);
     });
     return Array.from(shSet);

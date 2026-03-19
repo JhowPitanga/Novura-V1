@@ -1,20 +1,18 @@
 import { useOrderCmv } from "@/hooks/useOrderCmv";
+import type { Order } from "@/types/orders";
+import { OrderFinancials } from "./OrderFinancials";
 import { OrderGeneralInfo } from "./OrderGeneralInfo";
 import { OrderItemsList } from "./OrderItemsList";
-import { OrderFinancials } from "./OrderFinancials";
 
-interface OrderDetailsProps {
-    pedido: any;
-}
 
-export function OrderDetails({ pedido }: OrderDetailsProps) {
-    const cmvLinked = useOrderCmv(pedido);
+export function OrderDetails(order: Readonly<Order>) {
+    const cmvLinked = useOrderCmv(order);
 
     return (
         <div className="space-y-6 max-w-full overflow-x-hidden">
-            <OrderGeneralInfo pedido={pedido} />
-            <OrderItemsList pedido={pedido} />
-            <OrderFinancials pedido={pedido} cmvLinked={cmvLinked} />
+            <OrderGeneralInfo order={order} />
+            <OrderItemsList order={order} />
+            <OrderFinancials order={order} cmvLinked={cmvLinked} />
         </div>
     );
 }

@@ -1,0 +1,2 @@
+# orders-webhook: Cycle 0. Unified ML/Shopee order webhook → normalize + upsert. No side effects.
+# Per-function config (verify_jwt) in supabase/config.toml under [functions.orders-webhook].

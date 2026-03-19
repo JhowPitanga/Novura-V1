@@ -79,7 +79,7 @@ export function OrderTableRow({
       : (isCancelledRow
         ? 'Pagamento cancelado'
         : (isRefundedRow ? 'Pagamento reembolsado' : 'Abrir vinculação')));
-  const hasMultipleItems = Array.isArray(pedido.itens) && pedido.itens.length >= 2;
+  const hasMultipleItems = Array.isArray(pedido.items) && pedido.items.length >= 2;
 
   const isChecked =
     (activeStatus === "todos" && selection.selectedPedidos.includes(pedido.id)) ||
@@ -131,7 +131,7 @@ export function OrderTableRow({
       {columns.filter(col => col.enabled).map(col => (
         <td
           key={col.id}
-          className={`relative py-3 whitespace-nowrap text-sm text-gray-500 min-w-0 ${col.id === 'produto' ? 'text-left w-[26%] pr-0' : ''} ${col.id === 'itens' ? 'w-[4%] text-center pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'w-[14%] text-center pr-0' : ''} ${col.id === 'valor' ? 'w-[10%] text-left' : ''} ${col.id === 'tipoEnvio' ? 'w-[10%] text-center' : ''} ${col.id === 'marketplace' ? 'w-[8%] text-left' : ''} ${col.id === 'status' ? 'w-[10%] text-center' : ''} ${col.id === 'margem' ? 'w-[8%] text-center' : ''} ${pedido.quantidadeTotal >= 2 ? 'align-middle' : ''}`}
+          className={`relative py-3 whitespace-nowrap text-sm text-gray-500 min-w-0 ${col.id === 'produto' ? 'text-left w-[26%] pr-0' : ''} ${col.id === 'itens' ? 'w-[4%] text-center pl-0 pr-0' : ''} ${col.id === 'cliente' ? 'w-[14%] text-center pr-0' : ''} ${col.id === 'valor' ? 'w-[10%] text-left' : ''} ${col.id === 'tipoEnvio' ? 'w-[10%] text-center' : ''} ${col.id === 'marketplace' ? 'w-[8%] text-left' : ''} ${col.id === 'status' ? 'w-[10%] text-center' : ''} ${col.id === 'margem' ? 'w-[8%] text-center' : ''} ${pedido.totalQuantity >= 2 ? 'align-middle' : ''}`}
         >
           <div className="relative z-[1]">
             {col.render(pedido)}
@@ -177,7 +177,7 @@ export function OrderTableRow({
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              {pedido.impressoEtiqueta && (
+              {pedido.labelPrinted && (
                 <CheckCircle2 className="absolute -top-1 -right-1 h-3 w-3 text-green-600 pointer-events-none" />
               )}
             </div>
@@ -230,7 +230,7 @@ export function OrderTableRow({
             </DropdownMenu>
           </div>
         ) : (
-          (handlers.norm(pedido.status_interno) === 'processando nf' || nfeState.processingIdsSet.has(pedido.id))
+          (handlers.norm(pedido.internalStatus) === 'processando nf' || nfeState.processingIdsSet.has(pedido.id))
             ? (
               <div className="flex items-center justify-center">
                 <Badge className="bg-white text-purple-700 border border-purple-300 h-7 px-2 inline-flex items-center gap-2 rounded-md">

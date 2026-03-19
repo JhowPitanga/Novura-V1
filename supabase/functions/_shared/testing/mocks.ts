@@ -1,65 +1,11 @@
 // Fake implementations of port interfaces for testing
 
-import type { CredentialsPort } from "../ports/credentials-port.ts";
 import type { UserManagementPort } from "../ports/user-management-port.ts";
 import type {
   CreateUserRequest,
-  MarketplaceCredentials,
   OrganizationUser,
   ModulePermission,
 } from "../domain/types.ts";
-
-// ── Credentials ─────────────────────────────────────────────
-
-export interface FakeCredentialsStore {
-  credentials: Map<string, MarketplaceCredentials>;
-  refreshCalled: string[];
-}
-
-export function createFakeCredentialsStore(
-  initial: MarketplaceCredentials[] = [],
-): FakeCredentialsStore {
-  const store: FakeCredentialsStore = {
-    credentials: new Map(),
-    refreshCalled: [],
-  };
-  for (const c of initial) {
-    store.credentials.set(c.integrationId, c);
-  }
-  return store;
-}
-
-export function createFakeCredentialsAdapter(
-  store: FakeCredentialsStore,
-): CredentialsPort {
-  return {
-    async getValidCredentials(
-      integrationId: string,
-    ): Promise<MarketplaceCredentials> {
-      const cred = store.credentials.get(integrationId);
-      if (!cred) throw new Error(`Integration ${integrationId} not found`);
-      if (cred.isExpired) {
-        return this.refreshIfExpired(integrationId);
-      }
-      return cred;
-    },
-
-    async refreshIfExpired(
-      integrationId: string,
-    ): Promise<MarketplaceCredentials> {
-      const cred = store.credentials.get(integrationId);
-      if (!cred) throw new Error(`Integration ${integrationId} not found`);
-      store.refreshCalled.push(integrationId);
-      const refreshed: MarketplaceCredentials = {
-        ...cred,
-        accessToken: `refreshed_${cred.accessToken}`,
-        isExpired: false,
-      };
-      store.credentials.set(integrationId, refreshed);
-      return refreshed;
-    },
-  };
-}
 
 // ── User Management ─────────────────────────────────────────
 
