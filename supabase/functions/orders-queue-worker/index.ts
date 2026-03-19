@@ -26,7 +26,7 @@ import {
   MlOrderNormalizeService,
   ShopeeOrderNormalizeService,
 } from "../_shared/orders-normalize/index.ts";
-import { OrdersUpsertAdapter } from "../orders-upsert/orders-upsert-adapter.ts";
+import { OrdersUpsertAdapter } from "../_shared/adapters/orders-upsert/index.ts";
 import { isFetchFullOrderError } from "../_shared/domain/ml/ml-order-api-fetch.ts";
 import {
   isMlOrderQueueMessage,

@@ -2,19 +2,22 @@
  * Normalizer adapter: implements OrdersUpsertPort. All order upsert logic (orders, order_items, order_shipping, order_status_history) in one place.
  */
 
-import type { OrdersUpsertPort } from "../_shared/ports/orders-upsert-port.ts";
-import type { SupabaseClient } from "../_shared/adapters/infra/supabase-client.ts";
+import type { OrdersUpsertPort } from "../../ports/orders-upsert-port.ts";
+import type { SupabaseClient } from "../infra/supabase-client.ts";
 import type {
   NormalizedOrder,
   NormalizedOrderItem,
   NormalizedOrderShipping,
+  OrderInsertRow,
+  OrderItemInsertRow,
+  OrderShippingInsertRow,
   UpsertOrderInput,
   UpsertOrderResult,
-} from "../_shared/domain/orders/orders-types.ts";
+} from "../../domain/orders/orders-types.ts";
 
 const ORDERS_CONFLICT = "organization_id,marketplace,marketplace_order_id";
 
-function mapOrderRow(organizationId: string, order: NormalizedOrder): Record<string, unknown> {
+function mapOrderRow(organizationId: string, order: NormalizedOrder): OrderInsertRow {
   return {
     organization_id: organizationId,
     marketplace: order.marketplace,
@@ -41,7 +44,7 @@ function mapOrderRow(organizationId: string, order: NormalizedOrder): Record<str
   };
 }
 
-function mapItemRow(orderId: string, item: NormalizedOrderItem): Record<string, unknown> {
+function mapItemRow(orderId: string, item: NormalizedOrderItem): OrderItemInsertRow {
   return {
     order_id: orderId,
     marketplace_item_id: item.marketplace_item_id,
@@ -54,7 +57,7 @@ function mapItemRow(orderId: string, item: NormalizedOrderItem): Record<string, 
   };
 }
 
-function mapShippingRow(orderId: string, s: NormalizedOrderShipping): Record<string, unknown> {
+function mapShippingRow(orderId: string, s: NormalizedOrderShipping): OrderShippingInsertRow {
   return {
     order_id: orderId,
     shipment_id: s.shipment_id,

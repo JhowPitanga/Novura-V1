@@ -8,7 +8,7 @@ import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-util
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
 import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString } from "../_shared/adapters/infra/token-utils.ts";
 import { isMlOrderResponse, MlOrderNormalizeService } from "../_shared/orders-normalize/index.ts";
-import { upsertOrder } from "../orders-upsert/upsert-order.ts";
+import { upsertOrder } from "../_shared/adapters/orders-upsert/index.ts";
 
 const mlNormalizer = new MlOrderNormalizeService();
 const ML_MARKETPLACE_NAME = "Mercado Livre";
