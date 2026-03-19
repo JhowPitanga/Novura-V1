@@ -50,8 +50,8 @@ serve(async (req) => {
     for (const orderId of orderIds) {
       try {
         const out = await processor.processOneOrder(orderId);
-        if (out.ok) synced++;
-        else {
+        if (out.ok && !out.skipped) synced++;
+        else if (!out.ok) {
           failed++;
           errors.push({ order_id: orderId, error: out.error ?? "Unknown" });
         }
