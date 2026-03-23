@@ -41,6 +41,93 @@ async function blockAndReserveOnFailure(admin: any, orderId: string, orgId: stri
   try { console.error("linked-products-item failure_handling_done", { correlationId, orderId }); } catch (_) {}
 }
 
+/**
+ * C0-T15: After linking in legacy tables, also update order_items.product_id
+ * and orders.has_unlinked_items in the new Cycle 0 tables.
+ * The new orders.id is resolved via org+marketplace+marketplace_order_id.
+ */
+async function syncToNewOrdersTables(
+  admin: any,
+  productId: string,
+  externalItemId: string | null,
+  legacyOrderId: string,
+  correlationId: string,
+): Promise<void> {
+  try {
+    // Resolve new orders.id from the presented_new row (which has org+marketplace+order_id).
+    const { data: presented } = await admin
+      .from("marketplace_orders_presented_new")
+      .select("organizations_id, marketplace, marketplace_order_id")
+      .eq("id", legacyOrderId)
+      .maybeSingle();
+
+    if (!presented?.organizations_id || !presented?.marketplace_order_id) return;
+
+    const { data: newOrder } = await admin
+      .from("orders")
+      .select("id")
+      .eq("organization_id", presented.organizations_id)
+      .eq("marketplace", presented.marketplace)
+      .eq("marketplace_order_id", presented.marketplace_order_id)
+      .maybeSingle();
+
+    if (!newOrder?.id) return;
+
+    const newOrderId = newOrder.id as string;
+
+    // Update order_items.product_id for the matching item.
+    if (externalItemId) {
+      await admin
+        .from("order_items")
+        .update({ product_id: productId })
+        .eq("order_id", newOrderId)
+        .eq("marketplace_item_id", externalItemId);
+    } else {
+      // Fallback: link the first unlinked item.
+      await admin
+        .from("order_items")
+        .update({ product_id: productId })
+        .eq("order_id", newOrderId)
+        .is("product_id", null);
+    }
+
+    // Recompute has_unlinked_items.
+    const { count } = await admin
+      .from("order_items")
+      .select("id", { count: "exact", head: true })
+      .eq("order_id", newOrderId)
+      .is("product_id", null) as { count: number | null };
+
+    const hasUnlinked = (count ?? 0) > 0;
+
+    await admin
+      .from("orders")
+      .update({ has_unlinked_items: hasUnlinked })
+      .eq("id", newOrderId);
+
+    // If now fully linked, call reserve_stock_for_order_v2.
+    if (!hasUnlinked) {
+      const { data: storageId } = await admin.rpc("fn_get_default_storage", {
+        p_org_id: presented.organizations_id,
+      });
+      if (storageId) {
+        await admin.rpc("reserve_stock_for_order_v2", {
+          p_order_id: newOrderId,
+          p_storage_id: storageId,
+        });
+      }
+    }
+
+    console.log("linked-products-item sync_new_tables_done", { correlationId, newOrderId, hasUnlinked });
+  } catch (e) {
+    // Non-fatal — legacy tables already updated successfully.
+    console.error("linked-products-item sync_new_tables_error", {
+      correlationId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
 serve(async (req) => {
   try {
     const preCorrId = req.headers.get("x-request-id") || req.headers.get("x-correlation-id") || crypto.randomUUID();
@@ -233,6 +320,10 @@ serve(async (req) => {
           .eq("job_type", "reserve");
       }
     } catch (_) {}
+
+    // C0-T15: Dual-write — also update the new Cycle 0 order_items + orders tables.
+    await syncToNewOrdersTables(admin, productId, externalItemId || null, orderId, correlationId);
+
     try {
       const marketplaceName = String((presented as any)?.marketplace || "");
       const fn =

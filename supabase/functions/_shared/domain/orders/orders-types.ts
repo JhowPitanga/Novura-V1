@@ -85,6 +85,8 @@ export interface OrderInsertRow {
   delivered_at: string | null;
   canceled_at: string | null;
   last_synced_at: string;
+  internal_status?: string;
+  has_unlinked_items?: boolean;
 }
 
 /** Row shape for order_items table insert (Cycle 0 schema). */

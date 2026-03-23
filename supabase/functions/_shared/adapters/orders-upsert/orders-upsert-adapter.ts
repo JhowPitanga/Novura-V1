@@ -1,7 +1,10 @@
 /**
  * Normalizer adapter: implements OrdersUpsertPort. All order upsert logic (orders, order_items, order_shipping, order_status_history) in one place.
+ * C0-T12: computes internal_status + has_unlinked_items after writing items.
+ * C0-T14: detects internal_status transitions and calls stock RPCs directly (no inventory_jobs).
  */
 
+import { computeInternalStatus, OrderStatus } from "../../domain/orders/order-status.ts";
 import type {
   NormalizedOrder,
   NormalizedOrderItem,
@@ -16,6 +19,7 @@ import type { OrdersUpsertPort } from "../../ports/orders-upsert-port.ts";
 import type { SupabaseClient } from "../infra/supabase-client.ts";
 
 const ORDERS_CONFLICT = "organization_id,marketplace,marketplace_order_id";
+const ITEMS_CONFLICT = "order_id,marketplace_item_id";
 
 function mapOrderRow(organizationId: string, order: NormalizedOrder): OrderInsertRow {
   return {
@@ -86,6 +90,7 @@ type EnsureOrderRowOk = {
   created: boolean;
   previousMarketplaceStatus: string | null;
   previousStatus: string | null;
+  previousInternalStatus: string | null;
 };
 
 type EnsureOrderRowError = { error: string };
@@ -100,7 +105,7 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
         return { success: false, order_id: null, created: false, error: rowResult.error };
       }
 
-      const { orderId, created, previousMarketplaceStatus, previousStatus } = rowResult;
+      const { orderId, created, previousMarketplaceStatus, previousStatus, previousInternalStatus } = rowResult;
       const marketplaceChanged = previousMarketplaceStatus !== order.marketplace_status;
       const statusChanged = previousStatus !== (order.status ?? null);
       if (marketplaceChanged || statusChanged) {
@@ -114,7 +119,19 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
         );
       }
 
-      await this.replaceOrderItems(admin, orderId, order.items);
+      // UPSERT items (preserves product_id on existing rows).
+      await this.upsertOrderItems(admin, orderId, order.items);
+
+      // Compute has_unlinked_items and internal_status after items are written.
+      const hasUnlinked = await this.countUnlinkedItems(admin, orderId) > 0;
+      const newInternalStatus = computeInternalStatus(order.marketplace, order.marketplace_status, hasUnlinked);
+      await this.updateInternalStatus(admin, orderId, newInternalStatus, hasUnlinked);
+
+      // C0-T14: trigger stock RPCs on internal_status transitions.
+      if (newInternalStatus !== previousInternalStatus) {
+        await this.handleStockTransition(admin, orderId, newInternalStatus, organization_id);
+      }
+
       if (order.shipping) {
         await this.upsertOrderShipping(admin, orderId, order.shipping);
       }
@@ -133,16 +150,17 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
   ): Promise<EnsureOrderRowOk | EnsureOrderRowError> {
     const { data: existingData } = await supabase
       .from("orders")
-      .select("id, marketplace_status, status")
+      .select("id, marketplace_status, status, internal_status")
       .eq("organization_id", organizationId)
       .eq("marketplace", order.marketplace)
       .eq("marketplace_order_id", order.marketplace_order_id)
       .maybeSingle();
 
-    type ExistingRow = { id: string; marketplace_status: string | null; status: string | null } | null;
+    type ExistingRow = { id: string; marketplace_status: string | null; status: string | null; internal_status: string | null } | null;
     const existing = existingData as ExistingRow;
     const previousMarketplaceStatus = existing?.marketplace_status ?? null;
     const previousStatus = existing?.status ?? null;
+    const previousInternalStatus = existing?.internal_status ?? null;
 
     const row = mapOrderRow(organizationId, order);
     const { data: upsertedData, error: orderErr } = await supabase
@@ -158,7 +176,7 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
     const orderId = upserted?.id ?? "";
     const created = !existing;
 
-    return { orderId, created, previousMarketplaceStatus, previousStatus };
+    return { orderId, created, previousMarketplaceStatus, previousStatus, previousInternalStatus };
   }
 
   private async appendStatusHistory(
@@ -176,20 +194,80 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
     } as never);
   }
 
-  private async replaceOrderItems(
+  /**
+   * UPSERT items preserving product_id.
+   * ON CONFLICT (order_id, marketplace_item_id): update metadata but never overwrite product_id.
+   */
+  private async upsertOrderItems(
     supabase: SupabaseClient,
     orderId: string,
     items: NormalizedOrderItem[],
   ): Promise<void> {
-    const { error: deleteErr } = await supabase.from("order_items").delete().eq("order_id", orderId);
-    if (deleteErr) {
-      console.error("[orders-upsert] order_items delete failed", deleteErr.message);
-      return;
-    }
     if (items.length === 0) return;
     const rows = items.map((item) => mapItemRow(orderId, item));
-    const { error: insertErr } = await supabase.from("order_items").insert(rows as never);
-    if (insertErr) console.error("[orders-upsert] order_items insert failed", insertErr.message);
+    const { error } = await supabase
+      .from("order_items")
+      .upsert(rows as never, {
+        onConflict: ITEMS_CONFLICT,
+        ignoreDuplicates: false,
+      });
+    if (error) console.error("[orders-upsert] order_items upsert failed", error.message);
+  }
+
+  private async countUnlinkedItems(supabase: SupabaseClient, orderId: string): Promise<number> {
+    const { count } = await supabase
+      .from("order_items")
+      .select("id", { count: "exact", head: true })
+      .eq("order_id", orderId)
+      .is("product_id", null) as { count: number | null };
+    return count ?? 0;
+  }
+
+  private async updateInternalStatus(
+    supabase: SupabaseClient,
+    orderId: string,
+    internalStatus: string,
+    hasUnlinkedItems: boolean,
+  ): Promise<void> {
+    const { error } = await supabase
+      .from("orders")
+      .update({ internal_status: internalStatus, has_unlinked_items: hasUnlinkedItems } as never)
+      .eq("id", orderId);
+    if (error) console.error("[orders-upsert] internal_status update failed", error.message);
+  }
+
+  /**
+   * C0-T14: Call stock RPCs synchronously when internal_status transitions.
+   * reserve is NOT called here — it's triggered during manual product linking.
+   */
+  private async handleStockTransition(
+    admin: SupabaseClient,
+    orderId: string,
+    newInternalStatus: string,
+    organizationId: string,
+  ): Promise<void> {
+    try {
+      const { data: storageId } = await (admin as any).rpc("fn_get_default_storage", {
+        p_org_id: organizationId,
+      });
+      if (!storageId) return;
+
+      if (newInternalStatus === OrderStatus.CANCELLED || newInternalStatus === OrderStatus.RETURNED) {
+        const { error } = await (admin as any).rpc("refund_stock_for_order_v2", {
+          p_order_id: orderId,
+          p_storage_id: storageId,
+        });
+        if (error) console.error("[orders-upsert] refund_stock_for_order_v2 failed", error.message);
+      } else if (newInternalStatus === OrderStatus.SHIPPED) {
+        const { error } = await (admin as any).rpc("consume_stock_for_order_v2", {
+          p_order_id: orderId,
+          p_storage_id: storageId,
+        });
+        if (error) console.error("[orders-upsert] consume_stock_for_order_v2 failed", error.message);
+      }
+    } catch (e) {
+      console.error("[orders-upsert] handleStockTransition error", e instanceof Error ? e.message : String(e));
+    }
   }
 
   private async upsertOrderShipping(

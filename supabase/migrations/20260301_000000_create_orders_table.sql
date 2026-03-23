@@ -36,6 +36,7 @@ CREATE INDEX orders_marketplace_status_idx ON orders (marketplace_status);
 CREATE INDEX orders_created_at_idx ON orders (created_at DESC);
 CREATE INDEX orders_org_created_idx ON orders (organization_id, created_at DESC);
 
+
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "org_isolation" ON orders
   USING (organization_id = (SELECT organization_id FROM profiles WHERE id = auth.uid()));
