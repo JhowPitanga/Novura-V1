@@ -13,6 +13,30 @@
 | Cycle 1 | O Primeiro Minuto | `docs/CYCLE_1_PRIMEIRO_MINUTO.md` | [C1-README](./C1-README.md) |
 | Cycle 2 | Seu Caixa | `docs/CYCLE_2_SEU_CAIXA.md` | [C2-README](./C2-README.md) |
 | Cycle 3 | Visibilidade e Conformidade | `docs/CYCLE_3_VISIBILIDADE.md` | [C3-README](./C3-README.md) |
+| **Status Engine** | **Motor de Status de Pedidos (Refatoração)** | `docs/prds/STATUS-ENGINE-README.md` | Below |
+
+---
+
+## PRD Index — Status Engine (Motor de Status de Pedidos)
+
+> **Motivação:** Move o cálculo de status de pedidos de triggers SQL (~500 linhas PL/pgSQL) para
+> uma camada de domínio TypeScript testável, usando Arquitetura Hexagonal + DDD + Chain of Responsibility.
+> Elimina duplicação entre trigger SQL e edge functions `*-process-presented`.
+
+Tasks devem ser implementadas em ordem. Cada task depende da anterior.
+
+| ID | Título | Status | Depende de |
+|---|---|---|---|
+| [SE-T1](./STATUS-ENGINE-T1-dominio.md) | Camada de Domínio: Entidades e Value Objects | 🔴 Não iniciado | — |
+| [SE-T2](./STATUS-ENGINE-T2-portas.md) | Ports (Interfaces): Contratos Hexagonais | 🔴 Não iniciado | SE-T1 |
+| [SE-T3](./STATUS-ENGINE-T3-calculadora.md) | OrderStatusEngine: Chain of Responsibility (9 regras) | 🔴 Não iniciado | SE-T1 |
+| [SE-T4](./STATUS-ENGINE-T4-adaptadores.md) | Infrastructure Adapters: Implementações Supabase | 🔴 Não iniciado | SE-T2 |
+| [SE-T5](./STATUS-ENGINE-T5-caso-uso-vincular.md) | Use Case: Vincular Produto a Item de Pedido | 🔴 Não iniciado | SE-T2, SE-T3, SE-T4 |
+| [SE-T6](./STATUS-ENGINE-T6-caso-uso-status.md) | Use Cases: Recalcular Status + Marcar Etiqueta | 🔴 Não iniciado | SE-T2, SE-T3, SE-T4 |
+| [SE-T7](./STATUS-ENGINE-T7-caso-uso-estoque.md) | Use Case: Side Effects de Estoque | 🔴 Não iniciado | SE-T2, SE-T4 |
+| [SE-T8](./STATUS-ENGINE-T8-migracao-db.md) | Migration: Coluna `status` e Campos de Sinais | 🔴 Não iniciado | C0-T1 |
+| [SE-T9](./STATUS-ENGINE-T9-edge-functions.md) | Wiring: Integrar Engine nas Edge Functions | 🔴 Não iniciado | SE-T3 a SE-T7, SE-T8 |
+| [SE-T10](./STATUS-ENGINE-T10-frontend.md) | Frontend: Hooks, Componentes e LinkOrderModal | 🔴 Não iniciado | SE-T8, SE-T9 |
 
 ---
 

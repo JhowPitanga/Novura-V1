@@ -4,5 +4,9 @@
       "Bash(xargs grep:*)",
       "Bash(grep -l \"CONSTRAINT.*status\\\\|CHECK.*status\\\\|status.*IN\\\\|status.*ENUM\" /c/Users/jonat/OneDrive/Documentos/GitHub/Novura-V1/supabase/migrations/*.sql)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "supabase"
+  ],
+  "enableAllProjectMcpServers": true
 }
