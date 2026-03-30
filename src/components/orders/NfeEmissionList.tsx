@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { supabase, SUPABASE_PUBLISHABLE_KEY } from '@/integrations/supabase/client';
 import { useToast } from "@/hooks/use-toast";
-import { Paginacao } from "./Paginacao";
+import { OrderPagination as Paginacao } from "./Pagination";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { Settings, Loader2 } from "lucide-react";
@@ -105,48 +105,54 @@ export function NfeEmissionList({ onOpenDetalhesPedido, onRefreshPedidos }: NfeE
         const { data: orgRes } = await supabase.rpc('get_current_user_organization_id');
         orgId = (Array.isArray(orgRes) ? orgRes?.[0] : orgRes) || null;
       }
+      const emisStatuses = ['Emissao NF', 'Emissão NF', 'EMISSÃO NF', 'Subir xml', 'subir xml'];
       let q: any = (supabase as any)
-        .from('marketplace_orders_presented_new')
+        .from('orders')
         .select(`
           id,
           marketplace_order_id,
           created_at,
           marketplace,
-          shipping_type,
-          status_interno,
-          first_item_title,
-          first_item_sku,
-          items_total_quantity,
-          first_item_id
+          gross_amount,
+          status,
+          buyer_name,
+          pack_id,
+          order_items (title, quantity, sku, marketplace_item_id),
+          order_shipping (logistic_type)
         `, { count: 'exact' })
+        .in('status', emisStatuses)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
       if (orgId) {
-        q = (q as any).eq('organizations_id', orgId);
+        q = (q as any).eq('organization_id', orgId);
       }
       const { data, error } = await q;
       if (error) throw error;
       const rows: any[] = Array.isArray(data) ? data : [];
-      const parsed: OrderData[] = rows
-        .filter((o: any) => String(o?.status_interno || '') === 'Emissao NF')
-        .map((o: any) => ({
+      const parsed: OrderData[] = rows.map((o: any) => {
+        const items = Array.isArray(o?.order_items) ? o.order_items : [];
+        const firstItem = items[0];
+        const shipping = Array.isArray(o?.order_shipping) ? o.order_shipping[0] : o?.order_shipping;
+        const totalQty = items.reduce((sum: number, it: any) => sum + Number(it?.quantity ?? 0), 0) || 1;
+        return {
           id: String(o.id),
           marketplace_order_id: String(o.marketplace_order_id || o.id),
-          customer_name: '',
-          order_total: 0,
-          status: String(o.status_interno || ''),
+          customer_name: String(o.buyer_name ?? ''),
+          order_total: Number(o.gross_amount ?? 0),
+          status: String(o.status ?? ''),
           created_at: String(o.created_at),
-          order_items: [
-            {
-              product_name: String(o.first_item_title || ''),
-              quantity: Number(o.items_total_quantity || 1),
-              sku: String(o.first_item_sku || '')
-            }
-          ],
-          marketplace: String(o.marketplace || ''),
-          platform_id: String(o.first_item_id || ''),
-          shipping_type: String(o.shipping_type || '')
-        }));
+          order_items: items.length > 0
+            ? items.map((it: any) => ({
+                product_name: String(it?.title ?? ''),
+                quantity: Number(it?.quantity ?? 1),
+                sku: String(it?.sku ?? ''),
+              }))
+            : [{ product_name: '', quantity: totalQty, sku: '' }],
+          marketplace: String(o.marketplace ?? ''),
+          platform_id: String(firstItem?.marketplace_item_id ?? o.pack_id ?? o.marketplace_order_id ?? o.id),
+          shipping_type: String(shipping?.logistic_type ?? ''),
+        };
+      });
       setPedidos(parsed);
       const initialStatus: Record<string, string> = {};
       for (const p of parsed) {

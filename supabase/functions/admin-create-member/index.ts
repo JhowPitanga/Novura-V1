@@ -1,5 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
 import { buildLimitedPermissions, type Permissions } from "../_shared/domain/user-permissions.ts";
 
 interface CreateMemberPayload {

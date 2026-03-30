@@ -20,13 +20,39 @@ export default function MercadoLivreCallback() {
 
     const run = async () => {
       try {
+        // Validate CSRF: the `state` returned by ML must match the csrf we stored
+        // in sessionStorage before the redirect. This prevents CSRF attacks where
+        // an attacker tricks the user into completing someone else's OAuth flow.
+        let csrfValid = true;
+        let storedCsrf: string | null = null;
+        let codeVerifier: string | null = null;
+        try {
+          storedCsrf = sessionStorage.getItem('ml_oauth_csrf');
+          codeVerifier = sessionStorage.getItem('ml_pkce_verifier');
+          if (storedCsrf && state) {
+            const parsed = JSON.parse(atob(state));
+            if (parsed?.csrf && parsed.csrf !== storedCsrf) csrfValid = false;
+          }
+        } catch (_) { /* sessionStorage unavailable — skip CSRF check */ }
+
+        if (!csrfValid) {
+          throw new Error("Falha de segurança: parâmetro state inválido. Tente conectar novamente.");
+        }
+
+        // Send the PKCE verifier from sessionStorage (not from URL/state).
+        // The edge function uses it to complete the authorization code exchange.
         const { data, error } = await supabase.functions.invoke("mercado-livre-callback", {
-          body: { code, state },
+          body: { code, state, code_verifier: codeVerifier ?? undefined },
         });
         if (error || (data as any)?.error) {
           throw new Error(error?.message || (data as any)?.error || "Falha ao concluir autorização");
         }
         setStatus("success");
+        // Clean up sessionStorage — verifier and csrf are single-use
+        try {
+          sessionStorage.removeItem('ml_pkce_verifier');
+          sessionStorage.removeItem('ml_oauth_csrf');
+        } catch (_) {}
         // Se foi aberto em janela popup, notifica a janela pai e tenta fechar
         try {
           if (window.opener) {
@@ -43,6 +69,11 @@ export default function MercadoLivreCallback() {
         console.error("Erro no callback do Mercado Livre:", e);
         setStatus("error");
         setErrorMsg(e?.message || "Erro desconhecido");
+        // Clean up even on failure — a failed flow should not leave stale keys
+        try {
+          sessionStorage.removeItem('ml_pkce_verifier');
+          sessionStorage.removeItem('ml_oauth_csrf');
+        } catch (_) {}
       }
     };
 

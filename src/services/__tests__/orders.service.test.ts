@@ -1,16 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  getCompanyIdForOrg,
-  syncMercadoLivreOrders,
-  syncShopeeOrders,
-  syncNfeForOrder,
-  submitXmlSend,
-  arrangeShopeeShipment,
   emitNfeQueue,
-  fetchShopeeShops,
-  markOrdersPrinted,
-  updateOrdersInternalStatus,
   fetchNfeStatusRows,
+  fetchShopeeShops,
+  getCompanyIdForOrg,
+  markOrdersPrinted,
+  syncMercadoLivreOrders,
+  syncNfeForOrder,
+  updateOrdersInternalStatus
 } from "../orders.service";
 
 // Mock supabase
@@ -264,8 +261,8 @@ describe("updateOrdersInternalStatus", () => {
 
     await updateOrdersInternalStatus(["order-1"], "Processando NF");
 
-    expect(mockFrom).toHaveBeenCalledWith("marketplace_orders_presented_new");
-    expect(mockUpdate).toHaveBeenCalledWith({ status_interno: "Processando NF" });
+    expect(mockFrom).toHaveBeenCalledWith("orders");
+    expect(mockUpdate).toHaveBeenCalledWith({ status: "Processando NF" });
   });
 
   it("does nothing for empty array", async () => {
@@ -275,9 +272,9 @@ describe("updateOrdersInternalStatus", () => {
 });
 
 describe("fetchNfeStatusRows", () => {
-  it("queries notas_fiscais with order and marketplace ids", async () => {
+  it("queries invoices with order and marketplace ids", async () => {
     const mockOr = vi.fn().mockResolvedValue({
-      data: [{ order_id: "o1", status_focus: "autorizado" }],
+      data: [{ order_id: "o1", status: "autorizado", emission_environment: "producao" }],
     });
     const mockEq = vi.fn().mockReturnValue({ or: mockOr });
     mockFrom.mockReturnValue({
@@ -288,9 +285,11 @@ describe("fetchNfeStatusRows", () => {
 
     const result = await fetchNfeStatusRows("company-1", ["o1"], ["mk1"]);
 
-    expect(mockFrom).toHaveBeenCalledWith("notas_fiscais");
+    expect(mockFrom).toHaveBeenCalledWith("invoices");
     expect(result).toHaveLength(1);
+    // normalizeInvoiceToNfeRow maps status → status_focus, emission_environment → emissao_ambiente
     expect(result[0].status_focus).toBe("autorizado");
+    expect(result[0].emissao_ambiente).toBe("producao");
   });
 
   it("returns empty array when no data", async () => {

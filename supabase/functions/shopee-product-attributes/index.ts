@@ -1,9 +1,9 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { getField, getStr } from "../_shared/adapters/object-utils.ts";
-import { importAesGcmKey, tryDecryptToken, hmacSha256Hex, aesGcmEncryptToString } from "../_shared/adapters/token-utils.ts";
-import { normalizeLanguage as normalizeLanguageShared } from "../_shared/domain/shopee-language.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { getField, getStr } from "../_shared/adapters/infra/object-utils.ts";
+import { importAesGcmKey, tryDecryptToken, hmacSha256Hex, aesGcmEncryptToString } from "../_shared/adapters/infra/token-utils.ts";
+import { normalizeLanguage as normalizeLanguageShared } from "../_shared/domain/shopee/shopee-language.ts";
 
 function normalizeLanguage(input: string | null): string | null {
   const s = normalizeLanguageShared(input);
