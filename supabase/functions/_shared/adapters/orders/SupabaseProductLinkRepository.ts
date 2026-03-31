@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import type { SupabaseClient } from "../infra/supabase-client.ts";
 import type { IProductLinkRepository, OrderItemLink } from "../../domain/orders/ports/IProductLinkRepository.ts";
 
 type LinkRow = { readonly organizations_id: string; readonly sku: string; readonly product_id: string };
@@ -31,5 +31,21 @@ export class SupabaseProductLinkRepository implements IProductLinkRepository {
       sku: row.sku,
       productId: row.product_id,
     }));
+  }
+
+  async upsertPermanentLink(params: {
+    readonly organizationId: string;
+    readonly marketplaceItemId: string;
+    readonly productId: string;
+  }): Promise<void> {
+    const { error } = await this.supabase.from("marketplace_item_product_links").upsert(
+      {
+        organizations_id: params.organizationId,
+        marketplace_item_id: params.marketplaceItemId,
+        product_id: params.productId,
+      },
+      { onConflict: "organizations_id,marketplace_item_id" },
+    );
+    if (error) throw new Error(`SupabaseProductLinkRepository.upsertPermanentLink failed: ${error.message}`);
   }
 }

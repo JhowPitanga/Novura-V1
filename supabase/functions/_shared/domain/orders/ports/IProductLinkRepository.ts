@@ -15,4 +15,14 @@ export interface IProductLinkRepository {
    * Implementations must be idempotent and retry-safe.
    */
   listLinks(organizationId: string, skus: ReadonlyArray<string>): Promise<ReadonlyArray<OrderItemLink>>;
+
+  /**
+   * Persists a permanent link between a marketplace item and catalog product.
+   * Implementations must be idempotent for repeated calls with same payload.
+   */
+  upsertPermanentLink(params: {
+    readonly organizationId: string;
+    readonly marketplaceItemId: string;
+    readonly productId: string;
+  }): Promise<void>;
 }

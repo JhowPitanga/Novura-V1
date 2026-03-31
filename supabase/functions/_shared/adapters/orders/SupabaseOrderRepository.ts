@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import type { SupabaseClient } from "../infra/supabase-client.ts";
 import type { IOrderRepository, OrderRecord, OrderRecordItem } from "../../domain/orders/ports/IOrderRepository.ts";
 import type { MarketplaceSignals } from "../../domain/orders/MarketplaceSignals.ts";
 import type { OrderStatusChangedEvent } from "../../domain/orders/OrderDomainEvents.ts";
