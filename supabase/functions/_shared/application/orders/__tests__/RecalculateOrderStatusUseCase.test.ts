@@ -1,7 +1,9 @@
 import { RecalculateOrderStatusUseCase } from "../RecalculateOrderStatusUseCase.ts";
 import { OrderStatusEngine } from "../OrderStatusEngine.ts";
+import { HandleStockSideEffectsUseCase } from "../HandleStockSideEffectsUseCase.ts";
 import type { OrderStatusChangedEvent } from "../../../domain/orders/OrderDomainEvents.ts";
 import { OrderStatus } from "../../../domain/orders/OrderStatus.ts";
+import type { IInventoryPort } from "../../../domain/orders/ports/IInventoryPort.ts";
 import type { IOrderRepository, OrderRecord } from "../../../domain/orders/ports/IOrderRepository.ts";
 
 function assertEquals<T>(actual: T, expected: T): void {
@@ -22,6 +24,12 @@ class MockOrderRepository implements IOrderRepository {
   async updateOrderItemsProductId(_orderId: string, _items: ReadonlyArray<{ readonly id: string; readonly productId: string }>): Promise<void> {}
   async updateInternalFlags(_orderId: string, _flags: Readonly<{ isPrintedLabel?: boolean; isPickupDone?: boolean }>): Promise<void> {}
   async addStatusHistory(_orderId: string, _event: OrderStatusChangedEvent): Promise<void> {}
+}
+
+class MockInventoryPort implements IInventoryPort {
+  async reserveStockNow(_orderId: string, _items: ReadonlyArray<{ orderItemId: string; productId: string; quantity: number }>): Promise<void> {}
+  async enqueueConsumeStock(_orderId: string): Promise<void> {}
+  async enqueueRefundStock(_orderId: string): Promise<void> {}
 }
 
 const baseSignalsOrder = (items: OrderRecord["items"]): OrderRecord => ({
@@ -49,7 +57,8 @@ const baseSignalsOrder = (items: OrderRecord["items"]): OrderRecord => ({
 
 runTest("recalculate moves to READY_TO_PRINT when all items are linked", async () => {
   const repo = new MockOrderRepository(baseSignalsOrder([{ id: "i1", productId: "p1", marketplaceItemId: "m1", quantity: 1 }]));
-  const result = await new RecalculateOrderStatusUseCase(repo, new OrderStatusEngine()).execute("order-1");
+  const stock = new HandleStockSideEffectsUseCase(new MockInventoryPort());
+  const result = await new RecalculateOrderStatusUseCase(repo, new OrderStatusEngine(), stock).execute("order-1");
   assertEquals(result?.newStatus, OrderStatus.READY_TO_PRINT);
   assertEquals(repo.updates, 1);
 });
@@ -59,7 +68,8 @@ runTest("recalculate moves to UNLINKED when there are orphan items", async () =>
     { id: "i1", productId: "p1", marketplaceItemId: "m1", quantity: 1 },
     { id: "i2", productId: null, marketplaceItemId: "m2", quantity: 1 },
   ]));
-  const result = await new RecalculateOrderStatusUseCase(repo, new OrderStatusEngine()).execute("order-1");
+  const stock = new HandleStockSideEffectsUseCase(new MockInventoryPort());
+  const result = await new RecalculateOrderStatusUseCase(repo, new OrderStatusEngine(), stock).execute("order-1");
   assertEquals(result?.newStatus, OrderStatus.UNLINKED);
   assertEquals(repo.updates, 1);
 });
