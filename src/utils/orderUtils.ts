@@ -136,28 +136,36 @@ export function mapStatusFocusToBadge(status: string | undefined): { label: stri
 }
 
 export function getStatusColor(status: string): string {
-  const s = String(status || '').trim().toLowerCase();
+  const s = String(status || '').trim().toLowerCase().replace(/\s+/g, '_');
   switch (s) {
     case 'pendente':
-    case 'a vincular':
+    case 'pending':
+    case 'a_vincular':
+    case 'unlinked':
       return 'bg-yellow-500 hover:bg-yellow-500 text-white';
-    case 'emissao nf':
+    case 'emissao_nf':
+    case 'invoice_pending':
       return 'bg-orange-500 hover:bg-orange-500 text-white';
-    case 'subir xml':
+    case 'subir_xml':
       return 'bg-blue-500 hover:bg-blue-500 text-white';
     case 'nf emitida':
     case 'impressao':
+    case 'ready_to_print':
       return 'bg-purple-600 hover:bg-purple-700 text-white';
-    case 'aguardando coleta':
+    case 'aguardando_coleta':
+    case 'awaiting_pickup':
       return 'bg-blue-500 hover:bg-blue-500 text-white';
     case 'enviado':
+    case 'shipped':
       return 'bg-green-500 hover:bg-green-500 text-white';
     case 'entregue':
       return 'bg-green-600 hover:bg-green-600 text-white';
     case 'cancelado':
+    case 'cancelled':
       return 'bg-red-500 hover:bg-red-500 text-white';
     case 'devolvido':
     case 'devolução':
+    case 'returned':
       return 'bg-gray-500 hover:bg-gray-500 text-white';
     default:
       return 'bg-gray-500 hover:bg-gray-500 text-white';

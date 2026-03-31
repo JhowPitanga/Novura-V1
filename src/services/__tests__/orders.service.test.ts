@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   emitNfeQueue,
+  fetchAllOrders,
   fetchNfeStatusRows,
   fetchShopeeShops,
   getCompanyIdForOrg,
+  linkProductToOrderItems,
   markOrdersPrinted,
   syncMercadoLivreOrders,
   syncNfeForOrder,
@@ -15,12 +17,13 @@ const mockFrom = vi.fn();
 const mockRpc = vi.fn();
 const mockFunctionsInvoke = vi.fn();
 const mockAuthGetSession = vi.fn();
+const mockAuthGetUser = vi.fn();
 
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
     from: (...args: any[]) => mockFrom(...args),
     rpc: (...args: any[]) => mockRpc(...args),
-    auth: { getSession: () => mockAuthGetSession() },
+    auth: { getSession: () => mockAuthGetSession(), getUser: () => mockAuthGetUser() },
     functions: { invoke: (...args: any[]) => mockFunctionsInvoke(...args) },
   },
   SUPABASE_URL: "https://test.supabase.co",
@@ -35,6 +38,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockAuthGetSession.mockResolvedValue({
     data: { session: { access_token: "test-token" } },
+  });
+  mockAuthGetUser.mockResolvedValue({
+    data: { user: { id: "user-1" } },
+  });
+  mockRpc.mockImplementation((fnName: string) => {
+    if (fnName === "get_user_organization_id") {
+      return Promise.resolve({ data: "org-1", error: null });
+    }
+    return Promise.resolve({ data: null, error: null });
   });
 });
 
@@ -233,20 +245,22 @@ describe("emitNfeQueue", () => {
 });
 
 describe("markOrdersPrinted", () => {
-  it("calls rpc with order ids", async () => {
-    mockRpc.mockResolvedValue({ error: null });
+  it("calls edge function with order ids and organizationId", async () => {
+    mockFunctionsInvoke.mockResolvedValue({ error: null });
 
-    await markOrdersPrinted(["order-1", "order-2"]);
+    await markOrdersPrinted(["order-1", "order-2"], "org-1");
 
-    expect(mockRpc).toHaveBeenCalledWith(
-      "rpc_marketplace_order_print_label",
-      { p_order_ids: ["order-1", "order-2"] }
+    expect(mockFunctionsInvoke).toHaveBeenCalledWith(
+      "mark-labels-printed",
+      expect.objectContaining({
+        body: { orderIds: ["order-1", "order-2"], organizationId: "org-1" },
+      })
     );
   });
 
   it("does nothing for empty array", async () => {
-    await markOrdersPrinted([]);
-    expect(mockRpc).not.toHaveBeenCalled();
+    await markOrdersPrinted([], "org-1");
+    expect(mockFunctionsInvoke).not.toHaveBeenCalled();
   });
 });
 
@@ -303,5 +317,128 @@ describe("fetchNfeStatusRows", () => {
 
     const result = await fetchNfeStatusRows("company-1", ["o1"], ["mk1"]);
     expect(result).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T10 — fetchAllOrders (T10 §2.1: reads from 'orders', not legacy view)
+// ---------------------------------------------------------------------------
+
+describe("fetchAllOrders", () => {
+  it("queries the 'orders' table (not marketplace_orders_presented_new)", async () => {
+    mockFrom.mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          order: vi.fn().mockResolvedValue({ data: [], error: null }),
+        }),
+      }),
+    });
+
+    await fetchAllOrders("org-1");
+
+    expect(mockFrom).toHaveBeenCalledWith("orders");
+  });
+
+  it("throws when Supabase returns an error", async () => {
+    mockFrom.mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          order: vi.fn().mockResolvedValue({
+            data: null,
+            error: { message: "DB error" },
+          }),
+        }),
+      }),
+    });
+
+    await expect(fetchAllOrders("org-1")).rejects.toThrow("fetchAllOrders failed: DB error");
+  });
+
+  it("returns an empty array when data is null", async () => {
+    mockFrom.mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          order: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    });
+
+    const result = await fetchAllOrders("org-1");
+    expect(result).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T10 — linkProductToOrderItems (T10 §2.4)
+// ---------------------------------------------------------------------------
+
+describe("linkProductToOrderItems", () => {
+  it("invokes the link-order-product edge function", async () => {
+    mockFunctionsInvoke.mockResolvedValue({
+      data: { remainingUnlinkedCount: 0, statusChanged: true, newStatus: "ready_to_print" },
+      error: null,
+    });
+
+    const result = await linkProductToOrderItems({
+      orderId: "order-1",
+      organizationId: "org-1",
+      marketplace: "mercado_livre",
+      links: [
+        {
+          orderItemId: "item-1",
+          marketplaceItemId: "ml-item-1",
+          variationId: "var-1",
+          productId: "prod-1",
+          isPermanent: true,
+        },
+      ],
+    });
+
+    expect(mockFunctionsInvoke).toHaveBeenCalledWith(
+      "link-order-product",
+      expect.objectContaining({
+        body: expect.objectContaining({
+          orderId: "order-1",
+          organizationId: "org-1",
+        }),
+      })
+    );
+    expect(result.statusChanged).toBe(true);
+    expect(result.newStatus).toBe("ready_to_print");
+  });
+
+  it("throws when edge function returns an error", async () => {
+    mockFunctionsInvoke.mockResolvedValue({
+      data: null,
+      error: { message: "Function error" },
+    });
+
+    await expect(
+      linkProductToOrderItems({
+        orderId: "o1",
+        organizationId: "org-1",
+        marketplace: "shopee",
+        links: [],
+      })
+    ).rejects.toThrow("linkProductToOrderItems failed: Function error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T10 — markOrdersPrinted now calls edge function (T10 §2.3)
+// ---------------------------------------------------------------------------
+
+describe("markOrdersPrinted (T10 §2.3)", () => {
+  it("passes organizationId explicitly to mark-labels-printed", async () => {
+    mockFunctionsInvoke.mockResolvedValue({ error: null });
+
+    await markOrdersPrinted(["order-1"], "org-1");
+
+    expect(mockFunctionsInvoke).toHaveBeenCalledWith(
+      "mark-labels-printed",
+      expect.objectContaining({
+        body: { orderIds: ["order-1"], organizationId: "org-1" },
+      })
+    );
   });
 });

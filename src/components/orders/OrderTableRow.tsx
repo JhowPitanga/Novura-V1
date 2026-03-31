@@ -230,7 +230,7 @@ export function OrderTableRow({
             </DropdownMenu>
           </div>
         ) : (
-          (handlers.norm(pedido.internalStatus) === 'processando nf' || nfeState.processingIdsSet.has(pedido.id))
+            (handlers.norm(pedido.internalStatus) === 'processando_nf' || nfeState.processingIdsSet.has(pedido.id))
             ? (
               <div className="flex items-center justify-center">
                 <Badge className="bg-white text-purple-700 border border-purple-300 h-7 px-2 inline-flex items-center gap-2 rounded-md">

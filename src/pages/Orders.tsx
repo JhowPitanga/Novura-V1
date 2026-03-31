@@ -34,7 +34,7 @@ import { matchStatus, normStatus, useOrderFiltering } from "@/hooks/useOrderFilt
 import { usePrintingSettings } from "@/hooks/usePrintingSettings";
 import { supabase } from "@/integrations/supabase/client";
 import { calendarEndOfDaySPEpochMs, calendarStartOfDaySPEpochMs, eventToSPEpochMs, formatDateTimeSP } from "@/lib/datetime";
-import { arrangeShopeeShipment, emitNfeQueue, fetchAllOrders, fetchOrderByInternalId, fetchShopeeShops as fetchShopeeShopsSvc, getCompanyIdForOrg, markOrdersPrinted, resolveOrgId, submitXmlSend, syncMercadoLivreOrders, syncNfeForOrder, syncShopeeOrders, updateOrdersInternalStatus } from "@/services/orders.service";
+import { arrangeShopeeShipment, emitNfeQueue, fetchAllOrders, fetchOrderById as fetchOrderByIdService, fetchOrderByInternalId, fetchShopeeShops as fetchShopeeShopsSvc, getCompanyIdForOrg, markOrdersPrinted, resolveOrgId, submitXmlSend, syncMercadoLivreOrders, syncNfeForOrder, syncShopeeOrders, updateOrdersInternalStatus } from "@/services/orders.service";
 import type { Order } from "@/types/orders";
 import { isAbortLikeError, mapTipoEnvioLabel } from "@/utils/orderUtils";
 import { generateFunctionalPickingListPDF } from "@/utils/pdfGenerators";
@@ -255,14 +255,13 @@ function Pedidos() {
             };
             const matchesSearch = (p: any) => term === "" || p.id?.toLowerCase?.().includes(term) || p.customerName?.toLowerCase?.().includes(term) || (p.sku && p.sku.toLowerCase().includes(term)) || (Array.isArray(p.items) && p.items.some((it: any) => (it?.name && String(it.name).toLowerCase().includes(term)) || (it?.product_name && String(it.product_name).toLowerCase().includes(term))));
             const base = pedidos.filter(p => inDate(p) && matchesSearch(p));
-            const hasStatus = (p: any, arr: string[]) => arr.includes(String(p.internalStatus ?? ''));
-            const cancelado = base.filter(p => hasStatus(p, ['Cancelado', 'Devolução', 'Devolucao'])).length;
-            const enviado = base.filter(p => hasStatus(p, ['Enviado'])).length;
-            const aVincular = base.filter(p => hasStatus(p, ['A vincular', 'A Vincular', 'A VINCULAR'])).length;
-            const emissao = base.filter(p => hasStatus(p, ['Emissao NF', 'Emissão NF', 'EMISSÃO NF', 'Subir xml', 'subir xml'])).length;
-            const impressao = base.filter(p => hasStatus(p, ['Impressao', 'Impressão', 'IMPRESSÃO'])).length;
-            const aguardando = base.filter(p => hasStatus(p, ['Aguardando Coleta', 'Aguardando coleta', 'AGUARDANDO COLETA'])).length;
-            const semEstoque = base.filter(p => String(p.internalStatus ?? '') === 'Sem estoque').length;
+            const cancelado = base.filter(p => matchStatus(p, 'cancelado')).length;
+            const enviado = base.filter(p => matchStatus(p, 'enviado')).length;
+            const aVincular = base.filter(p => matchStatus(p, 'a-vincular')).length;
+            const emissao = base.filter(p => matchStatus(p, 'emissao-nf')).length;
+            const impressao = base.filter(p => matchStatus(p, 'impressao')).length;
+            const aguardando = base.filter(p => matchStatus(p, 'aguardando-coleta')).length;
+            const semEstoque = base.filter(p => normStatus(p.internalStatus) === 'sem_estoque').length;
             const todos = base.length;
             setStatusCountsGlobal({ cancelado, enviado, 'a-vincular': aVincular, 'emissao-nf': emissao, impressao, 'aguardando-coleta': aguardando, 'sem-estoque': semEstoque, todos });
             setCountsReady(true);
@@ -289,7 +288,7 @@ function Pedidos() {
                         startTransition(() => setPedidos(prev => prev.filter(p => p.id !== orderId)));
                     } else if (organizationId && orderId) {
                         try {
-                            const updated = await fetchOrderById(organizationId, orderId);
+                            const updated = await fetchOrderByIdService(organizationId, orderId);
                             startTransition(() => setPedidos(prev => {
                                 const idx = prev.findIndex(p => p.id === orderId);
                                 const next = [...prev];
@@ -904,8 +903,9 @@ function Pedidos() {
     const isPedidoAtrasado = (p: any) => {
         const shipmentStatusLower = String(p?.shipmentStatus ?? '').toLowerCase();
         const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
-        const isOrderCancelledOrReturned = (p?.internalStatus === 'Cancelado' || p?.internalStatus === 'Devolução');
-        if (deliveredStatuses.includes(shipmentStatusLower) || isOrderCancelledOrReturned || String(p?.internalStatus ?? '') === 'Enviado') return false;
+        const normalizedInternalStatus = normStatus(p?.internalStatus);
+        const isOrderCancelledOrReturned = normalizedInternalStatus === 'cancelado' || normalizedInternalStatus === 'devolucao' || normalizedInternalStatus === 'cancelled' || normalizedInternalStatus === 'returned';
+        if (deliveredStatuses.includes(shipmentStatusLower) || isOrderCancelledOrReturned || normalizedInternalStatus === 'enviado' || normalizedInternalStatus === 'shipped') return false;
         const slaStatusLower = String(p?.shippingSla?.status ?? '').toLowerCase();
         const ed = p?.shippingSla?.expectedDate;
         const expired = ed ? (new Date(ed).getTime() - new Date().getTime() <= 0) : false;
@@ -955,7 +955,7 @@ function Pedidos() {
             }
             try {
                 const ids = pedidosToPrint.map((p: any) => p.id);
-                await markOrdersPrinted(ids);
+                if (organizationId) await markOrdersPrinted(ids, organizationId);
             } catch { }
             setSelectedPedidosImpressao([]);
             setSelectedPedidosEmissao([]);
@@ -996,7 +996,7 @@ function Pedidos() {
             }
             setPedidos(prev => prev.map(p => p.id === pedido.id ? { ...p, impressoEtiqueta: true } : p));
             try {
-                await markOrdersPrinted([pedido.id]);
+                if (organizationId) await markOrdersPrinted([pedido.id], organizationId);
             } catch { }
         } catch (err) {
             console.error('Erro ao reimprimir etiqueta ML:', err);
@@ -1092,7 +1092,7 @@ function Pedidos() {
                                     vincularBadgeFilter={vincularBadgeFilter}
                                     onVincularBadgeFilterChange={(v) => setVincularBadgeFilter(v as 'para_vincular' | 'sem_estoque')}
                                     paraVincularCount={(countsReady && statusCountsGlobal && typeof statusCountsGlobal['a-vincular'] === 'number') ? statusCountsGlobal['a-vincular'] : (listReady ? baseFiltered.filter(p => matchStatus(p, 'a-vincular')).length : 0)}
-                                    semEstoqueCount={(countsReady && statusCountsGlobal && typeof statusCountsGlobal['sem-estoque'] === 'number') ? statusCountsGlobal['sem-estoque'] : (listReady ? baseFiltered.filter(p => String(p?.internalStatus ?? '') === 'Sem estoque').length : 0)}
+                                    semEstoqueCount={(countsReady && statusCountsGlobal && typeof statusCountsGlobal['sem-estoque'] === 'number') ? statusCountsGlobal['sem-estoque'] : (listReady ? baseFiltered.filter(p => normStatus(p?.internalStatus) === 'sem_estoque').length : 0)}
                                 />
                             )}
 
