@@ -32,6 +32,13 @@ export class MlOrderNormalizeService {
       raw.pack_id != null && /^\d+$/.test(String(raw.pack_id)) ? String(raw.pack_id) : null;
     const marketplaceStatus = raw.status ?? "unknown";
     const paymentStatus = raw.payments?.[0]?.status ?? null;
+    const shipmentStatus = raw.shipping?.status ?? null;
+    const shipmentSubstatus = raw.shipping?.substatus ?? null;
+    const isFulfillment = (raw.shipping?.logistic_type ?? "").toLowerCase() === "fulfillment";
+    const isCancelled = ["cancelled", "pending_cancel"].includes(marketplaceStatus.toLowerCase());
+    const isRefunded = (paymentStatus ?? "").toLowerCase() === "refunded";
+    const isReturned = marketplaceStatus.toLowerCase() === "returned_to_warehouse";
+    const hasInvoice = shipmentSubstatus?.toLowerCase() === "ready_to_print";
 
     return {
       marketplace: "mercado_livre",
@@ -54,6 +61,14 @@ export class MlOrderNormalizeService {
       shipped_at: dates.shipped_at,
       delivered_at: dates.delivered_at,
       canceled_at: dates.canceled_at,
+      shipmentStatus: shipmentStatus ?? undefined,
+      shipmentSubstatus: shipmentSubstatus ?? undefined,
+      isFulfillment,
+      isCancelled,
+      isRefunded,
+      isReturned,
+      hasInvoice,
+      isPickupDone: undefined,
       items,
       shipping,
     };

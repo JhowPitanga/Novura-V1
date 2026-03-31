@@ -53,6 +53,15 @@ export class ShopeeOrderNormalizeService {
       marketplaceOrderId && /^\d+$/.test(marketplaceOrderId) ? marketplaceOrderId : null;
     const marketplaceStatus = rawOrder.order_status ?? rawOrder.status ?? "unknown";
     const paymentStatus = rawOrder.pay_time == null ? null : "paid";
+    const statusLower = marketplaceStatus.toLowerCase();
+    const shipmentStatus = rawOrder.package_list?.[0]?.logistics_status ?? rawOrder.order_status ?? null;
+    const shipmentSubstatus = undefined;
+    const isFulfillment = rawOrder.fulfillment_flag === true;
+    const isCancelled = statusLower === "cancelled" || statusLower === "in_cancel";
+    const isRefunded = false;
+    const isReturned = statusLower === "to_return";
+    const hasInvoice = false;
+    const isPickupDone = statusLower === "pickup_done";
 
     return {
       marketplace: "shopee",
@@ -75,6 +84,14 @@ export class ShopeeOrderNormalizeService {
       shipped_at: dates.shipped_at,
       delivered_at: dates.delivered_at,
       canceled_at: dates.canceled_at,
+      shipmentStatus: shipmentStatus ?? undefined,
+      shipmentSubstatus,
+      isFulfillment,
+      isCancelled,
+      isRefunded,
+      isReturned,
+      hasInvoice,
+      isPickupDone,
       items,
       shipping,
     };

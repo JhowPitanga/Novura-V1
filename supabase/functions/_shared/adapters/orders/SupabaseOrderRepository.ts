@@ -34,7 +34,13 @@ export class SupabaseOrderRepository implements IOrderRepository {
   }
 
   async updateStatus(params: { readonly orderId: string; readonly currentStatus: OrderStatus | null; readonly newStatus: OrderStatus }): Promise<void> {
-    const query = this.supabase.from("orders").update({ status: params.newStatus }).eq("id", params.orderId).eq("status", params.currentStatus).select("id");
+    const baseQuery = this.supabase
+      .from("orders")
+      .update({ status: params.newStatus, status_updated_at: new Date().toISOString() } as never)
+      .eq("id", params.orderId);
+    const query = params.currentStatus === null
+      ? baseQuery.is("status", null).select("id")
+      : baseQuery.eq("status", params.currentStatus).select("id");
     const { data, error } = await query;
     if (error) throw new Error(`SupabaseOrderRepository.updateStatus failed: ${error.message}`);
     if (!data || data.length === 0) throw new Error("SupabaseOrderRepository.updateStatus concurrency conflict");
@@ -55,7 +61,7 @@ export class SupabaseOrderRepository implements IOrderRepository {
     if (flags.isPrintedLabel !== undefined) payload.is_printed_label = flags.isPrintedLabel;
     if (flags.isPickupDone !== undefined) payload.is_pickup_done = flags.isPickupDone;
     if (Object.keys(payload).length === 0) return;
-    const { error } = await this.supabase.from("orders").update(payload).eq("id", orderId);
+    const { error } = await this.supabase.from("orders").update(payload as never).eq("id", orderId);
     if (error) throw new Error(`SupabaseOrderRepository.updateInternalFlags failed: ${error.message}`);
   }
 
