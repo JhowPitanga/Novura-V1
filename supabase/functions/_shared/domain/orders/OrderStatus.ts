@@ -7,43 +7,43 @@
  *
  * Priority order (for calculation): see OrderStatusEngine.ts
  *
- * NOTE: Values are pt-BR slugs used in the database. Do NOT change them without
- * a corresponding database migration.
+ * NOTE: Values are canonical english slugs for persistence and integrations.
+ * UI labels in pt-BR are provided by getOrderStatusLabel().
  */
 export enum OrderStatus {
   /** Order cancelled by the marketplace or refunded */
-  CANCELLED = 'cancelado',
+  CANCELLED = 'cancelled',
 
   /** Order returned by the buyer */
-  RETURNED = 'devolucao',
+  RETURNED = 'returned',
 
   /**
    * At least one order item is not yet linked to a catalog product.
    * BLOCKING status — prevents the order from advancing in the pipeline.
    */
-  UNLINKED = 'a_vincular',
+  UNLINKED = 'unlinked',
 
   /**
    * Invoice (NF-e) must be issued before the order is dispatched.
    * ML: shipment_substatus = 'invoice_pending'
    * Shopee: ready_to_ship without invoice_number
    */
-  INVOICE_PENDING = 'emissao_nf',
+  INVOICE_PENDING = 'invoice_pending',
 
   /** Order is ready to print the shipping label */
-  READY_TO_PRINT = 'impressao',
+  READY_TO_PRINT = 'ready_to_print',
 
   /** Label printed, awaiting carrier pickup */
-  AWAITING_PICKUP = 'aguardando_coleta',
+  AWAITING_PICKUP = 'awaiting_pickup',
 
   /**
    * Order shipped / in transit / delivered.
    * Also covers fulfillment orders (ML Full / Shopee Full).
    */
-  SHIPPED = 'enviado',
+  SHIPPED = 'shipped',
 
   /** Initial state — order arrived but no more specific condition applies */
-  PENDING = 'pendente',
+  PENDING = 'pending',
 }
 
 /**
