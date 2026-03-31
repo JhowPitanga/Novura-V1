@@ -123,8 +123,8 @@ export function useOrderFiltering({
   // ── NFe badge counts ──
   const nfeOrdersAll = useMemo(() => orders.filter(order =>
     normStatus(order.internalStatus) === 'emissao_nf' ||
-    normStatus(order.internalStatus) === 'falha na emissao' ||
-    normStatus(order.internalStatus) === 'subir xml'
+    normStatus(order.internalStatus) === 'falha_na_emissao' ||
+    normStatus(order.internalStatus) === 'subir_xml'
   ), [orders]);
 
   const badgeCountFalha = useMemo(() => nfeOrdersAll.filter(order => normStatus(order.internalStatus) === 'falha_na_emissao').length, [nfeOrdersAll]);

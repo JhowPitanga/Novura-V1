@@ -299,7 +299,7 @@ const ORDERS_SELECT_FIELDS = `
   created_at, shipped_at, delivered_at, canceled_at, last_synced_at,
   is_printed_label, label_printed_at, has_invoice, is_fulfillment,
   order_items (
-    id, marketplace_item_id, sku, seller_sku, title, quantity, unit_price,
+    id, marketplace_item_id, sku, title, quantity, unit_price,
     unit_cost, variation_name, image_url, product_id
   ),
   order_shipping (
@@ -376,12 +376,10 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
       ? itemsRaw.map((it: Record<string, unknown>, idx: number) => ({
           id: `${row.marketplace_order_id || row.id}-ITEM-${idx + 1}`,
           name: (it.title as string) || "Item",
-          // seller_sku takes precedence for linking — falls back to sku
-          sku: (it.seller_sku as string) ?? (it.sku as string) ?? null,
+          sku: (it.sku as string) ?? null,
           quantity: typeof it.quantity === "number" ? it.quantity : Number(it.quantity ?? 1) || 1,
           unitPrice: typeof it.unit_price === "number" ? it.unit_price : Number(it.unit_price ?? 0) || 0,
-          // item is linked if it has a product_id OR a seller_sku (already mapped in catalog)
-          linked: Boolean(it.product_id) || Boolean(it.seller_sku),
+          linked: Boolean(it.product_id),
           marketplace: row.marketplace as string,
           scanned: false,
           imageUrl: ensureHttpUrl(it.image_url as string) || "/placeholder.svg",
@@ -478,8 +476,7 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
     linkedSku: skuLinked ?? undefined,
     label: labelInfo,
     linkedProducts: undefined,
-    // hasUnlinkedItems: item is unlinked when it has no product_id AND no seller_sku
-    hasUnlinkedItems: itemsRaw.some((it) => !it.product_id && !it.seller_sku),
+    hasUnlinkedItems: itemsRaw.some((it) => !it.product_id),
     shipmentStatus: (shippingRaw?.status as string) ?? null,
     shippingSla: {
       status: (shippingRaw?.sla_status as string) ?? null,
