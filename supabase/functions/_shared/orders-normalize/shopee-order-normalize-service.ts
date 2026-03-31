@@ -56,7 +56,7 @@ export class ShopeeOrderNormalizeService {
     const statusLower = marketplaceStatus.toLowerCase();
     const shipmentStatus = rawOrder.package_list?.[0]?.logistics_status ?? rawOrder.order_status ?? null;
     const shipmentSubstatus = undefined;
-    const isFulfillment = rawOrder.fulfillment_flag === true;
+    const isFulfillment = (rawOrder.fulfillment_flag ?? "").toLowerCase() === "fulfillment";
     const isCancelled = statusLower === "cancelled" || statusLower === "in_cancel";
     const isRefunded = false;
     const isReturned = statusLower === "to_return";

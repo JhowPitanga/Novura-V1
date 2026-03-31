@@ -5,7 +5,8 @@ export class SupabaseInventoryAdapter implements IInventoryPort {
   constructor(private readonly supabase: SupabaseClient) {}
 
   async reserveStockNow(orderId: string, _items: ReadonlyArray<InventoryItem>): Promise<void> {
-    const { error } = await this.supabase.rpc("reserve_stock_for_order", { p_order_id: orderId });
+    const { error } = await (this.supabase as unknown as { rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }> })
+      .rpc("reserve_stock_for_order", { p_order_id: orderId });
     if (error) throw new Error(`SupabaseInventoryAdapter.reserveStockNow failed: ${error.message}`);
   }
 
@@ -18,7 +19,9 @@ export class SupabaseInventoryAdapter implements IInventoryPort {
   }
 
   private async enqueueInventoryJob(orderId: string, jobType: "consume" | "refund"): Promise<void> {
-    const { error } = await this.supabase.from("inventory_jobs").upsert(
+    const { error } = await (this.supabase as unknown as {
+      from: (table: string) => { upsert: (payload: Record<string, unknown>, options: { onConflict: string }) => Promise<{ error: { message: string } | null }> };
+    }).from("inventory_jobs").upsert(
       { order_id: orderId, job_type: jobType, status: "pending" },
       { onConflict: "order_id,job_type" },
     );
