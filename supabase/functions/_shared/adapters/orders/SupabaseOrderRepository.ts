@@ -47,6 +47,18 @@ export class SupabaseOrderRepository implements IOrderRepository {
     }
   }
 
+  async updateInternalFlags(
+    orderId: string,
+    flags: Readonly<{ isPrintedLabel?: boolean; isPickupDone?: boolean }>,
+  ): Promise<void> {
+    const payload: { is_printed_label?: boolean; is_pickup_done?: boolean } = {};
+    if (flags.isPrintedLabel !== undefined) payload.is_printed_label = flags.isPrintedLabel;
+    if (flags.isPickupDone !== undefined) payload.is_pickup_done = flags.isPickupDone;
+    if (Object.keys(payload).length === 0) return;
+    const { error } = await this.supabase.from("orders").update(payload).eq("id", orderId);
+    if (error) throw new Error(`SupabaseOrderRepository.updateInternalFlags failed: ${error.message}`);
+  }
+
   async addStatusHistory(orderId: string, event: OrderStatusChangedEvent): Promise<void> {
     const { error } = await this.supabase.from("order_status_history").insert({
       order_id: orderId,
