@@ -23,7 +23,7 @@ export class SupabaseInventoryAdapter implements IInventoryPort {
       from: (table: string) => { upsert: (payload: Record<string, unknown>, options: { onConflict: string }) => Promise<{ error: { message: string } | null }> };
     }).from("inventory_jobs").upsert(
       { order_id: orderId, job_type: jobType, status: "pending" },
-      { onConflict: "order_id,job_type" },
+      { onConflict: "order_id,job_type", ignoreDuplicates: true },
     );
     if (error) throw new Error(`SupabaseInventoryAdapter.enqueueInventoryJob failed: ${error.message}`);
   }

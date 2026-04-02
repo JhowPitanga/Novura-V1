@@ -19,7 +19,7 @@ export class RecalculateOrderStatusUseCase {
     private readonly stockUseCase: HandleStockSideEffectsUseCase,
   ) {}
 
-  async execute(orderId: string): Promise<RecalculateOrderStatusResult | null> {
+  async execute(orderId: string, source: 'webhook' | 'user_action' | 'sync' = 'webhook'): Promise<RecalculateOrderStatusResult | null> {
     const order = await this.orderRepo.findById(orderId);
     if (!order) throw new Error(`Order ${orderId} not found`);
 
@@ -40,7 +40,7 @@ export class RecalculateOrderStatusUseCase {
       organizationId: order.organizationId,
       previousStatus: order.currentStatus,
       newStatus,
-      source: "webhook",
+      source,
     });
     await this.orderRepo.addStatusHistory(order.id, event);
     await this.stockUseCase.handleAsyncEffects(order.id, order.currentStatus, newStatus);

@@ -33,6 +33,35 @@ export class SupabaseOrderRepository implements IOrderRepository {
     return this.mapOrderRow(data as unknown as OrderRow);
   }
 
+  async findByMarketplaceOrderId(params: {
+    readonly organizationId: string;
+    readonly marketplace: string;
+    readonly marketplaceOrderId: string;
+  }): Promise<OrderRecord | null> {
+    const { data, error } = await this.supabase
+      .from("orders")
+      .select("*, order_items(*)")
+      .eq("organization_id", params.organizationId)
+      .eq("marketplace", params.marketplace)
+      .eq("marketplace_order_id", params.marketplaceOrderId)
+      .maybeSingle();
+    if (error) throw new Error(`SupabaseOrderRepository.findByMarketplaceOrderId failed: ${error.message}`);
+    if (!data) return null;
+    return this.mapOrderRow(data as unknown as OrderRow);
+  }
+
+  async markLabelPrinted(params: {
+    readonly orderIds: ReadonlyArray<string>;
+    readonly organizationId: string;
+  }): Promise<void> {
+    const { error } = await this.supabase
+      .from("orders")
+      .update({ is_printed_label: true, label_printed_at: new Date().toISOString() })
+      .in("id", [...params.orderIds])
+      .eq("organization_id", params.organizationId);
+    if (error) throw new Error(`SupabaseOrderRepository.markLabelPrinted failed: ${error.message}`);
+  }
+
   async updateStatus(params: { readonly orderId: string; readonly currentStatus: OrderStatus | null; readonly newStatus: OrderStatus }): Promise<void> {
     const baseQuery = this.supabase
       .from("orders")

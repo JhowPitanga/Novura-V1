@@ -33,19 +33,64 @@ export class SupabaseProductLinkRepository implements IProductLinkRepository {
     }));
   }
 
+  async checkLinks(params: {
+    readonly organizationId: string;
+    readonly marketplace: string;
+    readonly items: ReadonlyArray<{ marketplaceItemId: string; variationId: string; sellerSku: string }>;
+  }): Promise<ReadonlyArray<{ marketplaceItemId: string; variationId: string; productId: string | null; source: string | null }>> {
+    const itemsNeedingLookup = params.items.filter(item => !item.sellerSku);
+    if (itemsNeedingLookup.length === 0) {
+      return params.items.map(item => ({
+        marketplaceItemId: item.marketplaceItemId,
+        variationId: item.variationId,
+        productId: "sku_resolved",
+        source: "sku" as const,
+      }));
+    }
+    const { data, error } = await this.supabase
+      .from("marketplace_item_product_links")
+      .select("marketplace_item_id, variation_id, product_id")
+      .eq("organizations_id", params.organizationId)
+      .eq("marketplace_name", params.marketplace)
+      .in("marketplace_item_id", itemsNeedingLookup.map(i => i.marketplaceItemId));
+    if (error) throw new Error(`SupabaseProductLinkRepository.checkLinks failed: ${error.message}`);
+    const linkMap = new Map<string, string>(
+      (data ?? []).map((row: any) => [`${row.marketplace_item_id}:${row.variation_id}`, row.product_id]),
+    );
+    return params.items.map(item => {
+      if (item.sellerSku) return { marketplaceItemId: item.marketplaceItemId, variationId: item.variationId, productId: "sku_resolved", source: "sku" };
+      const key = `${item.marketplaceItemId}:${item.variationId}`;
+      const pid = linkMap.get(key) ?? null;
+      return { marketplaceItemId: item.marketplaceItemId, variationId: item.variationId, productId: pid, source: pid ? "permanent" : null };
+    });
+  }
+
   async upsertPermanentLink(params: {
     readonly organizationId: string;
+    readonly marketplace: string;
     readonly marketplaceItemId: string;
+    readonly variationId: string;
     readonly productId: string;
   }): Promise<void> {
-    const { error } = await this.supabase.from("marketplace_item_product_links").upsert(
-      {
+    const { error } = await this.supabase
+      .from("marketplace_item_product_links")
+      .upsert({
         organizations_id: params.organizationId,
+        marketplace_name: params.marketplace,
         marketplace_item_id: params.marketplaceItemId,
+        variation_id: params.variationId,
         product_id: params.productId,
-      },
-      { onConflict: "organizations_id,marketplace_item_id" },
-    );
+      }, { onConflict: "organizations_id,marketplace_name,marketplace_item_id,variation_id" });
     if (error) throw new Error(`SupabaseProductLinkRepository.upsertPermanentLink failed: ${error.message}`);
+  }
+
+  async countUnlinkedItems(params: {
+    readonly organizationId: string;
+    readonly marketplace: string;
+    readonly orderId: string;
+    readonly items: ReadonlyArray<{ marketplaceItemId: string; variationId: string; sellerSku: string }>;
+  }): Promise<number> {
+    const results = await this.checkLinks({ organizationId: params.organizationId, marketplace: params.marketplace, items: params.items });
+    return results.filter(r => r.productId === null).length;
   }
 }
