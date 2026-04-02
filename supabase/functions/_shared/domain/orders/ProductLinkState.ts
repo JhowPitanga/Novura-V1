@@ -25,15 +25,13 @@ export interface ProductLinkState {
  * @throws {Error} if unlinkedCount is negative
  */
 export function createProductLinkState(unlinkedCount: number): ProductLinkState {
-  if (unlinkedCount < 0) {
-    throw new Error(`unlinkedCount cannot be negative, received: ${unlinkedCount}`);
+  if (!Number.isInteger(unlinkedCount) || unlinkedCount < 0) {
+    throw new Error('unlinkedCount must be a non-negative integer');
   }
-  return {
+  return Object.freeze({
     unlinkedCount,
-    get isFullyLinked(): boolean {
-      return this.unlinkedCount === 0;
-    },
-  };
+    get isFullyLinked() { return this.unlinkedCount === 0; },
+  });
 }
 
 /**

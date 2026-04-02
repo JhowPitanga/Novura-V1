@@ -8,13 +8,15 @@
  * All event shapes are immutable: every field is readonly.
  */
 
+import type { OrderStatus } from './OrderStatus.ts';
+
 /** Fired when an order's internal status changes. */
 export type OrderStatusChangedEvent = {
   readonly type: 'ORDER_STATUS_CHANGED';
   readonly orderId: string;
   readonly organizationId: string;
-  readonly previousStatus: string | null;
-  readonly newStatus: string;
+  readonly previousStatus: OrderStatus | null;
+  readonly newStatus: OrderStatus;
   /** ISO 8601 timestamp when the change was recorded */
   readonly changedAt: string;
   readonly source: 'webhook' | 'user_action' | 'sync';
@@ -56,8 +58,8 @@ export type OrderDomainEvent =
 export function createStatusChangedEvent(params: {
   orderId: string;
   organizationId: string;
-  previousStatus: string | null;
-  newStatus: string;
+  previousStatus: OrderStatus | null;
+  newStatus: OrderStatus;
   source: OrderStatusChangedEvent['source'];
 }): OrderStatusChangedEvent {
   return {
