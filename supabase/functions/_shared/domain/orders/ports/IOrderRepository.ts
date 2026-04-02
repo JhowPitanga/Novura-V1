@@ -52,6 +52,16 @@ export interface IOrderRepository {
   findById(orderId: string): Promise<OrderRecord | null>;
 
   /**
+   * Busca um pedido pelo ID do marketplace.
+   * Usado pelo webhook handler quando só temos o ID externo.
+   */
+  findByMarketplaceOrderId(params: {
+    readonly organizationId: string;
+    readonly marketplace: string;
+    readonly marketplaceOrderId: string;
+  }): Promise<OrderRecord | null>;
+
+  /**
    * Updates the order status using optimistic concurrency control.
    *
    * Implementations must only update when persisted status equals currentStatus.
@@ -63,6 +73,16 @@ export interface IOrderRepository {
     readonly currentStatus: OrderStatus | null;
     readonly newStatus: OrderStatus;
   }): Promise<StatusUpdateResult>;
+
+  /**
+   * Marca etiquetas como impressas e atualiza timestamp.
+   * Operação atômica para batch de pedidos.
+   * Chamado pelo MarkOrderLabelPrintedUseCase.
+   */
+  markLabelPrinted(params: {
+    readonly orderIds: ReadonlyArray<string>;
+    readonly organizationId: string;
+  }): Promise<void>;
 
   /**
    * Persists product links for order items.

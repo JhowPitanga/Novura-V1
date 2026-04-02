@@ -20,7 +20,11 @@ export interface IInventoryPort {
    * stock shortage or timeout, status processing must be interrupted.
    * Implementations must be safe for retry with the same order/items payload.
    */
-  reserveStockNow(orderId: string, items: ReadonlyArray<InventoryItem>): Promise<void>;
+  reserveStockNow(params: {
+    readonly orderId: string;
+    readonly organizationId: string;
+    readonly items: ReadonlyArray<InventoryItem>;
+  }): Promise<void>;
 
   /**
    * Asynchronous definitive stock consumption.
@@ -29,7 +33,10 @@ export interface IInventoryPort {
    * Failures here should be handled via retry/requeue policies externally.
    * Enqueue must be idempotent for repeated calls with the same orderId.
    */
-  enqueueConsumeStock(orderId: string): Promise<void>;
+  enqueueConsumeStock(params: {
+    readonly orderId: string;
+    readonly organizationId: string;
+  }): Promise<void>;
 
   /**
    * Asynchronous stock refund flow.
@@ -37,5 +44,8 @@ export interface IInventoryPort {
    * This method only enqueues a compensation job and must not block status
    * processing. Enqueue must be idempotent for repeated calls.
    */
-  enqueueRefundStock(orderId: string): Promise<void>;
+  enqueueRefundStock(params: {
+    readonly orderId: string;
+    readonly organizationId: string;
+  }): Promise<void>;
 }
