@@ -9,6 +9,9 @@ export class AwaitingPickupRule implements OrderStatusRule {
   readonly status = OrderStatus.AWAITING_PICKUP;
 
   appliesTo(signals: MarketplaceSignals, _linkState: ProductLinkState): boolean {
-    return signals.isPrintedLabel;
+    if (signals.marketplace === 'mercado_livre') {
+      return signals.isPrintedLabel && signals.shipmentStatus === 'ready_to_ship';
+    }
+    return signals.marketplaceStatus?.toLowerCase() === 'retry_ship';
   }
 }
