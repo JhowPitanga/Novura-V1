@@ -20,7 +20,7 @@ export class SupabaseInventoryAdapter implements IInventoryPort {
   private async enqueueInventoryJob(orderId: string, jobType: "consume" | "refund"): Promise<void> {
     const { error } = await this.supabase.from("inventory_jobs").upsert(
       { order_id: orderId, job_type: jobType, status: "pending" },
-      { onConflict: "order_id,job_type" },
+      { onConflict: "order_id,job_type", ignoreDuplicates: true },
     );
     if (error) throw new Error(`SupabaseInventoryAdapter.enqueueInventoryJob failed: ${error.message}`);
   }
