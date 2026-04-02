@@ -1,5 +1,5 @@
 import { LinkProductToOrderItemUseCase } from "../LinkProductToOrderItemUseCase.ts";
-import { OrderStatusEngine } from "../OrderStatusEngine.ts";
+import type { RecalculateResult } from "../RecalculateOrderStatusUseCase.ts";
 import type { OrderStatusChangedEvent } from "../../../domain/orders/OrderDomainEvents.ts";
 import { OrderStatus } from "../../../domain/orders/OrderStatus.ts";
 import type { IOrderRepository, OrderRecord } from "../../../domain/orders/ports/IOrderRepository.ts";
@@ -37,6 +37,15 @@ class MockProductLinkRepository implements IProductLinkRepository {
   }
 }
 
+class MockRecalculateUseCase {
+  public calls: string[] = [];
+  constructor(public result: RecalculateResult | null = null) {}
+  async execute(orderId: string): Promise<RecalculateResult | null> {
+    this.calls.push(orderId);
+    return this.result;
+  }
+}
+
 const baseOrder = (items: OrderRecord["items"]): OrderRecord => ({
   id: "order-1",
   organizationId: "org-1",
@@ -60,39 +69,107 @@ const baseOrder = (items: OrderRecord["items"]): OrderRecord => ({
   items,
 });
 
-runTest("links last orphan item and changes UNLINKED -> READY_TO_PRINT", async () => {
+runTest("links last orphan item and delegates recalculation", async () => {
   const orderRepo = new MockOrderRepository(baseOrder([{ id: "i1", productId: null, marketplaceItemId: "mli-1", quantity: 1 }]));
   const linkRepo = new MockProductLinkRepository();
-  const result = await new LinkProductToOrderItemUseCase(orderRepo, linkRepo, new OrderStatusEngine()).execute({
+  const recalculate = new MockRecalculateUseCase({
+    orderId: "order-1",
+    previousStatus: OrderStatus.UNLINKED,
+    newStatus: OrderStatus.READY_TO_PRINT,
+  });
+
+  const result = await new LinkProductToOrderItemUseCase(orderRepo, linkRepo, recalculate).execute({
     orderId: "order-1",
     orderItemId: "i1",
     productId: "p-1",
     organizationId: "org-1",
     isPermanent: true,
   });
-  assertEquals(result.newStatus, OrderStatus.READY_TO_PRINT);
+
   assertEquals(result.statusChanged, true);
-  assertEquals(orderRepo.statusUpdates, 1);
-  assertEquals(orderRepo.historyWrites, 1);
+  assertEquals(result.newStatus, OrderStatus.READY_TO_PRINT);
+  assertEquals(result.remainingUnlinkedCount, 0);
+  assertEquals(recalculate.calls.length, 1);
+  assertEquals(recalculate.calls[0], "order-1");
   assertEquals(linkRepo.permanentLinks, 1);
 });
 
-runTest("links one item but keeps UNLINKED when other orphans remain", async () => {
+runTest("keeps UNLINKED when other orphans remain and does NOT recalculate", async () => {
   const orderRepo = new MockOrderRepository(baseOrder([
     { id: "i1", productId: null, marketplaceItemId: "mli-1", quantity: 1 },
     { id: "i2", productId: null, marketplaceItemId: "mli-2", quantity: 1 },
   ]));
   const linkRepo = new MockProductLinkRepository();
-  const result = await new LinkProductToOrderItemUseCase(orderRepo, linkRepo, new OrderStatusEngine()).execute({
+  const recalculate = new MockRecalculateUseCase();
+
+  const result = await new LinkProductToOrderItemUseCase(orderRepo, linkRepo, recalculate).execute({
     orderId: "order-1",
     orderItemId: "i1",
     productId: "p-1",
     organizationId: "org-1",
     isPermanent: false,
   });
-  assertEquals(result.newStatus, OrderStatus.UNLINKED);
+
   assertEquals(result.statusChanged, false);
-  assertEquals(orderRepo.statusUpdates, 0);
-  assertEquals(orderRepo.historyWrites, 0);
+  assertEquals(result.remainingUnlinkedCount, 1);
+  assertEquals(result.newStatus, undefined);
+  assertEquals(recalculate.calls.length, 0);
   assertEquals(linkRepo.permanentLinks, 0);
+});
+
+runTest("isPermanent=false does NOT save permanent link", async () => {
+  const orderRepo = new MockOrderRepository(baseOrder([{ id: "i1", productId: null, marketplaceItemId: "mli-1", quantity: 1 }]));
+  const linkRepo = new MockProductLinkRepository();
+  const recalculate = new MockRecalculateUseCase(null);
+
+  await new LinkProductToOrderItemUseCase(orderRepo, linkRepo, recalculate).execute({
+    orderId: "order-1",
+    orderItemId: "i1",
+    productId: "p-1",
+    organizationId: "org-1",
+    isPermanent: false,
+  });
+
+  assertEquals(linkRepo.permanentLinks, 0);
+});
+
+runTest("returns statusChanged=false when recalculation yields no change", async () => {
+  const orderRepo = new MockOrderRepository(baseOrder([{ id: "i1", productId: null, marketplaceItemId: "mli-1", quantity: 1 }]));
+  const linkRepo = new MockProductLinkRepository();
+  const recalculate = new MockRecalculateUseCase(null);
+
+  const result = await new LinkProductToOrderItemUseCase(orderRepo, linkRepo, recalculate).execute({
+    orderId: "order-1",
+    orderItemId: "i1",
+    productId: "p-1",
+    organizationId: "org-1",
+    isPermanent: true,
+  });
+
+  assertEquals(result.statusChanged, false);
+  assertEquals(result.remainingUnlinkedCount, 0);
+  assertEquals(result.newStatus, undefined);
+  assertEquals(recalculate.calls.length, 1);
+});
+
+runTest("returns correct remainingUnlinkedCount with 3 items, 1 linked", async () => {
+  const orderRepo = new MockOrderRepository(baseOrder([
+    { id: "i1", productId: null, marketplaceItemId: "mli-1", quantity: 1 },
+    { id: "i2", productId: null, marketplaceItemId: "mli-2", quantity: 1 },
+    { id: "i3", productId: null, marketplaceItemId: "mli-3", quantity: 1 },
+  ]));
+  const linkRepo = new MockProductLinkRepository();
+  const recalculate = new MockRecalculateUseCase();
+
+  const result = await new LinkProductToOrderItemUseCase(orderRepo, linkRepo, recalculate).execute({
+    orderId: "order-1",
+    orderItemId: "i1",
+    productId: "p-1",
+    organizationId: "org-1",
+    isPermanent: false,
+  });
+
+  assertEquals(result.remainingUnlinkedCount, 2);
+  assertEquals(result.statusChanged, false);
+  assertEquals(recalculate.calls.length, 0);
 });

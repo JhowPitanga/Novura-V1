@@ -1,9 +1,7 @@
-import { createStatusChangedEvent } from "../../domain/orders/OrderDomainEvents.ts";
-import { createProductLinkState } from "../../domain/orders/ProductLinkState.ts";
 import type { OrderStatus } from "../../domain/orders/OrderStatus.ts";
 import type { IOrderRepository } from "../../domain/orders/ports/IOrderRepository.ts";
 import type { IProductLinkRepository } from "../../domain/orders/ports/IProductLinkRepository.ts";
-import { OrderStatusEngine } from "./OrderStatusEngine.ts";
+import type { RecalculateOrderStatusUseCase } from "./RecalculateOrderStatusUseCase.ts";
 
 export interface LinkProductInput {
   readonly orderId: string;
@@ -15,8 +13,9 @@ export interface LinkProductInput {
 
 export interface LinkProductResult {
   readonly orderId: string;
-  readonly newStatus: OrderStatus;
+  readonly remainingUnlinkedCount: number;
   readonly statusChanged: boolean;
+  readonly newStatus?: OrderStatus;
 }
 
 /** Orchestrates order-item product linking and post-link status recalculation. */
@@ -24,15 +23,18 @@ export class LinkProductToOrderItemUseCase {
   constructor(
     private readonly orderRepo: IOrderRepository,
     private readonly productLinkRepo: IProductLinkRepository,
-    private readonly engine: OrderStatusEngine,
+    private readonly recalculateStatus: RecalculateOrderStatusUseCase,
   ) {}
 
   async execute(input: LinkProductInput): Promise<LinkProductResult> {
-    const beforeOrder = await this.orderRepo.findById(input.orderId);
-    if (!beforeOrder) throw new Error(`Order ${input.orderId} not found`);
+    const order = await this.orderRepo.findById(input.orderId);
+    if (!order) throw new Error(`Order ${input.orderId} not found`);
 
-    const targetItem = beforeOrder.items.find((item) => item.id === input.orderItemId);
-    if (!targetItem) throw new Error(`Order item ${input.orderItemId} not found`);
+    const targetItem = order.items.find((i) => i.id === input.orderItemId);
+    if (!targetItem)
+      throw new Error(
+        `OrderItem ${input.orderItemId} not found in order ${input.orderId}`,
+      );
 
     if (input.isPermanent && targetItem.marketplaceItemId) {
       await this.productLinkRepo.upsertPermanentLink({
@@ -43,34 +45,31 @@ export class LinkProductToOrderItemUseCase {
     }
 
     if (targetItem.productId !== input.productId) {
-      await this.orderRepo.updateOrderItemsProductId(input.orderId, [{ id: input.orderItemId, productId: input.productId }]);
+      await this.orderRepo.updateOrderItemsProductId(input.orderId, [
+        { id: input.orderItemId, productId: input.productId },
+      ]);
     }
 
     const afterOrder = await this.orderRepo.findById(input.orderId);
-    if (!afterOrder) throw new Error(`Order ${input.orderId} not found after linking`);
+    if (!afterOrder)
+      throw new Error(`Order ${input.orderId} not found after update`);
 
-    const unlinkedCount = afterOrder.items.filter((item) => item.productId === null).length;
-    const newStatus = this.engine.calculate(afterOrder.marketplaceSignals, createProductLinkState(unlinkedCount));
-    const statusChanged = newStatus !== afterOrder.currentStatus;
+    const unlinkedCount = afterOrder.items.filter((i) => !i.productId).length;
 
-    if (statusChanged) {
-      await this.orderRepo.updateStatus({
+    if (unlinkedCount === 0) {
+      const result = await this.recalculateStatus.execute(input.orderId);
+      return {
         orderId: input.orderId,
-        currentStatus: afterOrder.currentStatus,
-        newStatus,
-      });
-      await this.orderRepo.addStatusHistory(
-        input.orderId,
-        createStatusChangedEvent({
-          orderId: input.orderId,
-          organizationId: input.organizationId,
-          previousStatus: afterOrder.currentStatus,
-          newStatus,
-          source: "user_action",
-        }),
-      );
+        remainingUnlinkedCount: 0,
+        statusChanged: result !== null,
+        newStatus: result?.newStatus,
+      };
     }
 
-    return { orderId: input.orderId, newStatus, statusChanged };
+    return {
+      orderId: input.orderId,
+      remainingUnlinkedCount: unlinkedCount,
+      statusChanged: false,
+    };
   }
 }
