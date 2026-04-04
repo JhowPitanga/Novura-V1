@@ -1,7 +1,7 @@
 # STATUS-ENGINE-T2 — Ports (Interfaces): Contratos da Arquitetura Hexagonal
 
 **Ciclo:** Motor de Status de Pedidos
-**Status:** 🔴 Não iniciado
+**Status:** ✅ Implementado
 **Depende de:** [T1 — Camada de Domínio](./STATUS-ENGINE-T1-dominio.md)
 **Bloqueia:** T4 (adapters), T5, T6, T7 (use cases)
 
@@ -48,246 +48,198 @@ class LinkProductToOrderItemUseCase {
 
 ---
 
-## 3. Arquivos a Criar
+## 3. Arquivos Implementados
 
-### 3.1 `supabase/functions/_shared/ports/orders/IOrderRepository.ts`
+> **Nota de path:** Os ports foram colocados DENTRO do pacote de domínio (não em pasta `ports/` separada), seguindo a convenção de que interfaces de domínio pertencem ao domínio. Caminho real: `supabase/functions/_shared/domain/orders/ports/`
+
+### 3.1 `supabase/functions/_shared/domain/orders/ports/IOrderRepository.ts`
 
 **Responsabilidade:** Contrato para persistência e leitura de pedidos.
 
-**O que é isso:** Define as operações que o sistema pode fazer com pedidos no banco de dados, sem saber qual banco é esse. O use case de recalcular status usa este port para atualizar o status de um pedido — mas não sabe se estamos usando Supabase, PostgreSQL direto, ou uma lista em memória (para testes).
-
 ```typescript
-import type { OrderStatus } from '../../domain/orders/OrderStatus.ts';
-import type { MarketplaceSignals } from '../../domain/orders/MarketplaceSignals.ts';
+import type { MarketplaceSignals } from '../MarketplaceSignals.ts';
+import type { OrderStatus } from '../OrderStatus.ts';
+import type { OrderStatusChangedEvent } from '../OrderDomainEvents.ts';
 
-/**
- * Representa um pedido minimal para operações de status.
- * Não é o pedido completo — apenas os campos necessários para o motor de status.
- */
+/** Immutable order item payload used by status workflows. */
+export interface OrderRecordItem {
+  readonly id: string;
+  readonly productId: string | null;
+  readonly marketplaceItemId: string | null;
+  readonly quantity: number;
+}
+
+/** Immutable aggregate used by the application layer to recalculate status. */
 export interface OrderRecord {
-  id: string;
-  organizationId: string;
-  marketplace: string;
-  marketplaceOrderId: string;
-  currentStatus: OrderStatus | null;
-  marketplaceSignals: MarketplaceSignals;
+  readonly id: string;
+  readonly organizationId: string;
+  readonly marketplace: 'mercado_livre' | 'shopee';
+  readonly marketplaceOrderId: string;
+  readonly currentStatus: OrderStatus | null;
+  readonly marketplaceSignals: MarketplaceSignals;
+  readonly items: ReadonlyArray<OrderRecordItem>;
 }
 
-/**
- * Resultado de uma operação de atualização de status.
- */
+/** Immutable status update metadata returned by repository writes. */
 export interface StatusUpdateResult {
-  orderId: string;
-  previousStatus: OrderStatus | null;
-  newStatus: OrderStatus;
-  updatedAt: string;
+  readonly orderId: string;
+  readonly previousStatus: OrderStatus | null;
+  readonly newStatus: OrderStatus;
+  readonly updatedAt: string;
 }
 
-/**
- * Port: operações de repositório para pedidos.
- *
- * A implementação concreta (SupabaseOrderRepository) lê e escreve
- * na tabela `orders`. Os use cases só conhecem este contrato.
- */
+/** Port for order persistence and status transitions. */
 export interface IOrderRepository {
-  /**
-   * Busca um pedido pelo ID interno.
-   * Retorna null se não encontrado.
-   */
+  /** Returns full immutable order DTO or null when not found. */
   findById(orderId: string): Promise<OrderRecord | null>;
 
   /**
-   * Busca um pedido pelo ID do marketplace.
-   */
-  findByMarketplaceOrderId(params: {
-    organizationId: string;
-    marketplace: string;
-    marketplaceOrderId: string;
-  }): Promise<OrderRecord | null>;
-
-  /**
-   * Atualiza o status interno de um pedido.
-   * Escreve também em order_status_history (append-only).
-   *
-   * @param source Quem causou a mudança ('webhook' | 'user_action' | 'sync')
-   * @returns O resultado com status anterior e novo
+   * Updates order status with optimistic locking using currentStatus.
+   * Implementations must be idempotent for safe retries.
    */
   updateStatus(params: {
-    orderId: string;
-    newStatus: OrderStatus;
-    source: 'webhook' | 'user_action' | 'sync';
-  }): Promise<StatusUpdateResult>;
+    readonly orderId: string;
+    readonly currentStatus: OrderStatus | null;
+    readonly newStatus: OrderStatus;
+  }): Promise<void>;
+
+  /** Persists product links on order items; retries must be safe. */
+  updateOrderItemsProductId(
+    orderId: string,
+    items: ReadonlyArray<{ readonly id: string; readonly productId: string }>,
+  ): Promise<void>;
 
   /**
-   * Marca a etiqueta de envio como impressa e seta status para AWAITING_PICKUP.
-   * Operação atômica: atualiza `printed_label = true` e `status`.
+   * Updates internal status-driving flags (e.g., print/pickup markers).
+   * Implementations must be idempotent for repeated writes.
    */
-  markLabelPrinted(params: {
-    orderIds: string[];
-    organizationId: string;
-  }): Promise<void>;
+  updateInternalFlags(
+    orderId: string,
+    flags: Readonly<{ isPrintedLabel?: boolean; isPickupDone?: boolean }>,
+  ): Promise<void>;
+
+  /** Appends immutable audit history; duplicate retries must not double-write. */
+  addStatusHistory(orderId: string, event: OrderStatusChangedEvent): Promise<void>;
 }
 ```
 
-**Tamanho esperado:** ~70 linhas
+**Diferenças em relação ao rascunho inicial:**
+- `findByMarketplaceOrderId` e `markLabelPrinted` **não implementados** — use cases derivam essas operações de outros métodos
+- `updateStatus` usa **Optimistic Concurrency Control** via `currentStatus` (não tem `source` no parâmetro)
+- `updateInternalFlags` substitui o `markLabelPrinted` original
+- `addStatusHistory` separado do `updateStatus` para permitir auditoria independente
+- `OrderRecord` inclui `items: ReadonlyArray<OrderRecordItem>` (necessário para contar itens não vinculados sem consulta adicional)
+- Todos os campos são `readonly` (imutabilidade)
+
 **Testes necessários:** Nenhum diretamente (é interface). Testada via mock em T5, T6.
 
 ---
 
-### 3.2 `supabase/functions/_shared/ports/orders/IProductLinkRepository.ts`
+### 3.2 `supabase/functions/_shared/domain/orders/ports/IProductLinkRepository.ts`
 
 **Responsabilidade:** Contrato para verificar e persistir vínculos entre anúncios de marketplace e produtos do catálogo ERP.
 
-**O que é isso:** Um "vínculo de produto" é a ligação entre um anúncio no ML/Shopee e um produto no catálogo interno do Novura. Esta interface define como verificar se essa ligação existe e como criar uma nova. Existem dois tipos de vínculo:
-- **Permanente:** salvo em `marketplace_item_product_links`, vale para todos os pedidos futuros
-- **Efêmero:** temporário, para um único pedido
-
 ```typescript
-/**
- * Representa um item de pedido que pode ou não estar vinculado.
- */
-export interface OrderItemLinkQuery {
-  /** ID do item no marketplace (ex: ID do anúncio no ML) */
-  marketplaceItemId: string;
-
-  /** ID da variação (tamanho, cor) — vazio se o item não tem variação */
-  variationId: string;
-
-  /** SKU do vendedor no marketplace — se preenchido, item é considerado vinculado por SKU */
-  sellerSku: string;
+/** Single permanent link entry from marketplace_item_product_links. */
+export interface OrderItemLink {
+  readonly organizationId: string;
+  readonly marketplaceItemId: string;
+  readonly productId: string;
 }
 
-/**
- * Resultado da verificação de vínculo de um item.
- */
-export interface ProductLinkResult {
-  marketplaceItemId: string;
-  variationId: string;
-  /** ID do produto no catálogo Novura, ou null se não vinculado */
-  productId: string | null;
-  /** Como o vínculo foi encontrado */
-  source: 'permanent' | 'ephemeral' | 'sku' | null;
-}
-
-/**
- * Port: operações de vínculo anúncio ↔ produto.
- */
+/** Port for product-link persistence. */
 export interface IProductLinkRepository {
   /**
-   * Para cada item na lista, verifica se existe vínculo permanente
-   * em marketplace_item_product_links.
-   *
-   * Um item é considerado "vinculado" se:
-   * - Existe registro em marketplace_item_product_links, OU
-   * - O sellerSku não está vazio (vínculo implícito por SKU)
-   *
-   * @returns Lista com o resultado para cada item. Preserva a ordem.
+   * Returns the permanent link for a given (organizationId, SKU) pair, or null.
+   * Used to auto-link items when the seller has previously linked the listing.
    */
-  checkLinks(params: {
-    organizationId: string;
-    marketplace: string;
-    items: OrderItemLinkQuery[];
-  }): Promise<ProductLinkResult[]>;
+  findLink(organizationId: string, sku: string): Promise<OrderItemLink | null>;
 
   /**
-   * Cria ou atualiza um vínculo permanente entre anúncio e produto.
-   * Usa ON CONFLICT DO UPDATE para garantir idempotência.
+   * Returns all permanent links for the given list of SKUs in one batch query.
+   * Minimises round-trips when an order has multiple items.
+   */
+  listLinks(
+    organizationId: string,
+    skus: ReadonlyArray<string>,
+  ): Promise<ReadonlyArray<OrderItemLink>>;
+
+  /**
+   * Creates or updates a permanent link between a marketplace listing and a product.
+   * Uses ON CONFLICT DO UPDATE — safe to call multiple times with the same data.
    */
   upsertPermanentLink(params: {
-    organizationId: string;
-    marketplace: string;
-    marketplaceItemId: string;
-    variationId: string;
-    productId: string;
+    readonly organizationId: string;
+    readonly marketplaceItemId: string;
+    readonly productId: string;
   }): Promise<void>;
-
-  /**
-   * Conta quantos itens de um pedido estão sem vínculo.
-   * Usado pelo OrderStatusEngine para determinar se o status é UNLINKED.
-   */
-  countUnlinkedItems(params: {
-    organizationId: string;
-    marketplace: string;
-    orderId: string;
-    items: OrderItemLinkQuery[];
-  }): Promise<number>;
 }
 ```
 
-**Tamanho esperado:** ~75 linhas
+**Diferenças em relação ao rascunho inicial:**
+- `checkLinks` e `countUnlinkedItems` **não implementados** — a contagem de não-vinculados é feita diretamente em `OrderRecord.items` (campo `productId === null`)
+- `findLink` e `listLinks` substituem `checkLinks` com assinatura mais simples
+- `upsertPermanentLink` não inclui `variationId` nem `marketplace` (simplificado)
 
 ---
 
-### 3.3 `supabase/functions/_shared/ports/orders/IInventoryPort.ts`
+### 3.3 `supabase/functions/_shared/domain/orders/ports/IInventoryPort.ts`
 
 **Responsabilidade:** Contrato para operações de estoque relacionadas ao ciclo de vida de um pedido.
 
-**O que é isso:** Conforme um pedido avança no pipeline, o estoque dos produtos vinculados deve ser movimentado. Este port define as três operações possíveis:
-- **Reservar:** quando o pedido está em Emissão NF / Impressão / Aguardando Coleta
-- **Consumir:** quando o pedido é enviado (baixa definitiva no estoque)
-- **Devolver:** quando o pedido é cancelado (devolve a reserva)
-
-**Importante — sem transação distribuída:** Estas operações são chamadas após a atualização do status ter sido salva. Se uma operação de estoque falhar, o status do pedido já foi salvo. Isso é intencional — é melhor ter o status correto e um job de estoque com retry do que sacrificar o status por causa de um timeout no estoque.
-
 ```typescript
+export interface InventoryItem {
+  readonly productId: string;
+  readonly quantity: number;
+}
+
 /**
- * Port: operações de estoque para pedidos.
+ * Port: inventory operations driven by order status transitions.
  *
- * Estas operações devem ser idempotentes — chamá-las múltiplas vezes
- * com os mesmos parâmetros não deve criar entradas duplicadas no estoque.
- * A idempotência é garantida pela constraint UNIQUE em inventory_jobs.
+ * All methods must be idempotent — calling them multiple times with the
+ * same arguments must not create duplicate inventory movements.
  */
 export interface IInventoryPort {
   /**
-   * Reserva estoque para os itens vinculados de um pedido.
-   * Chamado quando o status muda para INVOICE_PENDING, READY_TO_PRINT
-   * ou AWAITING_PICKUP.
-   *
-   * Idempotente: ON CONFLICT DO NOTHING na inventory_jobs.
+   * Synchronously reserves stock for linked order items.
+   * Called when status transitions to INVOICE_PENDING, READY_TO_PRINT, or AWAITING_PICKUP.
+   * Propagates errors — a reservation failure blocks the status write.
    */
-  reserveStock(params: {
-    orderId: string;
-    organizationId: string;
-  }): Promise<void>;
+  reserveStockNow(orderId: string, items: ReadonlyArray<InventoryItem>): Promise<void>;
 
   /**
-   * Confirma o consumo do estoque reservado.
-   * Chamado quando o status muda para SHIPPED.
-   * Reduz products_stock.current e products_stock.reserved.
-   *
-   * Idempotente: só processa se existe reserva prévia.
+   * Enqueues a job to consume (permanently deduct) reserved stock.
+   * Called when status transitions to SHIPPED.
+   * Errors are swallowed and logged — does not block status write.
    */
-  consumeReservedStock(params: {
-    orderId: string;
-    organizationId: string;
-  }): Promise<void>;
+  enqueueConsumeStock(orderId: string, items: ReadonlyArray<InventoryItem>): Promise<void>;
 
   /**
-   * Devolve o estoque reservado para disponível.
-   * Chamado quando o status muda para CANCELLED.
-   * Reduz products_stock.reserved sem alterar products_stock.current.
-   *
-   * Idempotente: só processa se existe reserva.
+   * Enqueues a job to refund (return to available) reserved stock.
+   * Called when status transitions to CANCELLED or RETURNED.
+   * Errors are swallowed and logged — does not block status write.
    */
-  refundReservedStock(params: {
-    orderId: string;
-    organizationId: string;
-  }): Promise<void>;
+  enqueueRefundStock(orderId: string, items: ReadonlyArray<InventoryItem>): Promise<void>;
 }
 ```
 
-**Tamanho esperado:** ~55 linhas
+**Diferenças em relação ao rascunho inicial:**
+- Nomes: `reserveStock` → `reserveStockNow`, `consumeReservedStock` → `enqueueConsumeStock`, `refundReservedStock` → `enqueueRefundStock`
+- Os métodos recebem `items: ReadonlyArray<InventoryItem>` diretamente (não `orderId`+`organizationId`) — desacoplamento total do banco
+- Semântica de erro diferenciada: `reserveStockNow` propaga erros; `enqueue*` absorvem (ver T7)
 
 ---
 
 ## 4. Estrutura de Diretórios
 
 ```
-supabase/functions/_shared/ports/orders/
-├── IOrderRepository.ts        ← operações de persistência de pedidos
-├── IProductLinkRepository.ts  ← verificação e criação de vínculos
-└── IInventoryPort.ts          ← reserva, consumo e devolução de estoque
+supabase/functions/_shared/domain/orders/ports/
+├── IOrderRepository.ts        ← OrderRecord, OrderRecordItem, StatusUpdateResult, IOrderRepository
+├── IProductLinkRepository.ts  ← OrderItemLink, IProductLinkRepository
+└── IInventoryPort.ts          ← InventoryItem, IInventoryPort
 ```
+
+> **Decisão de arquitetura:** Os ports vivem dentro de `domain/orders/ports/` porque são contratos do domínio (não de infraestrutura). Os adapters de infraestrutura (T4) importam dessas interfaces, nunca o contrário.
 
 ---
 
@@ -301,44 +253,53 @@ Ports (interfaces) não são testados diretamente. Eles são testados indiretame
 ### Como criar um mock de um port (exemplo para T5/T6):
 
 ```typescript
-// mock-order-repository.ts — usado em testes de use cases
-import type { IOrderRepository, OrderRecord, StatusUpdateResult } from '../ports/orders/IOrderRepository.ts';
+// Used in use case unit tests — no Supabase required
+import type { IOrderRepository, OrderRecord } from '../domain/orders/ports/IOrderRepository.ts';
+import type { OrderStatusChangedEvent } from '../domain/orders/OrderDomainEvents.ts';
 import { OrderStatus } from '../domain/orders/OrderStatus.ts';
 
 export class MockOrderRepository implements IOrderRepository {
-  private orders: Map<string, OrderRecord> = new Map();
-  public updatedStatuses: StatusUpdateResult[] = [];
+  constructor(private order: OrderRecord) {}
+  public statusUpdates = 0;
+  public historyWrites = 0;
+  public flagsUpdated: Record<string, unknown>[] = [];
 
-  seed(order: OrderRecord): void {
-    this.orders.set(order.id, order);
-  }
-
-  async findById(orderId: string): Promise<OrderRecord | null> {
-    return this.orders.get(orderId) ?? null;
-  }
-
-  async findByMarketplaceOrderId(params: any): Promise<OrderRecord | null> {
-    return null;
+  async findById(_orderId: string): Promise<OrderRecord | null> {
+    return this.order;
   }
 
   async updateStatus(params: {
-    orderId: string;
-    newStatus: OrderStatus;
-    source: string;
-  }): Promise<StatusUpdateResult> {
-    const order = this.orders.get(params.orderId)!;
-    const result: StatusUpdateResult = {
-      orderId: params.orderId,
-      previousStatus: order.currentStatus,
-      newStatus: params.newStatus,
-      updatedAt: new Date().toISOString(),
-    };
-    this.updatedStatuses.push(result);
-    order.currentStatus = params.newStatus;
-    return result;
+    readonly orderId: string;
+    readonly currentStatus: OrderStatus | null;
+    readonly newStatus: OrderStatus;
+  }): Promise<void> {
+    this.statusUpdates += 1;
+    this.order = { ...this.order, currentStatus: params.newStatus };
   }
 
-  async markLabelPrinted(params: any): Promise<void> {}
+  async updateOrderItemsProductId(
+    _orderId: string,
+    items: ReadonlyArray<{ readonly id: string; readonly productId: string }>,
+  ): Promise<void> {
+    const patch = new Map(items.map((i) => [i.id, i.productId]));
+    this.order = {
+      ...this.order,
+      items: this.order.items.map((it) =>
+        patch.has(it.id) ? { ...it, productId: patch.get(it.id)! } : it
+      ),
+    };
+  }
+
+  async updateInternalFlags(
+    _orderId: string,
+    flags: Readonly<{ isPrintedLabel?: boolean; isPickupDone?: boolean }>,
+  ): Promise<void> {
+    this.flagsUpdated.push(flags);
+  }
+
+  async addStatusHistory(_orderId: string, _event: OrderStatusChangedEvent): Promise<void> {
+    this.historyWrites += 1;
+  }
 }
 ```
 
@@ -346,11 +307,12 @@ export class MockOrderRepository implements IOrderRepository {
 
 ## 6. Definition of Done
 
-- [ ] Arquivo `IOrderRepository.ts` criado com 4 métodos documentados
-- [ ] Arquivo `IProductLinkRepository.ts` criado com 3 métodos documentados
-- [ ] Arquivo `IInventoryPort.ts` criado com 3 métodos documentados
-- [ ] Cada método tem JSDoc explicando: propósito, idempotência, e quando é chamado
-- [ ] Cada arquivo tem no máximo 150 linhas
-- [ ] Nenhuma importação de Supabase — apenas imports de outros arquivos de domínio
-- [ ] Os tipos `OrderRecord`, `StatusUpdateResult`, `OrderItemLinkQuery`, `ProductLinkResult` estão todos exportados
-- [ ] Código TypeScript compila sem erros (`deno check`)
+- [x] Arquivo `IOrderRepository.ts` criado em `domain/orders/ports/` com 5 métodos documentados
+- [x] Arquivo `IProductLinkRepository.ts` criado em `domain/orders/ports/` com 3 métodos documentados
+- [x] Arquivo `IInventoryPort.ts` criado em `domain/orders/ports/` com 3 métodos documentados
+- [x] Cada método tem JSDoc explicando: propósito, idempotência, e quando é chamado
+- [x] Cada arquivo tem no máximo 150 linhas
+- [x] Nenhuma importação de Supabase — apenas imports de outros arquivos de domínio
+- [x] Tipos exportados: `OrderRecord`, `OrderRecordItem`, `StatusUpdateResult`, `OrderItemLink`, `InventoryItem`
+- [x] Todos os campos de `OrderRecord` são `readonly` (imutabilidade de domínio)
+- [x] Código TypeScript compila sem erros (`deno check`)
