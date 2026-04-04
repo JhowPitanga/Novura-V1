@@ -1,7 +1,7 @@
 # STATUS-ENGINE-T1 — Camada de Domínio: Entidades e Value Objects
 
 **Ciclo:** Motor de Status de Pedidos
-**Status:** 🔴 Não iniciado
+**Status:** ✅ Implementado
 **Depende de:** Nada (é a base de tudo)
 **Bloqueia:** T2, T3, T5, T6, T7
 
@@ -14,6 +14,8 @@ Esta task cria o "vocabulário" que o sistema usa para falar sobre pedidos. É c
 Hoje o sistema usa strings como `'A vincular'`, `'Impressao'`, `'Emissao NF'` espalhadas em SQL, TypeScript e até no banco de dados. Um erro de digitação em qualquer lugar causa um bug silencioso. Com esta task, todos esses valores viram um enum TypeScript com verificação em tempo de compilação.
 
 Também definimos o que é um "sinal do marketplace" (os dados brutos que o ML ou Shopee enviam) e o que é "estado de vinculação" (se os itens do pedido já foram ligados a produtos do catálogo). Essas duas informações são as únicas entradas necessárias para calcular o status de um pedido.
+
+> **Decisão de design (EN slugs):** Os valores do enum `OrderStatus` usam slugs em inglês (ex: `'unlinked'`, `'shipped'`) para consistência com os status dos marketplaces (ML e Shopee já fornecem seus status em inglês). Os rótulos em português para o usuário final são providos exclusivamente pela função `getOrderStatusLabel()`. Nunca usar os slugs EN diretamente no frontend — sempre passar pelo mapeamento de labels.
 
 ---
 
@@ -37,8 +39,10 @@ Se alguém escrever `'A Vincular'` (V maiúsculo) em qualquer lugar, nada quebra
 ### Solução
 ```typescript
 // Com enum TypeScript — erro de compilação garante consistência:
+// Slugs em EN para compatibilidade direta com os valores dos marketplaces.
+// Labels em PT-BR são fornecidos por getOrderStatusLabel().
 export enum OrderStatus {
-  UNLINKED = 'a_vincular',
+  UNLINKED = 'unlinked',
   // ...
 }
 ```
@@ -55,48 +59,64 @@ export enum OrderStatus {
 
 ```typescript
 /**
- * Status interno de um pedido no Novura.
+ * Internal order status for Novura.
  *
- * Representa o estágio atual do pedido no pipeline de atendimento do vendedor.
- * Este enum é a fonte de verdade — todos os outros lugares que precisam de status
- * de pedido devem importar daqui.
+ * Represents the current stage of the order in the seller's fulfillment pipeline.
+ * This enum is the single source of truth — every other place that needs an order
+ * status must import from here.
  *
- * Ordem de prioridade (para cálculo): ver OrderStatusEngine.ts
+ * Priority order (for calculation): see OrderStatusEngine.ts
+ *
+ * NOTE: Values are canonical English slugs for persistence and integrations.
+ * Using EN slugs ensures direct alignment with marketplace-provided status strings
+ * (ML and Shopee already deliver their statuses in English).
+ * UI labels in pt-BR are provided by getOrderStatusLabel().
  */
 export enum OrderStatus {
-  /** Pedido cancelado pelo marketplace ou reembolsado */
-  CANCELLED = 'cancelado',
+  /** Order cancelled by the marketplace or refunded */
+  CANCELLED = 'cancelled',
 
-  /** Pedido devolvido pelo comprador */
-  RETURNED = 'devolucao',
+  /** Order returned by the buyer */
+  RETURNED = 'returned',
 
-  /** Algum item do pedido ainda não foi vinculado a um produto do catálogo ERP.
-   *  É um status BLOQUEANTE — impede que o pedido avance no pipeline. */
-  UNLINKED = 'a_vincular',
+  /**
+   * At least one order item is not yet linked to a catalog product.
+   * BLOCKING status — prevents the order from advancing in the pipeline.
+   */
+  UNLINKED = 'unlinked',
 
-  /** NF-e precisa ser emitida antes do pedido ser despachado.
-   *  ML: shipment_substatus = 'invoice_pending'
-   *  Shopee: ready_to_ship sem invoice_number */
-  INVOICE_PENDING = 'emissao_nf',
+  /**
+   * Invoice (NF-e) must be issued before the order is dispatched.
+   * ML: shipment_substatus = 'invoice_pending'
+   * Shopee: ready_to_ship without invoice_number
+   */
+  INVOICE_PENDING = 'invoice_pending',
 
-  /** Pedido pronto para impressão da etiqueta de envio */
-  READY_TO_PRINT = 'impressao',
+  /** Order is ready to print the shipping label */
+  READY_TO_PRINT = 'ready_to_print',
 
-  /** Etiqueta impressa, aguardando coleta pela transportadora */
-  AWAITING_PICKUP = 'aguardando_coleta',
+  /** Label printed, awaiting carrier pickup */
+  AWAITING_PICKUP = 'awaiting_pickup',
 
-  /** Pedido enviado/em trânsito/entregue.
-   *  Também cobre pedidos fulfillment (ML Full/Shopee Full) */
-  SHIPPED = 'enviado',
+  /**
+   * Order shipped / in transit / delivered.
+   * Also covers fulfillment orders (ML Full / Shopee Full).
+   */
+  SHIPPED = 'shipped',
 
-  /** Estado inicial — pedido chegou mas nenhuma condição mais específica se aplica */
-  PENDING = 'pendente',
+  /** Initial state — order arrived but no more specific condition applies */
+  PENDING = 'pending',
 }
 
 /**
- * Converte o valor do enum para o label exibido no frontend (pt-BR).
- * Esta função NÃO pertence ao domínio — está aqui para conveniência.
- * O componente OrderStatusBadge deve usar esta função.
+ * Maps an OrderStatus enum value to its display label in pt-BR.
+ *
+ * Used by the OrderStatusBadge frontend component.
+ * Guaranteed to be exhaustive — TypeScript will error if a new enum member is
+ * added without a corresponding label entry.
+ *
+ * IMPORTANT: Never use the raw EN slug values directly in the UI.
+ * Always call this function to get the pt-BR label for display.
  */
 export function getOrderStatusLabel(status: OrderStatus): string {
   const labels: Record<OrderStatus, string> = {
@@ -368,7 +388,7 @@ export interface OrderStatusRule {
 
 ```
 supabase/functions/_shared/domain/orders/
-├── OrderStatus.ts          ← enum + getOrderStatusLabel()
+├── OrderStatus.ts          ← enum (EN slugs) + getOrderStatusLabel() (PT-BR)
 ├── MarketplaceSignals.ts   ← interface MarketplaceSignals
 ├── ProductLinkState.ts     ← interface + createProductLinkState()
 ├── OrderDomainEvents.ts    ← tipos de eventos + factories
@@ -377,7 +397,7 @@ supabase/functions/_shared/domain/orders/
     ├── CancelledRule.ts
     ├── ReturnedRule.ts
     ├── FulfillmentRule.ts
-    ├── UnlinkedItemsRule.ts
+    ├── UnlinkedRule.ts      ← (nota: implementado como UnlinkedRule, não UnlinkedItemsRule)
     ├── InvoicePendingRule.ts
     ├── ReadyToPrintRule.ts
     ├── AwaitingPickupRule.ts
@@ -443,8 +463,8 @@ Deno.test("createStatusChangedEvent cria evento com type correto", () => {
   const event = createStatusChangedEvent({
     orderId: 'order-1',
     organizationId: 'org-1',
-    previousStatus: 'pendente',
-    newStatus: 'enviado',
+    previousStatus: 'pending',   // EN slug
+    newStatus: 'shipped',        // EN slug
     source: 'webhook',
   });
   assertEquals(event.type, 'ORDER_STATUS_CHANGED');
@@ -452,7 +472,7 @@ Deno.test("createStatusChangedEvent cria evento com type correto", () => {
 
 Deno.test("createStatusChangedEvent define changedAt como ISO string", () => {
   const event = createStatusChangedEvent({
-    orderId: 'o', organizationId: 'org', previousStatus: null, newStatus: 'pendente', source: 'sync',
+    orderId: 'o', organizationId: 'org', previousStatus: null, newStatus: 'pending', source: 'sync',
   });
   // Deve ser parsável como Date válida
   const date = new Date(event.changedAt);
@@ -464,14 +484,16 @@ Deno.test("createStatusChangedEvent define changedAt como ISO string", () => {
 
 ## 6. Definition of Done
 
-- [ ] Arquivo `OrderStatus.ts` criado com enum `OrderStatus` contendo 8 valores
-- [ ] Arquivo `OrderStatus.ts` exporta `getOrderStatusLabel()` com mapeamento para pt-BR
-- [ ] Arquivo `MarketplaceSignals.ts` criado com interface completa (14 campos)
-- [ ] Arquivo `ProductLinkState.ts` criado com interface + `createProductLinkState()` + `FULLY_LINKED`
-- [ ] Arquivo `OrderDomainEvents.ts` criado com 3 tipos de evento + factory `createStatusChangedEvent()`
-- [ ] Arquivo `OrderStatusRule.ts` criado com interface `OrderStatusRule`
-- [ ] Diretório `rules/` criado (vazio — será preenchido em T3)
-- [ ] Todos os testes unitários passam com `deno test`
-- [ ] Nenhum arquivo excede 150 linhas
-- [ ] Nenhuma importação externa (zero `import` de Supabase ou Deno fora do necessário)
-- [ ] Cada tipo/interface tem JSDoc explicando seu propósito
+- [x] Arquivo `OrderStatus.ts` criado com enum `OrderStatus` contendo 8 valores
+- [x] **Valores do enum usam EN slugs** (`'cancelled'`, `'returned'`, `'unlinked'`, `'invoice_pending'`, `'ready_to_print'`, `'awaiting_pickup'`, `'shipped'`, `'pending'`) — alinhados com os status dos marketplaces
+- [x] Arquivo `OrderStatus.ts` exporta `getOrderStatusLabel()` com mapeamento para pt-BR (separação clara: persiste EN, exibe PT-BR)
+- [x] Arquivo `MarketplaceSignals.ts` criado com interface completa (13 campos)
+- [x] Arquivo `ProductLinkState.ts` criado com interface + `createProductLinkState()` + `FULLY_LINKED`
+- [x] Arquivo `OrderDomainEvents.ts` criado com 3 tipos de evento + factory `createStatusChangedEvent()`
+- [x] Arquivo `OrderStatusRule.ts` criado com interface `OrderStatusRule`
+- [x] Diretório `rules/` preenchido com 9 regras (ver T3)
+- [x] Todos os testes unitários passam com `deno test`
+- [x] Nenhum arquivo excede 150 linhas
+- [x] Nenhuma importação de Supabase nos arquivos de domínio
+- [x] Cada tipo/interface tem JSDoc explicando seu propósito
+- [x] **Regra de compatibilidade frontend:** `src/hooks/useOrderFiltering.ts` e `src/utils/orderUtils.ts` devem mapear os EN slugs para exibição PT-BR via `getOrderStatusLabel()` ou equivalente
