@@ -129,6 +129,7 @@ Frontend lê orders.status (não mais marketplace_orders_presented_new.status_in
 | [T8](./STATUS-ENGINE-T8-migracao-db.md) | Migration: coluna status | Adiciona `status` calculado na tabela `orders` | — |
 | [T9](./STATUS-ENGINE-T9-edge-functions.md) | Wiring Edge Functions | Integra o engine no `orders-queue-worker` | T6, T7 |
 | [T10](./STATUS-ENGINE-T10-frontend.md) | Frontend: hooks e componentes | Lê de `orders.status`, atualiza `LinkOrderModal` | T8, T9 |
+| [T11](./STATUS-ENGINE-T11-nfe-impressao-coleta.md) | NFe, impressão e coleta | Bugs, correções e tasks N1–N10 para emissão NF, etiqueta e coleta | T1–T4, T6 |
 
 ---
 
