@@ -375,6 +375,8 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
     itemsRaw.length > 0
       ? itemsRaw.map((it: Record<string, unknown>, idx: number) => ({
           id: `${row.marketplace_order_id || row.id}-ITEM-${idx + 1}`,
+          // dbId holds the real order_items.id UUID — required by link-order-product edge function
+          dbId: it.id ? String(it.id) : undefined,
           name: (it.title as string) || "Item",
           sku: (it.sku as string) ?? null,
           quantity: typeof it.quantity === "number" ? it.quantity : Number(it.quantity ?? 1) || 1,
