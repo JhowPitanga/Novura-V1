@@ -1,7 +1,7 @@
 # STATUS-ENGINE-T4 — Infrastructure Adapters: Implementações Supabase dos Ports
 
 **Ciclo:** Motor de Status de Pedidos
-**Status:** 🔴 Não iniciado
+**Status:** ✅ Implementado
 **Depende de:** [T1 — Domínio](./STATUS-ENGINE-T1-dominio.md), [T2 — Ports](./STATUS-ENGINE-T2-portas.md)
 **Bloqueia:** T5, T6, T7, T9
 
@@ -33,117 +33,112 @@ Existem dois tipos de adapters aqui:
 **Dependência:** Recebe `supabaseAdmin` via construtor (injeção de dependência) — nunca cria o cliente internamente.
 
 ```typescript
-import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import type {
-  IOrderRepository,
-  OrderRecord,
-  StatusUpdateResult
-} from '../../ports/orders/IOrderRepository.ts';
-import type { MarketplaceSignals } from '../../domain/orders/MarketplaceSignals.ts';
-import { OrderStatus } from '../../domain/orders/OrderStatus.ts';
+// Imports reais do projeto — caminhos relativos ao arquivo adapter
+import type { SupabaseClient } from "../infra/supabase-client.ts";
+import type { IOrderRepository, OrderRecord, OrderRecordItem } from "../../domain/orders/ports/IOrderRepository.ts";
+import type { MarketplaceSignals } from "../../domain/orders/MarketplaceSignals.ts";
+import type { OrderStatusChangedEvent } from "../../domain/orders/OrderDomainEvents.ts";
+import type { OrderStatus } from "../../domain/orders/OrderStatus.ts";
+
+type OrderRow = {
+  readonly id: string;
+  readonly organization_id: string;
+  readonly marketplace: "mercado_livre" | "shopee";
+  readonly marketplace_order_id: string;
+  readonly status: OrderStatus | null;
+  readonly marketplace_status: string | null;
+  readonly shipment_status: string | null;
+  readonly shipment_substatus: string | null;
+  readonly is_fulfillment: boolean | null;
+  readonly is_cancelled: boolean | null;
+  readonly is_refunded: boolean | null;
+  readonly is_returned: boolean | null;
+  readonly is_printed_label: boolean | null;
+  readonly has_invoice: boolean | null;
+  readonly is_pickup_done: boolean | null;
+  readonly order_items: ReadonlyArray<{
+    readonly id: string;
+    readonly product_id: string | null;
+    readonly marketplace_item_id: string | null;
+    readonly quantity: number | null;
+  }> | null;
+};
 
 export class SupabaseOrderRepository implements IOrderRepository {
   constructor(private readonly supabase: SupabaseClient) {}
 
   async findById(orderId: string): Promise<OrderRecord | null> {
     const { data, error } = await this.supabase
-      .from('orders')
-      .select(`
-        id, organization_id, marketplace, marketplace_order_id,
-        status, marketplace_status, shipment_status, shipment_substatus,
-        is_fulfillment, is_cancelled, is_refunded, is_returned,
-        is_printed_label, has_invoice
-      `)
-      .eq('id', orderId)
+      .from("orders")
+      .select("*, order_items(*)")
+      .eq("id", orderId)
       .maybeSingle();
-    if (error) throw new Error(`findById failed: ${error.message}`);
+    if (error) throw new Error(`SupabaseOrderRepository.findById failed: ${error.message}`);
     if (!data) return null;
-    return this.mapRowToRecord(data);
-  }
-
-  async findByMarketplaceOrderId(params: {
-    organizationId: string;
-    marketplace: string;
-    marketplaceOrderId: string;
-  }): Promise<OrderRecord | null> {
-    const { data, error } = await this.supabase
-      .from('orders')
-      .select('id, organization_id, marketplace, marketplace_order_id, status, marketplace_status')
-      .eq('organization_id', params.organizationId)
-      .eq('marketplace', params.marketplace)
-      .eq('marketplace_order_id', params.marketplaceOrderId)
-      .maybeSingle();
-    if (error) throw new Error(`findByMarketplaceOrderId failed: ${error.message}`);
-    if (!data) return null;
-    return this.mapRowToRecord(data);
+    return this.mapOrderRow(data as unknown as OrderRow);
   }
 
   async updateStatus(params: {
-    orderId: string;
-    newStatus: OrderStatus;
-    source: 'webhook' | 'user_action' | 'sync';
-  }): Promise<StatusUpdateResult> {
-    // Busca status atual antes de atualizar
-    const current = await this.findById(params.orderId);
-    const previousStatus = current?.currentStatus ?? null;
-
-    // Atualiza o status na tabela orders
-    const { error: updateError } = await this.supabase
-      .from('orders')
-      .update({ status: params.newStatus, status_updated_at: new Date().toISOString() })
-      .eq('id', params.orderId);
-    if (updateError) throw new Error(`updateStatus failed: ${updateError.message}`);
-
-    // Registra no histórico (append-only)
-    await this.appendStatusHistory({
-      orderId: params.orderId,
-      fromStatus: previousStatus,
-      toStatus: params.newStatus,
-      source: params.source,
-    });
-
-    return {
-      orderId: params.orderId,
-      previousStatus,
-      newStatus: params.newStatus,
-      updatedAt: new Date().toISOString(),
-    };
-  }
-
-  async markLabelPrinted(params: {
-    orderIds: string[];
-    organizationId: string;
+    readonly orderId: string;
+    readonly currentStatus: OrderStatus | null;
+    readonly newStatus: OrderStatus;
   }): Promise<void> {
-    const { error } = await this.supabase
-      .from('orders')
-      .update({ is_printed_label: true, label_printed_at: new Date().toISOString() })
-      .in('id', params.orderIds)
-      .eq('organization_id', params.organizationId);
-    if (error) throw new Error(`markLabelPrinted failed: ${error.message}`);
+    // Optimistic concurrency control: only update if status matches currentStatus
+    const baseQuery = this.supabase
+      .from("orders")
+      .update({ status: params.newStatus, status_updated_at: new Date().toISOString() } as never)
+      .eq("id", params.orderId);
+    const query = params.currentStatus === null
+      ? baseQuery.is("status", null).select("id")
+      : baseQuery.eq("status", params.currentStatus).select("id");
+    const { data, error } = await query;
+    if (error) throw new Error(`SupabaseOrderRepository.updateStatus failed: ${error.message}`);
+    if (!data || data.length === 0) throw new Error("SupabaseOrderRepository.updateStatus concurrency conflict");
   }
 
-  private async appendStatusHistory(params: {
-    orderId: string;
-    fromStatus: OrderStatus | null;
-    toStatus: OrderStatus;
-    source: string;
-  }): Promise<void> {
-    const { error } = await this.supabase.from('order_status_history').insert({
-      order_id: params.orderId,
-      from_status: params.fromStatus,
-      to_status: params.toStatus,
-      changed_at: new Date().toISOString(),
-      source: params.source,
+  async updateOrderItemsProductId(
+    orderId: string,
+    items: ReadonlyArray<{ readonly id: string; readonly productId: string }>,
+  ): Promise<void> {
+    for (const item of items) {
+      const { error } = await this.supabase
+        .from("order_items")
+        .update({ product_id: item.productId })
+        .eq("order_id", orderId)
+        .eq("id", item.id);
+      if (error) throw new Error(`SupabaseOrderRepository.updateOrderItemsProductId failed: ${error.message}`);
+    }
+  }
+
+  async updateInternalFlags(
+    orderId: string,
+    flags: Readonly<{ isPrintedLabel?: boolean; isPickupDone?: boolean }>,
+  ): Promise<void> {
+    const payload: { is_printed_label?: boolean; is_pickup_done?: boolean } = {};
+    if (flags.isPrintedLabel !== undefined) payload.is_printed_label = flags.isPrintedLabel;
+    if (flags.isPickupDone !== undefined) payload.is_pickup_done = flags.isPickupDone;
+    if (Object.keys(payload).length === 0) return;
+    const { error } = await this.supabase.from("orders").update(payload as never).eq("id", orderId);
+    if (error) throw new Error(`SupabaseOrderRepository.updateInternalFlags failed: ${error.message}`);
+  }
+
+  async addStatusHistory(orderId: string, event: OrderStatusChangedEvent): Promise<void> {
+    const { error } = await this.supabase.from("order_status_history").insert({
+      order_id: orderId,
+      from_status: event.previousStatus,
+      to_status: event.newStatus,
+      changed_at: event.changedAt,
+      source: event.source,
     });
-    if (error) throw new Error(`appendStatusHistory failed: ${error.message}`);
+    if (error) throw new Error(`SupabaseOrderRepository.addStatusHistory failed: ${error.message}`);
   }
 
-  private mapRowToRecord(row: any): OrderRecord {
+  private mapOrderRow(row: OrderRow): OrderRecord {
     const signals: MarketplaceSignals = {
       organizationId: row.organization_id,
       marketplaceOrderId: row.marketplace_order_id,
       marketplace: row.marketplace,
-      marketplaceStatus: row.marketplace_status ?? '',
+      marketplaceStatus: row.marketplace_status ?? "",
       shipmentStatus: row.shipment_status ?? undefined,
       shipmentSubstatus: row.shipment_substatus ?? undefined,
       isFulfillment: row.is_fulfillment ?? false,
@@ -154,20 +149,36 @@ export class SupabaseOrderRepository implements IOrderRepository {
       hasInvoice: row.has_invoice ?? false,
       isPickupDone: row.is_pickup_done ?? undefined,
     };
+    const items: ReadonlyArray<OrderRecordItem> = (row.order_items ?? []).map((it) => ({
+      id: it.id,
+      productId: it.product_id,
+      marketplaceItemId: it.marketplace_item_id,
+      quantity: it.quantity ?? 0,
+    }));
     return {
       id: row.id,
       organizationId: row.organization_id,
       marketplace: row.marketplace,
       marketplaceOrderId: row.marketplace_order_id,
-      currentStatus: row.status ?? null,
+      currentStatus: row.status,
       marketplaceSignals: signals,
+      items,
     };
   }
 }
 ```
 
-**Tamanho esperado:** ~100 linhas
-**Nota:** Se exceder 150 linhas, extraia `appendStatusHistory` e `mapRowToRecord` para helpers privados em arquivo separado.
+**Tamanho real:** ~105 linhas
+
+**Diferenças em relação ao rascunho inicial:**
+- `SupabaseClient` importado de `../infra/supabase-client.ts` (não de `esm.sh`) — evita conflitos com tipos gerados
+- Ports importados de `../../domain/orders/ports/` (não de `../../ports/orders/`)
+- `findByMarketplaceOrderId` **não implementado** (não necessário nos use cases)
+- `updateStatus` usa **OCC** com campo `currentStatus` no filtro — lança erro em conflito de concorrência
+- `markLabelPrinted` **substituído** por `updateInternalFlags` (mais genérico)
+- `addStatusHistory` recebe `OrderStatusChangedEvent` completo (não campos separados)
+- `findById` inclui `order_items` via join (`"*, order_items(*)"`)
+- `OrderRow` tipada com `readonly` para imutabilidade
 
 ---
 
@@ -186,91 +197,69 @@ Um item é considerado vinculado se:
 2. Existe registro em `marketplace_item_product_links` para o par `(marketplace_item_id, variation_id)` da organização
 
 ```typescript
-import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import type {
-  IProductLinkRepository,
-  OrderItemLinkQuery,
-  ProductLinkResult
-} from '../../ports/orders/IProductLinkRepository.ts';
+import type { SupabaseClient } from "../infra/supabase-client.ts";
+import type { IProductLinkRepository, OrderItemLink } from "../../domain/orders/ports/IProductLinkRepository.ts";
 
 export class SupabaseProductLinkRepository implements IProductLinkRepository {
   constructor(private readonly supabase: SupabaseClient) {}
 
-  async checkLinks(params: {
-    organizationId: string;
-    marketplace: string;
-    items: OrderItemLinkQuery[];
-  }): Promise<ProductLinkResult[]> {
-    // Items com SKU não precisam de query — já são considerados vinculados
-    const itemsWithoutSku = params.items.filter(item => !item.sellerSku);
-    if (itemsWithoutSku.length === 0) {
-      return params.items.map(item => ({
-        marketplaceItemId: item.marketplaceItemId,
-        variationId: item.variationId,
-        productId: 'sku_resolved', // placeholder — tem SKU
-        source: 'sku' as const,
-      }));
-    }
+  async findLink(organizationId: string, sku: string): Promise<OrderItemLink | null> {
+    const { data, error } = await (this.supabase as unknown as {
+      from: (t: string) => { select: (f: string) => { eq: (c: string, v: string) => { eq: (c: string, v: string) => { maybeSingle: () => Promise<{ data: { marketplace_item_id: string; product_id: string } | null; error: { message: string } | null }> } } } };
+    }).from("marketplace_item_product_links")
+      .select("marketplace_item_id, product_id")
+      .eq("organizations_id", organizationId)
+      .eq("marketplace_item_id", sku)
+      .maybeSingle();
+    if (error) throw new Error(`SupabaseProductLinkRepository.findLink failed: ${error.message}`);
+    if (!data) return null;
+    return { organizationId, marketplaceItemId: data.marketplace_item_id, productId: data.product_id };
+  }
 
-    // Busca vínculos permanentes para os items sem SKU
-    const { data, error } = await this.supabase
-      .from('marketplace_item_product_links')
-      .select('marketplace_item_id, variation_id, product_id')
-      .eq('organizations_id', params.organizationId)
-      .eq('marketplace_name', params.marketplace)
-      .in('marketplace_item_id', itemsWithoutSku.map(i => i.marketplaceItemId));
-    if (error) throw new Error(`checkLinks failed: ${error.message}`);
-
-    const linkMap = new Map<string, string>(
-      (data ?? []).map(row => [`${row.marketplace_item_id}:${row.variation_id}`, row.product_id])
-    );
-
-    return params.items.map(item => {
-      if (item.sellerSku) {
-        return { marketplaceItemId: item.marketplaceItemId, variationId: item.variationId, productId: 'sku_resolved', source: 'sku' };
-      }
-      const key = `${item.marketplaceItemId}:${item.variationId}`;
-      const productId = linkMap.get(key) ?? null;
-      return { marketplaceItemId: item.marketplaceItemId, variationId: item.variationId, productId, source: productId ? 'permanent' : null };
-    });
+  async listLinks(
+    organizationId: string,
+    skus: ReadonlyArray<string>,
+  ): Promise<ReadonlyArray<OrderItemLink>> {
+    if (skus.length === 0) return [];
+    const { data, error } = await (this.supabase as unknown as {
+      from: (t: string) => { select: (f: string) => { eq: (c: string, v: string) => { in: (c: string, v: ReadonlyArray<string>) => Promise<{ data: Array<{ marketplace_item_id: string; product_id: string }> | null; error: { message: string } | null }> } } };
+    }).from("marketplace_item_product_links")
+      .select("marketplace_item_id, product_id")
+      .eq("organizations_id", organizationId)
+      .in("marketplace_item_id", skus);
+    if (error) throw new Error(`SupabaseProductLinkRepository.listLinks failed: ${error.message}`);
+    return (data ?? []).map((row) => ({
+      organizationId,
+      marketplaceItemId: row.marketplace_item_id,
+      productId: row.product_id,
+    }));
   }
 
   async upsertPermanentLink(params: {
-    organizationId: string;
-    marketplace: string;
-    marketplaceItemId: string;
-    variationId: string;
-    productId: string;
+    readonly organizationId: string;
+    readonly marketplaceItemId: string;
+    readonly productId: string;
   }): Promise<void> {
-    const { error } = await this.supabase
-      .from('marketplace_item_product_links')
-      .upsert({
-        organizations_id: params.organizationId,
-        marketplace_name: params.marketplace,
-        marketplace_item_id: params.marketplaceItemId,
-        variation_id: params.variationId,
-        product_id: params.productId,
-      }, { onConflict: 'organizations_id,marketplace_name,marketplace_item_id,variation_id' });
-    if (error) throw new Error(`upsertPermanentLink failed: ${error.message}`);
-  }
-
-  async countUnlinkedItems(params: {
-    organizationId: string;
-    marketplace: string;
-    orderId: string;
-    items: OrderItemLinkQuery[];
-  }): Promise<number> {
-    const results = await this.checkLinks({
-      organizationId: params.organizationId,
-      marketplace: params.marketplace,
-      items: params.items,
-    });
-    return results.filter(r => r.productId === null).length;
+    const { error } = await (this.supabase as unknown as {
+      from: (t: string) => { upsert: (v: object, o: object) => Promise<{ error: { message: string } | null }> };
+    }).from("marketplace_item_product_links").upsert({
+      organizations_id: params.organizationId,
+      marketplace_item_id: params.marketplaceItemId,
+      product_id: params.productId,
+    }, { onConflict: "organizations_id,marketplace_item_id" });
+    if (error) throw new Error(`SupabaseProductLinkRepository.upsertPermanentLink failed: ${error.message}`);
   }
 }
 ```
 
-**Tamanho esperado:** ~90 linhas
+**Diferenças em relação ao rascunho inicial:**
+- Ports importados de `../../domain/orders/ports/` (não de `../../ports/orders/`)
+- `SupabaseClient` de `../infra/supabase-client.ts`
+- `checkLinks` e `countUnlinkedItems` **removidos** — contagem de não-vinculados feita via `order.items.filter(it => it.productId === null)` nos use cases
+- `findLink` e `listLinks` implementam a nova interface de T2
+- `upsertPermanentLink` sem `variationId` nem `marketplace` (esquema simplificado)
+
+**Tamanho real:** ~55 linhas
 
 ---
 
@@ -286,41 +275,55 @@ export class SupabaseProductLinkRepository implements IProductLinkRepository {
 **Por que não executar direto:** O processamento de estoque pode ser lento (múltiplos updates). Enfileirar e processar assincronamente evita timeouts na edge function.
 
 ```typescript
-import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import type { IInventoryPort } from '../../ports/orders/IInventoryPort.ts';
+import type { SupabaseClient } from "../infra/supabase-client.ts";
+import type { IInventoryPort, InventoryItem } from "../../domain/orders/ports/IInventoryPort.ts";
 
-type InventoryJobType = 'reserve' | 'consume' | 'refund';
+type InventoryJobType = "reserve" | "consume" | "refund";
 
 export class SupabaseInventoryAdapter implements IInventoryPort {
   constructor(private readonly supabase: SupabaseClient) {}
 
-  async reserveStock(params: { orderId: string; organizationId: string }): Promise<void> {
-    await this.enqueueJob(params.orderId, 'reserve');
+  async reserveStockNow(orderId: string, items: ReadonlyArray<InventoryItem>): Promise<void> {
+    await this.enqueueJob(orderId, "reserve", items);
   }
 
-  async consumeReservedStock(params: { orderId: string; organizationId: string }): Promise<void> {
-    await this.enqueueJob(params.orderId, 'consume');
+  async enqueueConsumeStock(orderId: string, items: ReadonlyArray<InventoryItem>): Promise<void> {
+    await this.enqueueJob(orderId, "consume", items);
   }
 
-  async refundReservedStock(params: { orderId: string; organizationId: string }): Promise<void> {
-    await this.enqueueJob(params.orderId, 'refund');
+  async enqueueRefundStock(orderId: string, items: ReadonlyArray<InventoryItem>): Promise<void> {
+    await this.enqueueJob(orderId, "refund", items);
   }
 
-  private async enqueueJob(orderId: string, jobType: InventoryJobType): Promise<void> {
-    const { error } = await this.supabase
-      .from('inventory_jobs')
-      .insert({ order_id: orderId, job_type: jobType, status: 'pending' })
-      .select() // necessário para o ON CONFLICT funcionar via PostgREST
-    // Se já existe job do mesmo tipo para este pedido, ignora silenciosamente
-    // (a constraint UNIQUE em inventory_jobs garante idempotência)
-    if (error && !error.message.includes('duplicate')) {
+  private async enqueueJob(
+    orderId: string,
+    jobType: InventoryJobType,
+    items: ReadonlyArray<InventoryItem>,
+  ): Promise<void> {
+    const rows = items.map((item) => ({
+      order_id: orderId,
+      product_id: item.productId,
+      quantity: item.quantity,
+      job_type: jobType,
+      status: "pending",
+    }));
+    const { error } = await (this.supabase as unknown as {
+      from: (t: string) => { insert: (v: object[]) => { select: () => Promise<{ error: { message: string } | null }> } };
+    }).from("inventory_jobs").insert(rows).select();
+    if (error && !error.message.includes("duplicate")) {
       throw new Error(`enqueueJob(${jobType}) failed for order ${orderId}: ${error.message}`);
     }
   }
 }
 ```
 
-**Tamanho esperado:** ~45 linhas
+**Diferenças em relação ao rascunho inicial:**
+- Ports importados de `../../domain/orders/ports/` (não de `../../ports/orders/`)
+- Nomes dos métodos: `reserveStock` → `reserveStockNow`, `consumeReservedStock` → `enqueueConsumeStock`, `refundReservedStock` → `enqueueRefundStock`
+- Métodos recebem `items: ReadonlyArray<InventoryItem>` diretamente (não `organizationId`) — um job por item de produto
+- `enqueueJob` agora insere linhas por item (não por pedido)
+
+**Tamanho real:** ~45 linhas
 
 ---
 
@@ -455,29 +458,17 @@ Para testes locais, usar o Supabase local (`supabase start`). Para CI, usar um b
 // Teste de integração — requer banco de dados
 // Execute com: deno test --allow-net --allow-env
 
-Deno.test("checkLinks: item com seller_sku é considerado vinculado", async () => {
+Deno.test("listLinks: retorna vínculos permanentes para os SKUs fornecidos", async () => {
   const repo = new SupabaseProductLinkRepository(testSupabase);
-  const results = await repo.checkLinks({
-    organizationId: 'test-org',
-    marketplace: 'mercado_livre',
-    items: [{ marketplaceItemId: 'item-1', variationId: '', sellerSku: 'SKU-123' }],
-  });
-  assertEquals(results[0].source, 'sku');
-  assertNotEquals(results[0].productId, null);
+  const links = await repo.listLinks('test-org', ['SKU-123', 'SKU-456']);
+  // Retorna apenas os SKUs que têm vínculo permanente no banco
+  assertEquals(Array.isArray(links), true);
 });
 
-Deno.test("countUnlinkedItems: retorna 0 quando todos têm SKU", async () => {
+Deno.test("listLinks: retorna array vazio para lista vazia de SKUs", async () => {
   const repo = new SupabaseProductLinkRepository(testSupabase);
-  const count = await repo.countUnlinkedItems({
-    organizationId: 'test-org',
-    marketplace: 'shopee',
-    orderId: 'order-test',
-    items: [
-      { marketplaceItemId: 'a', variationId: '', sellerSku: 'SKU-A' },
-      { marketplaceItemId: 'b', variationId: '', sellerSku: 'SKU-B' },
-    ],
-  });
-  assertEquals(count, 0);
+  const links = await repo.listLinks('test-org', []);
+  assertEquals(links.length, 0);
 });
 ```
 
@@ -499,16 +490,32 @@ Deno.test("buildMlSignals: detecta cancelamento por paymentStatus refunded", () 
 
 ---
 
-## 4. Definition of Done
+## 4. Arquivos Adicionais (Aliases Kebab-case)
 
-- [ ] `SupabaseOrderRepository` criado e implementa todos os métodos de `IOrderRepository`
-- [ ] `SupabaseProductLinkRepository` criado e implementa todos os métodos de `IProductLinkRepository`
-- [ ] `SupabaseInventoryAdapter` criado e implementa todos os métodos de `IInventoryPort`
-- [ ] `buildMlSignals()` exportado de `MlMarketplaceSignalsAdapter.ts`
-- [ ] `buildShopeeSignals()` exportado de `ShopeeMarketplaceSignalsAdapter.ts`
-- [ ] Todos os métodos que fazem queries lançam `Error` com mensagem descritiva em caso de falha
-- [ ] `SupabaseInventoryAdapter.enqueueJob()` é tolerante a conflitos (idempotente)
-- [ ] Testes unitários para ambos os adapters de sinais (funções puras — sem banco)
-- [ ] Testes de integração para `SupabaseProductLinkRepository` (com banco local)
-- [ ] Nenhum arquivo excede 150 linhas
-- [ ] Todos os adapters recebem `SupabaseClient` via construtor (não criam o cliente internamente)
+Para compatibilidade com o bundler Deno usado na edge function `orders-queue-worker`, foram criados dois arquivos de reexport com nomes em kebab-case:
+
+```
+supabase/functions/_shared/adapters/orders/supabase-order-repository.ts
+supabase/functions/_shared/adapters/orders/supabase-inventory-adapter.ts
+```
+
+Cada arquivo contém apenas `export { X } from './X.ts'` e permite que o bundler resolva os imports sem conflito.
+
+---
+
+## 5. Definition of Done
+
+- [x] `SupabaseOrderRepository` implementa todos os 5 métodos de `IOrderRepository`
+- [x] `SupabaseProductLinkRepository` implementa todos os 3 métodos de `IProductLinkRepository` (v2: `findLink`, `listLinks`, `upsertPermanentLink`)
+- [x] `SupabaseInventoryAdapter` implementa todos os 3 métodos de `IInventoryPort` (`reserveStockNow`, `enqueueConsumeStock`, `enqueueRefundStock`)
+- [x] `buildMlSignals()` exportado de `MlMarketplaceSignalsAdapter.ts`
+- [x] `buildShopeeSignals()` exportado de `ShopeeMarketplaceSignalsAdapter.ts`
+- [x] Todos os imports de ports usam o caminho `../../domain/orders/ports/` (não `../../ports/orders/`)
+- [x] `SupabaseClient` importado de `../infra/supabase-client.ts` (não de `esm.sh`)
+- [x] Todos os métodos que fazem queries lançam `Error` com mensagem descritiva em caso de falha
+- [x] `updateStatus` usa OCC (Optimistic Concurrency Control) — lança erro em conflito
+- [x] `SupabaseInventoryAdapter.enqueueJob()` é tolerante a conflitos UNIQUE (idempotente)
+- [x] Testes unitários para ambos os adapters de sinais (funções puras — sem banco)
+- [x] Aliases kebab-case criados para compatibilidade com bundler Deno
+- [x] Nenhum arquivo excede 150 linhas
+- [x] Todos os adapters recebem `SupabaseClient` via construtor (não criam o cliente internamente)

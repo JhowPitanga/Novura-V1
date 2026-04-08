@@ -1,5 +1,7 @@
 export interface OrderItem {
   id: string;
+  /** Real UUID from order_items.id table — used as orderItemId when calling link-order-product. */
+  dbId?: string;
   name: string;
   sku: string | null;
   quantity: number;

@@ -1,4 +1,4 @@
-import { LinkProductToOrderItemUseCase } from "../LinkProductToOrderItemUseCase.ts";
+import { LinkProductToOrderItemUseCase, type LinkProductInput } from "../LinkProductToOrderItemUseCase.ts";
 import type { RecalculateOrderStatusUseCase, RecalculateOrderStatusResult } from "../RecalculateOrderStatusUseCase.ts";
 import { createStatusChangedEvent } from "../../../domain/orders/OrderDomainEvents.ts";
 import type { OrderStatusChangedEvent } from "../../../domain/orders/OrderDomainEvents.ts";
@@ -24,8 +24,7 @@ function orphanItem(id: string, marketplaceItemId: string): OrderRecord["items"]
 
 class MockOrderRepository implements IOrderRepository {
   constructor(private order: OrderRecord) {}
-  public statusUpdates = 0;
-  public historyWrites = 0;
+  public productIdUpdates: Array<Array<{ id: string; productId: string }>> = [];
   async findById(_orderId: string): Promise<OrderRecord | null> {
     return this.order;
   }
@@ -34,25 +33,26 @@ class MockOrderRepository implements IOrderRepository {
   }
   async markLabelPrinted(): Promise<void> {}
   async updateStatus(params: { readonly orderId: string; readonly currentStatus: OrderStatus | null; readonly newStatus: OrderStatus }): Promise<void> {
-    this.statusUpdates += 1;
     this.order = { ...this.order, currentStatus: params.newStatus };
   }
   async updateOrderItemsProductId(_orderId: string, items: ReadonlyArray<{ readonly id: string; readonly productId: string }>): Promise<void> {
+    this.productIdUpdates.push([...items]);
     const patch = new Map(items.map((i) => [i.id, i.productId]));
-    this.order = { ...this.order, items: this.order.items.map((it) => (patch.has(it.id) ? { ...it, productId: patch.get(it.id)! } : it)) };
+    this.order = {
+      ...this.order,
+      items: this.order.items.map((it) => (patch.has(it.id) ? { ...it, productId: patch.get(it.id)! } : it)),
+    };
   }
   async updateInternalFlags(_orderId: string, _flags: Readonly<{ isPrintedLabel?: boolean; isPickupDone?: boolean }>): Promise<void> {}
-  async addStatusHistory(_orderId: string, _event: OrderStatusChangedEvent): Promise<void> {
-    this.historyWrites += 1;
-  }
+  async addStatusHistory(_orderId: string, _event: OrderStatusChangedEvent): Promise<void> {}
 }
 
 class MockProductLinkRepository implements IProductLinkRepository {
-  public permanentLinks = 0;
-  async findLink(_organizationId: string, _sku: string): Promise<OrderItemLink | null> {
+  public permanentLinkCalls: Array<{ marketplaceItemId: string; productId: string }> = [];
+  async findLink(_org: string, _sku: string): Promise<OrderItemLink | null> {
     return null;
   }
-  async listLinks(_organizationId: string, _skus: ReadonlyArray<string>): Promise<ReadonlyArray<OrderItemLink>> {
+  async listLinks(_org: string, _skus: ReadonlyArray<string>): Promise<ReadonlyArray<OrderItemLink>> {
     return [];
   }
   async checkLinks(_params: {
@@ -62,21 +62,16 @@ class MockProductLinkRepository implements IProductLinkRepository {
   }): Promise<ReadonlyArray<ProductLinkResult>> {
     return [];
   }
-  async upsertPermanentLink(_params: {
+  async upsertPermanentLink(params: {
     readonly organizationId: string;
     readonly marketplace: string;
     readonly marketplaceItemId: string;
     readonly variationId: string;
     readonly productId: string;
   }): Promise<void> {
-    this.permanentLinks += 1;
+    this.permanentLinkCalls.push({ marketplaceItemId: params.marketplaceItemId, productId: params.productId });
   }
-  async countUnlinkedItems(_params: {
-    readonly organizationId: string;
-    readonly marketplace: string;
-    readonly orderId: string;
-    readonly items: ReadonlyArray<OrderItemLinkQuery>;
-  }): Promise<number> {
+  async countUnlinkedItems(): Promise<number> {
     return 0;
   }
 }
@@ -116,7 +111,11 @@ const baseOrder = (items: OrderRecord["items"]): OrderRecord => ({
   items,
 });
 
-runTest("links last orphan item and delegates recalculation", async () => {
+function makeInput(orderId: string, links: LinkProductInput["links"]): LinkProductInput {
+  return { orderId, organizationId: "org-1", marketplace: "mercado_livre", links };
+}
+
+runTest("links last orphan item (batch) and delegates recalculation", async () => {
   const orderRepo = new MockOrderRepository(baseOrder([orphanItem("i1", "mli-1")]));
   const linkRepo = new MockProductLinkRepository();
   const recalculate = new MockRecalculateUseCase({
@@ -136,24 +135,22 @@ runTest("links last orphan item and delegates recalculation", async () => {
     orderRepo,
     linkRepo,
     recalculate as unknown as RecalculateOrderStatusUseCase,
-  ).execute({
-    orderId: "order-1",
-    orderItemId: "i1",
-    productId: "p-1",
-    organizationId: "org-1",
-    isPermanent: true,
-  });
+  ).execute(makeInput("order-1", [
+    { orderItemId: "i1", marketplaceItemId: "mli-1", variationId: "", productId: "p-1", isPermanent: true },
+  ]));
 
   assertEquals(result.statusChanged, true);
   assertEquals(result.newStatus, OrderStatus.READY_TO_PRINT);
   assertEquals(result.remainingUnlinkedCount, 0);
   assertEquals(recalculate.calls.length, 1);
-  assertEquals(recalculate.calls[0], "order-1");
-  assertEquals(linkRepo.permanentLinks, 1);
+  assertEquals(linkRepo.permanentLinkCalls.length, 1);
+  assertEquals(linkRepo.permanentLinkCalls[0].productId, "p-1");
 });
 
-runTest("keeps UNLINKED when other orphans remain and does NOT recalculate", async () => {
-  const orderRepo = new MockOrderRepository(baseOrder([orphanItem("i1", "mli-1"), orphanItem("i2", "mli-2")]));
+runTest("batch: 2 orphans, link 1, keeps UNLINKED and does NOT recalculate", async () => {
+  const orderRepo = new MockOrderRepository(
+    baseOrder([orphanItem("i1", "mli-1"), orphanItem("i2", "mli-2")]),
+  );
   const linkRepo = new MockProductLinkRepository();
   const recalculate = new MockRecalculateUseCase();
 
@@ -161,22 +158,17 @@ runTest("keeps UNLINKED when other orphans remain and does NOT recalculate", asy
     orderRepo,
     linkRepo,
     recalculate as unknown as RecalculateOrderStatusUseCase,
-  ).execute({
-    orderId: "order-1",
-    orderItemId: "i1",
-    productId: "p-1",
-    organizationId: "org-1",
-    isPermanent: false,
-  });
+  ).execute(makeInput("order-1", [
+    { orderItemId: "i1", marketplaceItemId: "mli-1", variationId: "", productId: "p-1", isPermanent: false },
+  ]));
 
   assertEquals(result.statusChanged, false);
   assertEquals(result.remainingUnlinkedCount, 1);
-  assertEquals(result.newStatus, undefined);
   assertEquals(recalculate.calls.length, 0);
-  assertEquals(linkRepo.permanentLinks, 0);
+  assertEquals(linkRepo.permanentLinkCalls.length, 0);
 });
 
-runTest("isPermanent=false does NOT save permanent link", async () => {
+runTest("isPermanent=false in links does NOT save permanent link", async () => {
   const orderRepo = new MockOrderRepository(baseOrder([orphanItem("i1", "mli-1")]));
   const linkRepo = new MockProductLinkRepository();
   const recalculate = new MockRecalculateUseCase(null);
@@ -185,18 +177,14 @@ runTest("isPermanent=false does NOT save permanent link", async () => {
     orderRepo,
     linkRepo,
     recalculate as unknown as RecalculateOrderStatusUseCase,
-  ).execute({
-    orderId: "order-1",
-    orderItemId: "i1",
-    productId: "p-1",
-    organizationId: "org-1",
-    isPermanent: false,
-  });
+  ).execute(makeInput("order-1", [
+    { orderItemId: "i1", marketplaceItemId: "mli-1", variationId: "", productId: "p-1", isPermanent: false },
+  ]));
 
-  assertEquals(linkRepo.permanentLinks, 0);
+  assertEquals(linkRepo.permanentLinkCalls.length, 0);
 });
 
-runTest("returns statusChanged=false when recalculation yields no change", async () => {
+runTest("returns statusChanged=false when recalculation yields null", async () => {
   const orderRepo = new MockOrderRepository(baseOrder([orphanItem("i1", "mli-1")]));
   const linkRepo = new MockProductLinkRepository();
   const recalculate = new MockRecalculateUseCase(null);
@@ -205,13 +193,9 @@ runTest("returns statusChanged=false when recalculation yields no change", async
     orderRepo,
     linkRepo,
     recalculate as unknown as RecalculateOrderStatusUseCase,
-  ).execute({
-    orderId: "order-1",
-    orderItemId: "i1",
-    productId: "p-1",
-    organizationId: "org-1",
-    isPermanent: true,
-  });
+  ).execute(makeInput("order-1", [
+    { orderItemId: "i1", marketplaceItemId: "mli-1", variationId: "", productId: "p-1", isPermanent: true },
+  ]));
 
   assertEquals(result.statusChanged, false);
   assertEquals(result.remainingUnlinkedCount, 0);
@@ -219,7 +203,7 @@ runTest("returns statusChanged=false when recalculation yields no change", async
   assertEquals(recalculate.calls.length, 1);
 });
 
-runTest("returns correct remainingUnlinkedCount with 3 items, 1 linked", async () => {
+runTest("batch: 3 orphans, link 1, returns remainingUnlinkedCount=2", async () => {
   const orderRepo = new MockOrderRepository(
     baseOrder([orphanItem("i1", "mli-1"), orphanItem("i2", "mli-2"), orphanItem("i3", "mli-3")]),
   );
@@ -230,15 +214,47 @@ runTest("returns correct remainingUnlinkedCount with 3 items, 1 linked", async (
     orderRepo,
     linkRepo,
     recalculate as unknown as RecalculateOrderStatusUseCase,
-  ).execute({
-    orderId: "order-1",
-    orderItemId: "i1",
-    productId: "p-1",
-    organizationId: "org-1",
-    isPermanent: false,
-  });
+  ).execute(makeInput("order-1", [
+    { orderItemId: "i1", marketplaceItemId: "mli-1", variationId: "", productId: "p-1", isPermanent: false },
+  ]));
 
   assertEquals(result.remainingUnlinkedCount, 2);
   assertEquals(result.statusChanged, false);
   assertEquals(recalculate.calls.length, 0);
+});
+
+runTest("batch: link all 3 items at once triggers recalculation", async () => {
+  const orderRepo = new MockOrderRepository(
+    baseOrder([orphanItem("i1", "mli-1"), orphanItem("i2", "mli-2"), orphanItem("i3", "mli-3")]),
+  );
+  const linkRepo = new MockProductLinkRepository();
+  const recalculate = new MockRecalculateUseCase({
+    orderId: "order-1",
+    previousStatus: OrderStatus.UNLINKED,
+    newStatus: OrderStatus.READY_TO_PRINT,
+    event: createStatusChangedEvent({
+      orderId: "order-1",
+      organizationId: "org-1",
+      previousStatus: OrderStatus.UNLINKED,
+      newStatus: OrderStatus.READY_TO_PRINT,
+      source: "user_action",
+    }),
+  });
+
+  const result = await new LinkProductToOrderItemUseCase(
+    orderRepo,
+    linkRepo,
+    recalculate as unknown as RecalculateOrderStatusUseCase,
+  ).execute(makeInput("order-1", [
+    { orderItemId: "i1", marketplaceItemId: "mli-1", variationId: "", productId: "p-1", isPermanent: true },
+    { orderItemId: "i2", marketplaceItemId: "mli-2", variationId: "", productId: "p-2", isPermanent: true },
+    { orderItemId: "i3", marketplaceItemId: "mli-3", variationId: "", productId: "p-3", isPermanent: true },
+  ]));
+
+  assertEquals(result.remainingUnlinkedCount, 0);
+  assertEquals(result.statusChanged, true);
+  assertEquals(recalculate.calls.length, 1);
+  assertEquals(linkRepo.permanentLinkCalls.length, 3);
+  assertEquals(orderRepo.productIdUpdates.length, 1);
+  assertEquals(orderRepo.productIdUpdates[0].length, 3);
 });

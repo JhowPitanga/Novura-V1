@@ -25,6 +25,8 @@ interface Product {
 
 interface AnuncioParaVincular {
     id: string;
+    /** Real UUID from order_items.id — preferred over synthetic id for backend calls. */
+    dbId?: string;
     nome: string;
     quantidade: number;
     marketplace: string;
@@ -121,6 +123,8 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                 if (!productId) return null;
                 return {
                     anuncioId: anuncio.id,
+                    // dbId is the real order_items.id UUID — required by the edge function
+                    dbId: anuncio.dbId,
                     productId,
                     quantity: anuncio.quantidade,
                     permanent: !!permanenteFlags[anuncio.id],
@@ -132,6 +136,7 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
             })
             .filter(Boolean) as Array<{
                 anuncioId: string;
+                dbId?: string;
                 productId: string;
                 quantity: number;
                 permanent: boolean;
@@ -166,7 +171,8 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                 organizationId,
                 marketplace: anunciosParaVincular[0]?.marketplace || '',
                 links: linkedItems.map((li) => ({
-                    orderItemId: li.anuncioId,
+                    // Prefer dbId (real UUID from order_items); fall back to anuncioId if dbId unavailable
+                    orderItemId: li.dbId || li.anuncioId,
                     marketplaceItemId: li.marketplaceItemId || '',
                     variationId: li.variationId || '',
                     productId: li.productId,
