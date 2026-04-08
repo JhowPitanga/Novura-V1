@@ -10,6 +10,7 @@ export function normStatus(value: unknown): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
+    .replace(/\s+/g, "_")
     .trim();
 }
 
@@ -20,13 +21,13 @@ export function matchStatus(order: Order, id: string): boolean {
   const s = normStatus(base);
   const target = String(id || '').toLowerCase().trim();
   if (!s && target !== 'a-vincular') return false;
-  if (target === 'impressao') return s === 'impressao';
-    if (target === 'aguardando-coleta') return s === 'aguardando coleta';
-  if (target === 'a-vincular') return s === 'a vincular';
-  if (target === 'cancelado') return s === 'cancelado' || s === 'devolucao';
-  if (target === 'emissao-nf') return s === 'emissao nf';
-  if (target === 'enviado') return s === 'enviado';
-  const normalized = s.replace(/ /g, '-');
+  if (target === 'impressao') return s === 'impressao' || s === 'ready_to_print';
+  if (target === 'aguardando-coleta') return s === 'aguardando_coleta' || s === 'awaiting_pickup';
+  if (target === 'a-vincular') return s === 'a_vincular' || s === 'unlinked';
+  if (target === 'cancelado') return s === 'cancelado' || s === 'devolucao' || s === 'cancelled' || s === 'returned';
+  if (target === 'emissao-nf') return s === 'emissao_nf' || s === 'invoice_pending';
+  if (target === 'enviado') return s === 'enviado' || s === 'shipped';
+  const normalized = s.replace(/_/g, '-');
   return normalized === target;
 }
 
@@ -121,17 +122,17 @@ export function useOrderFiltering({
 
   // ── NFe badge counts ──
   const nfeOrdersAll = useMemo(() => orders.filter(order =>
-    normStatus(order.internalStatus) === 'emissao nf' ||
-    normStatus(order.internalStatus) === 'falha na emissao' ||
-    normStatus(order.internalStatus) === 'subir xml'
+    normStatus(order.internalStatus) === 'emissao_nf' ||
+    normStatus(order.internalStatus) === 'falha_na_emissao' ||
+    normStatus(order.internalStatus) === 'subir_xml'
   ), [orders]);
 
-  const badgeCountFalha = useMemo(() => nfeOrdersAll.filter(order => normStatus(order.internalStatus) === 'falha na emissao').length, [nfeOrdersAll]);
-  const badgeCountProcessando = useMemo(() => orders.filter(order => normStatus(order.internalStatus) === 'processando nf').length, [orders]);
+  const badgeCountFalha = useMemo(() => nfeOrdersAll.filter(order => normStatus(order.internalStatus) === 'falha_na_emissao').length, [nfeOrdersAll]);
+  const badgeCountProcessando = useMemo(() => orders.filter(order => normStatus(order.internalStatus) === 'processando_nf').length, [orders]);
   const badgeCountEmitir = useMemo(() => nfeOrdersAll.filter(order => {
     const st = String(nfeFocusStatusByOrderId[String(order.id)] || '').toLowerCase();
-    return normStatus(order.internalStatus) === 'emissao nf' &&
-      normStatus(order.subStatus) !== 'falha na emissao' &&
+    return normStatus(order.internalStatus) === 'emissao_nf' &&
+      normStatus(order.subStatus) !== 'falha_na_emissao' &&
       !processingIdsSet.has(order.id) &&
       st !== 'processando_autorizacao' &&
       st !== 'pendente' &&
@@ -139,7 +140,7 @@ export function useOrderFiltering({
       st !== 'rejeitado' &&
       st !== 'denegado';
   }).length, [nfeOrdersAll, nfeFocusStatusByOrderId, processingIdsSet]);
-  const badgeCountSubirXml = useMemo(() => nfeOrdersAll.filter(order => normStatus(order.internalStatus) === 'subir xml').length, [nfeOrdersAll]);
+  const badgeCountSubirXml = useMemo(() => nfeOrdersAll.filter(order => normStatus(order.internalStatus) === 'subir_xml').length, [nfeOrdersAll]);
 
   // ── Status + board-specific filters ──
   const activeMarketplaceFilter = marketplaceFilters[activeStatus] ?? 'all';
@@ -161,17 +162,17 @@ export function useOrderFiltering({
     // NFe tab sub-filters
     if (activeStatus === "emissao-nf") {
       if (nfBadgeFilter === "falha") {
-        result = baseFiltered.filter(order => normStatus(order.internalStatus) === 'falha na emissao');
+        result = baseFiltered.filter(order => normStatus(order.internalStatus) === 'falha_na_emissao');
       } else if (nfBadgeFilter === "processando") {
-        result = baseFiltered.filter(order => normStatus(order.internalStatus) === 'processando nf');
+        result = baseFiltered.filter(order => normStatus(order.internalStatus) === 'processando_nf');
       } else if (nfBadgeFilter === "subir_xml") {
-        result = baseFiltered.filter(order => normStatus(order.internalStatus) === 'subir xml');
+        result = baseFiltered.filter(order => normStatus(order.internalStatus) === 'subir_xml');
       } else {
         result = result.filter(order => {
           const st = String(nfeFocusStatusByOrderId[String(order.id)] || '').toLowerCase();
-          return (normStatus(order.internalStatus) === 'emissao nf') &&
-            normStatus(order.subStatus) !== "falha na emissao" &&
-            normStatus(order.subStatus) !== "falha ao enviar" &&
+          return (normStatus(order.internalStatus) === 'emissao_nf') &&
+            normStatus(order.subStatus) !== "falha_na_emissao" &&
+            normStatus(order.subStatus) !== "falha_ao_enviar" &&
             !processingIdsSet.has(order.id) &&
             st !== "processando_autorizacao" &&
             st !== "pendente" &&
@@ -185,9 +186,12 @@ export function useOrderFiltering({
     // Vincular tab sub-filters
     if (activeStatus === "a-vincular") {
       if (vincularBadgeFilter === "sem_estoque") {
-        result = baseFiltered.filter(order => normStatus(order.internalStatus) === 'sem estoque');
+        result = baseFiltered.filter(order => normStatus(order.internalStatus) === 'sem_estoque');
       } else {
-        result = baseFiltered.filter(order => normStatus(order.internalStatus) === 'a vincular');
+        result = baseFiltered.filter(order => {
+          const status = normStatus(order.internalStatus);
+          return status === 'a_vincular' || status === 'unlinked';
+        });
       }
     }
 

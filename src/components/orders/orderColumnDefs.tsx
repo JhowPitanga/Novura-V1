@@ -105,17 +105,16 @@ export function createOrderColumns(ctx: ColumnRenderContext) {
     },
     {
       id: "tipoEnvio", name: "Tipo de Envio", enabled: true, alwaysVisible: true, render: (pedido: any) => {
+        const normalize = (v: unknown): string => String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, "_").trim();
         const shipmentStatus = String(pedido?.shipmentStatus ?? '').toLowerCase();
         const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
-        const isOrderCancelledOrReturned = (
-          pedido?.internalStatus === 'Cancelado' ||
-          pedido?.internalStatus === 'Devolução'
-        );
+        const internal = normalize(pedido?.internalStatus);
+        const isOrderCancelledOrReturned = ['cancelado', 'devolucao', 'cancelled', 'returned'].includes(internal);
         const allowedBoards = ['a-vincular', 'emissao-nf', 'impressao', 'aguardando-coleta'];
         const allowedLabels = new Set(['A vincular', 'Emissao NF', 'Impressao', 'Aguardando Coleta']);
         const computedLabel = String(pedido?.internalStatus ?? 'Pendente');
         const isAllowedByBoard = allowedBoards.includes(activeStatus) || (activeStatus === 'todos' && allowedLabels.has(computedLabel));
-        const showSLA = isAllowedByBoard && !deliveredStatuses.includes(shipmentStatus) && !isOrderCancelledOrReturned && computedLabel !== 'Enviado' && pedido?.shippingSla?.expectedDate;
+        const showSLA = isAllowedByBoard && !deliveredStatuses.includes(shipmentStatus) && !isOrderCancelledOrReturned && internal !== 'enviado' && internal !== 'shipped' && pedido?.shippingSla?.expectedDate;
         let countdown: JSX.Element | null = null;
         if (showSLA) {
           const expected = new Date(pedido.shippingSla.expectedDate);
@@ -163,19 +162,18 @@ export function createOrderColumns(ctx: ColumnRenderContext) {
     },
     {
       id: "status", name: "Status", enabled: true, alwaysVisible: true, render: (pedido: any) => {
+        const normalize = (v: unknown): string => String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, "_").trim();
         const boardLabel = String(pedido?.status ?? 'Pendente');
         const displayLabel = boardLabel === 'Aguardando Coleta' ? 'Coleta' : boardLabel;
         const badgeClass = getStatusColor(boardLabel);
         const shipmentStatusLower = String(pedido?.shipmentStatus ?? '').toLowerCase();
         const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
-        const isOrderCancelledOrReturned = (
-          pedido?.internalStatus === 'Cancelado' ||
-          pedido?.internalStatus === 'Devolução'
-        );
+        const internal = normalize(pedido?.internalStatus);
+        const isOrderCancelledOrReturned = ['cancelado', 'devolucao', 'cancelled', 'returned'].includes(internal);
         const slaStatusLower = String(pedido?.shippingSla?.status ?? '').toLowerCase();
         const ed = pedido?.shippingSla?.expectedDate;
         const expired = ed ? (new Date(ed).getTime() - new Date().getTime() <= 0) : false;
-        const showDelayedBadge = (slaStatusLower === 'delayed' || expired) && !deliveredStatuses.includes(shipmentStatusLower) && !isOrderCancelledOrReturned && String(pedido?.internalStatus ?? '') !== 'Enviado';
+        const showDelayedBadge = (slaStatusLower === 'delayed' || expired) && !deliveredStatuses.includes(shipmentStatusLower) && !isOrderCancelledOrReturned && internal !== 'enviado' && internal !== 'shipped';
         const isProcessing = processingIdsSet.has(pedido.id);
         return (
           <div className="flex flex-col items-center space-y-2 text-center">
@@ -242,7 +240,8 @@ export function createOrderColumns(ctx: ColumnRenderContext) {
     {
       id: "margem", name: "Margem %", enabled: true, alwaysVisible: true, render: (pedido: any) => {
         const tn = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
-        const isZeroed = String(pedido?.status ?? '').toLowerCase() === 'cancelado' || String(pedido?.status ?? '').toLowerCase() === 'devolução';
+        const statusNorm = String(pedido?.status ?? '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "_");
+        const isZeroed = statusNorm === 'cancelado' || statusNorm === 'devolucao' || statusNorm === 'cancelled' || statusNorm === 'returned';
         const zeroIfNeeded = (n: number) => (isZeroed ? 0 : n);
         const valorBrutoItens = (pedido?.items ?? []).reduce((sum: number, it: any) => sum + (tn(it?.unitPrice) * (tn(it?.quantity) || 0)), 0) || tn(pedido?.financial?.orderAmount) || tn(pedido?.totalAmount);
         const f = pedido?.financial ?? {};

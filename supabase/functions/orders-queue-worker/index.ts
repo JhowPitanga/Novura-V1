@@ -27,8 +27,8 @@ import {
   ShopeeOrderNormalizeService,
 } from "../_shared/orders-normalize/index.ts";
 import { OrdersUpsertAdapter } from "../_shared/adapters/orders-upsert/index.ts";
-import { SupabaseOrderRepository } from "../_shared/adapters/orders/SupabaseOrderRepository.ts";
-import { SupabaseInventoryAdapter } from "../_shared/adapters/orders/SupabaseInventoryAdapter.ts";
+import { SupabaseOrderRepository } from "../_shared/adapters/orders/supabase-order-repository.ts";
+import { SupabaseInventoryAdapter } from "../_shared/adapters/orders/supabase-inventory-adapter.ts";
 import { isFetchFullOrderError } from "../_shared/domain/ml/ml-order-api-fetch.ts";
 import { OrderStatusEngine } from "../_shared/application/orders/OrderStatusEngine.ts";
 import { HandleStockSideEffectsUseCase } from "../_shared/application/orders/HandleStockSideEffectsUseCase.ts";

@@ -197,11 +197,17 @@ export async function fetchShopeeShops(
   return opts;
 }
 
-export async function markOrdersPrinted(orderIds: string[]): Promise<void> {
+export async function markOrdersPrinted(
+  orderIds: string[],
+  organizationId: string,
+): Promise<void> {
   if (!orderIds || orderIds.length === 0) return;
-  await (supabase as any).rpc("rpc_marketplace_order_print_label", {
-    p_order_ids: orderIds,
+  const { error } = await (supabase as any).functions.invoke("mark-labels-printed", {
+    body: { orderIds, organizationId },
   });
+  if (error) {
+    throw new Error(`markOrdersPrinted failed: ${error.message}`);
+  }
 }
 
 export async function updateOrdersInternalStatus(
@@ -291,6 +297,7 @@ const ORDERS_SELECT_FIELDS = `
   gross_amount, marketplace_fee, shipping_cost, shipping_subsidy, net_amount,
   buyer_name, buyer_document, buyer_email, buyer_phone, buyer_state,
   created_at, shipped_at, delivered_at, canceled_at, last_synced_at,
+  is_printed_label, label_printed_at, has_invoice, is_fulfillment,
   order_items (
     id, marketplace_item_id, sku, title, quantity, unit_price,
     unit_cost, variation_name, image_url, product_id
@@ -303,6 +310,23 @@ const ORDERS_SELECT_FIELDS = `
   ),
   order_labels (id)
 `;
+
+
+function mapInternalStatusToLabel(value: unknown): string {
+  const status = String(value || "").trim().toLowerCase();
+  const labels: Record<string, string> = {
+    pending: "Pendente",
+    unlinked: "A vincular",
+    invoice_pending: "Emissao NF",
+    ready_to_print: "Impressao",
+    awaiting_pickup: "Aguardando Coleta",
+    shipped: "Enviado",
+    cancelled: "Cancelado",
+    returned: "Devolução",
+  };
+  if (labels[status]) return labels[status];
+  return String(value || "Pendente");
+}
 
 /** Maps buildFinancials (Portuguese keys) result to OrderFinancialInfo. */
 function toOrderFinancialInfo(raw: {
@@ -388,7 +412,7 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
   const statusUI =
     shipmentStatusLower === "delivered"
       ? "Entregue"
-      : (row.status as string) ?? (row.marketplace_status as string) ?? "Pendente";
+      : mapInternalStatusToLabel(row.status) || (row.marketplace_status as string) || "Pendente";
 
   const shippingReceived = toNum(row.shipping_subsidy);
   const marketplaceFee = toNum(row.marketplace_fee);
@@ -420,7 +444,10 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
   };
   const skuLinked = resolveLinkedSku(rowForSku, linkedProductsArr);
 
-  const printedLabel = Array.isArray(row?.order_labels) ? row.order_labels.length > 0 : Boolean(row?.printed_label);
+  // is_printed_label (new schema) takes precedence; fallback to order_labels join count (legacy)
+  const printedLabel =
+    Boolean(row?.is_printed_label) ||
+    (Array.isArray(row?.order_labels) ? row.order_labels.length > 0 : Boolean(row?.printed_label));
 
   return {
     id: String(row.id),
@@ -449,7 +476,7 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
     linkedSku: skuLinked ?? undefined,
     label: labelInfo,
     linkedProducts: undefined,
-    hasUnlinkedItems: mappedItems.some((it) => !it.linked),
+    hasUnlinkedItems: itemsRaw.some((it) => !it.product_id),
     shipmentStatus: (shippingRaw?.status as string) ?? null,
     shippingSla: {
       status: (shippingRaw?.sla_status as string) ?? null,
@@ -466,9 +493,10 @@ export async function fetchAllOrders(orgId: string): Promise<Order[]> {
   const { data, error } = await (supabase as any)
     .from("orders")
     .select(ORDERS_SELECT_FIELDS)
-    .eq("organization_id", orgId);
+    .eq("organization_id", orgId)
+    .order("created_at", { ascending: false });
 
-  if (error) throw error;
+  if (error) throw new Error(`fetchAllOrders failed: ${error.message}`);
   const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
   return rows.map(parseOrderRow);
 }
@@ -556,4 +584,35 @@ export async function fetchOrderItemLinkData(orderId: string): Promise<OrderItem
     firstItemId: firstItem ? String(firstItem.marketplace_item_id ?? '') : null,
     firstItemTitle: firstItem ? String(firstItem.title ?? '') : null,
   };
+}
+
+export interface LinkProductToOrderItemsParams {
+  orderId: string;
+  organizationId: string;
+  marketplace: string;
+  links: Array<{
+    orderItemId: string;
+    marketplaceItemId: string;
+    variationId: string;
+    productId: string;
+    isPermanent: boolean;
+  }>;
+}
+
+export interface LinkProductToOrderItemsResult {
+  remainingUnlinkedCount: number;
+  statusChanged: boolean;
+  newStatus?: string;
+}
+
+export async function linkProductToOrderItems(
+  params: LinkProductToOrderItemsParams,
+): Promise<LinkProductToOrderItemsResult> {
+  const { data, error } = await (supabase as any).functions.invoke("link-order-product", {
+    body: params,
+  });
+  if (error) {
+    throw new Error(`linkProductToOrderItems failed: ${error.message}`);
+  }
+  return data as LinkProductToOrderItemsResult;
 }
