@@ -10,8 +10,6 @@ import type { OrderStatus } from './OrderStatus.ts';
  * All event shapes are immutable: every field is readonly.
  */
 
-import type { OrderStatus } from './OrderStatus.ts';
-
 /** Fired when an order's internal status changes. */
 export type OrderStatusChangedEvent = {
   readonly type: 'ORDER_STATUS_CHANGED';
