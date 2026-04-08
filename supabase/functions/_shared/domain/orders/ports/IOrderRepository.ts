@@ -60,5 +60,14 @@ export interface IOrderRepository {
     items: ReadonlyArray<{ readonly id: string; readonly productId: string }>,
   ): Promise<void>;
 
+  /**
+   * Updates internal status-driving flags (e.g., print/pickup markers).
+   * Implementations must be idempotent for repeated writes.
+   */
+  updateInternalFlags(
+    orderId: string,
+    flags: Readonly<{ isPrintedLabel?: boolean; isPickupDone?: boolean }>,
+  ): Promise<void>;
+
   addStatusHistory(orderId: string, event: OrderStatusChangedEvent): Promise<void>;
 }

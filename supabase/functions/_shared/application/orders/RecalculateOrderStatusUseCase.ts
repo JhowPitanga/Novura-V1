@@ -1,13 +1,14 @@
-import { createStatusChangedEvent } from "../../domain/orders/OrderDomainEvents.ts";
+import { createStatusChangedEvent, type OrderStatusChangedEvent } from "../../domain/orders/OrderDomainEvents.ts";
 import { createProductLinkState } from "../../domain/orders/ProductLinkState.ts";
 import type { OrderStatus } from "../../domain/orders/OrderStatus.ts";
 import type { IOrderRepository } from "../../domain/orders/ports/IOrderRepository.ts";
 import { OrderStatusEngine } from "./OrderStatusEngine.ts";
 
-export interface RecalculateResult {
+export interface RecalculateOrderStatusResult {
   readonly orderId: string;
   readonly previousStatus: OrderStatus | null;
   readonly newStatus: OrderStatus;
+  readonly event: OrderStatusChangedEvent;
 }
 
 /**
@@ -24,7 +25,7 @@ export class RecalculateOrderStatusUseCase {
   async execute(
     orderId: string,
     source: "webhook" | "user_action" | "sync" = "webhook",
-  ): Promise<RecalculateResult | null> {
+  ): Promise<RecalculateOrderStatusResult | null> {
     const order = await this.orderRepo.findById(orderId);
     if (!order) throw new Error(`Order ${orderId} not found`);
 
@@ -37,21 +38,20 @@ export class RecalculateOrderStatusUseCase {
     if (newStatus === order.currentStatus) return null;
 
     await this.orderRepo.updateStatus({
-      orderId,
+      orderId: order.id,
       currentStatus: order.currentStatus,
       newStatus,
     });
-    await this.orderRepo.addStatusHistory(
-      orderId,
-      createStatusChangedEvent({
-        orderId,
-        organizationId: order.organizationId,
-        previousStatus: order.currentStatus,
-        newStatus,
-        source,
-      }),
-    );
 
-    return { orderId, previousStatus: order.currentStatus, newStatus };
+    const event = createStatusChangedEvent({
+      orderId: order.id,
+      organizationId: order.organizationId,
+      previousStatus: order.currentStatus,
+      newStatus,
+      source,
+    });
+    await this.orderRepo.addStatusHistory(order.id, event);
+
+    return { orderId: order.id, previousStatus: order.currentStatus, newStatus, event };
   }
 }
