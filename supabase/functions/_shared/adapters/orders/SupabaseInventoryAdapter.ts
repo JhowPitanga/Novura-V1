@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import type { SupabaseClient } from "../infra/supabase-client.ts";
 import type { IInventoryPort, InventoryItem } from "../../domain/orders/ports/IInventoryPort.ts";
 
 export class SupabaseInventoryAdapter implements IInventoryPort {
