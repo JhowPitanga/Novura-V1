@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { importAesGcmKey, aesGcmEncryptToString } from "../_shared/adapters/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { importAesGcmKey, aesGcmEncryptToString } from "../_shared/adapters/infra/token-utils.ts";
 
 function htmlPostMessageSuccess(siteUrl: string, payload: any) {
   const origin = (() => {
@@ -58,7 +58,13 @@ Deno.serve(async (req) => {
         error: "Invalid state"
       }, 400);
     }
-    const { organizationId, marketplaceName = "Mercado Livre", storeName, connectedByUserId, pkce_verifier, redirect_uri: stateRedirect } = state || {};
+    // code_verifier comes from the request body (stored in sessionStorage by the client),
+    // NOT from `state`. State travels through the browser URL and is not a safe transport
+    // for secrets. pkce_verifier in state is intentionally removed.
+    const pkce_verifier = method === "GET"
+      ? url.searchParams.get("code_verifier")
+      : body?.code_verifier ?? null;
+    const { organizationId, marketplaceName = "Mercado Livre", storeName, connectedByUserId, redirect_uri: stateRedirect } = state || {};
     console.log("[meli-callback] org/app", {
       organizationId,
       marketplaceName,
@@ -146,7 +152,10 @@ Deno.serve(async (req) => {
     };
     const access_token_enc = await aesGcmEncryptToString(aesKey, access_token);
     const refresh_token_enc = await aesGcmEncryptToString(aesKey, refresh_token);
-    const { error: insertError } = await admin.from("marketplace_integrations").insert([
+    // UPSERT instead of INSERT: if the seller reconnects (revoked and re-authorized),
+    // we update the existing row rather than failing or creating a duplicate.
+    // ON CONFLICT assumes a UNIQUE constraint on (organizations_id, marketplace_name).
+    const { error: upsertError } = await admin.from("marketplace_integrations").upsert(
       {
         organizations_id: organizationId,
         company_id: company.id,
@@ -156,14 +165,15 @@ Deno.serve(async (req) => {
         expires_in: expiresAtIso,
         meli_user_id: user_id,
         config
-      }
-    ]);
-    if (insertError) {
-      console.error("[meli-callback] insert error", {
-        insertError
+      },
+      { onConflict: "organizations_id,marketplace_name" }
+    );
+    if (upsertError) {
+      console.error("[meli-callback] upsert error", {
+        upsertError
       });
       return jsonResponse({
-        error: insertError.message
+        error: upsertError.message
       }, 500);
     }
     console.log("[meli-callback] insert ok", {

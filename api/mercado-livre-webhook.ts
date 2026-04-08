@@ -20,11 +20,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const xRequestId = (req.headers['x-request-id'] as string) || '';
 
     // Forward body & relevant headers to Supabase Edge Function with apikey
-    const forwardResp = await fetch(`${SUPABASE_URL}/functions/v1/mercado-livre-sync-all`, {
+    const forwardResp = await fetch(`${SUPABASE_URL}/functions/v1/orders-webhook`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'apikey': SUPABASE_PUBLISHABLE_KEY,
+        'x-source': 'mercado_livre',
         ...(xMeliSignature ? { 'x-meli-signature': xMeliSignature } : {}),
         ...(xRequestId ? { 'x-request-id': xRequestId } : {}),
       },

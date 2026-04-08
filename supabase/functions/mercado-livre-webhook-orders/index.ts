@@ -1,9 +1,15 @@
+/**
+ * @deprecated Use orders-webhook instead. ML order notifications are forwarded to orders-webhook
+ * which enqueues to the orders_sync queue; processing is done by orders-queue-worker.
+ * This function will be removed in a future cycle.
+ */
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString, uint8ToB64 } from "../_shared/adapters/token-utils.ts";
-import { normalizeOrderNumbers } from "../_shared/domain/mercado-livre-orders.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { SupabaseMarketplaceOrdersRawAdapter } from "../_shared/adapters/orders-raw/marketplace-orders-raw.ts";
+import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString, uint8ToB64 } from "../_shared/adapters/infra/token-utils.ts";
+import { normalizeOrderNumbers } from "../_shared/domain/ml/mercado-livre-orders.ts";
 
 // Utilitário: extrair ID de recurso (robusto para variações de caminho)
 function extractResourceId(resource: string, kind: "items" | "orders"): string | null {
@@ -38,6 +44,7 @@ serve(async (req) => {
   }
 
   const admin = createAdminClient();
+  const rawAdapter = new SupabaseMarketplaceOrdersRawAdapter(admin);
   const aesKey = await importAesGcmKey(ENC_KEY_B64);
 
   try {
@@ -513,10 +520,7 @@ serve(async (req) => {
     };
 
     if (!upErr && upId) {
-      const { error: updLabelsErr } = await admin
-        .from("marketplace_orders_raw")
-        .update({ labels: labelsObj, billing_info: billingInfoAggregated, last_updated: nowIso })
-        .eq("id", upId);
+      await rawAdapter.updateById(upId, { labels: labelsObj, billing_info: billingInfoAggregated, last_updated: nowIso });
       try {
         await (admin as any).functions.invoke("mercado-livre-process-presented", {
           body: { raw_id: upId },
@@ -565,30 +569,19 @@ serve(async (req) => {
           last_synced_at: nowIso,
           updated_at: nowIso,
         } as const;
-        const { error: upErr2 } = await admin
-          .from("marketplace_orders_raw")
-          .upsert(upsertData, { onConflict: "organizations_id,marketplace_name,marketplace_order_id" });
-        if (upErr2) {
-          console.error("mercado-livre-webhook-orders upsert_failed_fallback", { correlationId, message: upErr2.message });
-          return jsonResponse({ ok: false, error: `Failed to upsert order: ${upErr.message}`, correlationId, code: (upErr as any).code, details: (upErr as any).details, hint: (upErr as any).hint }, 200);
-        }
         try {
-          const { data: row } = await admin
-            .from("marketplace_orders_raw")
-            .select("id")
-            .eq("organizations_id", integration.organizations_id)
-            .eq("marketplace_name", "Mercado Livre")
-            .eq("marketplace_order_id", String(orderDataClean.id))
-            .limit(1)
-            .single();
-          const rawId = row?.id || null;
+          await rawAdapter.upsertFullRow(upsertData as Record<string, unknown>);
+          const rawId = await rawAdapter.getIdByOrderId(integration.organizations_id, "Mercado Livre", String(orderDataClean.id));
           if (rawId) {
             await (admin as any).functions.invoke("mercado-livre-process-presented", {
               body: { raw_id: rawId },
               headers: { "x-request-id": correlationId, "x-correlation-id": correlationId },
             });
           }
-        } catch (_) {}
+        } catch (upErr2: any) {
+          console.error("mercado-livre-webhook-orders upsert_failed_fallback", { correlationId, message: upErr2?.message });
+          return jsonResponse({ ok: false, error: `Failed to upsert order: ${upErr.message}`, correlationId, code: (upErr as any).code, details: (upErr as any).details, hint: (upErr as any).hint }, 200);
+        }
       } catch (_) {
         console.error("mercado-livre-webhook-orders upsert_exception_fallback", { correlationId });
         return jsonResponse({ ok: false, error: `Failed to upsert order: ${upErr.message}`, correlationId, code: (upErr as any).code, details: (upErr as any).details, hint: (upErr as any).hint }, 200);

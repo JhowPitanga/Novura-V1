@@ -1,8 +1,10 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { importAesGcmKey, aesGcmDecryptFromString, checkAndRefreshToken } from "../_shared/adapters/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { getMlAccessToken } from "../_shared/adapters/tokens/ml-token.ts";
+import { SupabaseMarketplaceIntegrationsAdapter } from "../_shared/adapters/integrations/marketplace-integrations-adapter.ts";
+import { SupabaseAppCredentialsAdapter } from "../_shared/adapters/integrations/app-credentials-adapter.ts";
 
 type Pic = string | { source?: string; url?: string };
 type Updates = {
@@ -48,7 +50,10 @@ serve(async (req) => {
 
   try {
     const ENC_KEY_B64 = Deno.env.get("TOKENS_ENCRYPTION_KEY") || "";
+    if (!ENC_KEY_B64) return jsonResponse({ error: "TOKENS_ENCRYPTION_KEY not set" }, 500);
     const admin = createAdminClient();
+    const integrations = new SupabaseMarketplaceIntegrationsAdapter(admin);
+    const appCredentials = new SupabaseAppCredentialsAdapter(admin);
 
     const bodyText = await req.text();
     let body: { organizationId?: string; itemId?: string; updates?: Updates } = {};
@@ -69,18 +74,8 @@ serve(async (req) => {
       .single();
     if (integErr || !integration) return jsonResponse({ error: integErr?.message || "Integration not found" }, 404);
 
-    let accessTokenPlain = String(integration.access_token || "");
-    let aesKey: CryptoKey | null = null;
-    if (ENC_KEY_B64) {
-      try { aesKey = await importAesGcmKey(ENC_KEY_B64); } catch (_) { aesKey = null; }
-    }
-    if (aesKey) {
-      try {
-        accessTokenPlain = await aesGcmDecryptFromString(aesKey, accessTokenPlain);
-      } catch (_) {
-        if (!accessTokenPlain.startsWith("enc:")) accessTokenPlain = String(integration.access_token || "");
-      }
-    }
+    const getToken = () => getMlAccessToken(integrations, appCredentials, integration.id, ENC_KEY_B64);
+    let accessTokenPlain = (await getToken()).accessToken;
 
     const headersBase = { Authorization: `Bearer ${accessTokenPlain}`, Accept: "application/json" };
 
@@ -107,15 +102,11 @@ serve(async (req) => {
       mlResp = await fetch(url, { method: "PUT", headers: { ...headersBase, "content-type": "application/json" }, body: JSON.stringify(mlPayload) });
       mlJson = await mlResp.json().catch(() => null) as unknown;
       if (mlResp.status === 401 || mlResp.status === 403) {
-        if (aesKey) {
-          const refreshRes = await checkAndRefreshToken(admin, aesKey, integration.id);
-          if (refreshRes.success && refreshRes.accessToken) {
-            const headersRetry = { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json", "content-type": "application/json" };
-            mlResp = await fetch(url, { method: "PUT", headers: headersRetry, body: JSON.stringify(mlPayload) });
-            mlJson = await mlResp.json().catch(() => null) as unknown;
-            accessTokenPlain = refreshRes.accessToken;
-          }
-        }
+        const refreshRes = await getToken();
+        const headersRetry = { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json", "content-type": "application/json" };
+        mlResp = await fetch(url, { method: "PUT", headers: headersRetry, body: JSON.stringify(mlPayload) });
+        mlJson = await mlResp.json().catch(() => null) as unknown;
+        accessTokenPlain = refreshRes.accessToken;
       }
       if (!mlResp.ok) return jsonResponse({ error: "ML update failed", details: mlJson }, mlResp.status);
     }
@@ -142,27 +133,19 @@ serve(async (req) => {
         let upResp = await fetch(upUrl, { method: "GET", headers: { ...headersBase } });
         let upJson: unknown = await upResp.json().catch(() => []) as unknown;
         if (upResp.status === 401 || upResp.status === 403) {
-          if (aesKey) {
-            const refreshRes = await checkAndRefreshToken(admin, aesKey, integration.id);
-            if (refreshRes.success && refreshRes.accessToken) {
-              upResp = await fetch(upUrl, { method: "GET", headers: { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json" } });
-              upJson = await upResp.json().catch(() => []) as unknown;
-              accessTokenPlain = refreshRes.accessToken;
-            }
-          }
+          const refreshRes = await getToken();
+          upResp = await fetch(upUrl, { method: "GET", headers: { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json" } });
+          upJson = await upResp.json().catch(() => []) as unknown;
+          accessTokenPlain = refreshRes.accessToken;
         }
 
         let downResp = await fetch(downUrl, { method: "GET", headers: { Authorization: `Bearer ${accessTokenPlain}`, Accept: "application/json" } });
         let downJson: unknown = await downResp.json().catch(() => []) as unknown;
         if (downResp.status === 401 || downResp.status === 403) {
-          if (aesKey) {
-            const refreshRes = await checkAndRefreshToken(admin, aesKey, integration.id);
-            if (refreshRes.success && refreshRes.accessToken) {
-              downResp = await fetch(downUrl, { method: "GET", headers: { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json" } });
-              downJson = await downResp.json().catch(() => []) as unknown;
-              accessTokenPlain = refreshRes.accessToken;
-            }
-          }
+          const refreshRes = await getToken();
+          downResp = await fetch(downUrl, { method: "GET", headers: { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json" } });
+          downJson = await downResp.json().catch(() => []) as unknown;
+          accessTokenPlain = refreshRes.accessToken;
         }
 
         const arrUp = Array.isArray(upJson) ? upJson as Array<Record<string, unknown>> : [];
@@ -180,14 +163,10 @@ serve(async (req) => {
       let ltResp = await fetch(ltUrl, { method: "POST", headers: { Authorization: `Bearer ${accessTokenPlain}`, Accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ id: listingTypeId }) });
       let ltJson: unknown = await ltResp.json().catch(() => null) as unknown;
       if (ltResp.status === 401 || ltResp.status === 403) {
-        if (aesKey) {
-          const refreshRes = await checkAndRefreshToken(admin, aesKey, integration.id);
-          if (refreshRes.success && refreshRes.accessToken) {
-            ltResp = await fetch(ltUrl, { method: "POST", headers: { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ id: listingTypeId }) });
-            ltJson = await ltResp.json().catch(() => null) as unknown;
-            accessTokenPlain = refreshRes.accessToken;
-          }
-        }
+        const refreshRes = await getToken();
+        ltResp = await fetch(ltUrl, { method: "POST", headers: { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ id: listingTypeId }) });
+        ltJson = await ltResp.json().catch(() => null) as unknown;
+        accessTokenPlain = refreshRes.accessToken;
       }
       if (!ltResp.ok) return jsonResponse({ error: "ML listing_type update failed", details: ltJson }, ltResp.status);
     }
@@ -201,14 +180,10 @@ serve(async (req) => {
       let dResp = await fetch(dUrl, { method: "PUT", headers: { ...headersBase, "content-type": "application/json" }, body: JSON.stringify(descPayload) });
       let dJson: unknown = await dResp.json().catch(() => null) as unknown;
       if (dResp.status === 401 || dResp.status === 403) {
-        if (aesKey) {
-          const refreshRes = await checkAndRefreshToken(admin, aesKey, integration.id);
-          if (refreshRes.success && refreshRes.accessToken) {
-            dResp = await fetch(dUrl, { method: "PUT", headers: { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(descPayload) });
-            dJson = await dResp.json().catch(() => null) as unknown;
-            accessTokenPlain = refreshRes.accessToken;
-          }
-        }
+        const refreshRes = await getToken();
+        dResp = await fetch(dUrl, { method: "PUT", headers: { Authorization: `Bearer ${refreshRes.accessToken}`, Accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(descPayload) });
+        dJson = await dResp.json().catch(() => null) as unknown;
+        accessTokenPlain = refreshRes.accessToken;
       }
       if (!dResp.ok) return jsonResponse({ error: "ML description update failed", details: dJson }, dResp.status);
       const nowIso = new Date().toISOString();

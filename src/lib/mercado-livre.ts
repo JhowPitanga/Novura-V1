@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { fetchOrderItemLinkData } from '@/services/orders.service';
 
 function slugifyTitle(title: string): string {
   const base = title
@@ -18,23 +18,14 @@ export function buildMercadoLivreLink(itemId: string, title?: string): string {
 
 export async function getOrderVariationLinkById(orderId: string): Promise<string> {
   if (!orderId) return '';
-  const { data, error } = await supabase
-    .from('marketplace_orders_presented')
-    .select('marketplace, first_item_permalink, first_item_id, first_item_title')
-    .eq('id', orderId)
-    .maybeSingle();
 
-  if (error) {
-    console.error('Erro ao buscar pedido:', error.message);
-    return '';
-  }
+  const row = await fetchOrderItemLinkData(orderId);
+  if (!row) return '';
 
-  if (!data) return '';
+  if (row.firstItemPermalink) return row.firstItemPermalink;
 
-  if (data.first_item_permalink) return data.first_item_permalink;
-
-  if (data.marketplace === 'Mercado Livre') {
-    return buildMercadoLivreLink(data.first_item_id || '', data.first_item_title || '');
+  if (row.marketplace === 'mercado_livre' || row.marketplace === 'Mercado Livre') {
+    return buildMercadoLivreLink(row.firstItemId || '', row.firstItemTitle || '');
   }
 
   return '';
