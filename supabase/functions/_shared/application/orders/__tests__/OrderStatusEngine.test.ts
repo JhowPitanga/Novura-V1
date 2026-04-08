@@ -227,3 +227,122 @@ Deno.test("unknown signals → PENDING", () => {
   );
   assertEquals(result, OrderStatus.PENDING);
 });
+
+// N2 AwaitingPickupRule Shopee scenarios
+Deno.test("N2: Shopee isPrintedLabel=true → AWAITING_PICKUP (not INVOICE_PENDING)", () => {
+  const result = engine.calculate(
+    buildSignals({
+      marketplace: "shopee",
+      marketplaceStatus: "READY_TO_SHIP",
+      shipmentStatus: "ready_to_ship",
+      isPrintedLabel: true,
+      hasInvoice: true,
+    }),
+    FULLY_LINKED,
+  );
+  assertEquals(result, OrderStatus.AWAITING_PICKUP);
+});
+
+Deno.test("N2: Shopee retry_ship without isPrintedLabel → AWAITING_PICKUP", () => {
+  const result = engine.calculate(
+    buildSignals({
+      marketplace: "shopee",
+      marketplaceStatus: "RETRY_SHIP",
+      shipmentStatus: "retry_ship",
+      isPrintedLabel: false,
+    }),
+    FULLY_LINKED,
+  );
+  assertEquals(result, OrderStatus.AWAITING_PICKUP);
+});
+
+Deno.test("N2: Shopee fulfillment + isPrintedLabel → SHIPPED (not AWAITING_PICKUP)", () => {
+  const result = engine.calculate(
+    buildSignals({
+      marketplace: "shopee",
+      marketplaceStatus: "SHIPPED",
+      shipmentStatus: "shipped",
+      isFulfillment: true,
+      isPrintedLabel: true,
+    }),
+    FULLY_LINKED,
+  );
+  assertEquals(result, OrderStatus.SHIPPED);
+});
+
+Deno.test("N2: Shopee ready_to_ship without isPrintedLabel and without retry_ship → INVOICE_PENDING", () => {
+  const result = engine.calculate(
+    buildSignals({
+      marketplace: "shopee",
+      marketplaceStatus: "READY_TO_SHIP",
+      shipmentStatus: "ready_to_ship",
+      isPrintedLabel: false,
+      hasInvoice: false,
+    }),
+    FULLY_LINKED,
+  );
+  assertEquals(result, OrderStatus.INVOICE_PENDING);
+});
+
+// N1 priority scenarios: verify new rule order
+// N1-1. ML shipped wins over AwaitingPickup even when isPrintedLabel=true
+Deno.test("N1: ML shipped with isPrintedLabel=true → SHIPPED (ShippedRule before AwaitingPickupRule)", () => {
+  const result = engine.calculate(
+    buildSignals({
+      shipmentStatus: "shipped",
+      isPrintedLabel: true,
+    }),
+    FULLY_LINKED,
+  );
+  assertEquals(result, OrderStatus.SHIPPED);
+});
+
+// N1-2. ML shipped wins over InvoicePending even when hasInvoice=false
+Deno.test("N1: ML shipped with no invoice → SHIPPED (ShippedRule before InvoicePendingRule)", () => {
+  const result = engine.calculate(
+    buildSignals({
+      shipmentStatus: "shipped",
+      hasInvoice: false,
+    }),
+    FULLY_LINKED,
+  );
+  assertEquals(result, OrderStatus.SHIPPED);
+});
+
+// N1-3. ML isPrintedLabel + ready_to_ship → AWAITING_PICKUP (not READY_TO_PRINT)
+Deno.test("N1: ML isPrintedLabel=true + ready_to_ship → AWAITING_PICKUP", () => {
+  const result = engine.calculate(
+    buildSignals({
+      isPrintedLabel: true,
+      shipmentStatus: "ready_to_ship",
+    }),
+    FULLY_LINKED,
+  );
+  assertEquals(result, OrderStatus.AWAITING_PICKUP);
+});
+
+// N1-4. ML invoice_pending → INVOICE_PENDING (not READY_TO_PRINT)
+Deno.test("N1: ML invoice_pending subStatus → INVOICE_PENDING (not READY_TO_PRINT)", () => {
+  const result = engine.calculate(
+    buildSignals({
+      shipmentStatus: "ready_to_ship",
+      shipmentSubstatus: "invoice_pending",
+    }),
+    FULLY_LINKED,
+  );
+  assertEquals(result, OrderStatus.INVOICE_PENDING);
+});
+
+// N1-5. Shopee ready_to_ship without invoice → INVOICE_PENDING (not READY_TO_PRINT)
+Deno.test("N1: Shopee ready_to_ship without invoice → INVOICE_PENDING (not READY_TO_PRINT)", () => {
+  const result = engine.calculate(
+    buildSignals({
+      marketplace: "shopee",
+      marketplaceStatus: "READY_TO_SHIP",
+      shipmentStatus: "ready_to_ship",
+      hasInvoice: false,
+    }),
+    FULLY_LINKED,
+  );
+  assertEquals(result, OrderStatus.INVOICE_PENDING);
+});

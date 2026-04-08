@@ -38,10 +38,10 @@ export class OrderStatusEngine {
       new ReturnedRule(),
       new FulfillmentRule(),
       new UnlinkedRule(),
-      new InvoicePendingRule(),
-      new AwaitingPickupRule(),
-      new ReadyToPrintRule(),
       new ShippedRule(),
+      new AwaitingPickupRule(),
+      new InvoicePendingRule(),
+      new ReadyToPrintRule(),
       new PendingRule(),
     ];
   }

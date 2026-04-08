@@ -2,6 +2,13 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { jsonResponse as json, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
 import { digits, mapDomainStatus } from "../_shared/domain/focus/focus-status.ts";
+import { SupabaseOrderRepository } from "../_shared/adapters/orders/SupabaseOrderRepository.ts";
+import { SupabaseInventoryAdapter } from "../_shared/adapters/orders/SupabaseInventoryAdapter.ts";
+import { SupabaseNfeAdapter } from "../_shared/adapters/orders/SupabaseNfeAdapter.ts";
+import { OrderStatusEngine } from "../_shared/application/orders/OrderStatusEngine.ts";
+import { HandleStockSideEffectsUseCase } from "../_shared/application/orders/HandleStockSideEffectsUseCase.ts";
+import { RecalculateOrderStatusUseCase } from "../_shared/application/orders/RecalculateOrderStatusUseCase.ts";
+import { EmitNfeUseCase } from "../_shared/application/orders/EmitNfeUseCase.ts";
 
 function toNumberOrNull(v: any): number | null {
   const n = Number(v);
@@ -36,7 +43,7 @@ function simplifyItems(arr: any[]): any[] {
     const qty = Number(qtyRaw);
     const priceRaw = it?.unit_price ?? it?.price ?? 0;
     const price = Number(priceRaw);
-    const sku = String(it?.item?.seller_sku ?? it?.seller_sku ?? "");
+      const sku = String(it?.item?.seller_sku ?? it?.seller_sku ?? it?.sku ?? "");
     out.push({
       product_name: title,
       quantity: Number.isFinite(qty) && qty > 0 ? qty : 1,
@@ -278,104 +285,83 @@ serve(async (req) => {
     }
   }
 
+    // Build use cases once per request for status side-effects after emission
+    const orderRepo = new SupabaseOrderRepository(admin as any);
+    const inventory = new SupabaseInventoryAdapter(admin as any);
+    const nfeAdapter = new SupabaseNfeAdapter(admin as any);
+    const engine = new OrderStatusEngine();
+    const stockUseCase = new HandleStockSideEffectsUseCase(inventory);
+    const recalculate = new RecalculateOrderStatusUseCase(orderRepo, engine, stockUseCase);
+    const emitNfeUseCase = new EmitNfeUseCase(orderRepo, nfeAdapter, recalculate);
+
     for (const oid of orderIds) {
       log("order_start", { oid });
-      const { data: order, error: orderErr } = await admin
-        .from("marketplace_orders_presented_new")
-        .select("*")
+      // Read from `orders` table (canonical source) with joined shipping and items
+      const { data: rawOrder, error: orderErr } = await admin
+        .from("orders")
+        .select("*, order_items(*), order_shipping(*)")
         .eq("id", oid)
-        .eq("organizations_id", organizationId)
-        .limit(1)
-        .single();
+        .eq("organization_id", organizationId)
+        .maybeSingle();
 
-      if (orderErr || !order) {
+      if (orderErr || !rawOrder) {
         log("order_not_found", { oid, error: orderErr?.message });
         results.push({ orderId: oid, ok: false, error: orderErr?.message || "Order not found" });
         continue;
       }
 
+      // Extract shipping data from joined order_shipping
+      const shipping: any = Array.isArray(rawOrder.order_shipping) ? rawOrder.order_shipping[0] : rawOrder.order_shipping;
+
+      // Map new schema fields to variables used throughout the function
+      const order = rawOrder as any;
+      order.customer_name = String(rawOrder.buyer_name || "");
+      order.shipping_state_uf = String(shipping?.state_uf || "");
+      order.shipping_city_name = String(shipping?.city || "");
+      order.marketplace_order_id = rawOrder.marketplace_order_id;
+      order.marketplace = rawOrder.marketplace;
+
       let destinatarioNome: string = String(order.customer_name || "").trim();
-      let ufDest: string = String(order.shipping_state_uf || "").trim();
+      let ufDest: string = String(shipping?.state_uf || "").trim();
       const ufEmpresa: string = String(company.estado || "").trim();
       let dentroEstado = !!ufDest && !!ufEmpresa && ufDest.toUpperCase() === ufEmpresa.toUpperCase();
 
-      let addressCity: string = String(order.shipping_city_name || "").trim();
-      let addressState: string = String(order.shipping_state_name || ufDest || "").trim();
+      let addressCity: string = String(shipping?.city || "").trim();
+      let addressState: string = String(ufDest || "").trim();
 
-      let destinatarioDoc: string | null = null;
-      let isPessoaFisica = true;
+      // Derive buyer document from orders.buyer_document
+      let destinatarioDoc: string | null = String(rawOrder.buyer_document || "").trim() || null;
+      let isPessoaFisica = destinatarioDoc ? isCpf(destinatarioDoc) : true;
+
+      // Build address fields from order_shipping join (replaces marketplace_orders_presented_new query)
+      const ufFromNew = String(shipping?.state_uf || "").trim();
+      const cityFromNew = String(shipping?.city || "").trim();
+      if (ufFromNew) ufDest = ufFromNew;
+      if (cityFromNew) addressCity = cityFromNew;
+
       try {
-        const buyerObj: any = order?.buyer || {};
-        const docFromBilling = buyerObj?.billing_info?.doc_number || buyerObj?.billing_info?.number || null;
-        const docFromId = buyerObj?.identification?.number || null;
-        destinatarioDoc = docFromBilling || docFromId || null;
-        isPessoaFisica = destinatarioDoc ? isCpf(destinatarioDoc) : true;
-      } catch (_) {}
-
-      const { data: presentedNew, error: pNewErr } = await admin
-        .from("marketplace_orders_presented_new")
-        .select("shipping_city_name, shipping_state_name, shipping_state_uf, shipping_street_name, shipping_street_number, shipping_neighborhood_name, shipping_zip_code, shipping_comment, shipping_address_line, pack_id, linked_products, items_total_quantity, items_total_amount, first_item_title, billing_name, billing_doc_number, billing_doc_type")
-        .eq("id", oid)
-        .eq("organizations_id", organizationId)
-        .limit(1)
-        .maybeSingle();
-
-      if (!pNewErr && presentedNew) {
-        const ufFromNew = String(presentedNew.shipping_state_uf || "").trim();
-        const cityFromNew = String(presentedNew.shipping_city_name || "").trim();
-        const stateFromNew = String(presentedNew.shipping_state_name || "").trim();
-        const overrideUf = ufFromNew || ufDest;
-        const overrideCity = cityFromNew || addressCity;
-        const overrideState = stateFromNew || addressState;
-        // override address fields from presented_new when available
-        ufDest = overrideUf;
-        addressCity = overrideCity;
-        addressState = overrideState;
-        try {
-          const emitCity = String(company?.cidade || "").trim();
-          const shipCity = String(addressCity || "").trim();
-          const n = (s: string) => s
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/[^a-zA-Z0-9\s]/g, "")
-            .toLowerCase()
-            .replace(/\s+/g, " ")
-            .trim();
-          if (emitCity && shipCity) {
-            const sameCity = n(emitCity) === n(shipCity);
-            if (sameCity) {
-              dentroEstado = true;
-            } else if (ufDest && ufEmpresa) {
-              dentroEstado = String(ufDest).toUpperCase() === String(ufEmpresa).toUpperCase();
-            }
+        const emitCity = String(company?.cidade || "").trim();
+        const shipCity = String(addressCity || "").trim();
+        const normCity = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9\s]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+        if (emitCity && shipCity) {
+          const sameCity = normCity(emitCity) === normCity(shipCity);
+          if (sameCity) {
+            dentroEstado = true;
           } else if (ufDest && ufEmpresa) {
             dentroEstado = String(ufDest).toUpperCase() === String(ufEmpresa).toUpperCase();
           }
-        } catch {}
-        const destNomeOverride = String((presentedNew as any)?.billing_name || "").trim();
-        if (destNomeOverride) {
-          // Prefer nome de faturamento completo quando disponível
-          destinatarioNome = destNomeOverride;
+        } else if (ufDest && ufEmpresa) {
+          dentroEstado = String(ufDest).toUpperCase() === String(ufEmpresa).toUpperCase();
         }
-        const docFromPresented = String((presentedNew as any)?.billing_doc_number || "").trim();
-        const docTypeFromPresented = String((presentedNew as any)?.billing_doc_type || "").trim().toUpperCase();
-        if (docFromPresented) {
-          destinatarioDoc = docFromPresented;
-        }
-        if (docTypeFromPresented === "CPF") {
-          isPessoaFisica = true;
-        } else if (docTypeFromPresented === "CNPJ") {
-          isPessoaFisica = false;
-        } else if (docFromPresented) {
-          isPessoaFisica = isCpf(docFromPresented);
-        }
-        log("presented_new", { oid });
-      }
-      const addrStreetNew = String((presentedNew as any)?.shipping_street_name || "");
-      const addrNumberNew = String((presentedNew as any)?.shipping_street_number || "");
-      const addrNeighNew = String((presentedNew as any)?.shipping_neighborhood_name || "");
-      const addrZipNew = String((presentedNew as any)?.shipping_zip_code || "");
-      const addrCommentNew = String((((presentedNew as any)?.shipping_comment || (presentedNew as any)?.shipping_address_line) || "") || "");
+      } catch (_) {}
+
+      log("order_loaded", { oid, addressCity, ufDest });
+
+      const addrStreetNew = String(shipping?.street_name || "");
+      const addrNumberNew = String(shipping?.street_number || "");
+      const addrNeighNew = String(shipping?.neighborhood || "");
+      const addrZipNew = String(shipping?.zip_code || "");
+      const addrCommentNew = String(shipping?.complement || "");
       const pessoaKey = isPessoaFisica ? "PF" : "PJ";
       const abrKey = dentroEstado ? "dentro" : "fora";
       const icmsKey = `saida_${pessoaKey}_${abrKey}`;
@@ -1295,39 +1281,9 @@ serve(async (req) => {
                 .eq("marketplace_order_id", order.marketplace_order_id);
             } catch {}
             try {
-              let updOk = false;
-              const { data: d1, error: e1 } = await admin
-                .from("marketplace_orders_presented_new")
-                .update({ status_interno: "subir xml" })
-                .eq("organizations_id", organizationId)
-                .eq("company_id", companyId)
-                .eq("marketplace", order.marketplace)
-                .eq("marketplace_order_id", order.marketplace_order_id)
-                .select("id");
-              updOk = !e1 && Array.isArray(d1) && d1.length > 0;
-              if (!updOk) {
-                const { data: d2, error: e2 } = await admin
-                  .from("marketplace_orders_presented_new")
-                  .update({ status_interno: "subir xml" })
-                  .eq("organizations_id", organizationId)
-                  .eq("company_id", companyId)
-                  .eq("marketplace_order_id", order.marketplace_order_id)
-                  .select("id");
-                updOk = !e2 && Array.isArray(d2) && d2.length > 0;
-                if (!updOk) {
-                  const { data: d3, error: e3 } = await admin
-                    .from("marketplace_orders_presented_new")
-                    .update({ status_interno: "subir xml" })
-                    .eq("company_id", companyId)
-                    .eq("marketplace_order_id", order.marketplace_order_id)
-                    .select("id");
-                  updOk = !e3 && Array.isArray(d3) && d3.length > 0;
-                }
-              }
-              if (!updOk) {
-                log("presented_new_update_authorized_not_found", { organizationId, companyId, marketplaceOrderId: order.marketplace_order_id, marketplace: order.marketplace, attempted: ["with_marketplace", "without_marketplace", "company_only"] });
-              }
-            } catch {}
+              await orderRepo.updateInternalFlags(oid, { hasInvoice: true });
+              await recalculate.execute(oid, "nfe_emission");
+            } catch (e) { console.error("[focus-nfe-emit] status_recalc failed (syncOnly authorized):", e); }
             log("already_processed_sync", { oid, status: stC });
             results.push({ orderId: oid, packId, ok: true, status: stC, response: cJson });
             continue;
@@ -1367,15 +1323,7 @@ serve(async (req) => {
           } else {
             await admin.from("notas_fiscais").insert(nfErrWrite);
           }
-          try {
-            await admin
-              .from("marketplace_orders_presented_new")
-              .update({ status_interno: "Falha na emissão" })
-              .eq("organizations_id", organizationId)
-              .eq("company_id", companyId)
-              .eq("marketplace", order.marketplace)
-              .eq("marketplace_order_id", order.marketplace_order_id);
-          } catch (_) {}
+          try { await recalculate.execute(oid, "nfe_emission"); } catch (e) { console.error("[focus-nfe-emit] status_recalc failed (http_error):", e); }
         } catch (_) {}
         results.push({ orderId: oid, packId, ok: false, error: errMsgRaw || `HTTP ${resp.status}`, response: jsonResp });
         continue;
@@ -1451,7 +1399,7 @@ serve(async (req) => {
         let finalStatus = status;
         let rejected = false;
         for (let attempt = 0; attempt < 10; attempt++) {
-          const sResp = await fetch(`https://api.focusnfe.com.br/v2/nfe/${focusId}`, {
+          const sResp = await fetch(`${apiBase}/v2/nfe/${focusId}`, {
             method: "GET",
             headers: { Authorization: `Basic ${basic}`, Accept: "application/json" },
           });
@@ -1484,15 +1432,7 @@ serve(async (req) => {
               .eq("company_id", companyId)
               .eq("order_id", oid);
               //.eq("emissao_ambiente", useHomolog ? "homologacao" : "producao");
-            try {
-              await admin
-                .from("marketplace_orders_presented_new")
-                .update({ status_interno: "Falha na emissão" })
-                .eq("organizations_id", organizationId)
-                .eq("company_id", companyId)
-                .eq("marketplace", order.marketplace)
-                .eq("marketplace_order_id", order.marketplace_order_id);
-            } catch (_) {}
+            try { await recalculate.execute(oid, "nfe_emission"); } catch (e) { console.error("[focus-nfe-emit] status_recalc failed (poll_rejected):", e); }
             log("poll_rejected", { oid, status: st2, errMsg });
             results.push({ orderId: oid, packId, ok: false, status: st2, error: errMsg, response: sJson });
             break;
@@ -1556,41 +1496,10 @@ serve(async (req) => {
                 .eq("marketplace_order_id", order.marketplace_order_id);
             } catch {}
             try {
-              let updOk = false;
-              const { data: d1, error: e1 } = await admin
-                .from("marketplace_orders_presented_new")
-                .update({ status_interno: "subir xml" })
-                .eq("organizations_id", organizationId)
-                .eq("company_id", companyId)
-                .eq("marketplace", order.marketplace)
-                .eq("marketplace_order_id", order.marketplace_order_id)
-                .select("id");
-              updOk = !e1 && Array.isArray(d1) && d1.length > 0;
-              if (!updOk) {
-                const { data: d2, error: e2 } = await admin
-                  .from("marketplace_orders_presented_new")
-                  .update({ status_interno: "subir xml" })
-                  .eq("organizations_id", organizationId)
-                  .eq("company_id", companyId)
-                  .eq("marketplace_order_id", order.marketplace_order_id)
-                  .select("id");
-                updOk = !e2 && Array.isArray(d2) && d2.length > 0;
-                if (!updOk) {
-                  const { data: d3, error: e3 } = await admin
-                    .from("marketplace_orders_presented_new")
-                    .update({ status_interno: "subir xml" })
-                    .eq("company_id", companyId)
-                    .eq("marketplace_order_id", order.marketplace_order_id)
-                    .select("id");
-                  updOk = !e3 && Array.isArray(d3) && d3.length > 0;
-                }
-              }
-              if (!updOk) {
-                log("presented_new_update_authorized_not_found", { organizationId, companyId, marketplaceOrderId: order.marketplace_order_id, marketplace: order.marketplace, attempted: ["with_marketplace", "without_marketplace", "company_only"] });
-              }
-            } catch {}
+              await orderRepo.updateInternalFlags(oid, { hasInvoice: true });
+              await recalculate.execute(oid, "nfe_emission");
+            } catch (e) { console.error("[focus-nfe-emit] status_recalc failed (poll_authorized):", e); }
           }
-          //.eq("emissao_ambiente", useHomolog ? "homologacao" : "producao");
           log("poll_authorized", { oid, status });
           results.push({ orderId: oid, packId, ok: true, status, response: { id: focusId, chave: nfeKey } });
           continue;
@@ -1624,39 +1533,9 @@ serve(async (req) => {
               .eq("marketplace_order_id", order.marketplace_order_id);
           } catch {}
           try {
-            let updOk = false;
-            const { data: d1, error: e1 } = await admin
-              .from("marketplace_orders_presented_new")
-              .update({ status_interno: "subir xml" })
-              .eq("organizations_id", organizationId)
-              .eq("company_id", companyId)
-              .eq("marketplace", order.marketplace)
-              .eq("marketplace_order_id", order.marketplace_order_id)
-              .select("id");
-            updOk = !e1 && Array.isArray(d1) && d1.length > 0;
-            if (!updOk) {
-              const { data: d2, error: e2 } = await admin
-                .from("marketplace_orders_presented_new")
-                .update({ status_interno: "subir xml" })
-                .eq("organizations_id", organizationId)
-                .eq("company_id", companyId)
-                .eq("marketplace_order_id", order.marketplace_order_id)
-                .select("id");
-              updOk = !e2 && Array.isArray(d2) && d2.length > 0;
-              if (!updOk) {
-                const { data: d3, error: e3 } = await admin
-                  .from("marketplace_orders_presented_new")
-                  .update({ status_interno: "subir xml" })
-                  .eq("company_id", companyId)
-                  .eq("marketplace_order_id", order.marketplace_order_id)
-                  .select("id");
-                updOk = !e3 && Array.isArray(d3) && d3.length > 0;
-              }
-            }
-            if (!updOk) {
-              log("presented_new_update_authorized_not_found", { organizationId, companyId, marketplaceOrderId: order.marketplace_order_id, marketplace: order.marketplace, attempted: ["with_marketplace", "without_marketplace", "company_only"] });
-            }
-          } catch {}
+            await orderRepo.updateInternalFlags(oid, { hasInvoice: true });
+            await recalculate.execute(oid, "nfe_emission");
+          } catch (e) { console.error("[focus-nfe-emit] status_recalc failed (sent_authorized):", e); }
         }
         results.push({ orderId: oid, packId, ok: true, status, response: jsonResp });
       }

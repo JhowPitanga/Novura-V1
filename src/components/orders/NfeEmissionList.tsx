@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { supabase, SUPABASE_PUBLISHABLE_KEY } from '@/integrations/supabase/client';
+import { supabase } from '@/integrations/supabase/client';
 import { useToast } from "@/hooks/use-toast";
 import { OrderPagination as Paginacao } from "./Pagination";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -10,45 +10,64 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { Settings, Loader2 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Card, CardContent } from "@/components/ui/card";
+import { useAuth } from "@/hooks/useAuth";
+import { useNfeEmissionOrders } from "@/hooks/useNfeEmissionOrders";
+import { emitNfeQueue, getCompanyIdForOrg, type NfeEmissionOrderData } from "@/services/orders.service";
 
-interface OrderItem {
-  product_name: string;
-  quantity: number;
-  sku: string;
+/** Normalize a status string to lowercase with underscores for comparison. */
+function normSt(v: string): string {
+  return v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, '_').trim();
 }
 
-interface OrderData {
-  id: string;
-  marketplace_order_id: string;
-  customer_name: string;
-  order_total: number;
-  status: string;
-  created_at: string;
-  order_items: OrderItem[];
-  marketplace: string;
-  platform_id: string;
-  shipping_type: string;
-}
+const NFE_EMIT_SLUGS = new Set(['invoice_pending', 'emissao_nf', 'emissao nf']);
+const NFE_FAIL_SLUGS = new Set(['nfe_error', 'falha_na_emissao', 'falha na emissao']);
+const NFE_XML_SLUGS = new Set(['nfe_xml_pending', 'subir_xml', 'subir xml']);
 
 interface NfeEmitirListaProps {
   onOpenDetalhesPedido: (pedidoId: string) => void;
   onRefreshPedidos: () => void;
 }
 
+const MOCK_ORDERS: NfeEmissionOrderData[] = [
+  {
+    id: 'MOCK-1001',
+    marketplace_order_id: 'MLB123456',
+    customer_name: 'Cliente Exemplo',
+    order_total: 249.9,
+    status: 'invoice_pending',
+    created_at: new Date().toISOString(),
+    order_items: [{ product_name: 'Teclado Mecânico', quantity: 1, sku: 'TECL-MECH-01' }],
+    marketplace: 'Mercado Livre',
+    platform_id: 'ITEM-001',
+    shipping_type: 'envios',
+  },
+  {
+    id: 'MOCK-1002',
+    marketplace_order_id: 'SHP987654',
+    customer_name: 'Outro Cliente',
+    order_total: 99.9,
+    status: 'nfe_error',
+    created_at: new Date().toISOString(),
+    order_items: [{ product_name: 'Mouse Óptico', quantity: 2, sku: 'MOUSE-OPT-02' }],
+    marketplace: 'Shopee',
+    platform_id: 'ITEM-002',
+    shipping_type: 'envios',
+  },
+];
+
 export function NfeEmissionList({ onOpenDetalhesPedido, onRefreshPedidos }: NfeEmitirListaProps) {
-  const [pedidos, setPedidos] = useState<OrderData[]>([]);
-  const [loading, setLoading] = useState(true);
   const [searchParams] = useSearchParams();
   const { toast } = useToast();
-  const [drawerMode] = useState<'emit' | 'preview' | 'edit'>('emit');
   const navigate = useNavigate();
-  
+  const { organizationId } = useAuth();
+
   const page = parseInt(searchParams.get('page') || '1');
+  const useMock = searchParams.get('mock') === '1';
   const limit = 10;
   const offset = (page - 1) * limit;
-  
+
   const [processingById, setProcessingById] = useState<Record<string, boolean>>({});
-  const [nfeStatusById, setNfeStatusById] = useState<Record<string, string>>({});
+  const [transientStatusById, setTransientStatusById] = useState<Record<string, string>>({});
   const [emitEnvironment, setEmitEnvironment] = useState<'homologacao' | 'producao'>(() => {
     try {
       const v = localStorage.getItem('nfe_environment');
@@ -58,196 +77,76 @@ export function NfeEmissionList({ onOpenDetalhesPedido, onRefreshPedidos }: NfeE
     }
   });
 
-  const fetchPedidos = useCallback(async () => {
-    setLoading(true);
-    try {
-      const useMock = (searchParams.get('mock') === '1');
-      if (useMock) {
-        const mocks: OrderData[] = [
-          {
-            id: 'MOCK-1001',
-            marketplace_order_id: 'MLB123456',
-            customer_name: 'Cliente Exemplo',
-            order_total: 249.9,
-            status: 'Emissao NF',
-            created_at: new Date().toISOString(),
-            order_items: [
-              { product_name: 'Teclado Mecânico', quantity: 1, sku: 'TECL-MECH-01' },
-            ],
-            marketplace: 'Mercado Livre',
-            platform_id: 'ITEM-001',
-            shipping_type: 'envios',
-          },
-          {
-            id: 'MOCK-1002',
-            marketplace_order_id: 'SHP987654',
-            customer_name: 'Outro Cliente',
-            order_total: 99.9,
-            status: 'Falha na emissao',
-            created_at: new Date().toISOString(),
-            order_items: [
-              { product_name: 'Mouse Óptico', quantity: 2, sku: 'MOUSE-OPT-02' },
-            ],
-            marketplace: 'Shopee',
-            platform_id: 'ITEM-002',
-            shipping_type: 'envios',
-          },
-        ];
-        setPedidos(mocks);
-        setNfeStatusById({
-          [mocks[0].id]: mocks[0].status,
-          [mocks[1].id]: mocks[1].status,
-        });
-        return;
-      }
-      let orgId: string | null = null;
-      {
-        const { data: orgRes } = await supabase.rpc('get_current_user_organization_id');
-        orgId = (Array.isArray(orgRes) ? orgRes?.[0] : orgRes) || null;
-      }
-      const emisStatuses = ['Emissao NF', 'Emissão NF', 'EMISSÃO NF', 'Subir xml', 'subir xml'];
-      let q: any = (supabase as any)
-        .from('orders')
-        .select(`
-          id,
-          marketplace_order_id,
-          created_at,
-          marketplace,
-          gross_amount,
-          status,
-          buyer_name,
-          pack_id,
-          order_items (title, quantity, sku, marketplace_item_id),
-          order_shipping (logistic_type)
-        `, { count: 'exact' })
-        .in('status', emisStatuses)
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1);
-      if (orgId) {
-        q = (q as any).eq('organization_id', orgId);
-      }
-      const { data, error } = await q;
-      if (error) throw error;
-      const rows: any[] = Array.isArray(data) ? data : [];
-      const parsed: OrderData[] = rows.map((o: any) => {
-        const items = Array.isArray(o?.order_items) ? o.order_items : [];
-        const firstItem = items[0];
-        const shipping = Array.isArray(o?.order_shipping) ? o.order_shipping[0] : o?.order_shipping;
-        const totalQty = items.reduce((sum: number, it: any) => sum + Number(it?.quantity ?? 0), 0) || 1;
-        return {
-          id: String(o.id),
-          marketplace_order_id: String(o.marketplace_order_id || o.id),
-          customer_name: String(o.buyer_name ?? ''),
-          order_total: Number(o.gross_amount ?? 0),
-          status: String(o.status ?? ''),
-          created_at: String(o.created_at),
-          order_items: items.length > 0
-            ? items.map((it: any) => ({
-                product_name: String(it?.title ?? ''),
-                quantity: Number(it?.quantity ?? 1),
-                sku: String(it?.sku ?? ''),
-              }))
-            : [{ product_name: '', quantity: totalQty, sku: '' }],
-          marketplace: String(o.marketplace ?? ''),
-          platform_id: String(firstItem?.marketplace_item_id ?? o.pack_id ?? o.marketplace_order_id ?? o.id),
-          shipping_type: String(shipping?.logistic_type ?? ''),
-        };
-      });
-      setPedidos(parsed);
-      const initialStatus: Record<string, string> = {};
-      for (const p of parsed) {
-        initialStatus[p.id] = p.status;
-      }
-      setNfeStatusById(initialStatus);
-    } catch (error: any) {
-      console.error("Erro ao buscar pedidos para NF-e:", error);
-      toast({
-        title: "Erro",
-        description: `Falha ao carregar a lista de pedidos: ${error.message || 'Erro desconhecido'}`,
-        variant: "destructive",
-      });
-      setPedidos([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [limit, offset, toast, searchParams]);
+  const { orders: fetchedOrders, totalCount, isLoading, refetch } = useNfeEmissionOrders(
+    useMock ? null : organizationId,
+    offset,
+    limit,
+  );
 
-  useEffect(() => {
-    fetchPedidos();
-  }, [fetchPedidos, onRefreshPedidos]);
+  const pedidos = useMock ? MOCK_ORDERS : fetchedOrders;
+  const totalPedidos = useMock ? MOCK_ORDERS.length : totalCount;
+
+  const statusOf = (p: NfeEmissionOrderData): string =>
+    transientStatusById[p.id] ?? p.status ?? '';
+
+  const counts = {
+    emitCount: pedidos.filter(p => NFE_EMIT_SLUGS.has(normSt(statusOf(p)))).length,
+    failCount: pedidos.filter(p => NFE_FAIL_SLUGS.has(normSt(statusOf(p)))).length,
+    subirXmlCount: pedidos.filter(p => NFE_XML_SLUGS.has(normSt(statusOf(p)))).length,
+  };
 
   const handleEmitirNfeClick = async (pedidoId: string) => {
     setProcessingById(prev => ({ ...prev, [pedidoId]: true }));
-    setNfeStatusById(prev => ({ ...prev, [pedidoId]: 'Processando' }));
+    setTransientStatusById(prev => ({ ...prev, [pedidoId]: 'processando' }));
     try {
-      const { data: sessionRes } = await (supabase as any).auth.getSession();
-      const token: string | undefined = sessionRes?.session?.access_token;
-      if (!token) throw new Error('Sessão expirada');
-      let orgId: string | null = null;
-      {
-        const { data: orgRes } = await (supabase as any).rpc('get_current_user_organization_id');
-        orgId = (Array.isArray(orgRes) ? orgRes?.[0] : orgRes) || null;
-      }
+      const orgId = organizationId;
       if (!orgId) throw new Error('Organização não encontrada');
-      let companyId: string | null = null;
-      {
-        const { data: companiesForOrg } = await (supabase as any)
-          .from('companies')
-          .select('id')
-          .eq('organization_id', orgId)
-          .order('is_active', { ascending: false })
-          .order('created_at', { ascending: true })
-          .limit(1);
-        companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
-      }
+      const companyId = await getCompanyIdForOrg(orgId);
       if (!companyId) throw new Error('Nenhuma empresa ativa encontrada');
-      const envSel = emitEnvironment;
-      const { error: sendErr } = await (supabase as any).rpc('rpc_queues_emit', {
-        p_message: {
-          organizations_id: orgId,
-          company_id: companyId,
-          environment: envSel,
-          orderIds: [String(pedidoId)],
-        }
-      } as any);
-      if (sendErr) throw sendErr;
+      await emitNfeQueue(orgId, companyId, [pedidoId], emitEnvironment);
       navigate('/pedidos/emissao_nfe/processando');
     } catch (e) {
       setProcessingById(prev => ({ ...prev, [pedidoId]: false }));
-      setNfeStatusById(prev => ({ ...prev, [pedidoId]: 'Falha na emissao' }));
+      setTransientStatusById(prev => ({ ...prev, [pedidoId]: 'nfe_error' }));
       console.error('Falha ao enfileirar emissão:', e);
       toast({ title: 'Falha ao enfileirar emissão', description: (e as any)?.message || String(e), variant: 'destructive' });
     }
   };
 
-  const handleVerNotaClick = (pedidoId: string) => {};
-
-  const handleEmissaoDrawerClose = () => {};
-
-  const handleEmissaoConcluida = (pedidoId: string) => { try { onRefreshPedidos(); } catch {} };
-
-  const totalPedidos = 12; // Valor mockado.
-  const counts = (() => {
-    const statusOf = (p: OrderData) => nfeStatusById[p.id] || p.status || '';
-    const emitCount = pedidos.filter(p => String(statusOf(p)).toLowerCase() === 'emissao nf').length;
-    const failCount = pedidos.filter(p => String(statusOf(p)).toLowerCase() === 'falha na emissao').length;
-    const subirXmlCount = pedidos.filter(p => String(statusOf(p)).toLowerCase() === 'subir xml').length;
-    return { emitCount, failCount, subirXmlCount };
-  })();
   const handleCreateHomologationMocks = async () => {
     try { localStorage.setItem('nfe_environment', 'homologacao'); } catch {}
     try {
       const { error } = await (supabase as any).rpc('rpc_create_mock_orders_emissao_nf');
       if (error) throw error;
       toast({ title: 'Pedido de teste criado', description: '1 pedido adicionado para homologação.' });
-      await fetchPedidos();
+      refetch();
+      onRefreshPedidos();
     } catch (e: any) {
       toast({
         title: 'Erro',
         description: `Falha ao criar pedidos de teste: ${e?.message || 'Erro desconhecido'}`,
-        variant: 'destructive'
+        variant: 'destructive',
       });
     }
+  };
+
+  const renderNfeStatusBadge = (pedidoId: string, pedidoStatus: string) => {
+    const st = normSt(transientStatusById[pedidoId] ?? pedidoStatus ?? '');
+    if (st === 'processando') {
+      return (
+        <Badge className="bg-white text-purple-700 border border-purple-300 h-6 px-2 inline-flex items-center gap-2 rounded-md">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          Processando
+        </Badge>
+      );
+    }
+    if (NFE_FAIL_SLUGS.has(st)) {
+      return <Badge className="bg-red-600 text-white h-6 px-2 inline-flex items-center rounded-md">Falha na emissão</Badge>;
+    }
+    if (NFE_XML_SLUGS.has(st)) {
+      return <Badge className="bg-blue-500 text-white h-6 px-2 inline-flex items-center rounded-md">Subir XML</Badge>;
+    }
+    return <Badge variant="outline" className="h-6 px-2 inline-flex items-center rounded-md">Emissão NF</Badge>;
   };
 
   return (
@@ -295,7 +194,7 @@ export function NfeEmissionList({ onOpenDetalhesPedido, onRefreshPedidos }: NfeE
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      {loading ? (
+      {isLoading ? (
         <div className="space-y-4">
           {[...Array(limit)].map((_, index) => (
             <div key={index} className="bg-white rounded-lg p-4 shadow-sm flex items-center space-x-4">
@@ -346,24 +245,7 @@ export function NfeEmissionList({ onOpenDetalhesPedido, onRefreshPedidos }: NfeE
                 </TableCell>
                 <TableCell>{pedido.platform_id}</TableCell>
                 <TableCell>
-                  {(() => {
-                    const st = (nfeStatusById[pedido.id] || pedido.status || '').toLowerCase();
-                    if (st === 'processando') {
-                      return (
-                        <Badge className="bg-white text-purple-700 border border-purple-300 h-6 px-2 inline-flex items-center gap-2 rounded-md">
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          Processando
-                        </Badge>
-                      );
-                    }
-                    if (st === 'falha na emissao') {
-                      return <Badge className="bg-red-600 text-white h-6 px-2 inline-flex items-center rounded-md">Falha na emissão</Badge>;
-                    }
-                    if (st === 'subir xml') {
-                      return <Badge className="bg-blue-500 text-white h-6 px-2 inline-flex items-center rounded-md">Subir XML</Badge>;
-                    }
-                    return <Badge variant="outline" className="h-6 px-2 inline-flex items-center rounded-md">Emissão NF</Badge>;
-                  })()}
+                  {renderNfeStatusBadge(pedido.id, pedido.status)}
                 </TableCell>
                 <TableCell>
                   <div className="flex space-x-2">

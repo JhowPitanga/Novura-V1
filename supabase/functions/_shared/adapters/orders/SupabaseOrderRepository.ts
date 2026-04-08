@@ -88,14 +88,20 @@ export class SupabaseOrderRepository implements IOrderRepository {
 
   async updateInternalFlags(
     orderId: string,
-    flags: Readonly<{ isPrintedLabel?: boolean; isPickupDone?: boolean }>,
+    flags: Readonly<{ isPrintedLabel?: boolean; isPickupDone?: boolean; hasInvoice?: boolean }>,
   ): Promise<void> {
-    const payload: { is_printed_label?: boolean; is_pickup_done?: boolean; label_printed_at?: string } = {};
+    const payload: {
+      is_printed_label?: boolean;
+      is_pickup_done?: boolean;
+      has_invoice?: boolean;
+      label_printed_at?: string;
+    } = {};
     if (flags.isPrintedLabel !== undefined) {
       payload.is_printed_label = flags.isPrintedLabel;
       if (flags.isPrintedLabel) payload.label_printed_at = new Date().toISOString();
     }
     if (flags.isPickupDone !== undefined) payload.is_pickup_done = flags.isPickupDone;
+    if (flags.hasInvoice !== undefined) payload.has_invoice = flags.hasInvoice;
     if (Object.keys(payload).length === 0) return;
     const { error } = await this.supabase.from("orders").update(payload as never).eq("id", orderId);
     if (error) throw new Error(`SupabaseOrderRepository.updateInternalFlags failed: ${error.message}`);

@@ -1,21 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse as json, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { jsonResponse as json } from "../_shared/adapters/infra/http-utils.ts";
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
-
-type QueueRow = {
-  id: string;
-  organizations_id: string;
-  company_id: string;
-  order_id: string;
-  environment: "homologacao" | "producao";
-  status: "pending" | "processing" | "done" | "error";
-  attempts: number;
-  last_error?: string | null;
-  priority: number;
-  batch_key?: string | null;
-  created_at: string;
-  processed_at?: string | null;
-};
 
 type ConsumeRequest = {
   organizationId?: string;
@@ -25,218 +10,178 @@ type ConsumeRequest = {
   queue?: "q_emit_focus" | "q_submit_xml";
 };
 
-const BATCH_SIZE_DEFAULT = 80;
+type PgmqRow = { msg_id: number; vt: string; message: any; enqueued_at: string; read_ct: number };
 
+type EmitGroup = {
+  msgIds: number[];
+  orderIds: string[];
+  organizationId: string;
+  companyId: string;
+  environment: "homologacao" | "producao";
+  forceNewNumber: boolean;
+  forceNewRef: boolean;
+};
+
+const BATCH_SIZE_DEFAULT = 80;
+const DEAD_LETTER_MAX_READS = 5;
+
+function extractEmitGroupKey(m: any): string {
+  const orgId = String(m.organizations_id || m.organizationId || "");
+  const compId = String(m.company_id || m.companyId || "");
+  const env = String(m.environment || "").toLowerCase() === "producao" ? "producao" : "homologacao";
+  return `${orgId}:${compId}:${env}`;
+}
+
+function extractOrderIds(m: any): string[] {
+  return Array.isArray(m.orderIds)
+    ? m.orderIds.map((x: any) => String(x)).filter(Boolean)
+    : [String(m.order_id || m.orderId || "")].filter(Boolean);
+}
+
+/** Group active PGMQ rows by (orgId, companyId, environment), accumulating orderIds per group. */
+function groupEmitRows(rows: PgmqRow[]): Map<string, EmitGroup> {
+  const groups = new Map<string, EmitGroup>();
+  for (const r of rows) {
+    const m = r.message ?? {};
+    const key = extractEmitGroupKey(m);
+    const orgId = String(m.organizations_id || m.organizationId || "");
+    const compId = String(m.company_id || m.companyId || "");
+    const env: "homologacao" | "producao" = String(m.environment || "").toLowerCase() === "producao" ? "producao" : "homologacao";
+    if (!groups.has(key)) {
+      groups.set(key, { msgIds: [], orderIds: [], organizationId: orgId, companyId: compId, environment: env, forceNewNumber: false, forceNewRef: false });
+    }
+    const group = groups.get(key)!;
+    group.msgIds.push(Number(r.msg_id));
+    group.forceNewNumber = group.forceNewNumber || !!m.forceNewNumber;
+    group.forceNewRef = group.forceNewRef || !!m.forceNewRef;
+    for (const id of extractOrderIds(m)) {
+      if (!group.orderIds.includes(id)) group.orderIds.push(id);
+    }
+  }
+  return groups;
+}
+
+async function callEmitFocus(supabaseUrl: string, anonKey: string, authHeader: string, group: EmitGroup): Promise<any[]> {
+  const resp = await fetch(`${supabaseUrl}/functions/v1/focus-nfe-emit`, {
+    method: "POST",
+    headers: { "content-type": "application/json", apikey: anonKey, ...(authHeader ? { Authorization: authHeader } : {}) },
+    body: JSON.stringify({ organizationId: group.organizationId, companyId: group.companyId, orderIds: group.orderIds, environment: group.environment, forceNewNumber: group.forceNewNumber, forceNewRef: group.forceNewRef }),
+  });
+  const text = await resp.text();
+  let resultJson: any = {};
+  try { resultJson = text ? JSON.parse(text) : {}; } catch { resultJson = { raw: text }; }
+  if (!resp.ok) return [];
+  return Array.isArray(resultJson?.results) ? resultJson.results : [];
+}
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return json({}, 200);
-  }
-  if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
-  }
+  if (req.method === "OPTIONS") return json({}, 200);
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   const rid = crypto.randomUUID();
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
   const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-
   const admin = createAdminClient();
 
   try {
     const body = (await req.json().catch(() => ({}))) as ConsumeRequest;
-    const organizationId = body.organizationId;
-    const companyId = body.companyId;
-    const environment = body.environment;
     const limit = Math.max(1, Math.min(Number(body.limit || BATCH_SIZE_DEFAULT), BATCH_SIZE_DEFAULT));
     const queue = String((body as any).queue || "").toLowerCase() === "q_submit_xml" ? "q_submit_xml" : "q_emit_focus";
-    console.log("[QUEUE-CONSUME] inbound", { rid, queue, limit, body_preview: JSON.stringify(body).slice(0, 256) });
+    const authHeader = req.headers.get("Authorization") || "";
+    console.log("[QUEUE-CONSUME] inbound", { rid, queue, limit });
 
-    let pgmqRows: Array<{ msg_id: number; vt: string; message: any; enqueued_at: string; read_ct: number }> = [];
-    let pgmqErr: any = null;
+    // Read messages from PGMQ
+    let pgmqRows: PgmqRow[] = [];
     try {
       const readFn = queue === "q_emit_focus" ? "q_emit_focus_read" : "q_submit_xml_read";
-      const { data, error } = await admin
-        .rpc(readFn, { p_vt: 120, p_qty: limit } as any);
-      if (error) pgmqErr = error;
-      if (Array.isArray(data)) pgmqRows = data as any[];
+      const { data, error } = await admin.rpc(readFn, { p_vt: 120, p_qty: limit } as any);
+      if (error) console.error("[QUEUE-CONSUME] read_error", { rid, error: error.message });
+      if (Array.isArray(data)) pgmqRows = data as PgmqRow[];
     } catch (e: any) {
-      pgmqErr = e;
+      console.error("[QUEUE-CONSUME] read_exception", { rid, error: e?.message });
     }
-    console.log("[QUEUE-CONSUME] read_result", { rid, queue, rows: pgmqRows.length, error: pgmqErr ? (pgmqErr.message || String(pgmqErr)) : null });
-
-    const authHeader = req.headers.get("Authorization") || "";
-    console.log("[QUEUE-CONSUME] auth_header", { rid, present: !!authHeader });
     if (pgmqRows.length === 0) return json({ ok: true, processed: 0, rid });
 
     if (queue === "q_emit_focus") {
-      let msgIds: number[] = [];
-      let orgForBatch: string | undefined = organizationId;
-      let companyForBatch: string | undefined = companyId;
-      let envForBatch: "homologacao" | "producao" | undefined = environment as any;
-      let forceNewNumber = false;
-      let forceNewRef = false;
-      let orderIds: string[] = [];
-      for (const r of pgmqRows) {
-        msgIds.push(Number(r.msg_id));
-        const m = (r as any).message ?? (r as any).msg ?? {};
-        const orgId = String(m.organizations_id || m.organizationId || "");
-        const compId = String(m.company_id || m.companyId || "");
-        const env = String(m.environment || "").toLowerCase() === "producao" ? "producao" : "homologacao";
-        forceNewNumber = forceNewNumber || !!m.forceNewNumber;
-        forceNewRef = forceNewRef || !!m.forceNewRef;
-        if (!orgForBatch) orgForBatch = orgId || orgForBatch;
-        if (!companyForBatch) companyForBatch = compId || companyForBatch;
-        if (!envForBatch) envForBatch = env as any;
-        const ids = Array.isArray(m.orderIds) ? m.orderIds.map((x: any) => String(x)).filter(Boolean) : [String(m.order_id || m.orderId || "")].filter(Boolean);
-        orderIds.push(...ids);
-      }
-      orderIds = Array.from(new Set(orderIds));
-      console.log("[QUEUE-CONSUME] emit_batch_compose", { rid, orgForBatch, companyForBatch, envForBatch, orderIds_len: orderIds.length, forceNewNumber, forceNewRef });
-      if (orderIds.length === 0) {
-        return json({ ok: true, processed: 0, rid });
-      }
-      const resp = await fetch(`${SUPABASE_URL}/functions/v1/focus-nfe-emit`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          apikey: SUPABASE_ANON_KEY,
-          ...(authHeader ? { Authorization: authHeader } : {}),
-        },
-        body: JSON.stringify({
-          organizationId: orgForBatch,
-          companyId: companyForBatch,
-          orderIds,
-          environment: envForBatch,
-          forceNewNumber,
-          forceNewRef,
-        }),
-      });
-      const resultText = await resp.text();
-      let resultJson: any = {};
-      try { resultJson = resultText ? JSON.parse(resultText) : {}; } catch { resultJson = { raw: resultText }; }
-      console.log("[QUEUE-CONSUME] emit_resp", { rid, status: resp.status, ok: resp.ok, body_preview: (resultText || "").slice(0, 512) });
-      if (!resp.ok) {
-        const errMsg = resultJson?.error || `HTTP ${resp.status}`;
-        return json({ error: errMsg, rid }, resp.status);
-      }
-      const results = Array.isArray(resultJson?.results) ? resultJson.results : [];
-      const byOrderId = new Map<string, any>();
-      for (const r of results) {
-        const k = String(r?.orderId || "");
-        if (k) byOrderId.set(k, r);
-      }
-      const dels = [];
-      const archs = [];
-      for (let i = 0; i < pgmqRows.length; i++) {
-        const r = pgmqRows[i];
-        const m = (r as any).message ?? (r as any).msg ?? {};
-        const ids = Array.isArray(m.orderIds) ? m.orderIds.map((x: any) => String(x)).filter(Boolean) : [String(m.order_id || m.orderId || "")].filter(Boolean);
-        const okAny = ids.some((oid: string) => {
-          const rr = byOrderId.get(oid);
-          const st = String(rr?.status || "").toLowerCase();
-          return !!rr && (st === "autorizado" || st === "autorizada" || st === "processando_autorizacao");
-        });
-        if (okAny) {
-          dels.push(admin.rpc("q_emit_focus_delete", { p_msg_id: Number(r.msg_id) } as any));
-        } else {
+      // Separate dead-letter messages (exceeded retry limit) from active rows
+      const deadMsgIds: number[] = [];
+      const activeRows = pgmqRows.filter(r => {
+        if (Number(r.read_ct) > DEAD_LETTER_MAX_READS) {
+          deadMsgIds.push(Number(r.msg_id));
+          return false;
         }
+        return true;
+      });
+
+      if (deadMsgIds.length > 0) {
+        console.error("[QUEUE-CONSUME] dead_letter", { rid, count: deadMsgIds.length, msgIds: deadMsgIds });
+        await Promise.allSettled(deadMsgIds.map(msgId => admin.rpc("q_emit_focus_delete", { p_msg_id: msgId } as any)));
       }
+
+      // Group active rows by (organizationId, companyId, environment)
+      const groups = groupEmitRows(activeRows);
+      console.log("[QUEUE-CONSUME] emit_groups", { rid, count: groups.size });
+
+      // Call focus-nfe-emit once per group
+      const allResults: any[] = [];
+      const successfulOrderIds = new Set<string>();
+      for (const group of groups.values()) {
+        if (group.orderIds.length === 0) continue;
+        const results = await callEmitFocus(SUPABASE_URL, SUPABASE_ANON_KEY, authHeader, group);
+        for (const r of results) {
+          if (r?.ok === true) successfulOrderIds.add(String(r.orderId || ""));
+        }
+        allResults.push(...results);
+      }
+
+      // Delete only messages whose orderIds were ALL successfully processed
+      const dels = activeRows
+        .filter(r => {
+          const ids = extractOrderIds(r.message ?? {});
+          return ids.length > 0 && ids.every(id => successfulOrderIds.has(id));
+        })
+        .map(r => admin.rpc("q_emit_focus_delete", { p_msg_id: Number(r.msg_id) } as any));
       await Promise.allSettled(dels);
-      await Promise.allSettled(archs);
-      return json({
-        ok: true,
-        processed: pgmqRows.length,
-        rid,
-        summary: {
-          authorized: results.filter((r: any) => String(r?.status || "").toLowerCase().includes("autoriz")).length,
-          errors: results.filter((r: any) => r?.ok === false || String(r?.status || "") === "").length,
-        },
-      });
-    } else {
-      const submits: Array<{
-        msgId: number;
-        organizationId: string;
-        companyId: string;
-        notaFiscalId?: string;
-        nfeKey?: string;
-        marketplace: string;
-      }> = [];
-      for (const r of pgmqRows) {
-        const m = (r as any).message ?? (r as any).msg ?? {};
-        const orgId = String(m.organizations_id || m.organizationId || "");
-        const compId = String(m.company_id || m.companyId || "");
-        const nfId = String(m.nota_fiscal_id || m.notaFiscalId || "");
-        const nfKey = String(m.nfe_key || m.nfeKey || "");
-        const mk = String(m.marketplace || m.marketplace_name || "").toLowerCase();
-        submits.push({
-          msgId: Number(r.msg_id),
-          organizationId: orgId,
-          companyId: compId,
-          notaFiscalId: nfId || undefined,
-          nfeKey: nfKey || undefined,
-          marketplace: mk,
-        });
-      }
-      console.log("[QUEUE-CONSUME] submit_batch_compose", { rid, count: submits.length });
-      const dels = [];
-      const results: any[] = [];
-      for (const s of submits) {
-        let endpoint: string | null = null;
-        const mkRaw = String(s.marketplace || "");
-        const mkTestMl = /(mercado\s*livre|meli|mlb|mercado)/i.test(mkRaw);
-        const mkTestShopee = /shopee/i.test(mkRaw);
-        if (mkTestMl) endpoint = "mercado-livre-submit-xml";
-        else if (mkTestShopee) endpoint = "shopee-submit-xml";
-        console.log("[QUEUE-CONSUME] submit_route", { rid, msg_id: s.msgId, mk: mkRaw, endpoint });
-        if (!endpoint || !s.organizationId || !s.companyId || (!s.notaFiscalId && !s.nfeKey)) {
-          results.push({ ok: false, marketplace: s.marketplace, msgId: s.msgId, status: "", error: "payload_incompleto" });
-          continue;
-        }
-        const payload: any = {
-          organizationId: s.organizationId,
-          companyId: s.companyId,
-        };
-        if (endpoint === "mercado-livre-submit-xml") {
-          if (s.notaFiscalId) payload.notaFiscalId = s.notaFiscalId;
-          if (s.nfeKey) payload.nfeKey = s.nfeKey;
-        } else if (endpoint === "shopee-submit-xml") {
-          if (s.notaFiscalId) payload.notaFiscalId = s.notaFiscalId;
-        }
-        console.log("[QUEUE-CONSUME] submit_call", { rid, msg_id: s.msgId, endpoint, payload });
-        const resp = await fetch(`${SUPABASE_URL}/functions/v1/${endpoint}`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            apikey: SUPABASE_ANON_KEY,
-            "x-internal-worker": "queue-consume",
-            "x-correlation-id": rid,
-            ...(authHeader ? { Authorization: authHeader } : {}),
-          },
-          body: JSON.stringify(payload),
-        });
-        const t = await resp.text();
-        let j: any = {};
-        try { j = t ? JSON.parse(t) : {}; } catch { j = { raw: t }; }
-        console.log("[QUEUE-CONSUME] submit_resp", { rid, msg_id: s.msgId, endpoint, status: resp.status, ok: resp.ok, body_preview: (t || "").slice(0, 512) });
-        const ok = resp.ok && j?.ok === true;
-        results.push({ ok, marketplace: s.marketplace, msgId: s.msgId, status: j?.status || "", error: j?.error || null });
-        if (ok) {
-          dels.push(admin.rpc("q_submit_xml_delete", { p_msg_id: Number(s.msgId) } as any));
-        }
-      }
-      await Promise.allSettled(dels);
-      console.log("[QUEUE-CONSUME] submit_summary", { rid, sent: results.filter((r: any) => r.ok === true && String(r?.status || "").toLowerCase() === "sent").length, errors: results.filter((r: any) => r.ok === false).length });
-      return json({
-        ok: true,
-        processed: pgmqRows.length,
-        rid,
-        summary: {
-          sent: results.filter((r: any) => r.ok === true && String(r?.status || "").toLowerCase() === "sent").length,
-          errors: results.filter((r: any) => r.ok === false).length,
-        },
-        results,
-      });
+
+      return json({ ok: true, processed: pgmqRows.length, rid, summary: { authorized: allResults.filter((r: any) => r?.ok === true).length, errors: allResults.filter((r: any) => r?.ok === false).length, deadLetters: deadMsgIds.length } });
     }
+
+    // q_submit_xml path
+    const dels: Promise<any>[] = [];
+    const results: any[] = [];
+    for (const r of pgmqRows) {
+      const m = r.message ?? {};
+      const orgId = String(m.organizations_id || m.organizationId || "");
+      const compId = String(m.company_id || m.companyId || "");
+      const nfId = String(m.nota_fiscal_id || m.notaFiscalId || "");
+      const nfKey = String(m.nfe_key || m.nfeKey || "");
+      const mk = String(m.marketplace || m.marketplace_name || "").toLowerCase();
+      const mkTestMl = /(mercado\s*livre|meli|mlb|mercado)/i.test(mk);
+      const mkTestShopee = /shopee/i.test(mk);
+      const endpoint = mkTestMl ? "mercado-livre-submit-xml" : mkTestShopee ? "shopee-submit-xml" : null;
+
+      if (!endpoint || !orgId || !compId || (!nfId && !nfKey)) {
+        results.push({ ok: false, marketplace: mk, msgId: r.msg_id, error: "payload_incompleto" });
+        continue;
+      }
+      const payload: any = { organizationId: orgId, companyId: compId };
+      if (endpoint === "mercado-livre-submit-xml") { if (nfId) payload.notaFiscalId = nfId; if (nfKey) payload.nfeKey = nfKey; }
+      else if (nfId) payload.notaFiscalId = nfId;
+
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/${endpoint}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", apikey: SUPABASE_ANON_KEY, "x-internal-worker": "queue-consume", ...(authHeader ? { Authorization: authHeader } : {}) },
+        body: JSON.stringify(payload),
+      });
+      const t = await resp.text();
+      let j: any = {};
+      try { j = t ? JSON.parse(t) : {}; } catch { j = { raw: t }; }
+      const ok = resp.ok && j?.ok === true;
+      results.push({ ok, marketplace: mk, msgId: r.msg_id, error: j?.error || null });
+      if (ok) dels.push(admin.rpc("q_submit_xml_delete", { p_msg_id: Number(r.msg_id) } as any));
+    }
+    await Promise.allSettled(dels);
+    return json({ ok: true, processed: pgmqRows.length, rid, summary: { sent: results.filter((r: any) => r.ok === true).length, errors: results.filter((r: any) => r.ok === false).length }, results });
   } catch (e: any) {
     return json({ error: e?.message || String(e), rid }, 500);
   }
