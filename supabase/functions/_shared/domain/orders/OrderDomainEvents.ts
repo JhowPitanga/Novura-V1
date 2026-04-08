@@ -1,3 +1,5 @@
+import type { OrderStatus } from './OrderStatus.ts';
+
 /**
  * Domain events emitted by the order status subsystem.
  *
