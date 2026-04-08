@@ -44,6 +44,14 @@ function mapOrderRow(organizationId: string, order: NormalizedOrder): OrderInser
     shipped_at: order.shipped_at,
     delivered_at: order.delivered_at,
     canceled_at: order.canceled_at,
+    shipment_status: order.shipmentStatus ?? null,
+    shipment_substatus: order.shipmentSubstatus ?? null,
+    is_fulfillment: order.isFulfillment ?? false,
+    is_cancelled: order.isCancelled ?? false,
+    is_refunded: order.isRefunded ?? false,
+    is_returned: order.isReturned ?? false,
+    has_invoice: order.hasInvoice ?? false,
+    is_pickup_done: order.isPickupDone ?? false,
     last_synced_at: new Date().toISOString(),
   };
 }

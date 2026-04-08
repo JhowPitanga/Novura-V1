@@ -57,6 +57,14 @@ export interface NormalizedOrder {
   shipped_at: string | null;
   delivered_at: string | null;
   canceled_at: string | null;
+  shipmentStatus?: string;
+  shipmentSubstatus?: string;
+  isFulfillment: boolean;
+  isCancelled: boolean;
+  isRefunded: boolean;
+  isReturned: boolean;
+  hasInvoice: boolean;
+  isPickupDone?: boolean;
   items: NormalizedOrderItem[];
   shipping: NormalizedOrderShipping | null;
 }
@@ -84,6 +92,14 @@ export interface OrderInsertRow {
   shipped_at: string | null;
   delivered_at: string | null;
   canceled_at: string | null;
+  shipment_status?: string | null;
+  shipment_substatus?: string | null;
+  is_fulfillment?: boolean;
+  is_cancelled?: boolean;
+  is_refunded?: boolean;
+  is_returned?: boolean;
+  has_invoice?: boolean;
+  is_pickup_done?: boolean;
   last_synced_at: string;
   internal_status?: string;
   has_unlinked_items?: boolean;
