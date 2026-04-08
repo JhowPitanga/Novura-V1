@@ -27,7 +27,12 @@ import {
   ShopeeOrderNormalizeService,
 } from "../_shared/orders-normalize/index.ts";
 import { OrdersUpsertAdapter } from "../_shared/adapters/orders-upsert/index.ts";
+import { SupabaseOrderRepository } from "../_shared/adapters/orders/SupabaseOrderRepository.ts";
+import { SupabaseInventoryAdapter } from "../_shared/adapters/orders/SupabaseInventoryAdapter.ts";
 import { isFetchFullOrderError } from "../_shared/domain/ml/ml-order-api-fetch.ts";
+import { OrderStatusEngine } from "../_shared/application/orders/OrderStatusEngine.ts";
+import { HandleStockSideEffectsUseCase } from "../_shared/application/orders/HandleStockSideEffectsUseCase.ts";
+import { RecalculateOrderStatusUseCase } from "../_shared/application/orders/RecalculateOrderStatusUseCase.ts";
 import {
   isMlOrderQueueMessage,
   isShopeeOrderQueueMessage,
@@ -48,11 +53,70 @@ const upsertAdapter = new OrdersUpsertAdapter();
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
+function buildStatusUseCases(admin: AdminClient): { recalculate: RecalculateOrderStatusUseCase } {
+  const orderRepo = new SupabaseOrderRepository(admin);
+  const inventory = new SupabaseInventoryAdapter(admin);
+  const stockEffects = new HandleStockSideEffectsUseCase(inventory);
+  const recalculate = new RecalculateOrderStatusUseCase(
+    orderRepo,
+    new OrderStatusEngine(),
+    stockEffects,
+  );
+  return { recalculate };
+}
+
+async function persistRecalculateFailure(params: {
+  admin: AdminClient;
+  orderId: string;
+  errorMessage: string;
+}): Promise<void> {
+  const baseRow = {
+    order_id: params.orderId,
+    from_status: null,
+    to_status: "system_error",
+    source: "system_error",
+  };
+  const withDescription = { ...baseRow, description: params.errorMessage };
+  const attemptWithDescription = await params.admin
+    .from("order_status_history")
+    .insert(withDescription as never);
+  if (!attemptWithDescription.error) return;
+  const fallback = await params.admin.from("order_status_history").insert(baseRow as never);
+  if (fallback.error) {
+    console.error("[orders-queue-worker] failed to persist recalculate error", {
+      orderId: params.orderId,
+      error: fallback.error.message,
+    });
+  }
+}
+
+async function recalculateAfterUpsert(params: {
+  admin: AdminClient;
+  orderId: string;
+  recalculate: RecalculateOrderStatusUseCase;
+}): Promise<void> {
+  try {
+    await params.recalculate.execute(params.orderId, "sync");
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("[orders-queue-worker] recalculate failed", {
+      orderId: params.orderId,
+      error: errorMessage,
+    });
+    await persistRecalculateFailure({
+      admin: params.admin,
+      orderId: params.orderId,
+      errorMessage,
+    });
+  }
+}
+
 async function processML(
   envelope: QueueEnvelope,
   encKeyB64: string,
   queue: SupabaseOrdersQueueAdapter,
   admin: AdminClient,
+  recalculate: RecalculateOrderStatusUseCase,
 ): Promise<void> {
   const msg = envelope.message;
   if (!isMlOrderQueueMessage(msg)) return;
@@ -109,8 +173,9 @@ async function processML(
     }
   }
   if (isFetchFullOrderError(fetchResult)) {
+    const errorStatus = "status" in fetchResult ? fetchResult.status : "?";
     throw new Error(
-      `ML order fetch failed: ${fetchResult.reason} status=${fetchResult.status ?? "?"}`,
+      `ML order fetch failed: ${fetchResult.reason} status=${errorStatus}`,
     );
   }
 
@@ -123,6 +188,13 @@ async function processML(
   if (!result.success) {
     throw new Error(`Upsert failed: ${result.error}`);
   }
+  if (result.order_id) {
+    await recalculateAfterUpsert({
+      admin,
+      orderId: result.order_id,
+      recalculate,
+    });
+  }
 
   await queue.archive(envelope.msg_id);
 }
@@ -132,6 +204,7 @@ async function processShopee(
   encKeyB64: string,
   queue: SupabaseOrdersQueueAdapter,
   admin: AdminClient,
+  recalculate: RecalculateOrderStatusUseCase,
 ): Promise<void> {
   const msg = envelope.message;
   if (!isShopeeOrderQueueMessage(msg)) return;
@@ -181,6 +254,13 @@ async function processShopee(
   if (!result.success) {
     throw new Error(`Upsert failed: ${result.error}`);
   }
+  if (result.order_id) {
+    await recalculateAfterUpsert({
+      admin,
+      orderId: result.order_id,
+      recalculate,
+    });
+  }
 
   await queue.archive(envelope.msg_id);
 }
@@ -198,6 +278,7 @@ serve(async (req) => {
 
   const admin = createAdminClient();
   const queue = new SupabaseOrdersQueueAdapter(admin);
+  const statusUseCases = buildStatusUseCases(admin);
   const envelopes = await queue.readBatch(BATCH_SIZE, VISIBILITY_TIMEOUT_SEC);
 
   if (envelopes.length === 0) {
@@ -212,9 +293,9 @@ serve(async (req) => {
     try {
       const msg = envelope.message;
       if (isMlOrderQueueMessage(msg)) {
-        await processML(envelope, encKeyB64, queue, admin);
+        await processML(envelope, encKeyB64, queue, admin, statusUseCases.recalculate);
       } else if (isShopeeOrderQueueMessage(msg)) {
-        await processShopee(envelope, encKeyB64, queue, admin);
+        await processShopee(envelope, encKeyB64, queue, admin, statusUseCases.recalculate);
       } else {
         // Unknown message shape — archive to prevent infinite retry loop
         console.warn(

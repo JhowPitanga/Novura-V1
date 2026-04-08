@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import type { SupabaseClient } from "../infra/supabase-client.ts";
 import type {
   IProductLinkRepository,
   OrderItemLink,
@@ -8,11 +8,23 @@ import type {
 
 type LinkRow = { readonly organizations_id: string; readonly sku: string; readonly product_id: string };
 
+type LinkCheckRow = {
+  readonly marketplace_item_id: string;
+  readonly variation_id: string;
+  readonly product_id: string;
+};
+
 export class SupabaseProductLinkRepository implements IProductLinkRepository {
   constructor(private readonly supabase: SupabaseClient) {}
 
+  /** `marketplace_item_product_links` is not in generated `Database` types yet. */
+  // deno-lint-ignore no-explicit-any
+  private get db(): any {
+    return this.supabase;
+  }
+
   async findLink(organizationId: string, sku: string): Promise<OrderItemLink | null> {
-    const { data, error } = await this.supabase
+    const { data, error } = await this.db
       .from("marketplace_item_product_links")
       .select("organizations_id, sku, product_id")
       .eq("organizations_id", organizationId)
@@ -32,7 +44,7 @@ export class SupabaseProductLinkRepository implements IProductLinkRepository {
 
   async listLinks(organizationId: string, skus: ReadonlyArray<string>): Promise<ReadonlyArray<OrderItemLink>> {
     if (skus.length === 0) return [];
-    const { data, error } = await this.supabase
+    const { data, error } = await this.db
       .from("marketplace_item_product_links")
       .select("organizations_id, sku, product_id")
       .eq("organizations_id", organizationId)
@@ -62,7 +74,7 @@ export class SupabaseProductLinkRepository implements IProductLinkRepository {
         source: "sku" as const,
       }));
     }
-    const { data, error } = await this.supabase
+    const { data, error } = await this.db
       .from("marketplace_item_product_links")
       .select("marketplace_item_id, variation_id, product_id")
       .eq("organizations_id", params.organizationId)
@@ -70,17 +82,28 @@ export class SupabaseProductLinkRepository implements IProductLinkRepository {
       .in("marketplace_item_id", itemsNeedingLookup.map((i) => i.marketplaceItemId));
     if (error) throw new Error(`SupabaseProductLinkRepository.checkLinks failed: ${error.message}`);
     const linkMap = new Map<string, string>(
-      (data ?? []).map((row: { marketplace_item_id: string; variation_id: string; product_id: string }) =>
-        [`${row.marketplace_item_id}:${row.variation_id}`, row.product_id]
-      ),
+      ((data as ReadonlyArray<LinkCheckRow> | null) ?? []).map((row) => [
+        `${row.marketplace_item_id}:${row.variation_id}`,
+        row.product_id,
+      ]),
     );
     return params.items.map((item) => {
       if (item.sellerSku) {
-        return { marketplaceItemId: item.marketplaceItemId, variationId: item.variationId, productId: "sku_resolved", source: "sku" as const };
+        return {
+          marketplaceItemId: item.marketplaceItemId,
+          variationId: item.variationId,
+          productId: "sku_resolved",
+          source: "sku" as const,
+        };
       }
       const key = `${item.marketplaceItemId}:${item.variationId}`;
       const productId = linkMap.get(key) ?? null;
-      return { marketplaceItemId: item.marketplaceItemId, variationId: item.variationId, productId, source: productId ? "permanent" as const : null };
+      return {
+        marketplaceItemId: item.marketplaceItemId,
+        variationId: item.variationId,
+        productId,
+        source: productId ? ("permanent" as const) : null,
+      };
     });
   }
 
@@ -91,7 +114,7 @@ export class SupabaseProductLinkRepository implements IProductLinkRepository {
     readonly variationId: string;
     readonly productId: string;
   }): Promise<void> {
-    const { error } = await this.supabase.from("marketplace_item_product_links").upsert(
+    const { error } = await this.db.from("marketplace_item_product_links").upsert(
       {
         organizations_id: params.organizationId,
         marketplace_name: params.marketplace,

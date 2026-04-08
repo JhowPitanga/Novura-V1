@@ -73,7 +73,7 @@ export class SupabaseOrderRepository implements IOrderRepository {
   async markLabelPrinted(params: { readonly orderIds: ReadonlyArray<string>; readonly organizationId: string }): Promise<void> {
     const { error } = await this.supabase
       .from("orders")
-      .update({ is_printed_label: true, label_printed_at: new Date().toISOString() })
+      .update({ is_printed_label: true, label_printed_at: new Date().toISOString() } as never)
       .in("id", [...params.orderIds])
       .eq("organization_id", params.organizationId);
     if (error) throw new Error(`SupabaseOrderRepository.markLabelPrinted failed: ${error.message}`);

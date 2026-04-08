@@ -13,11 +13,16 @@ export class InvoicePendingRule implements OrderStatusRule {
   readonly status = OrderStatus.INVOICE_PENDING;
 
   appliesTo(signals: MarketplaceSignals, _linkState: ProductLinkState): boolean {
-    if (signals.isFulfillment) {
-      return false;
+    if (signals.isFulfillment) return false;
+    if (signals.marketplace === 'mercado_livre') {
+      return signals.shipmentStatus === 'ready_to_ship'
+        && signals.shipmentSubstatus === 'invoice_pending';
     }
-    const isInvoicePending = signals.shipmentSubstatus?.toLowerCase() === "invoice_pending";
-    const shopeeWithoutInvoice = signals.marketplace === "shopee" && !signals.hasInvoice;
-    return isInvoicePending || shopeeWithoutInvoice;
+    if (signals.marketplace === 'shopee') {
+      const readyStatuses = ['ready_to_ship', 'logistics_ready', 'logistics_request_created'];
+      return readyStatuses.includes(signals.shipmentStatus?.toLowerCase() ?? '')
+        && !signals.hasInvoice;
+    }
+    return false;
   }
 }
