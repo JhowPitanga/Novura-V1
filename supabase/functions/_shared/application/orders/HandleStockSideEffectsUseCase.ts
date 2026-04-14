@@ -9,7 +9,7 @@ export const STATUSES_REQUIRING_SYNC_RESERVE = new Set<OrderStatus>([
   OrderStatus.AWAITING_PICKUP,
 ]);
 
-/** Statuses that confirm final stock consumption. */
+/** Statuses that confirm final stock consumption (order shipped). */
 export const STATUSES_REQUIRING_CONSUME = new Set<OrderStatus>([OrderStatus.SHIPPED]);
 
 /** Statuses that should refund previously reserved stock. */
@@ -18,13 +18,14 @@ export const STATUSES_REQUIRING_REFUND = new Set<OrderStatus>([
   OrderStatus.RETURNED,
 ]);
 
-/** Handles stock side effects for status transitions. */
+/** Handles stock side effects for order status transitions. */
 export class HandleStockSideEffectsUseCase {
   constructor(private readonly inventoryPort: IInventoryPort) {}
 
   /**
-   * Synchronous reservation step (must propagate failures).
-   * If reserve fails, caller must abort status change.
+   * Synchronous reservation — must run BEFORE the status transition is committed.
+   * Uses order.storageId (resolved by ResolveOrderWarehouseUseCase).
+   * The RPC also falls back to orders.storage_id → org default when storageId is null.
    */
   async reserveIfNeeded(order: OrderRecord, newStatus: OrderStatus): Promise<void> {
     const oldStatus = order.currentStatus;
@@ -42,12 +43,15 @@ export class HandleStockSideEffectsUseCase {
       orderId: order.id,
       organizationId: order.organizationId,
       items,
+      storageId: order.storageId ?? null,
     });
   }
 
   /**
-   * Asynchronous effects after status persistence.
-   * Queue errors are swallowed to avoid breaking main flow.
+   * Stock side effects after the status has been persisted.
+   * Consume and refund are called synchronously — errors are logged but do NOT
+   * break the main order flow. The v2 RPCs are idempotent so retries are safe.
+   * storageId is omitted here; the RPC reads it directly from orders.storage_id.
    */
   async handleAsyncEffects(params: {
     readonly orderId: string;
@@ -58,15 +62,15 @@ export class HandleStockSideEffectsUseCase {
     const { orderId, organizationId, oldStatus, newStatus } = params;
     try {
       if (STATUSES_REQUIRING_CONSUME.has(newStatus)) {
-        await this.inventoryPort.enqueueConsumeStock({ orderId, organizationId });
+        await this.inventoryPort.consumeStock({ orderId, organizationId, storageId: null });
         return;
       }
       const cameFromReserved = oldStatus !== null && STATUSES_REQUIRING_SYNC_RESERVE.has(oldStatus);
       if (cameFromReserved && STATUSES_REQUIRING_REFUND.has(newStatus)) {
-        await this.inventoryPort.enqueueRefundStock({ orderId, organizationId });
+        await this.inventoryPort.refundStock({ orderId, organizationId, storageId: null });
       }
     } catch (error) {
-      console.error(`[HandleStockSideEffectsUseCase] async queue failure for order ${orderId}:`, error);
+      console.error(`[HandleStockSideEffectsUseCase] stock effect failed for order ${orderId}:`, error);
     }
   }
 }

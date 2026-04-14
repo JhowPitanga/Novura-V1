@@ -21,6 +21,8 @@ export interface OrderRecord {
   readonly currentStatus: OrderStatus | null;
   readonly marketplaceSignals: MarketplaceSignals;
   readonly items: ReadonlyArray<OrderRecordItem>;
+  /** Resolved warehouse storage_id. Populated after warehouse resolution in the queue worker. */
+  readonly storageId?: string | null;
 }
 
 /** Immutable status update metadata (optional for optimistic-lock-only repos). */

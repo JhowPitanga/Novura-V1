@@ -4,34 +4,34 @@ overview: PRD completo para a arquitetura de armazens (fisico e fulfillment), vi
 todos:
   - id: W-T1-migration
     content: "WAREHOUSE-T1: Migracao DB (ALTER storage, CREATE integration_warehouse_config, CREATE fulfillment_stock, ALTER orders)"
-    status: pending
+    status: done
   - id: W-T2-domain
     content: "WAREHOUSE-T2: Dominio e ports (WarehouseType, IWarehouseResolverPort, atualizar IInventoryPort)"
-    status: pending
+    status: done
   - id: W-T3-adapters
     content: "WAREHOUSE-T3: Adapters Supabase (SupabaseWarehouseResolver, atualizar SupabaseInventoryAdapter)"
-    status: pending
+    status: done
   - id: W-T4-resolver
     content: "WAREHOUSE-T4: Use case ResolveOrderWarehouseUseCase"
-    status: pending
+    status: done
   - id: W-T5-wiring
     content: "WAREHOUSE-T5: Wiring no orders-queue-worker (resolver + storage_id no pedido)"
-    status: pending
+    status: done
   - id: W-T6-sync
     content: "WAREHOUSE-T6: Sync de estoque fulfillment (ML + Shopee -> fulfillment_stock)"
-    status: pending
+    status: done
   - id: W-T7-frontend-wh
     content: "WAREHOUSE-T7: Frontend gestao de armazens (tipos, vinculacao integracao)"
-    status: pending
+    status: done
   - id: W-T8-frontend-stock
     content: "WAREHOUSE-T8: Frontend visualizacao multi-armazem no controle de estoque"
-    status: pending
+    status: done
   - id: W-T9-frontend-listings
     content: "WAREHOUSE-T9: Frontend armazens no modulo de anuncios"
-    status: pending
+    status: done
   - id: W-T10-docs
     content: "WAREHOUSE-T10: Documentacao e testes"
-    status: pending
+    status: done
 isProject: false
 ---
 
@@ -39,7 +39,7 @@ isProject: false
 
 **Ciclo:** WAREHOUSE (Armazens e Resolucao de Estoque)
 
-**Status:** Planejamento
+**Status:** Implementado
 
 **Depende de:** STATUS-ENGINE T1-T4, T6 (motor de status), Cycle 0 (tabelas `orders`, `order_items`, `products_stock`, `storage`)
 

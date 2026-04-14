@@ -29,10 +29,12 @@ import {
 import { OrdersUpsertAdapter } from "../_shared/adapters/orders-upsert/index.ts";
 import { SupabaseOrderRepository } from "../_shared/adapters/orders/supabase-order-repository.ts";
 import { SupabaseInventoryAdapter } from "../_shared/adapters/orders/supabase-inventory-adapter.ts";
+import { SupabaseWarehouseResolver } from "../_shared/adapters/warehouse/SupabaseWarehouseResolver.ts";
 import { isFetchFullOrderError } from "../_shared/domain/ml/ml-order-api-fetch.ts";
 import { OrderStatusEngine } from "../_shared/application/orders/OrderStatusEngine.ts";
 import { HandleStockSideEffectsUseCase } from "../_shared/application/orders/HandleStockSideEffectsUseCase.ts";
 import { RecalculateOrderStatusUseCase } from "../_shared/application/orders/RecalculateOrderStatusUseCase.ts";
+import { ResolveOrderWarehouseUseCase } from "../_shared/application/orders/ResolveOrderWarehouseUseCase.ts";
 import {
   isMlOrderQueueMessage,
   isShopeeOrderQueueMessage,
@@ -86,6 +88,55 @@ async function persistRecalculateFailure(params: {
     console.error("[orders-queue-worker] failed to persist recalculate error", {
       orderId: params.orderId,
       error: fallback.error.message,
+    });
+  }
+}
+
+/**
+ * Resolves the correct warehouse for an order and persists storage_id +
+ * integration_id on the orders row.
+ * Must be called after the order upsert so the orderId is known.
+ * Non-fatal: failures are logged but do not block order processing.
+ */
+async function resolveAndPersistWarehouse(params: {
+  admin: AdminClient;
+  orderId: string;
+  integrationId: string;
+  isFulfillment: boolean;
+}): Promise<void> {
+  try {
+    const resolver = new SupabaseWarehouseResolver(params.admin);
+    const useCase = new ResolveOrderWarehouseUseCase(resolver);
+    const storageId = await useCase.execute({
+      integrationId: params.integrationId,
+      isFulfillment: params.isFulfillment,
+    });
+
+    // Always persist integration_id; only set storage_id when resolved.
+    const updatePayload: Record<string, unknown> = { integration_id: params.integrationId };
+    if (storageId) updatePayload.storage_id = storageId;
+
+    const { error } = await (params.admin as unknown as {
+      from: (t: string) => {
+        update: (row: Record<string, unknown>) => {
+          eq: (k: string, v: string) => Promise<{ error: { message: string } | null }>;
+        };
+      };
+    })
+      .from("orders")
+      .update(updatePayload)
+      .eq("id", params.orderId);
+
+    if (error) {
+      console.warn("[orders-queue-worker] failed to persist warehouse fields", {
+        orderId: params.orderId,
+        error: error.message,
+      });
+    }
+  } catch (e) {
+    console.warn("[orders-queue-worker] warehouse resolution error", {
+      orderId: params.orderId,
+      error: e instanceof Error ? e.message : String(e),
     });
   }
 }
@@ -189,6 +240,12 @@ async function processML(
     throw new Error(`Upsert failed: ${result.error}`);
   }
   if (result.order_id) {
+    await resolveAndPersistWarehouse({
+      admin,
+      orderId: result.order_id,
+      integrationId: integration.id,
+      isFulfillment: order.isFulfillment ?? false,
+    });
     await recalculateAfterUpsert({
       admin,
       orderId: result.order_id,
@@ -255,6 +312,12 @@ async function processShopee(
     throw new Error(`Upsert failed: ${result.error}`);
   }
   if (result.order_id) {
+    await resolveAndPersistWarehouse({
+      admin,
+      orderId: result.order_id,
+      integrationId: integration.id,
+      isFulfillment: order.isFulfillment ?? false,
+    });
     await recalculateAfterUpsert({
       admin,
       orderId: result.order_id,

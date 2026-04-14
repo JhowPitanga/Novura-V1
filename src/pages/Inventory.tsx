@@ -13,11 +13,14 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { StockTab } from "@/components/inventory/tabs/StockTab";
+import { FulfillmentTab } from "@/components/inventory/tabs/FulfillmentTab";
 import { CleanNavigation } from "@/components/CleanNavigation";
 import { StorageManagementDrawer } from "@/components/inventory/StorageManagementDrawer";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function Estoque() {
   const { storageLocations, loading: storageLoading, refetch: refetchStorage } = useStorage();
+  const { organizationId } = useAuth();
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedGalpao, setSelectedGalpao] = useState("todos");
   const [editingStorageId, setEditingStorageId] = useState<string | null>(null);
@@ -25,11 +28,12 @@ export default function Estoque() {
   const [openActionsForStorageId, setOpenActionsForStorageId] = useState<string | null>(null);
   const { categories, loading: categoriesLoading } = useCategories();
   const [activeFilter, setActiveFilter] = useState("estoque");
-  const [activeNav, setActiveNav] = useState<'controle' | 'armazem'>("controle");
+  const [activeNav, setActiveNav] = useState<'controle' | 'fulfillment' | 'armazem'>("controle");
   const [isStorageDrawerOpen, setIsStorageDrawerOpen] = useState(false);
 
   const navigationItems = [
     { title: "Controle", path: "controle", description: "Controle de estoque" },
+    { title: "Fulfillment", path: "fulfillment", description: "Estoque em armazéns externos" },
     { title: "Armazém", path: "armazem", description: "Gerenciar armazéns" },
   ];
 
@@ -52,7 +56,7 @@ export default function Estoque() {
             </div>
 
             {/* Navegação ao estilo Produtos */}
-            <CleanNavigation items={navigationItems} activePath={activeNav} onNavigate={(path) => setActiveNav(path as 'controle' | 'armazem')} />
+            <CleanNavigation items={navigationItems} activePath={activeNav} onNavigate={(path) => setActiveNav(path as 'controle' | 'fulfillment' | 'armazem')} />
 
             {/* Conteúdo controlado por navegação */}
             <Tabs value={activeNav} className="w-full">
@@ -126,12 +130,26 @@ export default function Estoque() {
                 />
               </TabsContent>
 
+              {/* Aba: Fulfillment */}
+              <TabsContent value="fulfillment" className="mt-6 space-y-6">
+                <FulfillmentTab />
+              </TabsContent>
+
               {/* Aba: Armazém */}
               <TabsContent value="armazem" className="mt-6 space-y-6">
                 <Card>
                   <CardContent className="p-4">
                     <div className="flex justify-between items-center mb-4">
                       <h2 className="text-xl font-semibold">Armazéns</h2>
+                      <Button
+                        className="bg-novura-primary"
+                        onClick={() => {
+                          setEditingStorageId(null);
+                          setIsStorageDrawerOpen(true);
+                        }}
+                      >
+                        Criar novo armazém
+                      </Button>
                     </div>
                     <div className="space-y-2">
                       {storageLoading && <p className="text-sm text-muted-foreground">Carregando armazéns...</p>}
@@ -186,6 +204,7 @@ export default function Estoque() {
                     </div>
                   </CardContent>
                 </Card>
+
                 <StorageManagementDrawer
                   open={isStorageDrawerOpen}
                   onOpenChange={(open) => setIsStorageDrawerOpen(open)}

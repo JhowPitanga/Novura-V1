@@ -193,3 +193,106 @@ export async function fetchStorageLocations(
   if (error) throw error;
   return data || [];
 }
+
+export interface FulfillmentStockSummary {
+  storageId: string;
+  storageName: string;
+  marketplace: string | null;
+  totalQty: number;
+  listings: Array<{ marketplaceItemId: string; qty: number }>;
+}
+
+export interface ProductFulfillmentStock {
+  productId: string;
+  productName: string;
+  sku: string;
+  imageUrl: string | null;
+  fulfillmentByStorage: FulfillmentStockSummary[];
+}
+
+/** Fetches fulfillment stock grouped by product and storage, joining storage names. */
+export async function fetchFulfillmentStockByOrg(
+  organizationId: string
+): Promise<ProductFulfillmentStock[]> {
+  const { data: fsData, error: fsErr } = await (supabase as any)
+    .from("fulfillment_stock")
+    .select(
+      `id, product_id, storage_id, marketplace_item_id, variation_id, quantity,
+       storage:storage_id ( name, marketplace_name )`
+    )
+    .eq("organization_id", organizationId)
+    .order("product_id");
+
+  if (fsErr) throw new Error(fsErr.message);
+  if (!fsData || fsData.length === 0) return [];
+
+  // Gather unique product IDs to fetch names/skus
+  const productIds = [...new Set((fsData as any[]).map((r: any) => r.product_id as string))];
+
+  const { data: productsData } = await supabase
+    .from("products")
+    .select("id, name, sku, image_urls")
+    .in("id", productIds);
+
+  const productMap = new Map<string, { name: string; sku: string; imageUrl: string | null }>();
+  for (const p of (productsData || []) as any[]) {
+    const imgUrls: string[] = Array.isArray(p.image_urls) ? p.image_urls : [];
+    productMap.set(p.id, { name: p.name, sku: p.sku, imageUrl: imgUrls[0] ?? null });
+  }
+
+  // Group by product → storage
+  const productStorageMap = new Map<string, Map<string, FulfillmentStockSummary>>();
+
+  for (const row of fsData as any[]) {
+    const productId = row.product_id as string;
+    const storageId = row.storage_id as string;
+    const storageName = (row.storage?.name as string) ?? "Armazém Desconhecido";
+    const marketplaceName = (row.storage?.marketplace_name as string | null) ?? null;
+    const qty = row.quantity as number;
+    const itemId = row.marketplace_item_id as string;
+
+    if (!productStorageMap.has(productId)) {
+      productStorageMap.set(productId, new Map());
+    }
+    const storageMap = productStorageMap.get(productId)!;
+
+    if (!storageMap.has(storageId)) {
+      storageMap.set(storageId, {
+        storageId,
+        storageName,
+        marketplace: marketplaceName,
+        totalQty: 0,
+        listings: [],
+      });
+    }
+
+    const summary = storageMap.get(storageId)!;
+    summary.totalQty += qty;
+    summary.listings.push({ marketplaceItemId: itemId, qty });
+  }
+
+  return productIds.map((productId) => {
+    const meta = productMap.get(productId) ?? { name: "Produto desconhecido", sku: "-", imageUrl: null };
+    const storageMap = productStorageMap.get(productId) ?? new Map();
+    return {
+      productId,
+      productName: meta.name,
+      sku: meta.sku,
+      imageUrl: meta.imageUrl,
+      fulfillmentByStorage: Array.from(storageMap.values()),
+    };
+  });
+}
+
+/** Fetches marketplace integrations for the given organization. */
+export async function fetchMarketplaceIntegrations(organizationId: string) {
+  const { data, error } = await supabase
+    .from("marketplace_integrations")
+    .select("id, marketplace_name, is_active")
+    .eq("organizations_id", organizationId)
+    .eq("is_active", true)
+    .order("marketplace_name");
+
+  if (error) throw error;
+  return (data || []) as Array<{ id: string; marketplace_name: string; is_active: boolean }>;
+}

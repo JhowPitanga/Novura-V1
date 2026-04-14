@@ -54,6 +54,10 @@ export interface ListingItem {
     publicationCosts: PublicationCosts;
     publicationFeeDetails: PublicationFeeDetails;
     permalink: string | null;
+    /** Total fulfillment stock for this listing when it is a Full (fulfillment) listing. */
+    fulfillmentQty?: number | null;
+    /** Name of the fulfillment warehouse, when applicable. */
+    fulfillmentWarehouseName?: string | null;
 }
 
 /** Variation data formatted for display */
