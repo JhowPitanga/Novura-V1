@@ -85,3 +85,13 @@ export const appsKeys = {
   connections: (orgId: string) =>
     [...appsKeys.all, "connections", orgId] as const,
 };
+
+export const warehouseKeys = {
+  all: ["warehouse"] as const,
+  config: (integrationId: string) =>
+    [...warehouseKeys.all, "config", integrationId] as const,
+  storageByType: (orgId: string, type: string) =>
+    [...warehouseKeys.all, "storage", orgId, type] as const,
+  storageAll: (orgId: string) =>
+    [...warehouseKeys.all, "storage", orgId, "all"] as const,
+};

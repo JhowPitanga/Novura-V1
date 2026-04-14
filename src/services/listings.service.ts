@@ -224,6 +224,43 @@ export async function createDraftFromListing(orgId: string, itemRow: any, listin
     return String((data as any)?.id || '');
 }
 
+// ─── Fulfillment Stock Enrichment ──────────────────────────────────────────
+
+/**
+ * Enriches a list of ListingItems with fulfillment stock quantities.
+ * Only items with "full" in their shippingTags get enriched.
+ * Returns a Map from marketplaceItemId → { qty, warehouseName }.
+ */
+export async function fetchFulfillmentStockForListings(
+  orgId: string,
+  marketplaceItemIds: string[]
+): Promise<Map<string, { qty: number; warehouseName: string }>> {
+  const result = new Map<string, { qty: number; warehouseName: string }>();
+  if (marketplaceItemIds.length === 0) return result;
+
+  const { data, error } = await (supabase as any)
+    .from("fulfillment_stock")
+    .select("marketplace_item_id, quantity, storage:storage_id ( name )")
+    .eq("organization_id", orgId)
+    .in("marketplace_item_id", marketplaceItemIds);
+
+  if (error || !data) return result;
+
+  for (const row of data as any[]) {
+    const itemId = String(row.marketplace_item_id || "");
+    const qty = Number(row.quantity || 0);
+    const warehouseName = String(row.storage?.name || "Fulfillment");
+    if (!itemId) continue;
+    if (result.has(itemId)) {
+      result.get(itemId)!.qty += qty;
+    } else {
+      result.set(itemId, { qty, warehouseName });
+    }
+  }
+
+  return result;
+}
+
 // ─── Sync ──────────────────────────────────────────────────────────────────
 
 export async function syncAllListings(orgId: string, marketplaceDisplay: string): Promise<number> {

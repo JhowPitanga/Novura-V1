@@ -554,5 +554,7 @@ export function parseListingRow(row: any, ctx: ParseListingRowContext): ListingI
         publicationCosts,
         publicationFeeDetails,
         permalink: row?.permalink || null,
+        fulfillmentQty: null,
+        fulfillmentWarehouseName: null,
     };
 }

@@ -13,6 +13,7 @@ import {
     syncSelectedListings,
     updateItemStatus,
     updateShopeeStock,
+    fetchFulfillmentStockForListings,
 } from "@/services/listings.service";
 import { parseListingRow } from "@/utils/listingUtils";
 import type { ListingItem, ShippingCaps, SortKey, SortDir } from "@/types/listings";
@@ -163,8 +164,36 @@ export function useListingItems({ orgId, selectedDisplayName, selectedPath, ship
         parseListingRow(row, { metricsByItemId, listingTypeByItemId, shippingTypesByItemId, listingPricesByItemId, shippingCaps })
     ), [rawItems, metricsByItemId, listingTypeByItemId, shippingTypesByItemId, listingPricesByItemId, shippingCaps]);
 
+    // Collect marketplace_item_ids for Full (fulfillment) listings
+    const fullItemIds = useMemo(
+        () => parsedItems
+            .filter(ad => ad.shippingTags.some(t => String(t).toLowerCase() === "full"))
+            .map(ad => ad.marketplaceId)
+            .filter(Boolean),
+        [parsedItems]
+    );
+
+    // Fetch fulfillment stock for Full listings — runs only when there are Full items
+    const fulfillmentStockQuery = useQuery({
+        queryKey: ['fulfillment-stock-listings', orgId, fullItemIds],
+        queryFn: () => fetchFulfillmentStockForListings(orgId!, fullItemIds),
+        enabled: !!orgId && fullItemIds.length > 0,
+        staleTime: 5 * 60 * 1000,
+    });
+
+    // Merge fulfillmentQty into parsedItems
+    const enrichedItems: ListingItem[] = useMemo(() => {
+        const fsMap = fulfillmentStockQuery.data;
+        if (!fsMap || fsMap.size === 0) return parsedItems;
+        return parsedItems.map(ad => {
+            const fs = fsMap.get(ad.marketplaceId);
+            if (!fs) return ad;
+            return { ...ad, fulfillmentQty: fs.qty, fulfillmentWarehouseName: fs.warehouseName };
+        });
+    }, [parsedItems, fulfillmentStockQuery.data]);
+
     return {
-        parsedItems,
+        parsedItems: enrichedItems,
         rawItems,
         setRawItems,
         listingTypeByItemId,

@@ -20,6 +20,7 @@ type OrderRow = {
   readonly is_printed_label: boolean | null;
   readonly has_invoice: boolean | null;
   readonly is_pickup_done: boolean | null;
+  readonly storage_id: string | null;
   readonly order_items: ReadonlyArray<{
     readonly id: string;
     readonly product_id: string | null;
@@ -150,6 +151,7 @@ export class SupabaseOrderRepository implements IOrderRepository {
       currentStatus: row.status,
       marketplaceSignals: signals,
       items,
+      storageId: row.storage_id ?? null,
     };
   }
 }

@@ -14,4 +14,6 @@ export interface AppConnection {
     status: 'active' | 'reconnect' | 'inactive';
     authenticatedAt: string;
     expiresAt: string;
+    /** The marketplace_integrations.id for this connection — used for warehouse config. */
+    integrationId?: string | null;
 }

@@ -334,7 +334,11 @@ export function ListingCard({
                                         </button>
                                     )}
                                 </div>
-                                <div className="text-xs text-gray-500">Estoque</div>
+                                <div className="text-xs text-gray-500">
+                                    {ad.fulfillmentQty != null
+                                        ? `Full: ${ad.fulfillmentQty}`
+                                        : "Estoque"}
+                                </div>
                             </div>
                         </div>
                         <div className="flex items-center space-x-2">

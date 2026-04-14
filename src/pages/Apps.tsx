@@ -125,7 +125,7 @@ export default function Aplicativos() {
                 .eq('organizations_id', organizationId);
             if (error) throw error;
 
-            type IntegrationRow = { marketplace_name: string; config?: { storeName?: string; connectedAt?: string }; expires_in?: number | string };
+            type IntegrationRow = { id: string; marketplace_name: string; config?: { storeName?: string; connectedAt?: string }; expires_in?: number | string };
             const rows = ((data as IntegrationRow[]) || []);
             const normalize = (n: string) => n.toLowerCase().replace(/[_\s-]+/g, '');
             const toDisplayName = (name: string) => {
@@ -181,6 +181,7 @@ export default function Aplicativos() {
                     status,
                     authenticatedAt: (row as any)?.config?.connectedAt || (row as any)?.config?.connected_at || new Date().toISOString(),
                     expiresAt: expiresAtDate.toISOString(),
+                    integrationId: row.id,
                 };
                 const existing = nextConnections[match.id];
                 if (!existing || new Date(existing.expiresAt) < expiresAtDate) {
@@ -343,7 +344,18 @@ export default function Aplicativos() {
                                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
                                         {connectedApps.map((app) => {
                                             const { conn, status, color } = getConnectionInfo(app);
-                                            return <ConnectedAppCard key={app.id} app={app} conn={conn} status={status} color={color} onDisconnect={disconnectApp} />;
+                                            return (
+                                                <ConnectedAppCard
+                                                    key={app.id}
+                                                    app={app}
+                                                    conn={conn}
+                                                    status={status}
+                                                    color={color}
+                                                    onDisconnect={disconnectApp}
+                                                    integrationId={conn?.integrationId ?? null}
+                                                    organizationId={organizationId}
+                                                />
+                                            );
                                         })}
                                     </div>
                                 )
