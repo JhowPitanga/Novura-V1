@@ -529,15 +529,28 @@ serve(async (req) => {
         const currentStatus = String(presRow?.status_interno || "");
         let nfSubmissionStatus: string | null = null;
         try {
-          const { data: nfRow } = await admin
-            .from("notas_fiscais")
+          // Prefer invoices table; fall back to notas_fiscais for legacy orders
+          const { data: invRow } = await admin
+            .from("invoices")
             .select("marketplace_submission_status")
             .eq("company_id", rec.company_id)
             .eq("marketplace_order_id", rec.marketplace_order_id)
             .order("created_at", { ascending: false })
             .limit(1)
             .maybeSingle();
-          nfSubmissionStatus = nfRow ? String((nfRow as any)?.marketplace_submission_status || "") : null;
+          if (invRow) {
+            nfSubmissionStatus = invRow ? String(invRow?.marketplace_submission_status || "") : null;
+          } else {
+            const { data: nfRow } = await admin
+              .from("notas_fiscais")
+              .select("marketplace_submission_status")
+              .eq("company_id", rec.company_id)
+              .eq("marketplace_order_id", rec.marketplace_order_id)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            nfSubmissionStatus = nfRow ? String((nfRow as any)?.marketplace_submission_status || "") : null;
+          }
         } catch (_) {}
         const invoiceStatus = (getStr(data, ["order_detail","invoice_data","invoice_status"]) || "").toLowerCase();
         const hasInvoiceNumber = !!getStr(data, ["order_detail","invoice_data","invoice_number"]);

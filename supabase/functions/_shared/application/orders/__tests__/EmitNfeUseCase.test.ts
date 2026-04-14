@@ -8,7 +8,8 @@ import { FULLY_LINKED } from "../../../domain/orders/ProductLinkState.ts";
 import type { IInventoryPort, InventoryItem } from "../../../domain/orders/ports/IInventoryPort.ts";
 import type { IOrderRepository, OrderRecord } from "../../../domain/orders/ports/IOrderRepository.ts";
 import type { OrderStatusChangedEvent } from "../../../domain/orders/OrderDomainEvents.ts";
-import type { INfePort, InvoiceRecord } from "../../../domain/orders/ports/INfePort.ts";
+import type { InvoicesPort, InvoiceRow, CreateInvoiceInput } from "../../../ports/invoices-port.ts";
+import type { SupabaseClient } from "../../../adapters/infra/supabase-client.ts";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -20,7 +21,6 @@ class NoopInventory implements IInventoryPort {
 
 class MockOrderRepository implements IOrderRepository {
   public flagCalls: Array<{ orderId: string; flags: Record<string, unknown> }> = [];
-  public recalculateCalls: string[] = [];
 
   constructor(private order: OrderRecord | null) {}
 
@@ -37,11 +37,44 @@ class MockOrderRepository implements IOrderRepository {
   async addStatusHistory(_orderId: string, _event: OrderStatusChangedEvent): Promise<void> {}
 }
 
-class MockNfePort implements INfePort {
-  public upsertCalls: InvoiceRecord[] = [];
-  async findInvoiceByOrder(): Promise<InvoiceRecord | null> { return null; }
-  async upsertInvoice(invoice: InvoiceRecord): Promise<void> { this.upsertCalls.push(invoice); }
+class MockInvoicesAdapter implements InvoicesPort {
+  public findCalls: string[] = [];
+  public createCalls: CreateInvoiceInput[] = [];
+  public markProcessingCalls: Array<{ id: string; focusId: string }> = [];
+  public markErrorCalls: Array<{ id: string; message: string; retryCount: number }> = [];
+  public markAuthorizedCalls: Array<{ id: string; nfeKey: string; nfeNumber: number }> = [];
+
+  private existingRow: InvoiceRow | null = null;
+
+  givenExisting(row: InvoiceRow): this {
+    this.existingRow = row;
+    return this;
+  }
+
+  async findByIdempotencyKey(_admin: SupabaseClient, key: string): Promise<InvoiceRow | null> {
+    this.findCalls.push(key);
+    return this.existingRow;
+  }
+  async createQueued(_admin: SupabaseClient, input: CreateInvoiceInput): Promise<InvoiceRow> {
+    this.createCalls.push(input);
+    return { id: "inv-001", status: "queued", retry_count: 0, ...input } as unknown as InvoiceRow;
+  }
+  async markProcessing(_admin: SupabaseClient, id: string, focusId: string): Promise<void> {
+    this.markProcessingCalls.push({ id, focusId });
+  }
+  async markError(_admin: SupabaseClient, id: string, message: string, retryCount: number): Promise<void> {
+    this.markErrorCalls.push({ id, message, retryCount });
+  }
+  async markAuthorized(_admin: SupabaseClient, id: string, nfeKey: string, nfeNumber: number): Promise<void> {
+    this.markAuthorizedCalls.push({ id, nfeKey, nfeNumber });
+  }
+  async markCanceled(_admin: SupabaseClient, _id: string): Promise<void> {}
+  async findByFocusId(_admin: SupabaseClient, _focusId: string): Promise<InvoiceRow | null> { return null; }
+  async findByNfeKey(_admin: SupabaseClient, _nfeKey: string): Promise<InvoiceRow | null> { return null; }
+  async updateFields(_admin: SupabaseClient, _id: string, _fields: Partial<InvoiceRow>): Promise<void> {}
 }
+
+const MOCK_ADMIN = {} as SupabaseClient;
 
 function buildOrder(orderId: string): OrderRecord {
   return {
@@ -68,86 +101,133 @@ function buildOrder(orderId: string): OrderRecord {
   };
 }
 
-function buildInvoice(orderId: string): InvoiceRecord {
+function buildExistingInvoice(): InvoiceRow {
   return {
-    orderId,
-    companyId: "company-1",
-    marketplaceOrderId: "ML-123",
+    id: "inv-existing",
+    organization_id: "org-1",
+    order_id: "order-1",
+    company_id: "company-1",
+    idempotency_key: "org-1:order-1:homologacao",
+    focus_id: null,
+    nfe_number: null,
+    nfe_key: null,
+    status: "queued",
+    emission_environment: "homologacao",
+    retry_count: 0,
+    error_message: null,
+    payload_sent: null,
     marketplace: "mercado_livre",
-    packId: null,
-    status: "autorizado",
-    statusFocus: "autorizado",
-    environment: "homologacao",
-    focusNfeId: "focus-1",
-    nfeKey: "key-1",
-    nfeNumber: 1,
-    serie: "1",
-    authorizedAt: new Date().toISOString(),
-    xmlBase64: null,
-    pdfBase64: null,
-    errorDetails: null,
+    marketplace_order_id: "ML-123",
+    total_value: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   };
 }
 
-function buildUseCase(repo: MockOrderRepository, nfePort: MockNfePort): EmitNfeUseCase {
+function buildUseCase(repo: MockOrderRepository, invoicesAdapter: MockInvoicesAdapter): EmitNfeUseCase {
   const stock = new HandleStockSideEffectsUseCase(new NoopInventory());
   const recalculate = new RecalculateOrderStatusUseCase(repo, new OrderStatusEngine(), stock);
-  return new EmitNfeUseCase(repo, nfePort, recalculate);
+  return new EmitNfeUseCase(MOCK_ADMIN, repo, invoicesAdapter, recalculate);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 Deno.test("EmitNfeUseCase: returns error when order not found", async () => {
   const repo = new MockOrderRepository(null);
-  const nfePort = new MockNfePort();
-  const useCase = buildUseCase(repo, nfePort);
+  const invoicesAdapter = new MockInvoicesAdapter();
+  const useCase = buildUseCase(repo, invoicesAdapter);
 
-  const result = await useCase.execute({ orderId: "missing-id", invoice: buildInvoice("missing-id"), authorized: true });
+  const result = await useCase.execute({
+    orderId: "missing-id",
+    organizationId: "org-1",
+    companyId: "company-1",
+    environment: "homologacao",
+    focusId: null,
+    nfeKey: "key-1",
+    nfeNumber: 1,
+    authorized: true,
+    errorMessage: null,
+  });
 
   assertEquals(result.ok, false);
-  assertEquals(nfePort.upsertCalls.length, 0);
+  assertEquals(invoicesAdapter.findCalls.length, 0);
   assertEquals(repo.flagCalls.length, 0);
 });
 
-Deno.test("EmitNfeUseCase: authorized emission persists invoice and sets hasInvoice", async () => {
+Deno.test("EmitNfeUseCase: authorized emission calls markAuthorized and sets hasInvoice", async () => {
   const orderId = "order-1";
   const repo = new MockOrderRepository(buildOrder(orderId));
-  const nfePort = new MockNfePort();
-  const useCase = buildUseCase(repo, nfePort);
+  const invoicesAdapter = new MockInvoicesAdapter().givenExisting(buildExistingInvoice());
+  const useCase = buildUseCase(repo, invoicesAdapter);
 
-  const result = await useCase.execute({ orderId, invoice: buildInvoice(orderId), authorized: true });
+  const result = await useCase.execute({
+    orderId,
+    organizationId: "org-1",
+    companyId: "company-1",
+    environment: "homologacao",
+    focusId: "focus-1",
+    nfeKey: "key-1",
+    nfeNumber: 1,
+    authorized: true,
+    errorMessage: null,
+  });
 
   assertEquals(result.ok, true);
-  assertEquals(nfePort.upsertCalls.length, 1);
+  assertEquals(invoicesAdapter.markAuthorizedCalls.length, 1);
+  assertEquals(invoicesAdapter.markAuthorizedCalls[0].nfeKey, "key-1");
   assertEquals(repo.flagCalls.length, 1);
   assertEquals(repo.flagCalls[0].flags.hasInvoice, true);
 });
 
-Deno.test("EmitNfeUseCase: failed emission persists invoice but does NOT set hasInvoice", async () => {
+Deno.test("EmitNfeUseCase: error emission calls markError and does NOT set hasInvoice", async () => {
   const orderId = "order-2";
-  const failedInvoice: InvoiceRecord = { ...buildInvoice(orderId), status: "erro_autorizacao", authorized: false } as any;
   const repo = new MockOrderRepository(buildOrder(orderId));
-  const nfePort = new MockNfePort();
-  const useCase = buildUseCase(repo, nfePort);
+  const existing = { ...buildExistingInvoice(), id: "inv-err", idempotency_key: "org-1:order-2:homologacao", order_id: orderId };
+  const invoicesAdapter = new MockInvoicesAdapter().givenExisting(existing);
+  const useCase = buildUseCase(repo, invoicesAdapter);
 
-  const result = await useCase.execute({ orderId, invoice: failedInvoice, authorized: false });
+  const result = await useCase.execute({
+    orderId,
+    organizationId: "org-1",
+    companyId: "company-1",
+    environment: "homologacao",
+    focusId: null,
+    nfeKey: null,
+    nfeNumber: null,
+    authorized: false,
+    errorMessage: "SEFAZ rejected",
+  });
 
   assertEquals(result.ok, true);
-  assertEquals(nfePort.upsertCalls.length, 1);
-  // hasInvoice should NOT be set when not authorized
-  const hasInvoiceFlags = repo.flagCalls.filter(c => (c.flags as any).hasInvoice === true);
+  assertEquals(invoicesAdapter.markErrorCalls.length, 1);
+  assertEquals(invoicesAdapter.markErrorCalls[0].message, "SEFAZ rejected");
+  const hasInvoiceFlags = repo.flagCalls.filter(c => (c.flags as Record<string, unknown>).hasInvoice === true);
   assertEquals(hasInvoiceFlags.length, 0);
 });
 
-Deno.test("EmitNfeUseCase: does NOT reference marketplace_orders_presented_new", async () => {
+Deno.test("EmitNfeUseCase: recalculateOrderStatus is always called", async () => {
   const orderId = "order-3";
   const repo = new MockOrderRepository(buildOrder(orderId));
-  const nfePort = new MockNfePort();
-  const useCase = buildUseCase(repo, nfePort);
+  const invoicesAdapter = new MockInvoicesAdapter();
+  const useCase = buildUseCase(repo, invoicesAdapter);
 
-  // The use case source code must not contain any reference to the legacy table.
-  // This is verified by grepping the source, but we ensure it runs without querying that table.
-  const result = await useCase.execute({ orderId, invoice: buildInvoice(orderId), authorized: true });
+  const result = await useCase.execute({
+    orderId,
+    organizationId: "org-1",
+    companyId: "company-1",
+    environment: "homologacao",
+    focusId: null,
+    nfeKey: null,
+    nfeNumber: null,
+    authorized: false,
+    errorMessage: null,
+  });
+
   assertEquals(result.ok, true);
   assertEquals(FULLY_LINKED.unlinkedCount, 0);
+});
+
+Deno.test("EmitNfeUseCase: source has no reference to notas_fiscais", async () => {
+  const src = await Deno.readTextFile(new URL("../EmitNfeUseCase.ts", import.meta.url));
+  assertEquals(src.includes("notas_fiscais"), false, "EmitNfeUseCase must not reference notas_fiscais");
 });

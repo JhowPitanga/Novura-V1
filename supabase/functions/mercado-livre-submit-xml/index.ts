@@ -64,13 +64,16 @@ serve(async (req) => {
 
     const organizationId: string | undefined = body?.organizationId || body?.organization_id;
     const companyId: string | undefined = body?.companyId || body?.company_id;
+    // Accept invoiceId (new) or notaFiscalId (legacy) for backward compatibility
+    const invoiceId: string | undefined = body?.invoiceId || body?.invoice_id;
     const notaFiscalId: string | undefined = body?.notaFiscalId || body?.nota_fiscal_id;
     const nfeKey: string | undefined = body?.nfeKey || body?.nfe_key;
-    console.log("[ML-SUBMIT-XML] params", { rid, organizationId, companyId, notaFiscalId, nfeKey });
+    const lookupId = invoiceId || notaFiscalId;
+    console.log("[ML-SUBMIT-XML] params", { rid, organizationId, companyId, invoiceId, notaFiscalId, nfeKey });
 
     if (!organizationId) return jsonResponse({ error: "organizationId is required" }, 400);
     if (!companyId) return jsonResponse({ error: "companyId is required" }, 400);
-    if (!notaFiscalId && !nfeKey) return jsonResponse({ error: "notaFiscalId or nfeKey is required" }, 400);
+    if (!lookupId && !nfeKey) return jsonResponse({ error: "invoiceId, notaFiscalId, or nfeKey is required" }, 400);
 
     if (userMode) {
       const { data: isMemberData, error: isMemberErr } = await (admin as any).rpc("is_org_member", {
@@ -85,17 +88,45 @@ serve(async (req) => {
     if (compErr || !company) return jsonResponse({ error: compErr?.message || "Company not found" }, 404);
     if (String(company.organization_id || "") !== String(organizationId)) return jsonResponse({ error: "Company not in organization" }, 403);
 
+    // Dual-lookup: try invoices first, then notas_fiscais for backward compatibility
     let nfRow: any = null;
+    let nfSource: "invoices" | "notas_fiscais" = "invoices";
     {
+      let invRow: any = null;
+      if (lookupId) {
+        const { data } = await admin.from("invoices").select("*").eq("id", lookupId).eq("company_id", companyId).limit(1).maybeSingle();
+        invRow = data;
+      }
+      if (!invRow && nfeKey) {
+        const { data } = await admin.from("invoices").select("*").eq("nfe_key", nfeKey).eq("company_id", companyId).limit(1).maybeSingle();
+        invRow = data;
+      }
+      if (invRow) {
+        // Map invoices fields to legacy nfRow shape used throughout this function
+        nfRow = {
+          ...invRow,
+          status_focus: invRow.status,
+          emissao_ambiente: invRow.emission_environment,
+          xml_base64: null,
+          pdf_base64: null,
+          marketplace_submission_status: invRow.marketplace_submission_status,
+          marketplace_submission_response: invRow.marketplace_submission_response,
+          marketplace_fiscal_document_id: invRow.marketplace_fiscal_document_id,
+        };
+        nfSource = "invoices";
+      }
+    }
+    if (!nfRow) {
       const q = admin.from("notas_fiscais").select("*").eq("company_id", companyId);
       let sel: any;
-      if (notaFiscalId) {
-        sel = await q.eq("id", notaFiscalId).limit(1).maybeSingle();
+      if (lookupId) {
+        sel = await q.eq("id", lookupId).limit(1).maybeSingle();
       } else {
         sel = await q.eq("nfe_key", nfeKey!).limit(1).maybeSingle();
       }
       if (sel.error || !sel.data) return jsonResponse({ error: sel.error?.message || "Nota fiscal não encontrada" }, 404);
       nfRow = sel.data;
+      nfSource = "notas_fiscais";
     }
     console.log("[ML-SUBMIT-XML] nfRow", {
       rid,
@@ -230,7 +261,8 @@ serve(async (req) => {
       if (!nfRow.nfe_number && meta.nfeNumber) updatePayload.nfe_number = Number(meta.nfeNumber);
       if (!nfRow.nfe_key && meta.nfeKey) updatePayload.nfe_key = meta.nfeKey;
       if (Object.keys(updatePayload).length > 0) {
-        await admin.from("notas_fiscais").update(updatePayload).eq("id", nfRow.id);
+        const table = nfSource === "invoices" ? "invoices" : "notas_fiscais";
+        await admin.from(table).update(updatePayload).eq("id", nfRow.id);
       }
     } catch {}
 
@@ -410,24 +442,33 @@ serve(async (req) => {
       return map[c] || null;
     }
 
-    const { error: updErr } = await admin
-      .from("notas_fiscais")
-      .update({
-        marketplace_submission_status: statusFinal,
-        marketplace_submission_response: {
-          ...js,
-          _endpoint: "shipments.invoice_data",
-          _shipment_id: shipmentId,
-          _site_id: "MLB",
-          _status_code: resp.status,
-          _error_code: errorCode,
-          _error_description: describeMeliInvoiceError(errorCode),
-          _error_message: errorMessage,
-          _error_details: errorDetails,
-        },
-        marketplace_fiscal_document_id: fiscalId,
-      })
-      .eq("id", nfRow.id);
+    const submissionPayload = {
+      marketplace_submission_status: statusFinal,
+      marketplace_submission_response: {
+        ...js,
+        _endpoint: "shipments.invoice_data",
+        _shipment_id: shipmentId,
+        _site_id: "MLB",
+        _status_code: resp.status,
+        _error_code: errorCode,
+        _error_description: describeMeliInvoiceError(errorCode),
+        _error_message: errorMessage,
+        _error_details: errorDetails,
+      },
+      marketplace_fiscal_document_id: fiscalId,
+    };
+
+    let updErr: any = null;
+    if (nfSource === "invoices") {
+      const { error } = await admin.from("invoices").update({
+        ...submissionPayload,
+        marketplace_submission_at: new Date().toISOString(),
+      }).eq("id", nfRow.id);
+      updErr = error;
+    } else {
+      const { error } = await admin.from("notas_fiscais").update(submissionPayload).eq("id", nfRow.id);
+      updErr = error;
+    }
     if (updErr) return jsonResponse({ ok: false, error: updErr.message, meli: js }, 200);
     console.log("[ML-SUBMIT-XML] db_update_ok", { rid, nf_id: nfRow.id, status: statusFinal, http_status: resp.status, fiscal_document_id: fiscalId });
 
