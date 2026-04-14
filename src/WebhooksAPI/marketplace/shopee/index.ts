@@ -3,6 +3,8 @@ import type { Database } from '@/integrations/supabase/types';
 
 export interface StartAuthOptions {
   organizationId: string;
+  /** ID of the company (CNPJ) to link this integration to. Falls back to default company if omitted. */
+  companyId?: string | null;
   storeName: string;
   connectedByUserId?: string | null;
   redirectUri?: string | null;
@@ -21,6 +23,7 @@ export async function startShopeeAuth(
   const { data, error } = await supabase.functions.invoke<StartAuthResponse>('shopee-start-auth', {
     body: {
       organizationId: opts.organizationId,
+      companyId: opts.companyId ?? null,
       storeName: opts.storeName,
       connectedByUserId: opts.connectedByUserId ?? null,
       redirect_uri: opts.redirectUri ?? undefined,
@@ -40,6 +43,7 @@ export async function startShopeeAuthSandbox(
   const { data, error } = await supabase.functions.invoke<StartAuthResponse>('shopee-start-auth-sandbox', {
     body: {
       organizationId: opts.organizationId,
+      companyId: opts.companyId ?? null,
       storeName: opts.storeName,
       connectedByUserId: opts.connectedByUserId ?? null,
       redirect_uri: opts.redirectUri ?? undefined,

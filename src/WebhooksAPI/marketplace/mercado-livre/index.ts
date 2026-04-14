@@ -28,6 +28,8 @@ export function handleMercadoLivreWebhook(event: MercadoLivreWebhookEvent) {
 // Inicia o fluxo de autorização no Mercado Livre usando a Edge Function segura
 export interface StartAuthOptions {
   organizationId: string;
+  /** ID of the company (CNPJ) to link this integration to. Falls back to default company if omitted. */
+  companyId?: string | null;
   storeName: string;
   marketplaceName?: string; // default: 'Mercado Livre'
   connectedByUserId?: string | null;
@@ -42,6 +44,7 @@ export async function startMercadoLivreAuth(
     body: {
       marketplaceName: opts.marketplaceName ?? 'Mercado Livre',
       organizationId: opts.organizationId,
+      companyId: opts.companyId ?? null,
       storeName: opts.storeName,
       connectedByUserId: opts.connectedByUserId ?? null,
       redirect_uri: opts.redirectUri ?? undefined,

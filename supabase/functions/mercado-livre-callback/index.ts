@@ -64,7 +64,7 @@ Deno.serve(async (req) => {
     const pkce_verifier = method === "GET"
       ? url.searchParams.get("code_verifier")
       : body?.code_verifier ?? null;
-    const { organizationId, marketplaceName = "Mercado Livre", storeName, connectedByUserId, redirect_uri: stateRedirect } = state || {};
+    const { organizationId, companyId: stateCompanyId, marketplaceName = "Mercado Livre", storeName, connectedByUserId, redirect_uri: stateRedirect } = state || {};
     console.log("[meli-callback] org/app", {
       organizationId,
       marketplaceName,
@@ -131,19 +131,37 @@ Deno.serve(async (req) => {
     }, resp.status);
     const { access_token, refresh_token, expires_in, user_id } = json;
     const expiresAtIso = new Date(Date.now() + (Number(expires_in) || 0) * 1000).toISOString();
-    // Resolve company by organization
-    const { data: company, error: companyError } = await admin.from("companies").select("id").eq("organization_id", organizationId).limit(1).single();
-    if (companyError || !company?.id) {
-      console.error("[meli-callback] company not found", {
-        companyError
-      });
-      return jsonResponse({
-        error: companyError?.message || "Company not found"
-      }, 404);
+    // Prefer explicit companyId from state; fall back to default company for backward compat.
+    let resolvedCompanyId: string | null = stateCompanyId ?? null;
+    if (!resolvedCompanyId) {
+      console.warn("[meli-callback] companyId missing from state — falling back to default company");
+      const { data: company, error: companyError } = await admin
+        .from("companies")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .eq("is_default", true)
+        .limit(1)
+        .single();
+      if (companyError || !company?.id) {
+        // Final fallback: oldest active company
+        const { data: fallback, error: fbErr } = await admin
+          .from("companies")
+          .select("id")
+          .eq("organization_id", organizationId)
+          .eq("is_active", true)
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .single();
+        if (fbErr || !fallback?.id) {
+          console.error("[meli-callback] company not found", { fbErr });
+          return jsonResponse({ error: fbErr?.message || "Company not found" }, 404);
+        }
+        resolvedCompanyId = fallback.id;
+      } else {
+        resolvedCompanyId = company.id;
+      }
     }
-    console.log("[meli-callback] company resolved", {
-      companyId: company.id
-    });
+    console.log("[meli-callback] company resolved", { companyId: resolvedCompanyId });
     const now = new Date();
     const config = {
       storeName: storeName ?? null,
@@ -152,13 +170,12 @@ Deno.serve(async (req) => {
     };
     const access_token_enc = await aesGcmEncryptToString(aesKey, access_token);
     const refresh_token_enc = await aesGcmEncryptToString(aesKey, refresh_token);
-    // UPSERT instead of INSERT: if the seller reconnects (revoked and re-authorized),
-    // we update the existing row rather than failing or creating a duplicate.
-    // ON CONFLICT assumes a UNIQUE constraint on (organizations_id, marketplace_name).
+    // UPSERT: ON CONFLICT on the new multi-company constraint (org, marketplace, company).
+    // Reconnecting the same seller account updates the existing row.
     const { error: upsertError } = await admin.from("marketplace_integrations").upsert(
       {
         organizations_id: organizationId,
-        company_id: company.id,
+        company_id: resolvedCompanyId,
         marketplace_name: marketplaceName,
         access_token: access_token_enc,
         refresh_token: refresh_token_enc,
@@ -166,7 +183,7 @@ Deno.serve(async (req) => {
         meli_user_id: user_id,
         config
       },
-      { onConflict: "organizations_id,marketplace_name" }
+      { onConflict: "organizations_id,marketplace_name,company_id" }
     );
     if (upsertError) {
       console.error("[meli-callback] upsert error", {
@@ -176,8 +193,8 @@ Deno.serve(async (req) => {
         error: upsertError.message
       }, 500);
     }
-    console.log("[meli-callback] insert ok", {
-      companyId: company.id,
+    console.log("[meli-callback] upsert ok", {
+      companyId: resolvedCompanyId,
       marketplaceName
     });
     if (method === "POST") {

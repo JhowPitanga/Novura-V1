@@ -24,9 +24,10 @@ import type { SupabaseClient } from "../infra/supabase-client.ts";
 const ORDERS_CONFLICT = "organization_id,marketplace,marketplace_order_id";
 const ITEMS_CONFLICT = "order_id,marketplace_item_id";
 
-function mapOrderRow(organizationId: string, order: NormalizedOrder): OrderInsertRow {
+function mapOrderRow(organizationId: string, order: NormalizedOrder, companyId?: string | null): OrderInsertRow {
   return {
     organization_id: organizationId,
+    company_id: companyId ?? null,
     marketplace: order.marketplace,
     marketplace_order_id: order.marketplace_order_id,
     pack_id: order.pack_id,
@@ -108,10 +109,10 @@ type EnsureOrderRowError = { error: string };
 
 export class OrdersUpsertAdapter implements OrdersUpsertPort {
   async upsert(admin: SupabaseClient, input: UpsertOrderInput): Promise<UpsertOrderResult> {
-    const { organization_id, order, source } = input;
+    const { organization_id, company_id, order, source } = input;
 
     try {
-      const rowResult = await this.ensureOrderRow(admin, organization_id, order);
+      const rowResult = await this.ensureOrderRow(admin, organization_id, order, company_id);
       if ("error" in rowResult) {
         return { success: false, order_id: null, created: false, error: rowResult.error };
       }
@@ -153,6 +154,7 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
     supabase: SupabaseClient,
     organizationId: string,
     order: NormalizedOrder,
+    companyId?: string | null,
   ): Promise<EnsureOrderRowOk | EnsureOrderRowError> {
     const { data: existingData } = await supabase
       .from("orders")
@@ -168,7 +170,7 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
     const previousStatus = existing?.status ?? null;
     const previousInternalStatus = existing?.internal_status ?? null;
 
-    const row = mapOrderRow(organizationId, order);
+    const row = mapOrderRow(organizationId, order, companyId);
     const { data: upsertedData, error: orderErr } = await supabase
       .from("orders")
       .upsert(row as never, { onConflict: ORDERS_CONFLICT })

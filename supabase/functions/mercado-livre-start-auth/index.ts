@@ -29,7 +29,7 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 
   try {
-    const { marketplaceName = "Mercado Livre", redirect_uri, organizationId, storeName, connectedByUserId } = await req.json();
+    const { marketplaceName = "Mercado Livre", redirect_uri, organizationId, companyId, storeName, connectedByUserId } = await req.json();
 
     const admin = createAdminClient();
 
@@ -63,6 +63,9 @@ Deno.serve(async (req) => {
     const statePayload = {
       csrf,
       organizationId: organizationId ?? null,
+      // companyId is included so the callback can link the integration to the chosen company
+      // without falling back to LIMIT 1 resolution.
+      companyId: companyId ?? null,
       marketplaceName: appRow.name,
       storeName: storeName ?? null,
       connectedByUserId: connectedByUserId ?? null,

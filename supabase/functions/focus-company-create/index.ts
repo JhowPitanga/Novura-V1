@@ -40,7 +40,10 @@ serve(async (req) => {
     try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
     const company_id: string | undefined = body?.company_id;
     const organization_id_input: string | undefined = body?.organization_id;
-    const dry_run: boolean = !!body?.dry_run;
+    // When dry_run=true the payload is validated by Focus without persisting. The caller
+    // should call twice: first with dry_run=true to validate, then with dry_run=false to create.
+    const dry_run: boolean = body?.dry_run === true || body?.dry_run === 1;
+    const mode: "create" | "update" = body?.mode === "update" ? "update" : "create";
     const arquivo_certificado_base64: string | undefined = body?.arquivo_certificado_base64;
     const senha_certificado: string | undefined = body?.senha_certificado;
 
@@ -64,6 +67,9 @@ serve(async (req) => {
     }
     if (!organizations_id) {
       return jsonResponse({ error: "organization_id is required for Focus sync" }, 400);
+    }
+    if (mode === "update" && !company?.focus_company_id) {
+      return jsonResponse({ error: "focus_company_id is required for update mode" }, 400);
     }
 
     // Membership check
@@ -115,13 +121,17 @@ serve(async (req) => {
     payload.mostrar_danfse_badge = false;
     payload.enviar_email_destinatario = false;
 
-    const url = new URL("https://api.focusnfe.com.br/v2/empresas");
+    const url = mode === "update" && company?.focus_company_id
+      ? new URL(`https://api.focusnfe.com.br/v2/empresas/${company.focus_company_id}`)
+      : new URL("https://api.focusnfe.com.br/v2/empresas");
+    // Append dry_run=1 flag only for create validation; Focus API expects integer 1 not boolean
+    if (dry_run && mode === "create") url.searchParams.set("dry_run", "1");
 
     // Basic Auth: token as username, blank password
     // @ts-ignore
     const basic = btoa(`${FOCUS_TOKEN}:`);
     const resp = await fetch(url.toString(), {
-      method: "POST",
+      method: mode === "update" ? "PUT" : "POST",
       headers: {
         "Authorization": `Basic ${basic}`,
         "Content-Type": "application/json",
@@ -138,22 +148,35 @@ serve(async (req) => {
       return jsonResponse({ ok: false, status: resp.status, error: json?.message || json?.error || "Focus API error", response: json }, resp.status);
     }
 
-    try {
-      const prodToken = json?.api_token || json?.token_producao || json?.token || null;
-      const homToken = json?.token_homologacao || null;
-      if (prodToken || homToken) {
+    // On dry_run we only validate — do not persist anything to the database.
+    if (!dry_run) {
+      try {
+        const prodToken = json?.api_token || json?.token_producao || json?.token || null;
+        const homToken = json?.token_homologacao || null;
+        // Focus returns the company id in the `id` field after successful creation.
+        const focusCompanyId = json?.id ? String(json.id) : (company?.focus_company_id ? String(company.focus_company_id) : null);
+
+        const updatePayload: Record<string, any> = {
+          focus_status: "synced",
+        };
+        if (prodToken) updatePayload.focus_token_producao = prodToken;
+        if (homToken) updatePayload.focus_token_homologacao = homToken;
+        if (focusCompanyId) updatePayload.focus_company_id = focusCompanyId;
+
         await admin
           .from("companies")
-          .update({
-            focus_token_producao: prodToken || null,
-            focus_token_homologacao: homToken || null,
-          })
+          .update(updatePayload)
           .eq("id", company_id);
+      } catch (updateErr: any) {
+        // Non-fatal: log but do not fail the request
+        console.error("[focus-company-create] failed to update company record", updateErr?.message);
       }
-    } catch {}
+    }
 
     return jsonResponse({
       ok: true,
+      mode,
+      dry_run,
       response: json,
     });
   } catch (e: any) {

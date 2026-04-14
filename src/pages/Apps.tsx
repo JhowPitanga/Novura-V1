@@ -67,6 +67,8 @@ export default function Aplicativos() {
     const [appsError, setAppsError] = useState<string | null>(null);
     const [isCannotDisconnectOpen, setIsCannotDisconnectOpen] = useState(false);
     const [cannotDisconnectMessage, setCannotDisconnectMessage] = useState('');
+    const [companies, setCompanies] = useState<Array<{ id: string; razao_social: string; cnpj: string }>>([]);
+    const [selectedCompanyId, setSelectedCompanyId] = useState<string>('');
     const { toast } = useToast();
     const { user, organizationId, permissions, userRole } = useAuth();
     const navigate = useNavigate();
@@ -81,6 +83,27 @@ export default function Aplicativos() {
         if (typeof mod === 'object' && mod !== null) return Boolean((mod as any).view);
         return false;
     })();
+
+    // Load companies for the connect dialog company selector
+    useEffect(() => {
+        if (!organizationId) return;
+        supabase
+            .from('companies')
+            .select('id, razao_social, cnpj')
+            .eq('organization_id', organizationId)
+            .eq('is_active', true)
+            .order('created_at', { ascending: true })
+            .then(({ data }) => {
+                if (Array.isArray(data)) {
+                    setCompanies(data as Array<{ id: string; razao_social: string; cnpj: string }>);
+                    // Pre-select the default company
+                    if (data.length > 0 && !selectedCompanyId) {
+                        setSelectedCompanyId(data[0].id);
+                    }
+                }
+            });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [organizationId]);
 
     useEffect(() => {
         if (!isLojaRoute || !canAccess) return;
@@ -209,7 +232,12 @@ export default function Aplicativos() {
         return !!conn && matchesFilter && matchesCategory;
     });
 
-    const handleConnect = (app: App) => { setSelectedApp(app); setIsDialogOpen(true); };
+    const handleConnect = (app: App) => {
+        setSelectedApp(app);
+        // Reset to default (first) company when opening dialog
+        if (companies.length > 0 && !selectedCompanyId) setSelectedCompanyId(companies[0].id);
+        setIsDialogOpen(true);
+    };
 
     const connectApp = async () => {
         try {
@@ -217,6 +245,9 @@ export default function Aplicativos() {
             if (!organizationId) { toast({ title: 'Sessão necessária', description: 'Entre na sua conta para conectar aplicativos.', variant: 'destructive' }); navigate('/auth'); return; }
             const trimmedStoreName = storeName.trim();
             if (!trimmedStoreName) { toast({ title: 'Nome da loja obrigatório', description: 'Informe o nome da loja para continuar.' }); return; }
+
+            // Resolve the company to link: use selectedCompanyId or fall back to first available
+            const companyIdToUse = selectedCompanyId || (companies.length > 0 ? companies[0].id : undefined);
 
             const appNameCanon = selectedApp.name.toLowerCase().replace(/[_\s-]+/g, '');
             const onSuccess = () => {
@@ -234,7 +265,7 @@ export default function Aplicativos() {
             if (appNameCanon === 'shopee' || (appNameCanon.includes('shopee') && (appNameCanon.includes('sandbox') || appNameCanon.includes('sanbox')))) {
                 const isSandbox = appNameCanon.includes('sandbox') || appNameCanon.includes('sanbox');
                 const authFn = isSandbox ? startShopeeAuthSandbox : startShopeeAuth;
-                const { authorization_url } = await authFn(supabase, { organizationId, storeName: trimmedStoreName, connectedByUserId: user?.id || null, redirectUri: SHOPEE_REDIRECT_URI || SHOPEE_REDIRECT_FALLBACK });
+                const { authorization_url } = await authFn(supabase, { organizationId, companyId: companyIdToUse, storeName: trimmedStoreName, connectedByUserId: user?.id || null, redirectUri: SHOPEE_REDIRECT_URI || SHOPEE_REDIRECT_FALLBACK });
                 try { localStorage.setItem('shopee_auth_env', isSandbox ? 'sandbox' : 'prod'); } catch (_) {}
                 const popup = window.open(authorization_url, 'shopee_auth', 'width=960,height=800,menubar=no,toolbar=no');
                 if (!popup) { toast({ title: 'Janela bloqueada', description: 'Permita pop-ups no navegador para continuar.' }); return; }
@@ -246,7 +277,7 @@ export default function Aplicativos() {
                     }
                 });
             } else {
-                const { authorization_url } = await startMercadoLivreAuth(supabase, { organizationId, storeName: trimmedStoreName, marketplaceName: selectedApp.name, connectedByUserId: user?.id || null, redirectUri: MELI_REDIRECT_URI || undefined });
+                const { authorization_url } = await startMercadoLivreAuth(supabase, { organizationId, companyId: companyIdToUse, storeName: trimmedStoreName, marketplaceName: selectedApp.name, connectedByUserId: user?.id || null, redirectUri: MELI_REDIRECT_URI || undefined });
                 const popup = window.open(authorization_url, 'meli_auth', 'width=960,height=800,menubar=no,toolbar=no');
                 if (!popup) { toast({ title: 'Janela bloqueada', description: 'Permita pop-ups no navegador para continuar.' }); return; }
                 const unsubscribe = listenForMeliOAuthSuccess((_payload) => {
@@ -372,6 +403,9 @@ export default function Aplicativos() {
                 storeName={storeName}
                 onStoreNameChange={setStoreName}
                 onConnect={connectApp}
+                companies={companies}
+                selectedCompanyId={selectedCompanyId}
+                onCompanyChange={setSelectedCompanyId}
             />
             <CannotDisconnectDialog
                 open={isCannotDisconnectOpen}
