@@ -220,6 +220,31 @@ export function AddTaxModal({ open, onOpenChange, companies, initialData, onSave
     }
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    setCurrentStep(1);
+    setSelectedCompanyId(initialData?.companyId);
+    setIsDefaultForCompany(Boolean(initialData?.isDefault));
+    setNaturezaSaida(initialData?.payload?.basics?.naturezaSaida || "");
+    setNaturezaEntrada(initialData?.payload?.basics?.naturezaEntrada || "");
+    setObservacao(initialData?.observacao || "");
+    setIcms(initialData?.payload?.icms || {});
+    setIcmsSaidaExtras(() => {
+      const pf = (initialData?.payload?.icmsExtras?.saidaPF || []).map((e: any) => ({ ...e, pessoa: "PF" as const }));
+      const pj = (initialData?.payload?.icmsExtras?.saidaPJ || []).map((e: any) => ({ ...e, pessoa: "PJ" as const }));
+      return [...pf, ...pj];
+    });
+    setIcmsEntradaExtras(initialData?.payload?.icmsExtras?.entrada || []);
+    setIpiPF(initialData?.payload?.ipi?.pf || {});
+    setIpiPJ(initialData?.payload?.ipi?.pj || {});
+    setPisPF(initialData?.payload?.pis?.pf || {});
+    setPisPJ(initialData?.payload?.pis?.pj || {});
+    setCofinsPF(initialData?.payload?.cofins?.pf || {});
+    setCofinsPJ(initialData?.payload?.cofins?.pj || {});
+    setInfoFisco(initialData?.payload?.adicionais?.infoFisco || "");
+    setInfoComplementar(initialData?.payload?.adicionais?.infoComplementar || "");
+  }, [open, initialData]);
+
   const canProceed = () => {
     if (currentStep === 1) {
       // Observação (nome do imposto) obrigatório (empresa opcional para testes)
@@ -282,12 +307,18 @@ export function AddTaxModal({ open, onOpenChange, companies, initialData, onSave
           .eq('company_id', dbPayload.company_id);
       }
 
-      // Insere novo registro de configuração fiscal da empresa
-      const { data: inserted, error } = await (supabase as any)
-        .from('company_tax_configs')
-        .insert(dbPayload)
-        .select('id, company_id, organizations_id, created_at')
-        .single();
+      const table = (supabase as any).from('company_tax_configs');
+      const isEditing = Boolean(initialData?.id);
+      const { data: inserted, error } = isEditing
+        ? await table
+            .update(dbPayload)
+            .eq('id', initialData!.id)
+            .select('id, company_id, organizations_id, created_at')
+            .single()
+        : await table
+            .insert(dbPayload)
+            .select('id, company_id, organizations_id, created_at')
+            .single();
 
       if (error) throw error;
 
@@ -312,7 +343,7 @@ export function AddTaxModal({ open, onOpenChange, companies, initialData, onSave
 
       // Dados salvos apenas em company_tax_configs (payload e colunas JSON)
 
-      toast.success("Imposto salvo com sucesso no banco de dados");
+      toast.success(isEditing ? "Imposto atualizado com sucesso" : "Imposto salvo com sucesso no banco de dados");
       const resultRecord = {
         id: inserted.id,
         companyId: selectedCompany?.id,
@@ -414,7 +445,7 @@ export function AddTaxModal({ open, onOpenChange, companies, initialData, onSave
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[1200px] max-w-[95vw] h-[82vh] p-0">
         <DialogHeader className="px-6 pt-6">
-          <DialogTitle>Adicionar Imposto</DialogTitle>
+          <DialogTitle>{initialData ? "Editar Imposto" : "Adicionar Imposto"}</DialogTitle>
           <DialogDescription>Configure as regras fiscais seguindo as etapas</DialogDescription>
         </DialogHeader>
 

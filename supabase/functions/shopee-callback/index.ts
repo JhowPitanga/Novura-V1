@@ -38,13 +38,14 @@ serve(async (req) => {
     if (!code || !shopId) return jsonResponse({ error: "Missing code or shop_id" }, 400);
 
     // Decodifica o State (Organization ID, etc)
-    type StatePayload = { organizationId?: string; storeName?: string; connectedByUserId?: string };
+    type StatePayload = { organizationId?: string; companyId?: string; storeName?: string; connectedByUserId?: string };
     let state: StatePayload | null = null;
     if (stateStr) {
       try { state = JSON.parse(atob(stateStr)) as StatePayload; } catch (_) { state = null; }
     }
 
     const organizationId: string | null = state?.organizationId ?? null;
+    const stateCompanyId: string | null = state?.companyId ?? null;
     const storeName: string | null = state?.storeName ?? null;
     const connectedByUserId: string | null = state?.connectedByUserId ?? null;
 
@@ -139,16 +140,31 @@ serve(async (req) => {
     const ttl = Number((getField(tokenJson, "expire_in") as number) || (getField(tokenJson, "expires_in") as number) || 14400);
     const expiresAtIso = new Date(Date.now() + (Number.isFinite(ttl) ? ttl : 14400) * 1000).toISOString();
 
-    // Resolve Company ID se organizationId existir
-    let companyId: string | null = null;
-    if (organizationId) {
-      const { data: company } = await admin
+    // Prefer explicit companyId from state; fall back to default company for backward compat.
+    let companyId: string | null = stateCompanyId;
+    if (!companyId && organizationId) {
+      console.warn("[shopee-callback] companyId missing from state — falling back to default company");
+      const { data: defCompany } = await admin
         .from("companies")
         .select("id")
         .eq("organization_id", organizationId)
+        .eq("is_default", true)
         .limit(1)
         .single();
-      if (company?.id) companyId = String(company.id);
+      if (defCompany?.id) {
+        companyId = String(defCompany.id);
+      } else {
+        // Final fallback: oldest active company
+        const { data: fallback } = await admin
+          .from("companies")
+          .select("id")
+          .eq("organization_id", organizationId)
+          .eq("is_active", true)
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .single();
+        if (fallback?.id) companyId = String(fallback.id);
+      }
     }
 
     // Prepara dados para salvar no banco
@@ -174,14 +190,17 @@ serve(async (req) => {
       config,
     };
 
-    // Insere na tabela marketplace_integrations
-    const { error: insertErr } = await admin.from("marketplace_integrations").insert([insertPayload]);
+    // UPSERT: ON CONFLICT on the multi-company constraint (org, marketplace, company).
+    // Reconnecting the same shop updates the existing row.
+    const { error: insertErr } = await admin
+      .from("marketplace_integrations")
+      .upsert([insertPayload], { onConflict: "organizations_id,marketplace_name,company_id" });
     if (insertErr) {
-      console.error("[shopee-callback] insert_failed", { correlationId, message: insertErr.message });
+      console.error("[shopee-callback] upsert_failed", { correlationId, message: insertErr.message });
       return jsonResponse({ error: insertErr.message }, 500);
     }
 
-    console.log("[shopee-callback] success_saved_db", { correlationId, shopId });
+    console.log("[shopee-callback] success_saved_db", { correlationId, shopId, companyId });
 
     // Retorno Final (HTML ou JSON)
     if (method === "POST") return jsonResponse({ ok: true });

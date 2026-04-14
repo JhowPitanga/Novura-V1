@@ -16,11 +16,13 @@ serve(async (req) => {
     const correlationId = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
     const method = req.method;
     
-    type StartBody = { organizationId?: string; storeName?: string; connectedByUserId?: string; redirect_uri?: string };
+    type StartBody = { organizationId?: string; companyId?: string; storeName?: string; connectedByUserId?: string; redirect_uri?: string };
     const body = method === "GET" ? null : (await req.json() as StartBody);
     
     // Dados para o STATE (passados para o callback)
     const organizationId = body?.organizationId || null;
+    // companyId is forwarded via state so the callback can link the integration to the correct company
+    const companyId = body?.companyId || null;
     const storeName = body?.storeName || null;
     const connectedByUserId = body?.connectedByUserId || null;
     const redirectOverride = sanitizeRedirect(body?.redirect_uri || null);
@@ -74,7 +76,7 @@ serve(async (req) => {
     authorizationUrl.searchParams.set("sign", sign);
     
     // Montagem do STATE e inserção na URL de Redirect
-    const statePayload = { organizationId, storeName, connectedByUserId, redirect_uri: redirectUri };
+    const statePayload = { organizationId, companyId, storeName, connectedByUserId, redirect_uri: redirectUri };
     const state = btoa(JSON.stringify(statePayload));
     
     let redirectWithState = redirectUri;

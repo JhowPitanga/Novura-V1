@@ -72,6 +72,10 @@ export interface NormalizedOrder {
 /** Row shape for orders table insert/upsert (Cycle 0 schema). */
 export interface OrderInsertRow {
   organization_id: string;
+  /** Company (CNPJ) derived from the marketplace integration. Optional for backward compat. */
+  company_id?: string | null;
+  /** Marketplace integration that generated this order. Set after upsert via resolveAndPersistWarehouse. */
+  integration_id?: string | null;
   marketplace: string;
   marketplace_order_id: string;
   pack_id: string | null;
@@ -142,6 +146,8 @@ export interface OrderShippingInsertRow {
 
 export interface UpsertOrderInput {
   organization_id: string;
+  /** Company ID from the integration row. When provided, written to orders.company_id on insert. */
+  company_id?: string | null;
   order: NormalizedOrder;
   source: "webhook" | "sync";
 }

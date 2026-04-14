@@ -233,6 +233,7 @@ async function processML(
   const order = mlNormalizer.normalize(fetchResult.order);
   const result = await upsertAdapter.upsert(admin, {
     organization_id: String(integration.organizations_id),
+    company_id: integration.company_id ?? null,
     order,
     source: "webhook",
   });
@@ -305,6 +306,7 @@ async function processShopee(
   const order = shopeeNormalizer.normalize(orderDetail);
   const result = await upsertAdapter.upsert(admin, {
     organization_id: tokenResult.organizationId,
+    company_id: integration.company_id ?? null,
     order,
     source: "webhook",
   });

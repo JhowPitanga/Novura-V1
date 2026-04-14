@@ -10,6 +10,8 @@ export interface IntegrationRow {
   expires_in: string | null;
   meli_user_id: string | null;
   organizations_id: string;
+  /** Company (CNPJ) that owns this integration. Populated after MC-T1 migration. */
+  company_id?: string | null;
   /** Shopee: shop_id in config or meli_user_id; ML uses meli_user_id as seller_id */
   config?: Record<string, unknown> | null;
   marketplace_name?: string | null;

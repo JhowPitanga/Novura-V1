@@ -4,25 +4,25 @@ overview: PRD completo para suporte multi-CNPJ (company) com vinculo a integraco
 todos:
   - id: MC-T1-migration
     content: "MC-T1: Migracao DB (UNIQUE constraint, company_id NOT NULL, orders columns, is_default, indices, backfill)"
-    status: pending
+    status: done
   - id: MC-T2-lifecycle
     content: "MC-T2: Lifecycle de company (criacao com Focus API, empresa padrao, regras de exclusao/desativacao)"
-    status: pending
+    status: done
   - id: MC-T3-oauth
     content: "MC-T3: OAuth com selecao de empresa (ConnectDialog, start-auth, callback)"
-    status: pending
+    status: done
   - id: MC-T4-pipeline
     content: "MC-T4: Company no pipeline de pedidos (worker, upsert adapter, normalized types)"
-    status: pending
+    status: done
   - id: MC-T5-stock-rpcs
     content: "MC-T5: RPCs de estoque company-aware (reserve, consume, refund leem orders.company_id)"
-    status: pending
+    status: done
   - id: MC-T6-frontend
     content: "MC-T6: Frontend Company Context, Selector e gestao multi-company"
-    status: pending
+    status: done
   - id: MC-T7-docs
     content: "MC-T7: Documentacao e testes (multi-company architecture, backward compat)"
-    status: pending
+    status: done
 isProject: false
 ---
 
@@ -30,7 +30,7 @@ isProject: false
 
 **Ciclo:** MULTI-COMPANY
 
-**Status:** Planejamento
+**Status:** Implementado
 
 **Depende de:** Cycle 0 (tabelas `orders`, `companies`, `marketplace_integrations`), WAREHOUSE-T1 (schema de armazens)
 
@@ -461,18 +461,14 @@ Se org tem apenas 1 empresa, pre-seleciona automaticamente (sem dropdown visivel
 
 ### 8.4 Gestao de empresas no frontend
 
-Novo componente na pagina de Configuracoes para listar e gerenciar empresas:
+A gestao de empresas permanece centralizada dentro de `FiscalSettings.tsx` (sub-aba "Empresas"), sem duplicar com uma aba separada em `Settings.tsx`.
 
-```
-src/components/settings/CompanyManagement.tsx
-```
-
-- Lista todas as empresas da org com status (ativa, padrao, Focus synced/error)
-- Badge "Padrao" na empresa default
-- Botao "Definir como padrao" (chama RPC ou edge function)
+- Lista todas as empresas da org com status Focus (`synced`/`error`)
+- Nao exibe badge de "Pendente Focus"
+- Nao exibe botao "Definir como padrao" nesta tela
 - Botao "Excluir/Desativar" com verificacoes pre-exclusao
-- Indicador de `focus_status` (synced, pending, error) com acao "Sincronizar com Focus"
-- Botao "Adicionar Empresa" redireciona para `/nova-empresa`
+- Botao "Adicionar Empresa" redireciona para `/configuracoes/notas-fiscais/nova-empresa`
+- Botao "Atualizar empresa" abre o mesmo formulario com `?companyId=...`
 
 **Fluxo de exclusao no frontend:**
 
@@ -628,12 +624,13 @@ Pedido chega → identifica integration → herda company_id → resolve warehou
 - Se Focus rejeitar: mostrar erro e nao persistir
 - Se e a primeira empresa da org: `is_default = true` automaticamente
 - Se editando: chamar `PUT` na Focus (em vez de `POST`)
+- Permitir navegar clicando diretamente nos pontos (steps) do formulario para editar uma etapa especifica
+- Incluir acao de "Fechar formulario" com popup perguntando se deseja salvar antes de sair
 
 **Arquivos afetados:**
 - [supabase/functions/focus-company-create/index.ts](supabase/functions/focus-company-create/index.ts)
 - [src/pages/NewCompany.tsx](src/pages/NewCompany.tsx)
 - Nova: `supabase/functions/company-delete/index.ts`
-- Nova: `src/components/settings/CompanyManagement.tsx`
 
 ---
 

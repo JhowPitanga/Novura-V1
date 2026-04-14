@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Plus, MoreHorizontal, Pencil } from "lucide-react";
+import { Plus, MoreHorizontal, Pencil, Trash2, CheckCircle2, AlertCircle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,6 +11,16 @@ import { CleanNavigation } from "@/components/CleanNavigation";
 import { AddTaxModal, TaxRecord, CompanyOption } from "@/components/settings/taxes/AddTaxModal";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useAuth } from "@/hooks/useAuth";
 
 interface Company {
@@ -23,6 +33,23 @@ interface Company {
   email: string;
   created_at: string;
   imposto_pago?: number | null;
+  is_default: boolean;
+  focus_status: "pending" | "synced" | "error";
+  focus_company_id: string | null;
+}
+
+function FocusStatusBadge({ status }: { status: Company["focus_status"] }) {
+  if (status === "synced") return (
+    <Badge variant="secondary" className="gap-1 text-xs text-green-700 bg-green-50 border-green-200">
+      <CheckCircle2 className="w-3 h-3" /> Focus sincronizado
+    </Badge>
+  );
+  if (status === "error") return (
+    <Badge variant="destructive" className="gap-1 text-xs">
+      <AlertCircle className="w-3 h-3" /> Erro Focus
+    </Badge>
+  );
+  return null;
 }
 
 export function FiscalSettings() {
@@ -36,6 +63,8 @@ export function FiscalSettings() {
   const { organizationId } = useAuth();
   const [editingImpostoCompanyId, setEditingImpostoCompanyId] = useState<string | null>(null);
   const [impostoPagoValue, setImpostoPagoValue] = useState<string>("0");
+  const [confirmDeactivateId, setConfirmDeactivateId] = useState<string | null>(null);
+  const [deactivatingId, setDeactivatingId] = useState<string | null>(null);
 
   const subNavItems = [
     { title: "Empresas", path: "empresas", description: "Gestão de empresas" },
@@ -45,18 +74,21 @@ export function FiscalSettings() {
   useEffect(() => {
     loadCompanies();
     loadTaxes();
-  }, []);
+  }, [organizationId]);
 
   const loadCompanies = async () => {
     try {
-      const { data, error } = await supabase
+      let query = (supabase as any)
         .from('companies')
         .select('*')
-        .eq('is_active', true)
-        .order('created_at', { ascending: false });
+        .eq('is_active', true);
+      if (organizationId) {
+        query = query.eq('organization_id', organizationId);
+      }
+      const { data, error } = await query.order('created_at', { ascending: false });
 
       if (error) throw error;
-      setCompanies(data || []);
+      setCompanies((data || []) as Company[]);
     } catch (error) {
       console.error('Erro ao carregar empresas:', error);
       toast.error('Erro ao carregar empresas');
@@ -75,17 +107,25 @@ export function FiscalSettings() {
         .order('created_at', { ascending: false });
       if (error) throw error;
       const rows: any[] = Array.isArray(data) ? data as any[] : [];
-      const mapCompany = (cid: string) => {
-        const c = companies.find(c => c.id === cid);
-        return { companyName: c?.razao_social || "—", cnpj: c?.cnpj || "" };
-      };
+
+      const companyIds = Array.from(new Set(rows.map((r) => String(r.company_id)).filter(Boolean)));
+      let companyMap = new Map<string, { razao_social: string; cnpj: string }>();
+      if (companyIds.length > 0) {
+        const { data: compRows } = await (supabase as any)
+          .from('companies')
+          .select('id, razao_social, cnpj')
+          .in('id', companyIds);
+        const arr: Array<{ id: string; razao_social: string; cnpj: string }> = Array.isArray(compRows) ? compRows : [];
+        companyMap = new Map(arr.map((c) => [String(c.id), { razao_social: c.razao_social, cnpj: c.cnpj }]));
+      }
+
       const mapped: TaxRecord[] = rows.map(r => {
-        const cm = mapCompany(String(r.company_id));
+        const cm = companyMap.get(String(r.company_id));
         return {
           id: String(r.id),
           companyId: String(r.company_id),
-          companyName: cm.companyName,
-          cnpj: cm.cnpj,
+          companyName: cm?.razao_social || "—",
+          cnpj: cm?.cnpj || "",
           isDefault: !!r.is_default,
           observacao: r.observacao || "",
           payload: r.payload,
@@ -100,7 +140,7 @@ export function FiscalSettings() {
   };
 
   const handleAddCompany = () => {
-    navigate('/configuracoes/notas-fiscais/nova-empresa');
+    navigate('/configuracoes/empresa');
   };
 
   const handleAddTax = () => {
@@ -108,12 +148,11 @@ export function FiscalSettings() {
     setIsTaxModalOpen(true);
   };
 
-  const handleSaveTax = (record: TaxRecord) => {
-    // Recarrega da base após salvar via modal
+  const handleSaveTax = (_record: TaxRecord) => {
     void loadTaxes();
   };
 
-  const handleDefinirPadrao = (tax: TaxRecord) => {
+  const handleDefinirPadraoTax = (tax: TaxRecord) => {
     const run = async () => {
       try {
         await (supabase as any)
@@ -154,6 +193,31 @@ export function FiscalSettings() {
     setIsTaxModalOpen(true);
   };
 
+  // Soft-deletes a company via the company-delete edge function (validates all business rules)
+  const handleDesativarEmpresa = async (companyId: string) => {
+    setDeactivatingId(companyId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      const { data, error } = await supabase.functions.invoke("company-delete", {
+        body: { company_id: companyId },
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (error) throw error;
+      if ((data as any)?.blocked) {
+        toast.error((data as any).reason || "Exclusão bloqueada por regras de negócio");
+        return;
+      }
+      setCompanies(prev => prev.filter(c => c.id !== companyId));
+      toast.success("Empresa desativada com sucesso");
+    } catch (e: any) {
+      toast.error(e?.message || "Erro ao desativar empresa");
+    } finally {
+      setDeactivatingId(null);
+      setConfirmDeactivateId(null);
+    }
+  };
+
   const formatPercent = (v?: number | null) => {
     const n = typeof v === "number" ? v : 0;
     const s = Number.isFinite(n) ? n : 0;
@@ -188,6 +252,8 @@ export function FiscalSettings() {
     }
   };
 
+  const confirmDeactivateCompany = companies.find(c => c.id === confirmDeactivateId);
+
   if (loading) {
     return (
       <div className="space-y-4">
@@ -212,6 +278,20 @@ export function FiscalSettings() {
 
       {activeSubTab === "empresas" ? (
         <>
+          {/* Header with Add button */}
+          {companies.length > 0 && (
+            <div className="flex justify-end">
+              <Button
+                onClick={handleAddCompany}
+                className="bg-novura-primary hover:bg-novura-primary/90"
+                size="sm"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Adicionar Empresa
+              </Button>
+            </div>
+          )}
+
           {companies.length === 0 ? (
             <Card className="p-8 text-center">
               <div className="max-w-sm mx-auto">
@@ -221,7 +301,7 @@ export function FiscalSettings() {
                 <p className="text-gray-600 mb-4">
                   Adicione uma empresa para começar a emitir notas fiscais
                 </p>
-                <Button 
+                <Button
                   onClick={handleAddCompany}
                   className="bg-novura-primary hover:bg-novura-primary/90"
                 >
@@ -234,29 +314,35 @@ export function FiscalSettings() {
             <div className="grid gap-4">
               {companies.map((company) => (
                 <Card key={company.id} className="p-6 hover:shadow-md transition-shadow">
-                  <div className="flex justify-between items-start">
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-3">
+                  <div className="flex justify-between items-start gap-4">
+                    {/* Left: company data */}
+                    <div className="space-y-2 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="text-lg font-semibold text-gray-900">
                           {company.razao_social}
                         </h3>
                         <Badge variant="secondary" className="text-xs">
                           {company.tipo_empresa}
                         </Badge>
+                        <FocusStatusBadge status={company.focus_status ?? "pending"} />
                       </div>
+
                       <p className="text-gray-600">CNPJ: {company.cnpj}</p>
                       <p className="text-gray-600">Email: {company.email}</p>
+
                       <div className="flex items-center gap-2">
                         <span className="text-sm text-gray-500">Tributação:</span>
                         <Badge variant="outline" className="text-xs">
                           {company.tributacao}
                         </Badge>
                       </div>
+
                       {company.inscricao_estadual && (
                         <p className="text-sm text-gray-500">
                           IE: {company.inscricao_estadual}
                         </p>
                       )}
+
                       <div className="flex items-center gap-2">
                         <span className="text-sm text-gray-500">Imposto pago:</span>
                         <Badge variant="outline" className="text-xs">
@@ -272,6 +358,7 @@ export function FiscalSettings() {
                           <Pencil className="w-4 h-4 text-novura-primary" />
                         </button>
                       </div>
+
                       {editingImpostoCompanyId === company.id && (
                         <div className="mt-2 flex items-center gap-2">
                           <Input
@@ -284,7 +371,7 @@ export function FiscalSettings() {
                             className="w-24"
                             placeholder="0"
                           />
-                          <span className="text-sm text-gray-500">% </span>
+                          <span className="text-sm text-gray-500">%</span>
                           <Button
                             size="sm"
                             className="bg-novura-primary hover:bg-novura-primary/90"
@@ -302,20 +389,62 @@ export function FiscalSettings() {
                         </div>
                       )}
                     </div>
-                    <div className="text-right">
+
+                    {/* Right: actions */}
+                    <div className="flex flex-col gap-2 items-end shrink-0">
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => navigate(`/configuracoes/notas-fiscais/nova-empresa?companyId=${company.id}&step=1`)}
+                        onClick={() => navigate(`/configuracoes/empresa?companyId=${company.id}`)}
                       >
                         Atualizar empresa
                       </Button>
+
+                      {companies.length > 1 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive hover:bg-destructive/10"
+                          disabled={!!deactivatingId}
+                          onClick={() => setConfirmDeactivateId(company.id)}
+                        >
+                          <Trash2 className="w-3.5 h-3.5 mr-1" />
+                          Desativar
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </Card>
               ))}
             </div>
           )}
+
+          {/* Confirm deactivation dialog */}
+          <AlertDialog
+            open={!!confirmDeactivateId}
+            onOpenChange={(open) => !open && setConfirmDeactivateId(null)}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Desativar empresa?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {confirmDeactivateCompany
+                    ? `A empresa "${confirmDeactivateCompany.razao_social}" será desativada. Esta ação pode ser bloqueada se existirem pedidos, integrações ou notas fiscais pendentes.`
+                    : "A empresa será desativada."}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={() => confirmDeactivateId && handleDesativarEmpresa(confirmDeactivateId)}
+                  disabled={!!deactivatingId}
+                >
+                  {deactivatingId ? "Desativando..." : "Desativar"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </>
       ) : (
         <div className="space-y-4">
@@ -377,7 +506,7 @@ export function FiscalSettings() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => handleDefinirPadrao(t)}>Definir como padrão</DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleDefinirPadraoTax(t)}>Definir como padrão</DropdownMenuItem>
                               <DropdownMenuItem onClick={() => handleEditarTax(t)}>Editar</DropdownMenuItem>
                               <DropdownMenuItem onClick={() => handleExcluirTax(t)}>Excluir</DropdownMenuItem>
                             </DropdownMenuContent>
@@ -401,7 +530,6 @@ export function FiscalSettings() {
             initialData={editingTax}
             onSave={(rec) => {
               handleSaveTax(rec);
-              // garantir persistência local
               try {
                 const arr: TaxRecord[] = JSON.parse(localStorage.getItem("impostos") || "[]");
                 const merged = [...arr.filter(a => a.id !== rec.id), rec];

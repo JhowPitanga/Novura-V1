@@ -57,7 +57,7 @@ export function ExpiringCertAlert({ certs, loading }: ExpiringCertAlertProps) {
                                     size="sm"
                                     className={critical || expired ? 'bg-red-600 hover:bg-red-700' : 'bg-novura-primary hover:bg-novura-primary/90'}
                                 >
-                                    <Link to={`/configuracoes/notas-fiscais/nova-empresa?companyId=${c.company_id}&step=2&mode=edit`}>
+                                    <Link to={`/configuracoes/empresa?companyId=${c.company_id}&step=2`}>
                                         Renovar
                                     </Link>
                                 </Button>

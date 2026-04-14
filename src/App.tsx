@@ -3,7 +3,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { RestrictedRoute } from "@/components/RestrictedRoute";
@@ -68,6 +68,11 @@ const ModuleLoadingFallback = () => (
     </div>
   </SidebarProvider>
 );
+
+const LegacyCompanyRouteRedirect = () => {
+  const location = useLocation();
+  return <Navigate to={`/configuracoes/empresa${location.search || ""}`} replace />;
+};
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -390,13 +395,23 @@ const App = () => (
               }
             />
             <Route
-              path="/configuracoes/notas-fiscais/nova-empresa"
+              path="/configuracoes/empresa"
               element={
                 <ProtectedRoute>
-                  <RestrictedRoute module="notas_fiscais" actions={["create","edit","view"]}>
+                  <RestrictedRoute module="configuracoes" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
                       <NewCompany />
                     </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/configuracoes/notas-fiscais/nova-empresa"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="configuracoes" actions={["view"]}>
+                    <LegacyCompanyRouteRedirect />
                   </RestrictedRoute>
                 </ProtectedRoute>
               }

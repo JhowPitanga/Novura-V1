@@ -8,7 +8,7 @@ import type { MarketplaceIntegrationsPort } from "../../ports/marketplace-integr
 import type { SupabaseClient } from "../infra/supabase-client.ts";
 
 const SELECT_COLUMNS =
-  "id, access_token, refresh_token, expires_in, meli_user_id, organizations_id, config, marketplace_name";
+  "id, access_token, refresh_token, expires_in, meli_user_id, organizations_id, company_id, config, marketplace_name";
 
 export class SupabaseMarketplaceIntegrationsAdapter implements MarketplaceIntegrationsPort {
   constructor(private readonly admin: SupabaseClient) {}
