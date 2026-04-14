@@ -14,8 +14,8 @@ flowchart TD
     F --> G{Agrupa por org / company / env}
     G --> H[focus-nfe-emit por grupo]
     H --> I{Focus NFe API}
-    I -->|Autorizado| J[SupabaseNfeAdapter: upsertInvoice]
-    I -->|Rejeitado / Timeout| K[SupabaseNfeAdapter: upsertInvoice com erro]
+    I -->|Autorizado| J[InvoicesAdapter: markAuthorized]
+    I -->|Rejeitado / Timeout| K[InvoicesAdapter: markError]
     J --> L[EmitNfeUseCase: updateInternalFlags hasInvoice=true]
     K --> M[EmitNfeUseCase: recalculate apenas]
     L --> N[RecalculateOrderStatusUseCase]
@@ -43,22 +43,30 @@ flowchart TD
 
 ### 3. Edge Function — `focus-nfe-emit`
 
-- Lê dados do pedido de `orders` + `order_items` + `order_shipping` (NÃO mais de `marketplace_orders_presented_new`)
-- Constrói payload NFe com dados fiscais da empresa e do destinatário
-- Chama a API Focus NFe
-- URL de polling usa `apiBase` dinâmico (homologação ou produção)
-- Persiste resultado em `notas_fiscais`
-- Após cada resultado: chama `EmitNfeUseCase.execute()` para side effects
+- Decomposed into 4 modules: `index.ts`, `emit-single-order.ts`, `build-nfe-payload.ts`, `nfe-sequence.ts`
+- Reads order data from `orders` + `order_items` + `order_shipping`
+- Builds NFe payload with company tax data and buyer info
+- Calls Focus NFe API
+- Uses dynamic `apiBase` (homologacao or producao)
+- Persists results in `invoices` table via `InvoicesAdapter`
+- After each result: calls `EmitNfeUseCase.execute()` for side effects
 
 ### 4. Use Case — `EmitNfeUseCase`
 
-Responsabilidades pós-emissão:
-1. Valida que o pedido existe em `orders`
-2. Persiste invoice via `INfePort.upsertInvoice()`
-3. Se autorizado: `IOrderRepository.updateInternalFlags({ hasInvoice: true })`
-4. Chama `RecalculateOrderStatusUseCase` → motor recalcula status com `hasInvoice=true`
+Post-emission responsibilities:
+1. Validates the order exists in `orders`
+2. Updates invoice status via `InvoicesPort.markAuthorized()` or `InvoicesPort.markError()`
+3. If authorized: `IOrderRepository.updateInternalFlags({ hasInvoice: true })`
+4. Calls `RecalculateOrderStatusUseCase` → engine recalculates status with `hasInvoice=true`
 
-### 5. Motor de Status
+### 5. Focus Webhook — `focus-webhook`
+
+- Receives Focus NFe status callbacks (authorized, canceled, rejected)
+- Finds existing invoice via `InvoicesPort.findByNfeKey()` or `InvoicesPort.findByFocusId()`
+- Updates invoice status via `InvoicesAdapter` methods
+- Triggers `EmitNfeUseCase` for order side-effects
+
+### 6. Motor de Status
 
 Com `hasInvoice=true`, a `InvoicePendingRule` não se aplica mais. O status é recalculado para o próximo estado elegível (ex: `nfe_xml_pending` quando a NF está autorizada mas o XML ainda não foi submetido ao marketplace).
 
@@ -69,6 +77,23 @@ Com `hasInvoice=true`, a `InvoicePendingRule` não se aplica mais. O status é r
 | `invoice_pending` | Aguardando emissão de NFe |
 | `nfe_xml_pending` | NFe autorizada, XML pendente de envio ao marketplace |
 | `nfe_error` | Falha na emissão da NFe |
+
+## Invoice Status Lifecycle (`invoices.status`)
+
+```
+pending → queued → processing → authorized
+                              → rejected
+                              → canceled
+                → error (retry até retry_count = 5)
+```
+
+## Key Interfaces
+
+| Interface | Location | Purpose |
+|---|---|---|
+| `InvoicesPort` | `_shared/ports/invoices-port.ts` | Port interface for invoice persistence |
+| `InvoicesAdapter` | `_shared/adapters/invoices/invoices-adapter.ts` | Concrete implementation against `invoices` table |
+| `EmitNfeUseCase` | `_shared/application/orders/EmitNfeUseCase.ts` | Orchestrates post-emission side effects |
 
 ## Regras de Prioridade no Engine
 

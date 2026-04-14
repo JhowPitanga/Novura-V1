@@ -1,673 +1,425 @@
+/**
+ * focus-webhook: receives Focus NFe status callbacks.
+ * All persistence goes through InvoicesPort/InvoicesAdapter (invoices table).
+ */
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse as json, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { jsonResponse as json } from "../_shared/adapters/infra/http-utils.ts";
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
-import { mapDomainStatus } from "../_shared/domain/focus/focus-status.ts";
+import { InvoicesAdapter } from "../_shared/adapters/invoices/invoices-adapter.ts";
+import type { InvoicesPort, InvoiceRow } from "../_shared/ports/invoices-port.ts";
+import { SupabaseOrderRepository } from "../_shared/adapters/orders/SupabaseOrderRepository.ts";
+import { SupabaseInventoryAdapter } from "../_shared/adapters/orders/SupabaseInventoryAdapter.ts";
+import { OrderStatusEngine } from "../_shared/application/orders/OrderStatusEngine.ts";
+import { HandleStockSideEffectsUseCase } from "../_shared/application/orders/HandleStockSideEffectsUseCase.ts";
+import { RecalculateOrderStatusUseCase } from "../_shared/application/orders/RecalculateOrderStatusUseCase.ts";
+import { EmitNfeUseCase } from "../_shared/application/orders/EmitNfeUseCase.ts";
 
 const RID = crypto.randomUUID();
 function log(step: string, context?: any) {
   try {
-    const entry = { source: "focus-webhook", rid: RID, ts: new Date().toISOString(), step, context: context ?? null };
-    console.log(JSON.stringify(entry));
+    console.log(JSON.stringify({ source: "focus-webhook", rid: RID, ts: new Date().toISOString(), step, context: context ?? null }));
   } catch {}
 }
 
 serve(async (req) => {
   try {
-    const hdr = {
-      host: req.headers.get("host") || null,
-      content_type: req.headers.get("content-type") || null,
-      user_agent: req.headers.get("user-agent") || null,
-      forwarded_for: req.headers.get("x-forwarded-for") || null,
-      authorization_present: !!req.headers.get("authorization"),
-    };
-    log("request_start", { method: req.method, url: req.url, headers: hdr });
+    log("request_start", { method: req.method, url: req.url });
   } catch {}
   if (req.method === "OPTIONS") return json({}, 200);
   if (req.method === "HEAD") return new Response("", { status: 200, headers: { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, GET, HEAD, OPTIONS", "access-control-allow-headers": "authorization, x-client-info, apikey, content-type" } });
-  if (!["POST", "GET"].includes(req.method)) {
-    log("method_not_allowed", { method: req.method, url: req.url });
-    return json({ error: "Method not allowed" }, 405);
-  }
+  if (!["POST", "GET"].includes(req.method)) return json({ error: "Method not allowed" }, 405);
 
   const FOCUS_WEBHOOK_SECRET = Deno.env.get("FOCUS_WEBHOOK_SECRET") || "";
   const admin = createAdminClient() as any;
+  const invoicesPort: InvoicesPort = new InvoicesAdapter();
 
   try {
+    // ── Auth ──────────────────────────────────────────────────────────
     const url = new URL(req.url);
-    const tokenQ = url.searchParams.get("secret") || url.searchParams.get("token") || "";
-    const tokenH1 = req.headers.get("x-webhook-secret") || "";
-    const tokenH2 = req.headers.get("x-webhook-token") || "";
-    const tokenH3 = req.headers.get("x-focus-webhook-secret") || "";
-    const tokenH4 = req.headers.get("x-api-token") || "";
-    const tokenH5 = req.headers.get("x-focus-token") || "";
-    const provided = [tokenQ, tokenH1, tokenH2, tokenH3, tokenH4, tokenH5].filter(Boolean);
-    const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || req.headers.get("x-authorization") || req.headers.get("X-Authorization") || "";
-    let secretOk = !!FOCUS_WEBHOOK_SECRET ? provided.some((v) => v === FOCUS_WEBHOOK_SECRET) : true;
+    const provided = [
+      url.searchParams.get("secret"), url.searchParams.get("token"),
+      req.headers.get("x-webhook-secret"), req.headers.get("x-webhook-token"),
+      req.headers.get("x-focus-webhook-secret"), req.headers.get("x-api-token"),
+      req.headers.get("x-focus-token"),
+    ].filter(Boolean) as string[];
+    const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || "";
+    let secretOk = FOCUS_WEBHOOK_SECRET ? provided.some((v) => v === FOCUS_WEBHOOK_SECRET) : true;
     let envFromAuth: "homologacao" | "producao" | null = null;
-    log("request_metadata", { method: req.method, url: req.url, providedCount: provided.length, hasServerSecret: !!FOCUS_WEBHOOK_SECRET, hasAuthHeader: !!authHeader, altHeadersPresent: { x_api_token: !!tokenH4, x_focus_token: !!tokenH5 } });
+
     if (!secretOk) {
-      try {
-        const isBasic = authHeader && authHeader.toLowerCase().startsWith("basic ");
-        log("auth_basic_check", { isBasic });
-        if (isBasic) {
-          const b64 = authHeader.slice(6).trim();
-          let raw = "";
-          try { raw = atob(b64) || ""; } catch {}
-          const tokenCandidate = (raw.split(":")[0] || "").trim();
-          log("auth_basic_token_candidate", { length: tokenCandidate.length > 0 ? tokenCandidate.length : 0 });
-          if (tokenCandidate) {
-            const { data: compMatch } = await admin
-              .from("companies")
-              .select("id, focus_token_producao, focus_token_homologacao")
-              .or(`focus_token_producao.eq.${tokenCandidate},focus_token_homologacao.eq.${tokenCandidate}`)
-              .limit(1)
-              .maybeSingle();
-            secretOk = !!compMatch?.id;
-            if (compMatch?.id) {
-              const prodTok = String(compMatch.focus_token_producao || "");
-              const homTok = String(compMatch.focus_token_homologacao || "");
-              envFromAuth = tokenCandidate === homTok ? "homologacao" : (tokenCandidate === prodTok ? "producao" : null);
-            }
-            log("auth_basic_company_match", { matched: !!compMatch?.id, envFromAuth });
-          }
-        } else if (authHeader) {
-          try {
-            const ah = String(authHeader).trim();
-            const lower = ah.toLowerCase();
-            let tokenCandidate = "";
-            if (lower.startsWith("bearer ")) {
-              tokenCandidate = ah.slice(7).trim();
-            } else if (lower.startsWith("token ")) {
-              tokenCandidate = ah.slice(6).trim();
-            } else {
-              tokenCandidate = ah;
-            }
-            log("auth_header_token_candidate", { scheme: lower.split(/\s+/)[0] || "raw", length: tokenCandidate ? tokenCandidate.length : 0 });
-            const candidates = [tokenCandidate].filter((v) => !!v);
-            for (const cand of candidates) {
-              const { data: compMatch2 } = await admin
-                .from("companies")
-                .select("id, focus_token_producao, focus_token_homologacao")
-                .or(`focus_token_producao.eq.${cand},focus_token_homologacao.eq.${cand}`)
-                .limit(1)
-                .maybeSingle();
-              if (compMatch2?.id) {
-                secretOk = true;
-                const prodTok = String(compMatch2.focus_token_producao || "");
-                const homTok = String(compMatch2.focus_token_homologacao || "");
-                envFromAuth = cand === homTok ? "homologacao" : (cand === prodTok ? "producao" : null);
-                log("auth_header_company_match", { matched: true, envFromAuth });
-                break;
-              }
-            }
-          } catch {}
-        }
-      } catch {}
+      const result = await authenticateViaCompanyToken(admin, authHeader);
+      secretOk = result.ok;
+      envFromAuth = result.env;
     }
     if (!secretOk) {
-      const providedCount = provided.length;
-      const hasAuthHeader = !!authHeader;
-      log("unauthorized", { providedCount, hasAuthHeader, reason: !!FOCUS_WEBHOOK_SECRET ? "server_secret_mismatch_or_basic_invalid" : "basic_invalid_or_missing" });
+      log("unauthorized");
       return json({ error: "Unauthorized webhook" }, 401);
     }
 
+    // ── Parse body ───────────────────────────────────────────────────
     const raw = await req.text();
     let body: any = {};
     try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
-    try {
-      const isGet = req.method === "GET";
-      const hasQuery = url.search && url.search.length > 1;
-      if ((!body || Object.keys(body).length === 0) && isGet && hasQuery) {
-        const obj: any = {};
-        url.searchParams.forEach((v, k) => { obj[k] = v; });
-        const embedded = obj.payload || obj.data || obj.body || null;
-        if (embedded && typeof embedded === "string") {
-          try { body = { ...obj, ...JSON.parse(embedded) }; } catch { body = obj; }
-        } else {
-          body = obj;
-        }
-        log("query_params_parsed", { method: req.method, query_keys: Object.keys(obj), query_count: Object.keys(obj).length });
-      }
-    } catch {}
-    try {
+    if ((!body || !Object.keys(body).length) && req.method === "GET" && url.search.length > 1) {
+      const obj: any = {};
+      url.searchParams.forEach((v, k) => { obj[k] = v; });
+      const embedded = obj.payload || obj.data || obj.body || null;
+      if (embedded && typeof embedded === "string") {
+        try { body = { ...obj, ...JSON.parse(embedded) }; } catch { body = obj; }
+      } else body = obj;
+    }
+    if (!body || !Object.keys(body).length) {
       const ct = String(req.headers.get("content-type") || "").toLowerCase();
-      const shouldParseForm = (!body || Object.keys(body).length === 0) && (ct.includes("application/x-www-form-urlencoded") || (typeof raw === "string" && raw.includes("=") && raw.includes("&")));
-      if (shouldParseForm) {
+      if (ct.includes("x-www-form-urlencoded") || (raw?.includes("=") && raw?.includes("&"))) {
         const params = new URLSearchParams(raw || "");
         const obj: any = {};
         params.forEach((v, k) => { obj[k] = v; });
-        const embedded = obj.payload || obj.data || obj.body || null;
-        if (embedded && typeof embedded === "string") {
-          try { body = { ...obj, ...JSON.parse(embedded) }; } catch { body = obj; }
-        } else {
-          body = obj;
-        }
-        log("form_body_parsed", { method: req.method, keys: Object.keys(obj), count: Object.keys(obj).length });
+        body = obj;
       }
-    } catch {}
-    log("body_received", { length: raw?.length ?? 0, preview: raw ? String(raw).slice(0, 500) : "" });
+    }
 
-    // Token webhook handling
-    try {
-      const tokenProducao = body?.token_producao || body?.api_token || body?.token || null;
-      const tokenHomologacao = body?.token_homologacao || null;
-      const env: string | null = (body?.environment || body?.ambiente || null) ? String(body?.environment || body?.ambiente) : null;
-      const refStrInit: string | null = body?.referencia || null;
-      let refInit: any = null;
-      try { refInit = refStrInit ? JSON.parse(refStrInit) : null; } catch { refInit = null; }
-      const companyIdForToken: string | null = refInit?.companyId || null;
-      const cnpjForToken: string | null = body?.cnpj || body?.cnpj_emitente || null;
-      if (tokenProducao || tokenHomologacao) {
-        let targetCompanyId: string | null = companyIdForToken;
-        if (!targetCompanyId && cnpjForToken) {
-          const { data: foundCompany } = await admin
-            .from("companies")
-            .select("id")
-            .eq("cnpj", String(cnpjForToken).replace(/\D/g, ""))
-            .limit(1)
-            .maybeSingle();
-          targetCompanyId = foundCompany?.id || null;
-        }
-        if (targetCompanyId) {
-          const updatePayload: any = {};
-          if (!env || String(env).toLowerCase().includes("prod")) updatePayload.focus_token_producao = tokenProducao || null;
-          if (!env || String(env).toLowerCase().includes("homolog")) updatePayload.focus_token_homologacao = tokenHomologacao || null;
-          if (Object.keys(updatePayload).length > 0) {
-            await admin.from("companies").update(updatePayload).eq("id", targetCompanyId);
-            log("token_update_saved", { company_id: targetCompanyId, saved: Object.keys(updatePayload) });
-            return json({ ok: true, updated_company_id: targetCompanyId, saved: Object.keys(updatePayload) }, 200);
-          }
-        }
-      }
-    } catch {}
+    // ── Token webhook handling ───────────────────────────────────────
+    const tokenResult = await handleTokenWebhook(admin, body, url);
+    if (tokenResult) return tokenResult;
 
-    const status: string = String(body?.status || body?.status_sefaz || "").trim();
+    // ── Extract fields ───────────────────────────────────────────────
+    const status = String(body?.status || body?.status_sefaz || "").trim();
     const focusId: string | null = body?.uuid || body?.id || null;
     const nfeKey: string | null = body?.chave || body?.chave_nfe || body?.chave_de_acesso || null;
-    const nfeNumber: number | null = typeof body?.numero === "number" ? body?.numero : null;
+    const nfeNumber: number | null = typeof body?.numero === "number" ? body.numero : null;
     const serieLocal: string | null = body?.serie || null;
     const authorizedAt: string | null = body?.data_autorizacao || null;
     const referenciaStr: string | null = body?.referencia || body?.ref || null;
     const xmlB64: string | null = body?.xml_base64 || null;
-    const pdfB64: string | null = body?.pdf_base64 || null;
-    const eventRaw: string | null = body?.event || url.searchParams.get("event") || null;
     const links = {
       caminho_xml: body?.caminho_xml || body?.caminho_xml_nota_fiscal || null,
       caminho_pdf: body?.caminho_pdf || body?.caminho_pdf_danfe || body?.caminho_danfe || null,
     };
-    log("hook_event_meta", { event: eventRaw, status, status_sefaz: body?.status_sefaz || null, mensagem_sefaz: body?.mensagem_sefaz || body?.message || null, referencia: referenciaStr, focusId, nfeKey, nfeNumber, serieLocal });
+    log("hook_event_meta", { status, focusId, nfeKey, nfeNumber, referencia: referenciaStr });
 
-    let ref: any = null;
-    try { ref = referenciaStr ? JSON.parse(referenciaStr) : null; } catch { ref = null; }
-    if ((!ref || typeof ref !== "object") && referenciaStr) {
-      const rr = String(referenciaStr);
-      let companyIdP: string | null = null;
-      let orderIdP: string | null = null;
-      let packIdP: string | null = null;
-      const packIdx = rr.indexOf("pack-");
-      const orderIdx = rr.indexOf("order-");
-      const companyMarker = "-company-";
-      const companyIdx = rr.indexOf(companyMarker);
-      if (packIdx >= 0 && orderIdx > packIdx) {
-        packIdP = rr.substring(packIdx + 5, orderIdx).trim();
-      }
-      if (orderIdx >= 0 && companyIdx > orderIdx) {
-        orderIdP = rr.substring(orderIdx + 6, companyIdx).trim();
-      }
-      if (companyIdx >= 0) {
-        const start = companyIdx + companyMarker.length;
-        const retryIdx = rr.indexOf("-retry-", start);
-        const compRaw = rr.substring(start, retryIdx >= 0 ? retryIdx : rr.length).trim();
-        companyIdP = compRaw;
-      }
-      const parsed = {
-        companyId: companyIdP || null,
-        marketplace_order_id: orderIdP || null,
-        pack_id: packIdP || null,
-      };
-      ref = parsed;
-      log("ref_string_parsed", { companyId: parsed.companyId ?? null, marketplaceOrderId: parsed.marketplace_order_id ?? null, packId: parsed.pack_id ?? null });
-    }
-    log("payload_meta", { status, focusId, nfeKey, nfeNumber, serieLocal, authorizedAt, hasXmlB64: !!xmlB64, hasPdfB64: !!pdfB64, ref_companyId: ref?.companyId ?? null, ref_marketplace: ref?.marketplace ?? null, ref_order_id: ref?.marketplace_order_id ?? null, ref_pack_id: ref?.pack_id ?? null });
-
+    // ── Parse referencia ─────────────────────────────────────────────
+    const ref = parseReferencia(referenciaStr);
     const companyId: string | null = ref?.companyId || null;
     const marketplace: string | null = ref?.marketplace || null;
     const marketplaceOrderId: string | null = ref?.marketplace_order_id || null;
-    const packId: number | null = typeof ref?.pack_id === "number" ? ref.pack_id : null;
 
-    const whereKey = nfeKey ? { nfe_key: nfeKey } : (focusId ? { focus_nfe_id: focusId } : null);
-    let existing: any = null;
-    if (whereKey) {
-      const { data: found, error: selErr } = await admin
-        .from("notas_fiscais")
-        .select("id, company_id")
-        .match(whereKey)
+    // ── Find existing invoice ────────────────────────────────────────
+    let invoice: InvoiceRow | null = null;
+    if (nfeKey) invoice = await invoicesPort.findByNfeKey(admin, nfeKey);
+    if (!invoice && focusId) invoice = await invoicesPort.findByFocusId(admin, focusId);
+    if (!invoice && companyId && marketplaceOrderId) {
+      const envRaw = resolveEnvironment(body, ref, envFromAuth);
+      const idempotencyKey = companyId && ref?.organizationId
+        ? `${ref.organizationId}:${ref.orderId || marketplaceOrderId}:${envRaw || "producao"}`
+        : null;
+      if (idempotencyKey) invoice = await invoicesPort.findByIdempotencyKey(admin, idempotencyKey);
+    }
+    log("invoice_found", { invoiceId: invoice?.id ?? null });
+
+    // ── Resolve environment ──────────────────────────────────────────
+    const envResolved = resolveEnvironment(body, ref, envFromAuth);
+
+    // ── Normalize XML/PDF URLs ───────────────────────────────────────
+    const xmlUrl = normalizeUrl(links.caminho_xml);
+    const pdfUrl = normalizeUrl(links.caminho_pdf);
+
+    // ── Build use cases ──────────────────────────────────────────────
+    const orderRepo = new SupabaseOrderRepository(admin);
+    const inventory = new SupabaseInventoryAdapter(admin);
+    const engine = new OrderStatusEngine();
+    const stockUseCase = new HandleStockSideEffectsUseCase(inventory);
+    const recalculate = new RecalculateOrderStatusUseCase(orderRepo, engine, stockUseCase);
+    const emitNfeUseCase = new EmitNfeUseCase(admin, orderRepo, invoicesPort, recalculate);
+
+    const stLower = status.toLowerCase();
+    const isAuthorized = stLower === "autorizado" || stLower === "autorizada" || stLower === "authorized";
+    const isCanceled = stLower === "cancelado" || stLower === "cancelada";
+    const isError = stLower === "rejeitado" || stLower === "denegado" || stLower === "erro_autorizacao";
+
+    if (invoice?.id) {
+      // ── Update existing invoice ──────────────────────────────────
+      const updates: Partial<InvoiceRow> = {};
+      if (focusId) updates.focus_id = focusId;
+      if (nfeKey) updates.nfe_key = nfeKey;
+      if (nfeNumber) updates.nfe_number = nfeNumber;
+      if (serieLocal) (updates as any).serie = serieLocal;
+      if (xmlUrl) (updates as any).xml_url = xmlUrl;
+      if (pdfUrl) (updates as any).pdf_url = pdfUrl;
+      if (envResolved) updates.emission_environment = envResolved as any;
+
+      if (isAuthorized) {
+        if (nfeKey && nfeNumber) {
+          await invoicesPort.markAuthorized(admin, invoice.id, nfeKey, nfeNumber);
+        }
+        if (Object.keys(updates).length) await invoicesPort.updateFields(admin, invoice.id, updates);
+
+        // Extract total_value from XML if available
+        await extractAndUpdateFromXml(admin, invoicesPort, invoice, companyId, xmlUrl, xmlB64, envResolved);
+
+        // Trigger order side-effects
+        const orderId = invoice.order_id;
+        if (orderId && invoice.organization_id) {
+          await emitNfeUseCase.execute({
+            orderId, organizationId: invoice.organization_id, companyId: invoice.company_id,
+            environment: invoice.emission_environment, focusId, nfeKey, nfeNumber,
+            authorized: true, errorMessage: null,
+          });
+        }
+      } else if (isCanceled) {
+        await invoicesPort.markCanceled(admin, invoice.id);
+        if (Object.keys(updates).length) await invoicesPort.updateFields(admin, invoice.id, updates);
+      } else if (isError) {
+        const errMsg = body?.mensagem_sefaz || body?.message || body?.error || "Rejected";
+        await invoicesPort.markError(admin, invoice.id, errMsg, invoice.retry_count);
+        if (Object.keys(updates).length) await invoicesPort.updateFields(admin, invoice.id, updates);
+
+        const orderId = invoice.order_id;
+        if (orderId && invoice.organization_id) {
+          await emitNfeUseCase.execute({
+            orderId, organizationId: invoice.organization_id, companyId: invoice.company_id,
+            environment: invoice.emission_environment, focusId, nfeKey: null, nfeNumber: null,
+            authorized: false, errorMessage: errMsg,
+          });
+        }
+      } else if (Object.keys(updates).length) {
+        await invoicesPort.updateFields(admin, invoice.id, updates);
+      }
+
+      log("invoice_updated", { id: invoice.id, status });
+      return json({ ok: true, updated_id: invoice.id });
+    }
+
+    // ── No existing invoice: resolve order and create ──────────────
+    if (!companyId) {
+      log("insert_blocked_missing_company");
+      return json({ ok: false, error: "Missing company_id for invoice insert" }, 422);
+    }
+
+    let orderId: string | null = null;
+    let organizationId: string | null = null;
+    if (companyId && marketplaceOrderId) {
+      const { data: orderRow } = await admin
+        .from("orders")
+        .select("id, organization_id")
+        .eq("marketplace_order_id", marketplaceOrderId)
         .limit(1)
         .maybeSingle();
-      if (!selErr && found) existing = found;
-      log("nf_select", { whereKey, selErr: selErr?.message ?? null, foundId: found?.id ?? null });
+      orderId = orderRow?.id || null;
+      organizationId = orderRow?.organization_id || null;
+    }
+    if (!organizationId && companyId) {
+      const { data: compRow } = await admin.from("companies").select("organization_id").eq("id", companyId).limit(1).maybeSingle();
+      organizationId = compRow?.organization_id || null;
+    }
+    if (!organizationId) {
+      log("insert_blocked_no_org");
+      return json({ ok: false, error: "Could not resolve organization_id" }, 422);
     }
 
-    const nfWrite: any = {
-      status_focus: status || null,
-      status: mapDomainStatus(status || null),
-      focus_nfe_id: focusId,
-      nfe_key: nfeKey,
-      nfe_number: nfeNumber,
-      serie: serieLocal,
-      authorized_at: authorizedAt,
-      tipo: "Saída",
-    };
-    try {
-      let envRaw: string | null = (body?.environment || body?.ambiente || null) ? String(body?.environment || body?.ambiente) : null;
-      if (!envRaw && ref && typeof ref?.environment === "string") envRaw = String(ref.environment);
-      const envLower = envRaw ? envRaw.toLowerCase() : "";
-      let emissaoAmbiente = envLower.includes("homolog") ? "homologacao" : (envLower ? "producao" : null);
-      if (!emissaoAmbiente && envFromAuth) emissaoAmbiente = envFromAuth;
-      if (emissaoAmbiente) (nfWrite as any).emissao_ambiente = emissaoAmbiente;
-      log("env_resolved", { envRaw, emissaoAmbiente });
-    } catch {}
+    const idempotencyKey = `${organizationId}:${orderId || marketplaceOrderId}:${envResolved || "producao"}`;
 
-    if (xmlB64) nfWrite.xml_base64 = xmlB64;
-    if (pdfB64) nfWrite.pdf_base64 = pdfB64;
-
-    if (companyId) nfWrite.company_id = companyId;
-    if (marketplace) nfWrite.marketplace = marketplace;
-    if (marketplaceOrderId) nfWrite.marketplace_order_id = marketplaceOrderId;
-    {
-      const packRaw: any = ref?.pack_id;
-      if (packRaw !== undefined && packRaw !== null) {
-        const cleaned = String(packRaw).trim().replace(/\-$/, "");
-        (nfWrite as any).pack_id = cleaned;
+    // Check again by idempotency key (may have been created between lookups)
+    const existingByKey = await invoicesPort.findByIdempotencyKey(admin, idempotencyKey);
+    if (existingByKey?.id) {
+      if (isAuthorized && nfeKey && nfeNumber) {
+        await invoicesPort.markAuthorized(admin, existingByKey.id, nfeKey, nfeNumber);
+      } else if (isCanceled) {
+        await invoicesPort.markCanceled(admin, existingByKey.id);
+      } else if (isError) {
+        const errMsg = body?.mensagem_sefaz || body?.message || "Rejected";
+        await invoicesPort.markError(admin, existingByKey.id, errMsg, existingByKey.retry_count);
       }
+      return json({ ok: true, updated_id: existingByKey.id });
     }
 
-    try {
-      let orderIdResolved: string | null = null;
-      if (companyId && marketplaceOrderId) {
-        try {
-          const { data: row1 } = await admin
-            .from("marketplace_orders_presented_new")
-            .select("id, marketplace, pack_id")
-            .eq("company_id", companyId)
-            .eq("marketplace_order_id", marketplaceOrderId)
-            .limit(1)
-            .maybeSingle();
-          orderIdResolved = row1?.id || null;
-          if (row1) {
-            const mk = String((row1 as any)?.marketplace || "").trim();
-            if (mk && !nfWrite.marketplace) (nfWrite as any).marketplace = mk;
-            const pNew = (row1 as any)?.pack_id;
-            if ((nfWrite as any).pack_id === undefined || (nfWrite as any).pack_id === null) {
-              if (pNew !== undefined && pNew !== null) {
-                const cleaned = String(pNew).trim().replace(/\-$/, "");
-                (nfWrite as any).pack_id = cleaned;
-              }
-            }
-          }
-        } catch {}
-        if (!orderIdResolved) {
-          try {
-            const { data: row1b } = await admin
-              .from("marketplace_orders_presented")
-              .select("id, marketplace, pack_id")
-              .eq("company_id", companyId)
-              .eq("marketplace_order_id", marketplaceOrderId)
-              .limit(1)
-              .maybeSingle();
-            orderIdResolved = row1b?.id || null;
-            if (row1b) {
-              const mk = String((row1b as any)?.marketplace || "").trim();
-              if (mk && !nfWrite.marketplace) (nfWrite as any).marketplace = mk;
-              const pNew = (row1b as any)?.pack_id;
-              if ((nfWrite as any).pack_id === undefined || (nfWrite as any).pack_id === null) {
-                if (pNew !== undefined && pNew !== null) {
-                  const cleaned = String(pNew).trim().replace(/\-$/, "");
-                  (nfWrite as any).pack_id = cleaned;
-                }
-              }
-            }
-          } catch {}
-        }
-        if (!orderIdResolved) {
-          try {
-            const { data: row2 } = await admin
-              .from("orders")
-              .select("id")
-              .eq("company_id", companyId)
-              .eq("marketplace_order_id", marketplaceOrderId)
-              .limit(1)
-              .maybeSingle();
-            orderIdResolved = row2?.id || null;
-          } catch {}
-        }
-        if (orderIdResolved) (nfWrite as any).order_id = orderIdResolved;
-        log("order_id_resolved", { companyId, marketplaceOrderId, orderId: orderIdResolved });
-      }
-    } catch {}
+    // Create new invoice via upsert
+    const newInvoice = await invoicesPort.createQueued(admin, {
+      organization_id: organizationId,
+      order_id: orderId,
+      company_id: companyId,
+      idempotency_key: idempotencyKey,
+      emission_environment: (envResolved || "producao") as any,
+      marketplace: marketplace,
+      marketplace_order_id: marketplaceOrderId,
+      total_value: null,
+      payload_sent: {} as any,
+    });
 
-    try {
-      if (!existing && companyId && (nfWrite as any)?.order_id) {
-        const { data: found2 } = await admin
-          .from("notas_fiscais")
-          .select("id, company_id")
-          .eq("company_id", companyId)
-          .eq("order_id", (nfWrite as any).order_id)
-          .limit(1)
-          .maybeSingle();
-        if (found2?.id) {
-          existing = found2;
-          log("nf_select_fallback", { companyId, orderId: (nfWrite as any).order_id, foundId: found2?.id ?? null });
-        }
+    if (isAuthorized && nfeKey && nfeNumber) {
+      await invoicesPort.markAuthorized(admin, newInvoice.id, nfeKey, nfeNumber);
+      if (orderId) {
+        await emitNfeUseCase.execute({
+          orderId, organizationId, companyId,
+          environment: (envResolved || "producao") as any, focusId, nfeKey, nfeNumber,
+          authorized: true, errorMessage: null,
+        });
       }
-    } catch {}
-
-    const respMeta = {
-      status_sefaz: body?.status_sefaz || null,
-      mensagem_sefaz: body?.mensagem_sefaz || body?.message || body?.error || null,
-      links,
-    };
-    const stLowerMeta = String(status || "").toLowerCase();
-    if (stLowerMeta === "erro_autorizacao" || stLowerMeta === "rejeitado" || stLowerMeta === "denegado") {
-      (nfWrite as any).error_details = respMeta;
+    } else if (isCanceled) {
+      await invoicesPort.markCanceled(admin, newInvoice.id);
+    } else if (isError) {
+      const errMsg = body?.mensagem_sefaz || body?.message || "Rejected";
+      await invoicesPort.markError(admin, newInvoice.id, errMsg, 0);
     }
-    try {
-      function normalize(path: string | null): string | null {
-        if (!path) return null;
-        const p0 = String(path).trim();
-        const p = p0.replace(/^['"`]\s*|\s*['"`]$/g, "");
-        if (p.startsWith("http://") || p.startsWith("https://")) return p;
-        try { const base = new URL("https://api.focusnfe.com.br/"); return new URL(p, base).toString(); } catch { return p; }
-      }
-      const xmlUrlNorm = normalize(links.caminho_xml || null);
-      const pdfUrlNorm = normalize(links.caminho_pdf || null);
-      if (xmlUrlNorm) (nfWrite as any).xml_url = xmlUrlNorm;
-      if (pdfUrlNorm) (nfWrite as any).pdf_url = pdfUrlNorm;
-      log("links_normalized", { xmlUrl: xmlUrlNorm ?? null, pdfUrl: pdfUrlNorm ?? null });
-    } catch {}
 
-    if (existing?.id) {
-      const { error: updErr } = await admin.from("notas_fiscais").update(nfWrite).eq("id", existing.id);
-      if (updErr) {
-        log("nf_update_error", { id: existing.id, error: updErr.message });
-        return json({ ok: false, error: updErr.message }, 200);
-      }
-      log("nf_update_ok", { id: existing.id });
-      let organizationsId: string | null = null;
-      if (companyId) {
-        try {
-          const { data: compOrg } = await admin.from("companies").select("organization_id, focus_token_producao, focus_token_homologacao").eq("id", companyId).limit(1).maybeSingle();
-          organizationsId = compOrg?.organization_id || null;
-          const st = String(status || "").toLowerCase();
-          const isAuthorized = (st === "autorizado" || st === "autorizada" || st === "authorized");
-          if (isAuthorized && organizationsId && companyId && marketplaceOrderId) {
-            let xmlText: string | null = null;
-            const xmlUrl = (nfWrite as any)?.xml_url || null;
-            const envLower = String((nfWrite as any)?.emissao_ambiente || "").toLowerCase();
-            const useToken = envLower.includes("homolog") ? compOrg?.focus_token_homologacao : compOrg?.focus_token_producao;
-            if (xmlUrl) {
-              try {
-                const basic = useToken ? "Basic " + btoa(`${String(useToken)}:`) : undefined;
-                const respXml = await fetch(String(xmlUrl), { method: "GET", headers: basic ? { Authorization: basic } : undefined });
-                log("xml_fetch_attempt", { url: xmlUrl, status: respXml.status });
-                if (respXml.ok) xmlText = await respXml.text();
-              } catch {}
-            }
-            if (!xmlText && xmlB64) {
-              try { xmlText = atob(xmlB64); } catch {}
-            }
-            if (xmlText) {
-              try {
-                const m = xmlText.match(/<vNF>([\d.,]+)<\/vNF>/);
-                if (m && m[1]) {
-                  const raw = m[1].replace(/,/g, "."); 
-                  const num = Number(raw);
-                  if (Number.isFinite(num)) {
-                    await admin.from("notas_fiscais").update({ total_value: num, tipo: "Saída" }).eq("id", existing.id);
-                    log("nf_total_value_set", { id: existing.id, total_value: num });
-                  }
-                }
-              } catch {}
-            }
-            if (xmlText) {
-              try {
-                const mNNF = xmlText.match(/<nNF>(\d+)<\/nNF>/);
-                const mSerie = xmlText.match(/<serie>(\d+)<\/serie>/);
-                const mDhEmi = xmlText.match(/<dhEmi>([^<]+)<\/dhEmi>/);
-                const updates: any = {};
-                if (mNNF && mNNF[1]) updates.nfe_number = Number(mNNF[1]);
-                if (mSerie && mSerie[1]) updates.serie = mSerie[1];
-                if (mDhEmi && mDhEmi[1] && !authorizedAt) {
-                  const iso = new Date(mDhEmi[1]).toISOString();
-                  updates.authorized_at = iso;
-                }
-                if (Object.keys(updates).length > 0) {
-                  await admin.from("notas_fiscais").update(updates).eq("id", existing.id);
-                  log("nf_meta_from_xml_set", { id: existing.id, hasNNF: !!updates.nfe_number, hasSerie: !!updates.serie, hasAuthorizedAt: !!updates.authorized_at });
-                }
-              } catch {}
-            }
-            if (xmlText) {
-              try {
-                await admin
-                  .from("marketplace_orders_presented_new")
-                  .update({ xml_to_submit: xmlText })
-                  .eq("organizations_id", organizationsId)
-                  .eq("company_id", companyId)
-                  .eq("marketplace", marketplace)
-                  .eq("marketplace_order_id", marketplaceOrderId);
-                log("presented_new_xml_saved", { organizationsId, companyId, marketplaceOrderId });
-              } catch {}
-            }
-          }
-          if (organizationsId && companyId && marketplaceOrderId) {
-            const stLower = String(status || "").toLowerCase();
-            if (stLower === "rejeitado" || stLower === "denegado" || stLower === "erro_autorizacao") {
-              try {
-                await admin
-                  .from("marketplace_orders_presented_new")
-                  .update({ status_interno: "Falha na emissão" })
-                  .eq("organizations_id", organizationsId)
-                  .eq("company_id", companyId)
-                  .eq("marketplace", marketplace)
-                  .eq("marketplace_order_id", marketplaceOrderId);
-                log("presented_new_update_failed", { organizationsId, companyId, marketplaceOrderId, status: stLower });
-              } catch {}
-            } else if (isAuthorized) {
-              try {
-                let nextInternal: string = "subir xml";
-                await admin
-                  .from("notas_fiscais")
-                  .update({ marketplace_submission_status: "pending" })
-                  .eq("company_id", companyId)
-                  .eq("marketplace_order_id", marketplaceOrderId);
-                let updOk = false;
-                try {
-                  const { data: d1, error: e1 } = await admin
-                    .from("marketplace_orders_presented_new")
-                    .update({ status_interno: nextInternal })
-                    .eq("organizations_id", organizationsId)
-                    .eq("company_id", companyId)
-                    .eq("marketplace", marketplace)
-                    .eq("marketplace_order_id", marketplaceOrderId)
-                    .select("id");
-                  updOk = !e1 && Array.isArray(d1) && d1.length > 0;
-                  if (!updOk) {
-                    const { data: d2, error: e2 } = await admin
-                      .from("marketplace_orders_presented_new")
-                      .update({ status_interno: nextInternal })
-                      .eq("organizations_id", organizationsId)
-                      .eq("company_id", companyId)
-                      .eq("marketplace_order_id", marketplaceOrderId)
-                      .select("id");
-                    updOk = !e2 && Array.isArray(d2) && d2.length > 0;
-                    if (!updOk) {
-                      const { data: d3, error: e3 } = await admin
-                        .from("marketplace_orders_presented_new")
-                        .update({ status_interno: nextInternal })
-                        .eq("company_id", companyId)
-                        .eq("marketplace_order_id", marketplaceOrderId)
-                        .select("id");
-                      updOk = !e3 && Array.isArray(d3) && d3.length > 0;
-                    }
-                  }
-                } catch {}
-                if (updOk) {
-                  log("presented_new_update_authorized", { organizationsId, companyId, marketplaceOrderId, status_interno: nextInternal, marketplace_submission_status: "pending" });
-                } else {
-                  log("presented_new_update_authorized_not_found", { organizationsId, companyId, marketplaceOrderId, marketplace, attempted: ["with_marketplace", "without_marketplace", "company_only"] });
-                }
-              } catch {}
-            }
-          }
-        } catch {}
-      }
-      return json({ ok: true, updated_id: existing.id });
-    } else {
-      if (!((nfWrite as any).company_id)) {
-        log("nf_insert_blocked_missing_company", { companyId, marketplaceOrderId, hasCompanyId: !!(nfWrite as any).company_id, hasOrderId: !!(nfWrite as any).order_id });
-        return json({ ok: false, error: "Missing company_id for notas_fiscais insert" }, 422);
-      }
-      const { data: ins, error: insErr } = await admin.from("notas_fiscais").insert(nfWrite).select("id").single();
-      if (insErr) {
-        log("nf_insert_error", { error: insErr.message });
-        return json({ ok: false, error: insErr.message }, 200);
-      }
-      log("nf_insert_ok", { id: ins?.id ?? null });
-      let organizationsId: string | null = null;
-      if (companyId) {
-        try {
-          const { data: compOrg } = await admin.from("companies").select("organization_id, focus_token_producao, focus_token_homologacao").eq("id", companyId).limit(1).maybeSingle();
-          organizationsId = compOrg?.organization_id || null;
-          const st = String(status || "").toLowerCase();
-          const isAuthorized = (st === "autorizado" || st === "autorizada" || st === "authorized");
-          if (isAuthorized && organizationsId && companyId && marketplaceOrderId) {
-            let xmlText: string | null = null;
-            const xmlUrl = (nfWrite as any)?.xml_url || null;
-            const envLower = String((nfWrite as any)?.emissao_ambiente || "").toLowerCase();
-            const useToken = envLower.includes("homolog") ? compOrg?.focus_token_homologacao : compOrg?.focus_token_producao;
-            if (xmlUrl) {
-              try {
-                const basic = useToken ? "Basic " + btoa(`${String(useToken)}:`) : undefined;
-                const respXml = await fetch(String(xmlUrl), { method: "GET", headers: basic ? { Authorization: basic } : undefined });
-                log("xml_fetch_attempt", { url: xmlUrl, status: respXml.status });
-                if (respXml.ok) xmlText = await respXml.text();
-              } catch {}
-            }
-            if (!xmlText && xmlB64) {
-              try { xmlText = atob(xmlB64); } catch {}
-            }
-            if (xmlText && ins?.id) {
-              try {
-                const m = xmlText.match(/<vNF>([\d.,]+)<\/vNF>/);
-                if (m && m[1]) {
-                  const raw = m[1].replace(/,/g, "."); 
-                  const num = Number(raw);
-                  if (Number.isFinite(num)) {
-                    await admin.from("notas_fiscais").update({ total_value: num, tipo: "Saída" }).eq("id", ins.id);
-                    log("nf_total_value_set", { id: ins.id, total_value: num });
-                  }
-                }
-              } catch {}
-            }
-            if (xmlText && ins?.id) {
-              try {
-                const mNNF = xmlText.match(/<nNF>(\d+)<\/nNF>/);
-                const mSerie = xmlText.match(/<serie>(\d+)<\/serie>/);
-                const mDhEmi = xmlText.match(/<dhEmi>([^<]+)<\/dhEmi>/);
-                const updates: any = {};
-                if (mNNF && mNNF[1]) updates.nfe_number = Number(mNNF[1]);
-                if (mSerie && mSerie[1]) updates.serie = mSerie[1];
-                if (mDhEmi && mDhEmi[1] && !authorizedAt) {
-                  const iso = new Date(mDhEmi[1]).toISOString();
-                  updates.authorized_at = iso;
-                }
-                if (Object.keys(updates).length > 0) {
-                  await admin.from("notas_fiscais").update(updates).eq("id", ins.id);
-                  log("nf_meta_from_xml_set", { id: ins.id, hasNNF: !!updates.nfe_number, hasSerie: !!updates.serie, hasAuthorizedAt: !!updates.authorized_at });
-                }
-              } catch {}
-            }
-            if (xmlText) {
-              try {
-                await admin
-                  .from("marketplace_orders_presented_new")
-                  .update({ xml_to_submit: xmlText })
-                  .eq("organizations_id", organizationsId)
-                  .eq("company_id", companyId)
-                  .eq("marketplace", marketplace)
-                  .eq("marketplace_order_id", marketplaceOrderId);
-                log("presented_new_xml_saved", { organizationsId, companyId, marketplaceOrderId });
-              } catch {}
-            }
-          }
-          if (organizationsId && companyId && marketplaceOrderId) {
-            const stLower = String(status || "").toLowerCase();
-            if (stLower === "rejeitado" || stLower === "denegado" || stLower === "erro_autorizacao") {
-              try {
-                await admin
-                  .from("marketplace_orders_presented_new")
-                  .update({ status_interno: "Falha na emissão" })
-                  .eq("organizations_id", organizationsId)
-                  .eq("company_id", companyId)
-                  .eq("marketplace", marketplace)
-                  .eq("marketplace_order_id", marketplaceOrderId);
-                log("presented_new_update_failed", { organizationsId, companyId, marketplaceOrderId, status: stLower });
-              } catch {}
-            } else if (isAuthorized) {
-              try {
-                let nextInternal: string = "subir xml";
-                await admin
-                  .from("notas_fiscais")
-                  .update({ marketplace_submission_status: "pending" })
-                  .eq("company_id", companyId)
-                  .eq("marketplace_order_id", marketplaceOrderId);
-                let updOk = false;
-                try {
-                  const { data: d1, error: e1 } = await admin
-                    .from("marketplace_orders_presented_new")
-                    .update({ status_interno: nextInternal })
-                    .eq("organizations_id", organizationsId)
-                    .eq("company_id", companyId)
-                    .eq("marketplace", marketplace)
-                    .eq("marketplace_order_id", marketplaceOrderId)
-                    .select("id");
-                  updOk = !e1 && Array.isArray(d1) && d1.length > 0;
-                  if (!updOk) {
-                    const { data: d2, error: e2 } = await admin
-                      .from("marketplace_orders_presented_new")
-                      .update({ status_interno: nextInternal })
-                      .eq("organizations_id", organizationsId)
-                      .eq("company_id", companyId)
-                      .eq("marketplace_order_id", marketplaceOrderId)
-                      .select("id");
-                    updOk = !e2 && Array.isArray(d2) && d2.length > 0;
-                    if (!updOk) {
-                      const { data: d3, error: e3 } = await admin
-                        .from("marketplace_orders_presented_new")
-                        .update({ status_interno: nextInternal })
-                        .eq("company_id", companyId)
-                        .eq("marketplace_order_id", marketplaceOrderId)
-                        .select("id");
-                      updOk = !e3 && Array.isArray(d3) && d3.length > 0;
-                    }
-                  }
-                } catch {}
-                if (updOk) {
-                  log("presented_new_update_authorized", { organizationsId, companyId, marketplaceOrderId, status_interno: nextInternal, marketplace_submission_status: "pending" });
-                } else {
-                  log("presented_new_update_authorized_not_found", { organizationsId, companyId, marketplaceOrderId, marketplace, attempted: ["with_marketplace", "without_marketplace", "company_only"] });
-                }
-              } catch {}
-            }
-          }
-        } catch {}
-      }
-      return json({ ok: true, inserted_id: ins?.id || null });
+    if (focusId || xmlUrl || pdfUrl) {
+      const updates: any = {};
+      if (focusId) updates.focus_id = focusId;
+      if (nfeKey) updates.nfe_key = nfeKey;
+      if (nfeNumber) updates.nfe_number = nfeNumber;
+      if (serieLocal) updates.serie = serieLocal;
+      if (xmlUrl) updates.xml_url = xmlUrl;
+      if (pdfUrl) updates.pdf_url = pdfUrl;
+      if (Object.keys(updates).length) await invoicesPort.updateFields(admin, newInvoice.id, updates);
     }
+
+    log("invoice_inserted", { id: newInvoice.id });
+    return json({ ok: true, inserted_id: newInvoice.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     log("exception", { message: msg });
     return json({ error: msg }, 500);
   }
 });
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+async function authenticateViaCompanyToken(
+  admin: any,
+  authHeader: string,
+): Promise<{ ok: boolean; env: "homologacao" | "producao" | null }> {
+  if (!authHeader) return { ok: false, env: null };
+  let tokenCandidate = "";
+  const lower = authHeader.toLowerCase();
+  if (lower.startsWith("basic ")) {
+    try {
+      const raw = atob(authHeader.slice(6).trim());
+      tokenCandidate = (raw.split(":")[0] || "").trim();
+    } catch { return { ok: false, env: null }; }
+  } else if (lower.startsWith("bearer ")) {
+    tokenCandidate = authHeader.slice(7).trim();
+  } else if (lower.startsWith("token ")) {
+    tokenCandidate = authHeader.slice(6).trim();
+  } else {
+    tokenCandidate = authHeader.trim();
+  }
+  if (!tokenCandidate) return { ok: false, env: null };
+  const { data: comp } = await admin
+    .from("companies")
+    .select("id, focus_token_producao, focus_token_homologacao")
+    .or(`focus_token_producao.eq.${tokenCandidate},focus_token_homologacao.eq.${tokenCandidate}`)
+    .limit(1)
+    .maybeSingle();
+  if (!comp?.id) return { ok: false, env: null };
+  const env = tokenCandidate === comp.focus_token_homologacao ? "homologacao" : "producao";
+  return { ok: true, env };
+}
+
+async function handleTokenWebhook(admin: any, body: any, url: URL): Promise<Response | null> {
+  const tokenProducao = body?.token_producao || body?.api_token || body?.token || null;
+  const tokenHomologacao = body?.token_homologacao || null;
+  if (!tokenProducao && !tokenHomologacao) return null;
+
+  const refStr = body?.referencia || null;
+  let ref: any = null;
+  try { ref = refStr ? JSON.parse(refStr) : null; } catch {}
+  const companyId = ref?.companyId || null;
+  const cnpj = body?.cnpj || body?.cnpj_emitente || null;
+  let targetId = companyId;
+  if (!targetId && cnpj) {
+    const { data } = await admin.from("companies").select("id").eq("cnpj", String(cnpj).replace(/\D/g, "")).limit(1).maybeSingle();
+    targetId = data?.id || null;
+  }
+  if (!targetId) return null;
+
+  const env = body?.environment || body?.ambiente || null;
+  const updates: any = {};
+  if (!env || String(env).toLowerCase().includes("prod")) updates.focus_token_producao = tokenProducao || null;
+  if (!env || String(env).toLowerCase().includes("homolog")) updates.focus_token_homologacao = tokenHomologacao || null;
+  if (!Object.keys(updates).length) return null;
+
+  await admin.from("companies").update(updates).eq("id", targetId);
+  return json({ ok: true, updated_company_id: targetId, saved: Object.keys(updates) }, 200);
+}
+
+function parseReferencia(referenciaStr: string | null): any {
+  if (!referenciaStr) return null;
+  try { const parsed = JSON.parse(referenciaStr); if (typeof parsed === "object") return parsed; } catch {}
+  const rr = referenciaStr;
+  const packIdx = rr.indexOf("pack-");
+  const orderIdx = rr.indexOf("order-");
+  const companyMarker = "-company-";
+  const companyIdx = rr.indexOf(companyMarker);
+  let packId = null, orderId = null, companyId = null;
+  if (packIdx >= 0 && orderIdx > packIdx) packId = rr.substring(packIdx + 5, orderIdx).trim();
+  if (orderIdx >= 0 && companyIdx > orderIdx) orderId = rr.substring(orderIdx + 6, companyIdx).trim();
+  if (companyIdx >= 0) {
+    const start = companyIdx + companyMarker.length;
+    const retryIdx = rr.indexOf("-retry-", start);
+    companyId = rr.substring(start, retryIdx >= 0 ? retryIdx : rr.length).trim();
+  }
+  return { companyId, marketplace_order_id: orderId, pack_id: packId };
+}
+
+function resolveEnvironment(
+  body: any,
+  ref: any,
+  envFromAuth: "homologacao" | "producao" | null,
+): "homologacao" | "producao" | null {
+  let envRaw = body?.environment || body?.ambiente || ref?.environment || null;
+  if (envRaw) {
+    const lower = String(envRaw).toLowerCase();
+    return lower.includes("homolog") ? "homologacao" : "producao";
+  }
+  return envFromAuth;
+}
+
+function normalizeUrl(path: string | null): string | null {
+  if (!path) return null;
+  const p = String(path).trim().replace(/^['"`]\s*|\s*['"`]$/g, "");
+  if (p.startsWith("http://") || p.startsWith("https://")) return p;
+  try { return new URL(p, "https://api.focusnfe.com.br/").toString(); } catch { return p; }
+}
+
+async function extractAndUpdateFromXml(
+  admin: any,
+  invoicesPort: InvoicesPort,
+  invoice: InvoiceRow,
+  companyId: string | null,
+  xmlUrl: string | null,
+  xmlB64: string | null,
+  envResolved: string | null,
+): Promise<void> {
+  let xmlText: string | null = null;
+  if (xmlUrl && companyId) {
+    try {
+      const { data: comp } = await admin.from("companies").select("focus_token_producao, focus_token_homologacao").eq("id", companyId).limit(1).maybeSingle();
+      const useToken = String(envResolved || "").includes("homolog") ? comp?.focus_token_homologacao : comp?.focus_token_producao;
+      const basicAuth = useToken ? "Basic " + btoa(`${String(useToken)}:`) : undefined;
+      const resp = await fetch(xmlUrl, { method: "GET", headers: basicAuth ? { Authorization: basicAuth } : undefined });
+      if (resp.ok) xmlText = await resp.text();
+    } catch {}
+  }
+  if (!xmlText && xmlB64) {
+    try { xmlText = atob(xmlB64); } catch {}
+  }
+  if (!xmlText) return;
+
+  const updates: any = {};
+  const mVNF = xmlText.match(/<vNF>([\d.,]+)<\/vNF>/);
+  if (mVNF?.[1]) {
+    const num = Number(mVNF[1].replace(/,/g, "."));
+    if (Number.isFinite(num)) updates.total_value = num;
+  }
+  const mNNF = xmlText.match(/<nNF>(\d+)<\/nNF>/);
+  if (mNNF?.[1]) updates.nfe_number = Number(mNNF[1]);
+  const mSerie = xmlText.match(/<serie>(\d+)<\/serie>/);
+  if (mSerie?.[1]) updates.serie = mSerie[1];
+  const mDhEmi = xmlText.match(/<dhEmi>([^<]+)<\/dhEmi>/);
+  if (mDhEmi?.[1] && !invoice.authorized_at) {
+    try { updates.authorized_at = new Date(mDhEmi[1]).toISOString(); } catch {}
+  }
+  if (Object.keys(updates).length) {
+    await invoicesPort.updateFields(admin, invoice.id, updates);
+    log("xml_meta_extracted", { invoiceId: invoice.id, fields: Object.keys(updates) });
+  }
+}

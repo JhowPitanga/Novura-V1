@@ -1,8 +1,21 @@
+/**
+ * focus-nfe-sync: queries Focus NFe status for a list of orders and persists
+ * the result to the canonical invoices table.
+ * Downloads XML/PDF URLs from Focus API and stores them in invoices.xml_url / pdf_url.
+ */
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse as json, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { jsonResponse } from "../_shared/adapters/infra/http-utils.ts";
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
 import { digits, mapDomainStatus } from "../_shared/domain/focus/focus-status.ts";
 import { normalizeFocusUrl } from "../_shared/domain/focus/focus-url.ts";
+import { InvoicesAdapter } from "../_shared/adapters/invoices/invoices-adapter.ts";
+import type { InvoicesPort, InvoiceRow } from "../_shared/ports/invoices-port.ts";
+import { SupabaseOrderRepository } from "../_shared/adapters/orders/SupabaseOrderRepository.ts";
+import { SupabaseInventoryAdapter } from "../_shared/adapters/orders/SupabaseInventoryAdapter.ts";
+import { OrderStatusEngine } from "../_shared/application/orders/OrderStatusEngine.ts";
+import { HandleStockSideEffectsUseCase } from "../_shared/application/orders/HandleStockSideEffectsUseCase.ts";
+import { RecalculateOrderStatusUseCase } from "../_shared/application/orders/RecalculateOrderStatusUseCase.ts";
+import { EmitNfeUseCase } from "../_shared/application/orders/EmitNfeUseCase.ts";
 
 function toNumberOrNull(v: any): number | null {
   const n = Number(v);
@@ -14,452 +27,304 @@ function arrayBufferToBase64(ab: ArrayBuffer): string {
   const chunk = 0x8000;
   let binary = "";
   for (let i = 0; i < bytes.length; i += chunk) {
-    const sub = bytes.subarray(i, i + chunk);
-    binary += String.fromCharCode(...sub);
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
 }
 
-async function fetchToBase64(u: string, accept: string, basic: string, token: string): Promise<string | null> {
+async function fetchToBase64(url: string, accept: string, basic: string, token: string): Promise<string | null> {
   try {
-    const r = await fetch(u, { method: "GET", headers: { Authorization: `Basic ${basic}`, Accept: accept } });
-    if (r.ok) {
-      const b = await r.arrayBuffer();
-      return arrayBufferToBase64(b);
-    }
+    const r = await fetch(url, { method: "GET", headers: { Authorization: `Basic ${basic}`, Accept: accept } });
+    if (r.ok) return arrayBufferToBase64(await r.arrayBuffer());
     if (r.status === 401 || r.status === 403) {
-      let u2 = u;
-      try {
-        const o = new URL(u);
-        if (!o.searchParams.has("token")) o.searchParams.set("token", token);
-        u2 = o.toString();
-      } catch {
-        u2 = u + (u.includes("?") ? "&" : "?") + "token=" + token;
-      }
+      const u2 = url.includes("?") ? `${url}&token=${token}` : `${url}?token=${token}`;
       const r2 = await fetch(u2, { method: "GET", headers: { Accept: accept } });
-      if (r2.ok) {
-        const b2 = await r2.arrayBuffer();
-        return arrayBufferToBase64(b2);
-      }
+      if (r2.ok) return arrayBufferToBase64(await r2.arrayBuffer());
     }
     return null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return json({}, 200);
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (req.method === "OPTIONS") return jsonResponse({}, 200);
+  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 
   const reqId = crypto.randomUUID();
   const log = (step: string, context?: any) => {
     try {
-      const entry = {
-        source: "focus-nfe-sync",
-        reqId,
-        ts: new Date().toISOString(),
-        step,
-        context: context ?? null,
-      };
-      console.log(JSON.stringify(entry));
+      console.log(JSON.stringify({ source: "focus-nfe-sync", reqId, ts: new Date().toISOString(), step, context: context ?? null }));
     } catch {}
   };
 
   try {
     const FOCUS_TOKEN = Deno.env.get("FOCUS_API_TOKEN");
-    if (!FOCUS_TOKEN) {
-      log("config_error");
-      return json({ error: "Missing service configuration" }, 500);
-    }
+    if (!FOCUS_TOKEN) return jsonResponse({ error: "Missing service configuration" }, 500);
+
     const admin = createAdminClient() as any;
     const authHeader = req.headers.get("Authorization") || "";
     const token = authHeader.replace("Bearer ", "");
     const { data: userRes, error: userErr } = await (admin as any).auth.getUser(token);
-    if (userErr || !userRes?.user) {
-      log("unauthorized", { userErr: userErr?.message });
-      return json({ error: "Unauthorized" }, 401);
-    }
+    if (userErr || !userRes?.user) return jsonResponse({ error: "Unauthorized" }, 401);
     const user = userRes.user;
 
     const raw = await req.text();
     let body: any = {};
     try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
+
     const organizationId: string | undefined = body?.organizationId || body?.organization_id;
     const companyId: string | undefined = body?.companyId || body?.company_id;
     const orderIds: string[] = Array.isArray(body?.orderIds) ? body.orderIds.map((x: any) => String(x)) : [];
     const environmentInput = String(body?.environment || body?.ambiente || "").toLowerCase();
     const useHomolog = environmentInput.includes("homolog") || body?.homologacao === true || body?.homolog === true;
-    log("request", { userId: user.id, organizationId, companyId, orderIdsCount: orderIds.length, environmentInput });
+    const environment: "homologacao" | "producao" = useHomolog ? "homologacao" : "producao";
 
-    if (!organizationId) return json({ error: "organizationId is required" }, 400);
-    if (!companyId) return json({ error: "companyId is required" }, 400);
-    if (!orderIds || orderIds.length === 0) return json({ error: "orderIds is required" }, 400);
+    log("request", { userId: user.id, organizationId, companyId, orderIdsCount: orderIds.length, environment });
 
-    const { data: isMemberData, error: isMemberErr } = await admin.rpc("is_org_member", {
-      p_user_id: user.id,
-      p_org_id: organizationId,
-    });
+    if (!organizationId) return jsonResponse({ error: "organizationId is required" }, 400);
+    if (!companyId) return jsonResponse({ error: "companyId is required" }, 400);
+    if (!orderIds.length) return jsonResponse({ error: "orderIds is required" }, 400);
+
+    const { data: isMemberData, error: isMemberErr } = await admin.rpc("is_org_member", { p_user_id: user.id, p_org_id: organizationId });
     const isMember = (Array.isArray(isMemberData) ? isMemberData?.[0] : isMemberData) === true;
-    if (isMemberErr || !isMember) return json({ error: "Forbidden" }, 403);
-    log("is_member", { ok: isMember === true });
+    if (isMemberErr || !isMember) return jsonResponse({ error: "Forbidden" }, 403);
 
     const { data: company, error: compErr } = await admin.from("companies").select("*").eq("id", companyId).single();
-    if (compErr || !company) return json({ error: compErr?.message || "Company not found" }, 404);
-    if (String(company.organization_id || "") !== String(organizationId)) return json({ error: "Company not in organization" }, 403);
+    if (compErr || !company) return jsonResponse({ error: compErr?.message || "Company not found" }, 404);
+    if (String(company.organization_id || "") !== String(organizationId)) return jsonResponse({ error: "Company not in organization" }, 403);
 
-    const tokenProducao = company?.focus_token_producao || null;
-    const tokenHomolog = company?.focus_token_homologacao || null;
-    const tokenUsed = useHomolog ? (tokenHomolog || FOCUS_TOKEN) : (tokenProducao || FOCUS_TOKEN);
+    const tokenUsed = useHomolog ? (company?.focus_token_homologacao || FOCUS_TOKEN) : (company?.focus_token_producao || FOCUS_TOKEN);
     let tokenForAuth = String(tokenUsed || "").trim();
     let basic = btoa(`${tokenForAuth}:`);
     const apiBase = useHomolog ? "https://homologacao.focusnfe.com.br" : "https://api.focusnfe.com.br";
-    log("auth_basic_ready", { environment: useHomolog ? "homologacao" : "producao", tokenLen: tokenForAuth.length, apiBase });
+
+    // Preflight auth check
     try {
       const cnpjDigits = digits(String(company?.cnpj || ""));
       if (cnpjDigits) {
-        const preUrl = new URL(`${apiBase}/v2/empresas/${cnpjDigits}`);
-        log("auth_preflight_start", { companyId, cnpj: cnpjDigits, url: preUrl.toString() });
-        let preResp = await fetch(preUrl.toString(), { method: "GET", headers: { Authorization: `Basic ${basic}`, Accept: "application/json" } });
-        let preText = await preResp.text();
-        let preJson: any = {};
-        try { preJson = preText ? JSON.parse(preText) : {}; } catch { preJson = { raw: preText }; }
-        log("auth_preflight_response", { status: preResp.status, ok: preResp.ok, message: preJson?.mensagem || preJson?.message || preJson?.error || null });
+        let preResp = await fetch(`${apiBase}/v2/empresas/${cnpjDigits}`, {
+          method: "GET", headers: { Authorization: `Basic ${basic}`, Accept: "application/json" },
+        });
         if (preResp.status === 401) {
           const globalToken = String(FOCUS_TOKEN || "").trim();
-          const isDifferent = globalToken && globalToken !== tokenForAuth;
-          if (isDifferent) {
+          if (globalToken && globalToken !== tokenForAuth) {
             const basicGlobal = btoa(`${globalToken}:`);
-            log("auth_preflight_retry_global", { environment: useHomolog ? "homologacao" : "producao" });
-            preResp = await fetch(preUrl.toString(), { method: "GET", headers: { Authorization: `Basic ${basicGlobal}`, Accept: "application/json" } });
-            preText = await preResp.text();
-            preJson = {};
-            try { preJson = preText ? JSON.parse(preText) : {}; } catch { preJson = { raw: preText }; }
-            log("auth_preflight_response_global", { status: preResp.status, ok: preResp.ok, message: preJson?.mensagem || preJson?.message || preJson?.error || null });
-            if (preResp.ok) {
-              tokenForAuth = globalToken;
-              basic = basicGlobal;
-            }
-          }
-          if (preResp.status === 401) {
-            log("auth_preflight_failed", { reason: "basic_auth_denied", environment: useHomolog ? "homologacao" : "producao" });
-            return json({ error: "Focus token unauthorized for company CNPJ", details: { cnpj: cnpjDigits, environment: useHomolog ? "homologacao" : "producao" } }, 401);
+            preResp = await fetch(`${apiBase}/v2/empresas/${cnpjDigits}`, {
+              method: "GET", headers: { Authorization: `Basic ${basicGlobal}`, Accept: "application/json" },
+            });
+            if (preResp.ok) { tokenForAuth = globalToken; basic = basicGlobal; }
+            else return jsonResponse({ error: "Focus token unauthorized for company CNPJ" }, 401);
+          } else {
+            return jsonResponse({ error: "Focus token unauthorized for company CNPJ" }, 401);
           }
         }
       }
     } catch {}
 
-    const results: Array<{ orderId: string; packId?: number | null; ok: boolean; status?: string; response?: any; error?: string }> = [];
+    // Build use cases
+    const invoicesPort: InvoicesPort = new InvoicesAdapter();
+    const orderRepo = new SupabaseOrderRepository(admin);
+    const inventory = new SupabaseInventoryAdapter(admin);
+    const engine = new OrderStatusEngine();
+    const stockUseCase = new HandleStockSideEffectsUseCase(inventory);
+    const recalculate = new RecalculateOrderStatusUseCase(orderRepo, engine, stockUseCase);
+    const emitNfeUseCase = new EmitNfeUseCase(admin, orderRepo, invoicesPort, recalculate);
+
+    const results: Array<{ orderId: string; packId?: string | null; ok: boolean; status?: string; response?: any; error?: string }> = [];
 
     for (const oid of orderIds) {
       log("order_start", { oid });
+
+      // Load order from canonical orders table
       const { data: order, error: orderErr } = await admin
-        .from("marketplace_orders_presented")
-        .select("id, marketplace_order_id, marketplace")
+        .from("orders")
+        .select("id, marketplace_order_id, marketplace, organization_id, pack_id, order_shipping(*)")
         .eq("id", oid)
-        .eq("organizations_id", organizationId)
-        .limit(1)
-        .single();
+        .eq("organization_id", organizationId)
+        .maybeSingle();
+
       if (orderErr || !order) {
         log("order_not_found", { oid, error: orderErr?.message });
         results.push({ orderId: oid, ok: false, error: orderErr?.message || "Order not found" });
         continue;
       }
-      const { data: presentedNew } = await admin
-        .from("marketplace_orders_presented_new")
-        .select("pack_id")
-        .eq("id", oid)
-        .eq("organizations_id", organizationId)
-        .limit(1)
-        .maybeSingle();
-      const packId = (presentedNew as any)?.pack_id ?? null;
-      const refStr = `pack-${packId ?? "0"}-order-${order.marketplace_order_id}-company-${companyId}`;
+
+      const shipping: any = Array.isArray(order.order_shipping) ? order.order_shipping[0] : order.order_shipping;
+      const packId = String(order.pack_id ?? shipping?.pack_id ?? "").trim() || null;
+      const packIdRef = packId && packId !== "0" ? packId : String(order.marketplace_order_id || "");
+      const refStr = `pack-${packIdRef}-order-${order.marketplace_order_id}-company-${companyId}`;
+      const idempotencyKey = `${organizationId}:${oid}:${environment}`;
+
       try {
-        const url = new URL(`${apiBase}/v2/nfe/${encodeURIComponent(refStr)}`);
-        try { url.searchParams.set("completa", "1"); } catch {}
-        const resp = await fetch(url.toString(), { method: "GET", headers: { Authorization: `Basic ${basic}`, Accept: "application/json" } });
+        // Query Focus API
+        const focusUrl = new URL(`${apiBase}/v2/nfe/${encodeURIComponent(refStr)}`);
+        focusUrl.searchParams.set("completa", "1");
+        const resp = await fetch(focusUrl.toString(), {
+          method: "GET", headers: { Authorization: `Basic ${basic}`, Accept: "application/json" },
+        });
         const text = await resp.text();
         let jsonResp: any = {};
         try { jsonResp = text ? JSON.parse(text) : {}; } catch { jsonResp = { raw: text }; }
+
         if (!resp.ok) {
-          log("sync_focus_error", { oid, httpStatus: resp.status, message: jsonResp?.mensagem || jsonResp?.message || "Erro na consulta" });
+          const errMsg = jsonResp?.mensagem || jsonResp?.message || `HTTP ${resp.status}`;
+          log("sync_focus_error", { oid, httpStatus: resp.status, message: errMsg });
+
           try {
-            const { data: existingSyncErr } = await admin
-              .from("notas_fiscais")
-              .select("id")
-              .eq("company_id", companyId)
-              .eq("marketplace_order_id", order.marketplace_order_id)
-              .eq("emissao_ambiente", useHomolog ? "homologacao" : "producao")
-              .limit(1)
-              .maybeSingle();
-            const nfErrWrite: any = {
-              company_id: companyId,
-              order_id: oid,
-              marketplace: order.marketplace,
-              marketplace_order_id: order.marketplace_order_id,
-              pack_id: packId,
-              emissao_ambiente: useHomolog ? "homologacao" : "producao",
-              status_focus: jsonResp?.status || jsonResp?.status_sefaz || null,
-              status: mapDomainStatus(jsonResp?.status || jsonResp?.status_sefaz || null),
-              error_details: {
-                status_sefaz: jsonResp?.status_sefaz || null,
-                mensagem_sefaz: jsonResp?.mensagem_sefaz || jsonResp?.mensagem || jsonResp?.message || "Falha ao consultar NF-e",
-              },
-            };
-            if (existingSyncErr?.id) {
-              await admin.from("notas_fiscais").update(nfErrWrite).eq("id", existingSyncErr.id);
-            } else {
-              await admin.from("notas_fiscais").insert(nfErrWrite);
-            }
+            const existing = await invoicesPort.findByIdempotencyKey(admin, idempotencyKey);
+            if (existing?.id) await invoicesPort.markError(admin, existing.id, errMsg, existing.retry_count);
           } catch {}
-          results.push({ orderId: oid, packId, ok: false, status: jsonResp?.status || jsonResp?.status_sefaz, error: jsonResp?.mensagem || jsonResp?.message || "Falha ao consultar NF-e por referência", response: jsonResp });
+          results.push({ orderId: oid, packId, ok: false, status: jsonResp?.status, error: errMsg, response: jsonResp });
           continue;
         }
-        let statusSync: string = jsonResp?.status || jsonResp?.status_sefaz || "pendente";
+
+        let statusSync = String(jsonResp?.status || jsonResp?.status_sefaz || "pendente");
         let focusIdSync: string | null = jsonResp?.uuid || jsonResp?.id || null;
         let nfeKeySync: string | null = jsonResp?.chave || jsonResp?.chave_nfe || jsonResp?.chave_de_acesso || null;
         let nfeNumberSync: number | null = toNumberOrNull(jsonResp?.numero);
         let serieSync: string | null = jsonResp?.serie || null;
-        let authorizedAtSync: string | null = String(statusSync).toLowerCase() === "autorizado" ? (jsonResp?.data_autorizacao || new Date().toISOString()) : null;
+        let authorizedAtSync: string | null = null;
         let xmlB64Sync: string | null = jsonResp?.xml || jsonResp?.xml_base64 || null;
         let pdfB64Sync: string | null = jsonResp?.danfe || jsonResp?.pdf || null;
-        let linksMeta: any = {
-          caminho_xml: (typeof jsonResp?.caminho_xml_nota_fiscal === "string" ? jsonResp?.caminho_xml_nota_fiscal : null) || (typeof jsonResp?.caminho_xml === "string" ? jsonResp?.caminho_xml : null),
-          caminho_pdf: (typeof jsonResp?.caminho_danfe === "string" ? jsonResp?.caminho_danfe : null) || (typeof jsonResp?.caminho_pdf === "string" ? jsonResp?.caminho_pdf : null) || (typeof jsonResp?.caminho_pdf_danfe === "string" ? jsonResp?.caminho_pdf_danfe : null),
+        let linksMeta = {
+          caminho_xml: (typeof jsonResp?.caminho_xml_nota_fiscal === "string" ? jsonResp.caminho_xml_nota_fiscal : null) || (typeof jsonResp?.caminho_xml === "string" ? jsonResp.caminho_xml : null) || null,
+          caminho_pdf: (typeof jsonResp?.caminho_danfe === "string" ? jsonResp.caminho_danfe : null) || (typeof jsonResp?.caminho_pdf === "string" ? jsonResp.caminho_pdf : null) || null,
         };
-        if (String(statusSync).toLowerCase() === "autorizado" && focusIdSync && (!xmlB64Sync || !pdfB64Sync)) {
-          try {
-            const cUrl = new URL(`${apiBase}/v2/nfe/${encodeURIComponent(focusIdSync)}`);
-            try { cUrl.searchParams.set("completa", "1"); } catch {}
-            const cResp = await fetch(cUrl.toString(), { method: "GET", headers: { Authorization: `Basic ${basic}`, Accept: "application/json" } });
-            const cText = await cResp.text();
-            let cJson: any = {};
-            try { cJson = cText ? JSON.parse(cText) : {}; } catch { cJson = { raw: cText }; }
-            const stC = cJson?.status || cJson?.status_sefaz || statusSync;
-            statusSync = stC;
-            if (String(stC).toLowerCase() === "autorizado") {
-              xmlB64Sync = cJson?.xml || cJson?.xml_base64 || xmlB64Sync || null;
-              pdfB64Sync = cJson?.danfe || cJson?.pdf || pdfB64Sync || null;
-              authorizedAtSync = cJson?.data_autorizacao || authorizedAtSync || new Date().toISOString();
-              const nfeKeyC: string | null = cJson?.chave || cJson?.chave_nfe || cJson?.chave_de_acesso || null;
-              if (nfeKeyC) nfeKeySync = nfeKeyC;
-              const nfeNumC: number | null = toNumberOrNull(cJson?.numero);
-              if (nfeNumC !== null) nfeNumberSync = nfeNumC;
-              linksMeta = {
-                caminho_xml: (typeof cJson?.caminho_xml_nota_fiscal === "string" ? cJson?.caminho_xml_nota_fiscal : null) || (typeof cJson?.caminho_xml === "string" ? cJson?.caminho_xml : null) || linksMeta?.caminho_xml || null,
-                caminho_pdf: (typeof cJson?.caminho_danfe === "string" ? cJson?.caminho_danfe : null) || (typeof cJson?.caminho_pdf === "string" ? cJson?.caminho_pdf : null) || (typeof cJson?.caminho_pdf_danfe === "string" ? cJson?.caminho_pdf_danfe : null) || linksMeta?.caminho_pdf || null,
-              };
-              if (!xmlB64Sync) {
-                const xmlLink =
-                  (typeof cJson?.caminho_xml_nota_fiscal === "string" ? cJson.caminho_xml_nota_fiscal : null) ||
-                  (typeof cJson?.caminho_xml === "string" ? cJson.caminho_xml : null);
-                if (xmlLink) {
-                  const got = await fetchToBase64(xmlLink, "application/xml", basic, tokenForAuth);
-                  if (got) {
-                    xmlB64Sync = got;
-                  } else {
-                    log("xml_download_error", { oid, via: "link", status: "failed" });
-                  }
-                }
-                if (!xmlB64Sync && focusIdSync) {
-                  const direct = `${apiBase}/v2/nfe/${encodeURIComponent(focusIdSync)}/xml`;
-                  const got2 = await fetchToBase64(direct, "application/xml", basic, tokenForAuth);
-                  if (got2) {
-                    xmlB64Sync = got2;
-                  } else {
-                    log("xml_download_error", { oid, via: "id_xml", status: "failed" });
-                  }
-                }
-                if (!xmlB64Sync && refStr) {
-                  const byRef = `${apiBase}/v2/nfe/${encodeURIComponent(refStr)}/xml`;
-                  const got3 = await fetchToBase64(byRef, "application/xml", basic, tokenForAuth);
-                  if (got3) {
-                    xmlB64Sync = got3;
-                  } else {
-                    log("xml_download_error", { oid, via: "ref_xml", status: "failed" });
-                  }
-                }
-              }
-              if (!pdfB64Sync) {
-                const pdfLink =
-                  (typeof cJson?.caminho_danfe === "string" ? cJson.caminho_danfe : null) ||
-                  (typeof cJson?.caminho_pdf === "string" ? cJson.caminho_pdf : null) ||
-                  (typeof cJson?.caminho_pdf_danfe === "string" ? cJson.caminho_pdf_danfe : null);
-                if (pdfLink) {
-                  const gotP = await fetchToBase64(pdfLink, "application/pdf", basic, tokenForAuth);
-                  if (gotP) {
-                    pdfB64Sync = gotP;
-                  } else {
-                    log("danfe_download_error", { oid, via: "link", status: "failed" });
-                  }
-                }
-                if (!pdfB64Sync && focusIdSync) {
-                  const directP = `${apiBase}/v2/nfe/${encodeURIComponent(focusIdSync)}/danfe`;
-                  const gotP2 = await fetchToBase64(directP, "application/pdf", basic, tokenForAuth);
-                  if (gotP2) {
-                    pdfB64Sync = gotP2;
-                  } else {
-                    log("danfe_download_error", { oid, via: "id_danfe", status: "failed" });
-                  }
-                }
-                if (!pdfB64Sync && refStr) {
-                  const byRefP = `${apiBase}/v2/nfe/${encodeURIComponent(refStr)}/danfe`;
-                  const gotP3 = await fetchToBase64(byRefP, "application/pdf", basic, tokenForAuth);
-                  if (gotP3) {
-                    pdfB64Sync = gotP3;
-                  } else {
-                    log("danfe_download_error", { oid, via: "ref_danfe", status: "failed" });
-                  }
-                }
-              }
-            }
-            log("xml_fetch_retry", { oid, by: "focusId", gotXml: !!xmlB64Sync, gotPdf: !!pdfB64Sync });
-          } catch (e: any) {
-            log("xml_fetch_retry_error", { oid, message: e?.message || String(e) });
-          }
-        }
-        const xmlUrlSync: string | null = normalizeFocusUrl(apiBase, linksMeta?.caminho_xml || null);
-        const pdfUrlSync: string | null = normalizeFocusUrl(apiBase, linksMeta?.caminho_pdf || null);
-        const { data: existingSync } = await admin
-          .from("notas_fiscais")
-          .select("id")
-          .eq("company_id", companyId)
-          .eq("marketplace_order_id", order.marketplace_order_id)
-          .eq("emissao_ambiente", useHomolog ? "homologacao" : "producao")
-          .limit(1)
-          .maybeSingle();
-        const nfWriteSync: any = {
-          company_id: companyId,
-          order_id: oid,
-          marketplace: order.marketplace,
-          marketplace_order_id: order.marketplace_order_id,
-          pack_id: packId,
-          nfe_number: nfeNumberSync,
-          serie: serieSync,
-          nfe_key: nfeKeySync,
-          status_focus: String(statusSync),
-          status: mapDomainStatus(statusSync),
-          authorized_at: authorizedAtSync,
-          focus_nfe_id: focusIdSync,
-          emissao_ambiente: useHomolog ? "homologacao" : "producao",
-        };
-        if (xmlB64Sync) nfWriteSync.xml_base64 = xmlB64Sync;
-        if (pdfB64Sync) nfWriteSync.pdf_base64 = pdfB64Sync;
-        if (xmlUrlSync) nfWriteSync.xml_url = xmlUrlSync;
-        if (pdfUrlSync) nfWriteSync.pdf_url = pdfUrlSync;
-        if ((jsonResp?.mensagem_sefaz || jsonResp?.mensagem || jsonResp?.message) && String(statusSync).toLowerCase() !== "autorizado") {
-          nfWriteSync.error_details = {
-            status_sefaz: jsonResp?.status_sefaz || null,
-            mensagem_sefaz: jsonResp?.mensagem_sefaz || jsonResp?.mensagem || jsonResp?.message || null,
-          };
-        }
-        let writeOk = true;
-        let lastErrMsg: string | null = null;
-        const statusCandidates = [
-          mapDomainStatus(statusSync),
-          // Tentativas alternativas por possíveis constraints diferentes
-          (() => {
-            const s = mapDomainStatus(statusSync);
-            return s.charAt(0).toUpperCase() + s.slice(1);
-          })(),
-          "autorizado",
-          "rejeitado",
-          "denegado",
-          "cancelado",
-          "pendente",
-          "Autorizada",
-          "Rejeitada",
-          "Denegada",
-          "Cancelada",
-          "Pendente",
-        ];
-        for (const candidate of statusCandidates) {
-          let errMsg: string | null = null;
-          try {
-            const payload = { ...nfWriteSync, status: candidate };
-            if (existingSync?.id) {
-              const { error: updErrS } = await admin.from("notas_fiscais").update(payload).eq("id", existingSync.id);
-              if (updErrS) errMsg = updErrS.message;
-            } else {
-              const { error: insErrS } = await admin.from("notas_fiscais").insert(payload);
-              if (insErrS) errMsg = insErrS.message;
-            }
-          } catch (e: any) {
-            errMsg = e?.message || String(e);
-          }
-          if (!errMsg) {
-            writeOk = true;
-            lastErrMsg = null;
-            log("notas_fiscais_sync_persist_ok", { oid, marketplace_order_id: order.marketplace_order_id, status_used: candidate });
-            break;
-          } else {
-            writeOk = false;
-            lastErrMsg = errMsg;
-            log("notas_fiscais_sync_persist_try_failed", { oid, marketplace_order_id: order.marketplace_order_id, status_candidate: candidate, error: errMsg });
-            // Continua tentando próximos candidatos apenas quando constraint falha
-          }
-        }
-        if (writeOk) {
-          if (String(statusSync).toLowerCase() === "autorizado") {
+
+        const stLower = statusSync.toLowerCase();
+        const isAuthorized = stLower === "autorizado" || stLower === "autorizada";
+
+        if (isAuthorized) {
+          authorizedAtSync = jsonResp?.data_autorizacao || new Date().toISOString();
+
+          // Fetch complete data if needed
+          if (focusIdSync && (!xmlB64Sync || !pdfB64Sync)) {
             try {
-              await admin
-                .from("notas_fiscais")
-                .update({ marketplace_submission_status: "pending" })
-                .eq("company_id", companyId)
-                .eq("marketplace_order_id", order.marketplace_order_id);
-            } catch {}
-            try {
-              let updOk = false;
-              const { data: d1, error: e1 } = await admin
-                .from("marketplace_orders_presented_new")
-                .update({ status_interno: "subir xml" })
-                .eq("organizations_id", organizationId)
-                .eq("company_id", companyId)
-                .eq("marketplace", order.marketplace)
-                .eq("marketplace_order_id", order.marketplace_order_id)
-                .select("id");
-              updOk = !e1 && Array.isArray(d1) && d1.length > 0;
-              if (!updOk) {
-                const { data: d2, error: e2 } = await admin
-                  .from("marketplace_orders_presented_new")
-                  .update({ status_interno: "subir xml" })
-                  .eq("organizations_id", organizationId)
-                  .eq("company_id", companyId)
-                  .eq("marketplace_order_id", order.marketplace_order_id)
-                  .select("id");
-                updOk = !e2 && Array.isArray(d2) && d2.length > 0;
-                if (!updOk) {
-                  const { data: d3, error: e3 } = await admin
-                    .from("marketplace_orders_presented_new")
-                    .update({ status_interno: "subir xml" })
-                    .eq("company_id", companyId)
-                    .eq("marketplace_order_id", order.marketplace_order_id)
-                    .select("id");
-                  updOk = !e3 && Array.isArray(d3) && d3.length > 0;
-                }
-              }
-              if (!updOk) {
-                log("presented_new_update_authorized_not_found", { organizationId, companyId, marketplaceOrderId: order.marketplace_order_id, marketplace: order.marketplace, attempted: ["with_marketplace", "without_marketplace", "company_only"] });
+              const detailUrl = new URL(`${apiBase}/v2/nfe/${encodeURIComponent(focusIdSync)}`);
+              detailUrl.searchParams.set("completa", "1");
+              const cResp = await fetch(detailUrl.toString(), { method: "GET", headers: { Authorization: `Basic ${basic}`, Accept: "application/json" } });
+              if (cResp.ok) {
+                const cText = await cResp.text();
+                let cJson: any = {};
+                try { cJson = cText ? JSON.parse(cText) : {}; } catch {}
+                statusSync = cJson?.status || cJson?.status_sefaz || statusSync;
+                xmlB64Sync = cJson?.xml || cJson?.xml_base64 || xmlB64Sync || null;
+                pdfB64Sync = cJson?.danfe || cJson?.pdf || pdfB64Sync || null;
+                nfeKeySync = cJson?.chave || cJson?.chave_nfe || nfeKeySync || null;
+                nfeNumberSync = toNumberOrNull(cJson?.numero) ?? nfeNumberSync;
+                authorizedAtSync = cJson?.data_autorizacao || authorizedAtSync;
+                linksMeta = {
+                  caminho_xml: (typeof cJson?.caminho_xml_nota_fiscal === "string" ? cJson.caminho_xml_nota_fiscal : null) || (typeof cJson?.caminho_xml === "string" ? cJson.caminho_xml : null) || linksMeta.caminho_xml,
+                  caminho_pdf: (typeof cJson?.caminho_danfe === "string" ? cJson.caminho_danfe : null) || (typeof cJson?.caminho_pdf === "string" ? cJson.caminho_pdf : null) || linksMeta.caminho_pdf,
+                };
               }
             } catch {}
           }
-          log("sync_done", { oid, ref: refStr, status: statusSync });
-          results.push({ orderId: oid, packId, ok: true, status: statusSync, response: jsonResp });
-        } else {
-          log("sync_failed", { oid, ref: refStr, status: statusSync, error: lastErrMsg });
-          results.push({ orderId: oid, packId, ok: false, status: statusSync, error: lastErrMsg || "Persistência falhou", response: jsonResp });
+
+          // Download XML if missing (for caching in URL fields)
+          if (!xmlB64Sync) {
+            const xmlLink = linksMeta.caminho_xml;
+            if (xmlLink) xmlB64Sync = await fetchToBase64(normalizeFocusUrl(apiBase, xmlLink) || xmlLink, "application/xml", basic, tokenForAuth);
+            if (!xmlB64Sync && focusIdSync) xmlB64Sync = await fetchToBase64(`${apiBase}/v2/nfe/${encodeURIComponent(focusIdSync)}/xml`, "application/xml", basic, tokenForAuth);
+          }
+          if (!pdfB64Sync) {
+            const pdfLink = linksMeta.caminho_pdf;
+            if (pdfLink) pdfB64Sync = await fetchToBase64(normalizeFocusUrl(apiBase, pdfLink) || pdfLink, "application/pdf", basic, tokenForAuth);
+            if (!pdfB64Sync && focusIdSync) pdfB64Sync = await fetchToBase64(`${apiBase}/v2/nfe/${encodeURIComponent(focusIdSync)}/danfe`, "application/pdf", basic, tokenForAuth);
+          }
         }
-        continue;
+
+        const xmlUrl: string | null = normalizeFocusUrl(apiBase, linksMeta.caminho_xml);
+        const pdfUrl: string | null = normalizeFocusUrl(apiBase, linksMeta.caminho_pdf);
+
+        // Find or create invoice record
+        let invoice: InvoiceRow | null = await invoicesPort.findByIdempotencyKey(admin, idempotencyKey);
+
+        if (!invoice) {
+          // Create invoice record from sync data
+          try {
+            invoice = await invoicesPort.createQueued(admin, {
+              organization_id: organizationId,
+              order_id: oid,
+              company_id: companyId,
+              idempotency_key: idempotencyKey,
+              emission_environment: environment,
+              marketplace: String(order.marketplace || ""),
+              marketplace_order_id: String(order.marketplace_order_id || ""),
+              total_value: null,
+              payload_sent: {} as any,
+            });
+          } catch (e) {
+            console.error("[focus-nfe-sync] createQueued failed:", e);
+          }
+        }
+
+        if (invoice?.id) {
+          // Apply focused update based on status
+          if (isAuthorized && nfeKeySync && nfeNumberSync) {
+            await invoicesPort.markAuthorized(admin, invoice.id, nfeKeySync, nfeNumberSync);
+          } else if (stLower === "rejeitado" || stLower === "denegado" || stLower === "erro_autorizacao") {
+            const errMsg = jsonResp?.mensagem_sefaz || jsonResp?.mensagem || jsonResp?.message || "Rejeitado pela SEFAZ";
+            await invoicesPort.markError(admin, invoice.id, errMsg, invoice.retry_count);
+          } else if (stLower === "cancelado" || stLower === "cancelada") {
+            await invoicesPort.markCanceled(admin, invoice.id);
+          } else if (focusIdSync) {
+            await invoicesPort.markProcessing(admin, invoice.id, String(focusIdSync));
+          }
+
+          // Patch additional fields
+          const updates: Partial<InvoiceRow> = {};
+          if (focusIdSync) updates.focus_id = focusIdSync;
+          if (nfeKeySync) updates.nfe_key = nfeKeySync;
+          if (nfeNumberSync) updates.nfe_number = nfeNumberSync;
+          if (serieSync) updates.serie = serieSync;
+          if (xmlUrl) updates.xml_url = xmlUrl;
+          if (pdfUrl) updates.pdf_url = pdfUrl;
+          if (isAuthorized) updates.marketplace_submission_status = "pending";
+          if (Object.keys(updates).length) await invoicesPort.updateFields(admin, invoice.id, updates);
+        }
+
+        log("sync_done", { oid, refStr, status: statusSync, invoiceId: invoice?.id ?? null });
+
+        // Side effects when authorized
+        if (isAuthorized) {
+          // Update orders.has_invoice and recalculate status
+          try {
+            await emitNfeUseCase.execute({
+              orderId: oid,
+              organizationId,
+              companyId,
+              environment,
+              focusId: focusIdSync,
+              nfeKey: nfeKeySync,
+              nfeNumber: nfeNumberSync,
+              authorized: true,
+              errorMessage: null,
+            });
+          } catch (e) {
+            console.error("[focus-nfe-sync] EmitNfeUseCase failed:", e);
+          }
+
+          // Update presented status for XML submission queue (backward compat)
+          try {
+            await admin
+              .from("marketplace_orders_presented_new")
+              .update({ status_interno: "subir xml" })
+              .eq("organizations_id", organizationId)
+              .eq("company_id", companyId)
+              .eq("marketplace_order_id", String(order.marketplace_order_id || ""));
+          } catch {}
+        }
+
+        results.push({ orderId: oid, packId, ok: true, status: statusSync, response: jsonResp });
       } catch (e: any) {
-        log("sync_exception", { oid, message: e?.message || String(e) });
+        log("order_exception", { oid, message: e?.message || String(e) });
         results.push({ orderId: oid, packId, ok: false, error: e?.message || String(e) });
-        continue;
       }
     }
 
-    return json({ ok: true, results }, 200);
+    return jsonResponse({ ok: true, results }, 200);
   } catch (e: any) {
     log("exception", { message: e?.message || String(e) });
-    return json({ error: e?.message || "Internal error" }, 500);
+    return jsonResponse({ error: e?.message || "Internal error" }, 500);
   }
 });
