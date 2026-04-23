@@ -131,28 +131,7 @@ function Pedidos() {
               onSyncNfe={ctl.onSyncNfe}
               onArrangeShipment={ctl.onArrangeShipment}
               addProcessingId={ctl.addProcessingId}
-              onSelectAll={() => {
-                const { activeStatus: status } = filters;
-                const { selectedPedidos, selectedPedidosEmissao, selectedPedidosImpressao, selectedPedidosEnviado } = selection;
-                const filtered = ctl.filteredOrders;
-                if (status === 'todos') {
-                  selectionActions.setSelectedPedidos(
-                    selectedPedidos.length === filtered.length ? [] : filtered.map(p => p.id),
-                  );
-                } else if (status === 'emissao-nf') {
-                  selectionActions.setSelectedPedidosEmissao(
-                    selectedPedidosEmissao.length === filtered.length ? [] : filtered.map(p => p.id),
-                  );
-                } else if (status === 'impressao') {
-                  selectionActions.setSelectedPedidosImpressao(
-                    selectedPedidosImpressao.length === filtered.length ? [] : filtered.map(p => p.id),
-                  );
-                } else if (status === 'enviado') {
-                  selectionActions.setSelectedPedidosEnviado(
-                    selectedPedidosEnviado.length === filtered.length ? [] : filtered.map(p => p.id),
-                  );
-                }
-              }}
+              onSelectAll={ctl.selectionActions.selectAll}
               onPageChange={filterActions.setCurrentPage}
             />
           </main>

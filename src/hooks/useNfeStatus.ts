@@ -35,6 +35,15 @@ export const nfeStatusKeys = {
     ['nfe-status', orgId, pedidoIds, env] as const,
 };
 
+// Stable empty references used as fallbacks when the query hasn't returned data
+// yet. Creating `{}` inline on every render causes identity changes that break
+// downstream `useEffect`/`useMemo` dependency comparisons and can lead to
+// infinite re-render loops in consumers.
+const EMPTY_AUTHORIZED_MAP: Readonly<Record<string, boolean>> = Object.freeze({});
+const EMPTY_FOCUS_STATUS_MAP: Readonly<Record<string, string>> = Object.freeze({});
+const EMPTY_XML_PENDING_MAP: Readonly<Record<string, boolean>> = Object.freeze({});
+const EMPTY_ERROR_MESSAGE_MAP: Readonly<Record<string, string>> = Object.freeze({});
+
 type NfeMaps = {
   authorized: Record<string, boolean>;
   focusStatus: Record<string, string>;
@@ -202,10 +211,10 @@ export function useNfeStatus({
   }, [refetch]);
 
   return {
-    nfeAuthorizedByPedidoId: data?.authorized ?? {},
-    nfeFocusStatusByPedidoId: data?.focusStatus ?? {},
-    nfeXmlPendingByPedidoId: data?.xmlPending ?? {},
-    nfeErrorMessageByPedidoId: data?.errorMessage ?? {},
+    nfeAuthorizedByPedidoId: data?.authorized ?? EMPTY_AUTHORIZED_MAP,
+    nfeFocusStatusByPedidoId: data?.focusStatus ?? EMPTY_FOCUS_STATUS_MAP,
+    nfeXmlPendingByPedidoId: data?.xmlPending ?? EMPTY_XML_PENDING_MAP,
+    nfeErrorMessageByPedidoId: data?.errorMessage ?? EMPTY_ERROR_MESSAGE_MAP,
     refreshNfeAuthorizedMapForList,
   };
 }

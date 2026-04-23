@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ChevronDown, FileBadge, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +10,7 @@ import {
     DropdownMenuItem,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { normStatus } from "@/hooks/useOrderFiltering";
 
 interface ColumnDef {
   id: string;
@@ -17,55 +19,50 @@ interface ColumnDef {
   render: (pedido: any) => React.ReactNode;
 }
 
-interface OrderTableRowHandlers {
-  handleCheckboxChange: (id: string, selected: string[], setter: (fn: any) => void) => void;
-  handleVincularClick: (pedido: any) => void;
-  handleOpenDetailsDrawer: (pedido: any) => void;
-  handleReprintLabel: (pedido: any) => void;
-  handleEmitirNfe: (pedidos: any[], opts?: any) => void;
-  handleEnviarNfeForPedido: (pedido: any) => void;
-  handleSyncNfeForPedido: (pedido: any) => void;
-  handleArrangeShipmentForPedido: (pedido: any) => void;
-  addProcessingId: (id: string) => void;
-  norm: (s: string) => string;
-}
-
-interface SelectionState {
-  selectedPedidos: string[];
-  setSelectedPedidos: (fn: any) => void;
-  selectedPedidosEmissao: string[];
-  setSelectedPedidosEmissao: (fn: any) => void;
-  selectedPedidosImpressao: string[];
-  setSelectedPedidosImpressao: (fn: any) => void;
-  selectedPedidosEnviado: string[];
-  setSelectedPedidosEnviado: (fn: any) => void;
-}
-
-interface NfeState {
-  nfBadgeFilter: string;
-  processingIdsSet: Set<string>;
-  nfeAuthorizedByPedidoId: Record<string, boolean>;
-  nfeFocusStatusByPedidoId: Record<string, string>;
-  xmlLoadingSet: Set<string>;
-  arrangeLoadingSet: Set<string>;
-}
-
+// Flat primitive props — every field compares by value (Object.is), so React.memo
+// shallow equality correctly skips re-renders when only unrelated page state changes.
 interface OrderTableRowProps {
   pedido: any;
+  isChecked: boolean;
+  isProcessing: boolean;
+  isNfeAuthorized: boolean;
+  nfeFocusStatus: string;
+  isXmlLoading: boolean;
+  isArrangeLoading: boolean;
   activeStatus: string;
   columns: ColumnDef[];
-  handlers: OrderTableRowHandlers;
-  selection: SelectionState;
-  nfeState: NfeState;
+  nfBadgeFilter: string;
+  onToggle: (id: string) => void;
+  onOpenDetails: (pedido: any) => void;
+  onVincular: (pedido: any) => void;
+  onReprintLabel: (pedido: any) => void;
+  onEmitir: (pedidos: any[], opts?: any) => void;
+  onSubirXml: (pedido: any) => void;
+  onSyncNfe: (pedido: any) => void;
+  onArrangeShipment: (pedido: any) => void;
+  addProcessingId: (id: string) => void;
 }
 
-export function OrderTableRow({
+function OrderTableRowImpl({
   pedido,
+  isChecked,
+  isProcessing,
+  isNfeAuthorized,
+  nfeFocusStatus,
+  isXmlLoading,
+  isArrangeLoading,
   activeStatus,
   columns,
-  handlers,
-  selection,
-  nfeState,
+  nfBadgeFilter,
+  onToggle,
+  onOpenDetails,
+  onVincular,
+  onReprintLabel,
+  onEmitir,
+  onSubirXml,
+  onSyncNfe,
+  onArrangeShipment,
+  addProcessingId,
 }: OrderTableRowProps) {
   const payLower = String(pedido?.payment_status || '').toLowerCase();
   const isApprovedRow = payLower === 'approved' || payLower === 'paid' || payLower === 'settled' || Boolean(pedido?.payment_date_approved);
@@ -80,33 +77,20 @@ export function OrderTableRow({
         ? 'Pagamento cancelado'
         : (isRefundedRow ? 'Pagamento reembolsado' : 'Abrir vinculação')));
   const hasMultipleItems = Array.isArray(pedido.items) && pedido.items.length >= 2;
-
-  const isChecked =
-    (activeStatus === "todos" && selection.selectedPedidos.includes(pedido.id)) ||
-    (activeStatus === "emissao-nf" && selection.selectedPedidosEmissao.includes(pedido.id)) ||
-    (activeStatus === "impressao" && selection.selectedPedidosImpressao.includes(pedido.id)) ||
-    (activeStatus === "enviado" && selection.selectedPedidosEnviado.includes(pedido.id));
-
-  const handleRowCheckbox = () => {
-    if (activeStatus === "todos") handlers.handleCheckboxChange(pedido.id, selection.selectedPedidos, selection.setSelectedPedidos);
-    if (activeStatus === "emissao-nf") handlers.handleCheckboxChange(pedido.id, selection.selectedPedidosEmissao, selection.setSelectedPedidosEmissao);
-    if (activeStatus === "impressao") handlers.handleCheckboxChange(pedido.id, selection.selectedPedidosImpressao, selection.setSelectedPedidosImpressao);
-    if (activeStatus === "enviado") handlers.handleCheckboxChange(pedido.id, selection.selectedPedidosEnviado, selection.setSelectedPedidosEnviado);
-  };
-
   const hasLabel = Boolean(pedido?.label?.pdf_base64 || pedido?.label?.content_base64 || pedido?.label?.zpl2_base64);
+  const isCheckboxStatusAllowed = activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado";
 
   return (
     <tr className="group hover:bg-gray-50 transition-colors relative overflow-hidden">
       <td className="relative overflow-hidden w-[2%] px-2 py-3 whitespace-nowrap align-top">
-        {(activeStatus === "todos" || activeStatus === "emissao-nf" || activeStatus === "impressao" || activeStatus === "enviado") && (
+        {isCheckboxStatusAllowed && (
           <div className="flex flex-col items-center gap-1">
             <div className="w-5 h-5 flex items-center justify-center">
               <CustomCheckbox
                 className="outline-none focus:outline-none"
                 checked={isChecked}
-                disabled={nfeState.nfBadgeFilter === 'processando' && nfeState.processingIdsSet.has(pedido.id)}
-                onChange={handleRowCheckbox}
+                disabled={nfBadgeFilter === 'processando' && isProcessing}
+                onChange={() => onToggle(pedido.id)}
                 onClick={(e) => e.stopPropagation()}
               />
             </div>
@@ -147,7 +131,7 @@ export function OrderTableRow({
                   variant="link"
                   className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
                   disabled={!canVincular}
-                  onClick={(e) => { e.stopPropagation(); if (canVincular) handlers.handleVincularClick(pedido); }}
+                  onClick={(e) => { e.stopPropagation(); if (canVincular) onVincular(pedido); }}
                 >
                   Vincular
                 </Button>
@@ -166,7 +150,7 @@ export function OrderTableRow({
                     <Button
                       variant="link"
                       className={`h-8 w-8 p-0 ${hasLabel ? 'text-purple-600' : 'text-gray-500'}`}
-                      onClick={(e) => { e.stopPropagation(); handlers.handleReprintLabel(pedido); }}
+                      onClick={(e) => { e.stopPropagation(); onReprintLabel(pedido); }}
                       aria-label="Imprimir"
                     >
                       <FileBadge className="h-4 w-4" />
@@ -189,7 +173,7 @@ export function OrderTableRow({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlers.handleOpenDetailsDrawer(pedido); }}>
+                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onOpenDetails(pedido); }}>
                   Mostrar detalhes
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -203,7 +187,7 @@ export function OrderTableRow({
                   <Button
                     variant="link"
                     className="h-8 w-8 p-0"
-                    onClick={(e) => { e.stopPropagation(); handlers.handleReprintLabel(pedido); }}
+                    onClick={(e) => { e.stopPropagation(); onReprintLabel(pedido); }}
                     disabled={!hasLabel}
                     aria-label="Reimprimir etiqueta"
                   >
@@ -223,14 +207,14 @@ export function OrderTableRow({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlers.handleOpenDetailsDrawer(pedido); }}>
+                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onOpenDetails(pedido); }}>
                   Mostrar detalhes
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         ) : (
-            (handlers.norm(pedido.internalStatus) === 'processando_nf' || nfeState.processingIdsSet.has(pedido.id))
+            (normStatus(pedido.internalStatus) === 'processando_nf' || isProcessing)
             ? (
               <div className="flex items-center justify-center">
                 <Badge className="bg-white text-purple-700 border border-purple-300 h-7 px-2 inline-flex items-center gap-2 rounded-md">
@@ -240,22 +224,22 @@ export function OrderTableRow({
               </div>
             )
             : (
-              <div className={`${activeStatus === "emissao-nf" && (nfeState.nfBadgeFilter === "emitir" || nfeState.nfBadgeFilter === "subir_xml") ? "flex flex-col items-center justify-center gap-1" : "flex items-center justify-center gap-2"}`}>
-                {activeStatus === "emissao-nf" && nfeState.nfBadgeFilter === "emitir" && !nfeState.nfeAuthorizedByPedidoId[String(pedido.id)] && (
+              <div className={`${activeStatus === "emissao-nf" && (nfBadgeFilter === "emitir" || nfBadgeFilter === "subir_xml") ? "flex flex-col items-center justify-center gap-1" : "flex items-center justify-center gap-2"}`}>
+                {activeStatus === "emissao-nf" && nfBadgeFilter === "emitir" && !isNfeAuthorized && (
                   <Button
                     variant="link"
                     className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handlers.addProcessingId(String(pedido.id));
-                      handlers.handleEmitirNfe([pedido]);
+                      addProcessingId(String(pedido.id));
+                      onEmitir([pedido]);
                     }}
                   >
                     Emitir
                   </Button>
                 )}
-                {activeStatus === "emissao-nf" && nfeState.nfBadgeFilter === "subir_xml" && (
-                  nfeState.xmlLoadingSet.has(String(pedido.id)) ? (
+                {activeStatus === "emissao-nf" && nfBadgeFilter === "subir_xml" && (
+                  isXmlLoading ? (
                     <span className="inline-flex items-center h-8">
                       <Loader2 className="h-4 w-4 animate-spin text-purple-600" />
                     </span>
@@ -263,14 +247,14 @@ export function OrderTableRow({
                     <Button
                       variant="link"
                       className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
-                      onClick={(e) => { e.stopPropagation(); handlers.handleEnviarNfeForPedido(pedido); }}
+                      onClick={(e) => { e.stopPropagation(); onSubirXml(pedido); }}
                     >
                       Subir xml
                     </Button>
                   )
                 )}
-                {activeStatus === "emissao-nf" && nfeState.nfBadgeFilter === "subir_xml" && String(pedido.marketplace || '').toLowerCase().includes('shopee') && (
-                  nfeState.arrangeLoadingSet.has(String(pedido.id)) ? (
+                {activeStatus === "emissao-nf" && nfBadgeFilter === "subir_xml" && String(pedido.marketplace || '').toLowerCase().includes('shopee') && (
+                  isArrangeLoading ? (
                     <span className="inline-flex items-center h-8">
                       <Loader2 className="h-4 w-4 animate-spin text-purple-600" />
                     </span>
@@ -278,7 +262,7 @@ export function OrderTableRow({
                     <Button
                       variant="link"
                       className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
-                      onClick={(e) => { e.stopPropagation(); handlers.handleArrangeShipmentForPedido(pedido); }}
+                      onClick={(e) => { e.stopPropagation(); onArrangeShipment(pedido); }}
                     >
                       Organizar Envio
                     </Button>
@@ -293,35 +277,35 @@ export function OrderTableRow({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlers.handleOpenDetailsDrawer(pedido); }}>
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onOpenDetails(pedido); }}>
                       Mostrar detalhes
                     </DropdownMenuItem>
 
-                    {activeStatus === "emissao-nf" && nfeState.nfBadgeFilter !== "subir_xml" && nfeState.nfBadgeFilter !== "emitir" && (
-                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlers.handleSyncNfeForPedido(pedido); }}>
+                    {activeStatus === "emissao-nf" && nfBadgeFilter !== "subir_xml" && nfBadgeFilter !== "emitir" && (
+                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onSyncNfe(pedido); }}>
                         Sincronizar NF-e
                       </DropdownMenuItem>
                     )}
-                    {activeStatus === "emissao-nf" && nfeState.nfBadgeFilter === "falha" && (
+                    {activeStatus === "emissao-nf" && nfBadgeFilter === "falha" && (
                       <DropdownMenuItem onClick={(e) => {
                         e.stopPropagation();
-                        handlers.addProcessingId(String(pedido.id));
-                        handlers.handleEmitirNfe([pedido]);
+                        addProcessingId(String(pedido.id));
+                        onEmitir([pedido]);
                       }}>
                         Reemitir
                       </DropdownMenuItem>
                     )}
-                    {activeStatus === "emissao-nf" && ["cancelado", "cancelada", "rejeitado", "rejeitada"].includes(String(nfeState.nfeFocusStatusByPedidoId[String(pedido.id)] || "").toLowerCase()) && (
+                    {activeStatus === "emissao-nf" && ["cancelado", "cancelada", "rejeitado", "rejeitada"].includes(String(nfeFocusStatus).toLowerCase()) && (
                       <DropdownMenuItem onClick={(e) => {
                         e.stopPropagation();
-                        handlers.addProcessingId(String(pedido.id));
-                        handlers.handleEmitirNfe([pedido], { forceNewNumber: true, forceNewRef: true });
+                        addProcessingId(String(pedido.id));
+                        onEmitir([pedido], { forceNewNumber: true, forceNewRef: true });
                       }}>
                         Gerar Nova NF-e
                       </DropdownMenuItem>
                     )}
-                    {activeStatus === "emissao-nf" && nfeState.nfeAuthorizedByPedidoId[String(pedido.id)] && (
-                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlers.handleEnviarNfeForPedido(pedido); }}>
+                    {activeStatus === "emissao-nf" && isNfeAuthorized && (
+                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onSubirXml(pedido); }}>
                         Subir xml
                       </DropdownMenuItem>
                     )}
@@ -334,3 +318,5 @@ export function OrderTableRow({
     </tr>
   );
 }
+
+export const OrderTableRow = memo(OrderTableRowImpl);

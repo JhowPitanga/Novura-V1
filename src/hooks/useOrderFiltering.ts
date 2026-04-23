@@ -83,7 +83,6 @@ interface UseOrderFilteringParams {
   pageSize: number;
   currentPage: number;
   totalPedidosCount: number | null;
-  statusCountsGlobal: Record<string, number> | null;
 }
 
 interface OrderFilteringResult {
@@ -122,7 +121,6 @@ export function useOrderFiltering({
   pageSize,
   currentPage,
   totalPedidosCount,
-  statusCountsGlobal,
 }: UseOrderFilteringParams): OrderFilteringResult {
 
   const effectiveFromMs = dateRange?.from ? calendarStartOfDaySPEpochMs(dateRange.from as Date) : undefined;
@@ -262,10 +260,8 @@ export function useOrderFiltering({
   const totalFiltered = useMemo(() => {
     const hasLocalFilterImpact = (activeMarketplaceFilter !== 'all' || activeShippingTypeFilter !== 'all');
     if (!isServerPaged || hasLocalFilterImpact) return sortedOrders.length;
-    if (activeStatus === 'todos') return (totalPedidosCount ?? sortedOrders.length);
-    const gs = statusCountsGlobal?.[activeStatus];
-    return typeof gs === 'number' ? gs : sortedOrders.length;
-  }, [sortedOrders.length, isServerPaged, activeMarketplaceFilter, activeShippingTypeFilter, activeStatus, totalPedidosCount, statusCountsGlobal]);
+    return (totalPedidosCount ?? sortedOrders.length);
+  }, [sortedOrders.length, isServerPaged, activeMarketplaceFilter, activeShippingTypeFilter, totalPedidosCount]);
 
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
   const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
