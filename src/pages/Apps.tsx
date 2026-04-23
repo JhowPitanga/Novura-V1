@@ -1,417 +1,515 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Store, Settings } from "lucide-react";
-import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
+import { Badge } from "@/components/ui/badge";
+import { Search, Store, Settings, AlertTriangle, Loader2 } from "lucide-react";
+import { Routes, Route, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { CleanNavigation } from "@/components/CleanNavigation";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { startMercadoLivreAuth, listenForMeliOAuthSuccess } from '@/WebhooksAPI/marketplace/mercado-livre';
-import { startShopeeAuth, startShopeeAuthSandbox, listenForShopeeOAuthSuccess } from '@/WebhooksAPI/marketplace/shopee';
+import { useQueryClient } from "@tanstack/react-query";
 import type { App, AppConnection } from "@/types/apps";
 import { AppCard } from "@/components/apps/AppCard";
 import { ConnectedAppCard } from "@/components/apps/ConnectedAppCard";
-import { ConnectDialog } from "@/components/apps/ConnectDialog";
 import { CannotDisconnectDialog } from "@/components/apps/CannotDisconnectDialog";
+import { StoreNameDialog } from "@/components/apps/StoreNameDialog";
+import { QuickSetupModal } from "@/components/apps/QuickSetupModal";
+import { useAppsWithProvider } from "@/hooks/useMarketplaceProviders";
+import { useIntegrations } from "@/hooks/useIntegrations";
+import type { OAuthSuccessPayload } from "@/WebhooksAPI/marketplace/oauth";
+import type { AppWithProvider } from "@/services/marketplace-providers.service";
+import { integrationKeys as intKeys } from "@/services/marketplace-providers.service";
+
+const navigationItems = [
+  { title: "Loja de Apps", path: "", description: "Explore e conecte aplicativos" },
+  { title: "Conectados", path: "/conectados", description: "Aplicativos integrados" },
+];
+
+const STATIC_CATEGORIES = [
+  { id: "all", name: "Todos", icon: Settings },
+  { id: "marketplaces", name: "Marketplaces", icon: Store },
+];
 
 const MELI_REDIRECT_URI = import.meta.env.VITE_MERCADO_LIVRE_REDIRECT_URI as string | undefined;
 const SHOPEE_REDIRECT_URI = import.meta.env.VITE_SHOPEE_REDIRECT_URI as string | undefined;
-const SHOPEE_REDIRECT_FALLBACK = 'https://www.novuraerp.com.br/oauth/shopee/callback';
+const SHOPEE_REDIRECT_FALLBACK = "https://www.novuraerp.com.br/oauth/shopee/callback";
 
-const navigationItems = [
-    { title: "Loja de Apps", path: "", description: "Explore e conecte aplicativos" },
-    { title: "Conectados", path: "/conectados", description: "Aplicativos integrados" },
-];
+const allowedCategories = ["marketplaces", "logistics", "dropshipping", "others"] as const;
 
-const categories = [
-    { id: "all", name: "Todos", icon: Settings },
-    { id: "marketplaces", name: "Marketplaces", icon: Store },
-];
-
-type AppViewRow = {
-    id: string; name: string; description: string;
-    logo_url: string; category: string; price_type: string;
-};
-
-const allowedCategories = ['marketplaces', 'logistics', 'dropshipping', 'others'] as const;
-
-function mapAppRow(row: AppViewRow): App {
-    const category = allowedCategories.includes(row.category as (typeof allowedCategories)[number])
-        ? row.category as App['category']
-        : 'others';
-    return {
-        id: row.id,
-        name: row.name,
-        description: row.description,
-        logo: row.logo_url,
-        category,
-        isConnected: false,
-        price: row.price_type === 'free' ? 'free' : 'paid',
-    };
+function mapAppRow(row: AppWithProvider): App {
+  const category = allowedCategories.includes(
+    (row.category ?? "others") as (typeof allowedCategories)[number],
+  )
+    ? (row.category as App["category"])
+    : "others";
+  return {
+    id: row.id ?? "",
+    name: row.name ?? "",
+    description: row.description ?? "",
+    logo: row.logo_url ?? "",
+    category,
+    isConnected: false,
+    price: row.price_type === "free" ? "free" : "paid",
+    providerKey: row.provider_key ?? null,
+    providerDisplayName: row.name ?? null,
+  };
 }
 
 export default function Aplicativos() {
-    const [searchTerm, setSearchTerm] = useState("");
-    const [selectedCategory, setSelectedCategory] = useState("all");
-    const [connectedFilter] = useState("all");
-    const [selectedApp, setSelectedApp] = useState<App | null>(null);
-    const [isDialogOpen, setIsDialogOpen] = useState(false);
-    const [storeName, setStoreName] = useState("");
-    const [appConnections, setAppConnections] = useState<Record<string, AppConnection>>({});
-    const [apps, setApps] = useState<App[]>([]);
-    const [loadingApps, setLoadingApps] = useState<boolean>(true);
-    const [appsError, setAppsError] = useState<string | null>(null);
-    const [isCannotDisconnectOpen, setIsCannotDisconnectOpen] = useState(false);
-    const [cannotDisconnectMessage, setCannotDisconnectMessage] = useState('');
-    const [companies, setCompanies] = useState<Array<{ id: string; razao_social: string; cnpj: string }>>([]);
-    const [selectedCompanyId, setSelectedCompanyId] = useState<string>('');
-    const { toast } = useToast();
-    const { user, organizationId, permissions, userRole } = useAuth();
-    const navigate = useNavigate();
-    const location = useLocation();
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("all");
 
-    const isLojaRoute = location.pathname === '/aplicativos' || location.pathname === '/aplicativos/';
-    const isConectadosRoute = location.pathname.startsWith('/aplicativos/conectados');
-    const canAccess = (() => {
-        if (userRole === 'owner') return true;
-        const mod = (permissions as any)?.aplicativos;
-        if (!mod) return false;
-        if (typeof mod === 'object' && mod !== null) return Boolean((mod as any).view);
-        return false;
-    })();
+  // Connection dialog state
+  const [storeNameDialogOpen, setStoreNameDialogOpen] = useState(false);
+  const [quickSetupOpen, setQuickSetupOpen] = useState(false);
+  const [connectingApp, setConnectingApp] = useState<App | null>(null);
+  const [pendingIntegration, setPendingIntegration] = useState<OAuthSuccessPayload | null>(null);
 
-    // Load companies for the connect dialog company selector
-    useEffect(() => {
-        if (!organizationId) return;
-        supabase
-            .from('companies')
-            .select('id, razao_social, cnpj')
-            .eq('organization_id', organizationId)
-            .eq('is_active', true)
-            .order('created_at', { ascending: true })
-            .then(({ data }) => {
-                if (Array.isArray(data)) {
-                    setCompanies(data as Array<{ id: string; razao_social: string; cnpj: string }>);
-                    // Pre-select the default company
-                    if (data.length > 0 && !selectedCompanyId) {
-                        setSelectedCompanyId(data[0].id);
-                    }
-                }
-            });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [organizationId]);
+  // Disconnect state
+  const [isCannotDisconnectOpen, setIsCannotDisconnectOpen] = useState(false);
+  const [cannotDisconnectMessage, setCannotDisconnectMessage] = useState("");
 
-    useEffect(() => {
-        if (!isLojaRoute || !canAccess) return;
-        let isMounted = true;
-        const loadApps = async () => {
-            setLoadingApps(true);
-            setAppsError(null);
-            try {
-                const { data, error } = await supabase.from('apps_public_view').select('*').order('name');
-                if (error) throw error;
-                if (isMounted && Array.isArray(data)) {
-                    setApps((data as AppViewRow[]).map(mapAppRow));
-                }
-            } catch (err) {
-                if (isMounted) {
-                    setApps([]);
-                    setAppsError(err instanceof Error ? err.message : 'Não foi possível carregar o catálogo de apps.');
-                }
-            } finally {
-                if (isMounted) setLoadingApps(false);
-            }
-        };
-        loadApps();
-        return () => { isMounted = false; };
-    }, [isLojaRoute, canAccess]);
+  const { toast } = useToast();
+  const { organizationId, permissions, userRole } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
 
-    const filteredApps = apps.filter(app => {
-        const matchesSearch = app.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            app.description.toLowerCase().includes(searchTerm.toLowerCase());
-        const matchesCategory = selectedCategory === "all" || app.category === selectedCategory;
-        return matchesSearch && matchesCategory;
-    });
+  const isLojaRoute =
+    location.pathname === "/aplicativos" || location.pathname === "/aplicativos/";
 
-    const toDbMarketplaceName = (name: string) => name === 'Mercado Livre' ? 'Mercado Livre' : name;
+  const canAccess = (() => {
+    if (userRole === "owner") return true;
+    const mod = (permissions as Record<string, unknown>)?.aplicativos;
+    if (!mod) return false;
+    if (typeof mod === "object" && mod !== null)
+      return Boolean((mod as Record<string, unknown>).view);
+    return false;
+  })();
 
-    const loadConnections = useCallback(async () => {
-        try {
-            if (!organizationId) return;
-            const { data, error } = await supabase
-                .from('marketplace_integrations')
-                .select('id, marketplace_name, config, expires_in')
-                .eq('organizations_id', organizationId);
-            if (error) throw error;
+  // Data from React Query
+  const { data: appRows = [], isLoading: loadingApps } = useAppsWithProvider();
+  const { data: integrations = [], isLoading: loadingIntegrations } = useIntegrations();
 
-            type IntegrationRow = { id: string; marketplace_name: string; config?: { storeName?: string; connectedAt?: string }; expires_in?: number | string };
-            const rows = ((data as IntegrationRow[]) || []);
-            const normalize = (n: string) => n.toLowerCase().replace(/[_\s-]+/g, '');
-            const toDisplayName = (name: string) => {
-                const canon = name.toLowerCase().replace(/[_\s-]+/g, '_');
-                if (canon === 'mercado_livre' || canon === 'meli') return 'Mercado Livre';
-                if (canon === 'shopee') return 'Shopee';
-                if (canon === 'amazon') return 'Amazon';
-                return name.replace(/[_-]+/g, ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-            };
-
-            let catalog = Array.isArray(apps) ? [...apps] : [];
-            if (!catalog || catalog.length === 0) {
-                const names = Array.from(new Set(rows.map(r => toDisplayName(r.marketplace_name))));
-                if (names.length > 0) {
-                    const { data: appRows } = await supabase.from('apps_public_view').select('*');
-                    catalog = ((appRows as AppViewRow[]) || []).map(mapAppRow);
-                }
-            }
-
-            const nextConnections: Record<string, AppConnection> = {};
-            rows.forEach((row) => {
-                let match = catalog.find(a => {
-                    const an = normalize(a.name);
-                    const mn = normalize(row.marketplace_name);
-                    return an === mn || an.includes(mn) || mn.includes(an);
-                });
-                if (!match) {
-                    const syntheticId = `integration:${normalize(row.marketplace_name)}`;
-                    if (!catalog.find(a => a.id === syntheticId)) {
-                        catalog.push({ id: syntheticId, name: toDisplayName(row.marketplace_name), description: 'Integração conectada', logo: '', category: 'marketplaces', isConnected: true, price: 'free' });
-                    }
-                    match = catalog.find(a => a.id === syntheticId) || null;
-                    if (!match) return;
-                }
-
-                const rawExp = row.expires_in;
-                let expiresAtDate: Date;
-                if (typeof rawExp === 'string' && rawExp.trim()) {
-                    const d = new Date(rawExp);
-                    expiresAtDate = Number.isFinite(d.getTime()) ? d : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-                } else if (typeof rawExp === 'number' && Number.isFinite(rawExp)) {
-                    expiresAtDate = new Date(Date.now() + rawExp * 1000);
-                } else {
-                    expiresAtDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-                }
-                const now = new Date();
-                const daysLeft = Math.ceil((expiresAtDate.getTime() - now.getTime()) / 86400000);
-                const status: AppConnection['status'] = expiresAtDate <= now ? 'inactive' : daysLeft <= 7 ? 'reconnect' : 'active';
-
-                const candidate: AppConnection = {
-                    appId: match.id,
-                    storeName: (row as any)?.config?.shop_name || (row as any)?.config?.storeName || 'Minha Loja',
-                    status,
-                    authenticatedAt: (row as any)?.config?.connectedAt || (row as any)?.config?.connected_at || new Date().toISOString(),
-                    expiresAt: expiresAtDate.toISOString(),
-                    integrationId: row.id,
-                };
-                const existing = nextConnections[match.id];
-                if (!existing || new Date(existing.expiresAt) < expiresAtDate) {
-                    nextConnections[match.id] = candidate;
-                }
-            });
-
-            setAppConnections(nextConnections);
-            setApps(catalog.map(app => ({ ...app, isConnected: !!nextConnections[app.id] && nextConnections[app.id].status !== 'inactive' })));
-        } catch (e) {
-            console.error('Falha ao carregar integrações', e);
-        }
-    }, [organizationId, apps]);
-
-    useEffect(() => {
-        if (!canAccess) return;
-        if (isConectadosRoute && organizationId) loadConnections();
-    }, [isConectadosRoute, organizationId, canAccess]);
-
-    const connectedApps = apps.filter(app => {
-        const conn = appConnections[app.id];
-        const isActive = !!conn && conn.status !== 'inactive';
-        const matchesFilter = connectedFilter === "all" || (connectedFilter === "connected" && isActive) || (connectedFilter === "disconnected" && !conn);
-        const matchesCategory = selectedCategory === "all" || app.category === selectedCategory;
-        return !!conn && matchesFilter && matchesCategory;
-    });
-
-    const handleConnect = (app: App) => {
-        setSelectedApp(app);
-        // Reset to default (first) company when opening dialog
-        if (companies.length > 0 && !selectedCompanyId) setSelectedCompanyId(companies[0].id);
-        setIsDialogOpen(true);
-    };
-
-    const connectApp = async () => {
-        try {
-            if (!selectedApp) { toast({ title: 'Seleção ausente', description: 'Nenhum aplicativo selecionado para conexão.', variant: 'destructive' }); return; }
-            if (!organizationId) { toast({ title: 'Sessão necessária', description: 'Entre na sua conta para conectar aplicativos.', variant: 'destructive' }); navigate('/auth'); return; }
-            const trimmedStoreName = storeName.trim();
-            if (!trimmedStoreName) { toast({ title: 'Nome da loja obrigatório', description: 'Informe o nome da loja para continuar.' }); return; }
-
-            // Resolve the company to link: use selectedCompanyId or fall back to first available
-            const companyIdToUse = selectedCompanyId || (companies.length > 0 ? companies[0].id : undefined);
-
-            const appNameCanon = selectedApp.name.toLowerCase().replace(/[_\s-]+/g, '');
-            const onSuccess = () => {
-                setIsDialogOpen(false);
-                setStoreName('');
-                setAppConnections(prev => ({
-                    ...prev,
-                    [selectedApp.id]: { appId: selectedApp.id, storeName: trimmedStoreName, status: 'active', authenticatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() },
-                }));
-                setApps(prev => prev.map(a => a.id === selectedApp.id ? { ...a, isConnected: true } : a));
-                toast({ title: 'Conexão concluída', description: `${selectedApp.name} foi conectado com sucesso.` });
-                navigate('/aplicativos/conectados');
-            };
-
-            if (appNameCanon === 'shopee' || (appNameCanon.includes('shopee') && (appNameCanon.includes('sandbox') || appNameCanon.includes('sanbox')))) {
-                const isSandbox = appNameCanon.includes('sandbox') || appNameCanon.includes('sanbox');
-                const authFn = isSandbox ? startShopeeAuthSandbox : startShopeeAuth;
-                const { authorization_url } = await authFn(supabase, { organizationId, companyId: companyIdToUse, storeName: trimmedStoreName, connectedByUserId: user?.id || null, redirectUri: SHOPEE_REDIRECT_URI || SHOPEE_REDIRECT_FALLBACK });
-                try { localStorage.setItem('shopee_auth_env', isSandbox ? 'sandbox' : 'prod'); } catch (_) {}
-                const popup = window.open(authorization_url, 'shopee_auth', 'width=960,height=800,menubar=no,toolbar=no');
-                if (!popup) { toast({ title: 'Janela bloqueada', description: 'Permita pop-ups no navegador para continuar.' }); return; }
-                const unsubscribe = listenForShopeeOAuthSuccess((_payload) => {
-                    try { onSuccess(); } finally {
-                        unsubscribe();
-                        if (isSandbox) { try { localStorage.removeItem('shopee_auth_env'); } catch (_) {} }
-                        popup.close?.();
-                    }
-                });
-            } else {
-                const { authorization_url } = await startMercadoLivreAuth(supabase, { organizationId, companyId: companyIdToUse, storeName: trimmedStoreName, marketplaceName: selectedApp.name, connectedByUserId: user?.id || null, redirectUri: MELI_REDIRECT_URI || undefined });
-                const popup = window.open(authorization_url, 'meli_auth', 'width=960,height=800,menubar=no,toolbar=no');
-                if (!popup) { toast({ title: 'Janela bloqueada', description: 'Permita pop-ups no navegador para continuar.' }); return; }
-                const unsubscribe = listenForMeliOAuthSuccess((_payload) => {
-                    try { onSuccess(); } finally { unsubscribe(); popup.close?.(); }
-                });
-            }
-        } catch (e) {
-            console.error('Erro inesperado ao conectar app:', e);
-            toast({ title: 'Erro inesperado', description: 'Ocorreu um erro ao conectar o aplicativo.', variant: 'destructive' });
-        }
-    };
-
-    const disconnectApp = async (appId: string) => {
-        try {
-            if (!organizationId) { toast({ title: 'Sessão necessária', description: 'Entre na sua conta para desconectar aplicativos.', variant: 'destructive' }); navigate('/auth'); return; }
-            const app = apps.find(a => a.id === appId);
-            if (!app) return;
-            const { error: rpcErr } = await supabase.rpc('disconnect_marketplace_cascade', { p_organizations_id: organizationId, p_marketplace_name: toDbMarketplaceName(app.name) });
-            if (rpcErr) {
-                const msg = String(rpcErr?.message || '').toLowerCase();
-                if (msg.includes('reserved_stock_present')) { setCannotDisconnectMessage('Não é possível desconectar. Existem reservas de estoque ativas vinculadas a anúncios deste aplicativo.'); setIsCannotDisconnectOpen(true); return; }
-                const { data: deletedRows, error } = await supabase.from('marketplace_integrations').delete().eq('organizations_id', organizationId).or(`marketplace_name.eq.${toDbMarketplaceName(app.name)},marketplace_name.eq.${app.name}`).select('id');
-                if (error || !deletedRows || deletedRows.length === 0) { toast({ title: 'Falha ao desconectar', description: 'Não foi possível remover a conexão.', variant: 'destructive' }); return; }
-            }
-            setAppConnections(prev => { const next = { ...prev }; delete next[appId]; return next; });
-            setApps(prev => prev.map(a => a.id === appId ? { ...a, isConnected: false } : a));
-            await loadConnections();
-            toast({ title: 'Aplicativo desconectado', description: `${app.name} foi removido da sua organização.` });
-        } catch (e) {
-            console.error('Erro inesperado ao desconectar app:', e);
-            toast({ title: 'Erro inesperado', description: 'Ocorreu um erro ao desconectar o aplicativo.', variant: 'destructive' });
-        }
-    };
-
-    const getConnectionInfo = (app: App) => {
-        const conn = appConnections[app.id];
-        if (!conn) return { conn, status: 'inactive' as const, color: 'bg-red-500' };
-        const exp = new Date(conn.expiresAt);
-        const now = new Date();
-        if (exp < now) return { conn, status: 'inactive' as const, color: 'bg-red-500' };
-        const daysLeft = Math.ceil((exp.getTime() - now.getTime()) / 86400000);
-        if (daysLeft <= 7) return { conn, status: 'reconnect' as const, color: 'bg-yellow-500' };
-        return { conn, status: 'active' as const, color: 'bg-green-500' };
-    };
-
-    return (
-        <SidebarProvider>
-            <div className="min-h-screen flex w-full bg-gray-50">
-                <AppSidebar disableChat />
-                <div className="flex-1 flex flex-col">
-                    <GlobalHeader />
-                    <main className="flex-1 p-6 overflow-auto">
-                        <CleanNavigation items={navigationItems} basePath="/aplicativos" />
-                        <Routes>
-                            <Route path="/" element={
-                                <>
-                                    <div className="relative max-w-md">
-                                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                                        <Input placeholder="Buscar aplicativos..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-10" />
-                                    </div>
-                                    <div className="flex space-x-2 overflow-x-auto pb-2 mt-6">
-                                        {categories.map((category) => (
-                                            <Button key={category.id} variant={selectedCategory === category.id ? "default" : "outline"} onClick={() => setSelectedCategory(category.id)} className="flex items-center space-x-2 whitespace-nowrap" size="sm">
-                                                <category.icon className="w-4 h-4" />
-                                                <span>{category.name}</span>
-                                            </Button>
-                                        ))}
-                                    </div>
-                                    {loadingApps ? (
-                                        <div className="mt-6 text-sm text-gray-600">Carregando catálogo de apps...</div>
-                                    ) : filteredApps.length === 0 ? (
-                                        <div className="mt-6 text-center py-12">
-                                            <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                                <Settings className="w-8 h-8 text-gray-400" />
-                                            </div>
-                                            <p className="text-gray-500">Catálogo de apps indisponível no momento</p>
-                                            {appsError && <p className="text-gray-400 text-sm mt-2">Tente novamente mais tarde.</p>}
-                                        </div>
-                                    ) : (
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-6">
-                                            {filteredApps.map((app) => <AppCard key={app.id} app={app} onConnect={handleConnect} />)}
-                                        </div>
-                                    )}
-                                </>
-                            } />
-                            <Route path="/conectados" element={
-                                connectedApps.length === 0 ? (
-                                    <div className="text-center py-12">
-                                        <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                            <Settings className="w-8 h-8 text-gray-400" />
-                                        </div>
-                                        <p className="text-gray-500">Nenhum aplicativo conectado ainda</p>
-                                    </div>
-                                ) : (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
-                                        {connectedApps.map((app) => {
-                                            const { conn, status, color } = getConnectionInfo(app);
-                                            return (
-                                                <ConnectedAppCard
-                                                    key={app.id}
-                                                    app={app}
-                                                    conn={conn}
-                                                    status={status}
-                                                    color={color}
-                                                    onDisconnect={disconnectApp}
-                                                    integrationId={conn?.integrationId ?? null}
-                                                    organizationId={organizationId}
-                                                />
-                                            );
-                                        })}
-                                    </div>
-                                )
-                            } />
-                        </Routes>
-                    </main>
-                </div>
-            </div>
-
-            <ConnectDialog
-                open={isDialogOpen}
-                onOpenChange={setIsDialogOpen}
-                appName={selectedApp?.name}
-                storeName={storeName}
-                onStoreNameChange={setStoreName}
-                onConnect={connectApp}
-                companies={companies}
-                selectedCompanyId={selectedCompanyId}
-                onCompanyChange={setSelectedCompanyId}
-            />
-            <CannotDisconnectDialog
-                open={isCannotDisconnectOpen}
-                onOpenChange={setIsCannotDisconnectOpen}
-                message={cannotDisconnectMessage}
-            />
-        </SidebarProvider>
+  // Build app list + connection status
+  const apps: App[] = appRows.map((row) => {
+    const mappedApp = mapAppRow(row);
+    const integration = integrations.find(
+      (i) => i.provider_id === row.provider_id && i.organizations_id === organizationId,
     );
+    return {
+      ...mappedApp,
+      isConnected: Boolean(integration && integration.status === "active"),
+    };
+  });
+
+  // Build appConnections map (appId → connection info)
+  const appConnections: Record<string, AppConnection> = {};
+  integrations.forEach((integration) => {
+    const matchedApp = apps.find(
+      (a) => a.providerKey && integration.provider_id &&
+        appRows.find(r => r.provider_id === integration.provider_id && r.id === a.id),
+    );
+    if (!matchedApp) return;
+    const expiresAt = integration.expires_at
+      ? new Date(integration.expires_at)
+      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const daysLeft = Math.ceil((expiresAt.getTime() - now.getTime()) / 86400000);
+    const status: AppConnection["status"] =
+      expiresAt <= now
+        ? "inactive"
+        : daysLeft <= 7
+        ? "reconnect"
+        : integration.status === "active"
+        ? "active"
+        : "inactive";
+
+    const existing = appConnections[matchedApp.id];
+    const candidate: AppConnection = {
+      appId: matchedApp.id,
+      storeName:
+        integration.store_name ??
+        (integration.config as Record<string, unknown>)?.storeName as string ??
+        "Minha Loja",
+      status,
+      authenticatedAt:
+        integration.connected_at ?? new Date().toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      integrationId: integration.id,
+      setupStatus: integration.setup_status as "pending" | "completed",
+    };
+    if (!existing || new Date(existing.expiresAt) < expiresAt) {
+      appConnections[matchedApp.id] = candidate;
+    }
+  });
+
+  // Check for pending setup from NewCompany.tsx returnToApp flow
+  const [returningIntegration] = useState<{ integrationId: string; providerKey: string } | null>(() => {
+    try {
+      const raw = sessionStorage.getItem("novura:pending_setup");
+      if (raw) {
+        sessionStorage.removeItem("novura:pending_setup");
+        return JSON.parse(raw);
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  });
+
+  // When returning from /empresas/nova, open QuickSetupModal once apps have loaded
+  useEffect(() => {
+    if (!returningIntegration || !searchParams.get("company") || apps.length === 0) return;
+    setPendingIntegration({
+      integrationId: returningIntegration.integrationId,
+      providerKey: returningIntegration.providerKey,
+      externalAccountId: "",
+      ok: true,
+    });
+    const app = apps.find((a) => a.providerKey === returningIntegration.providerKey);
+    setConnectingApp(app ?? null);
+    setQuickSetupOpen(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apps.length]);
+
+  // Dynamic categories from provider data
+  const providerCategories = Array.from(
+    new Set(appRows.map((r) => r.provider_category ?? r.category ?? "others")),
+  );
+  const categories = [
+    ...STATIC_CATEGORIES,
+    ...providerCategories
+      .filter((c) => !STATIC_CATEGORIES.find((sc) => sc.id === c))
+      .map((c) => ({
+        id: c,
+        name: c.charAt(0).toUpperCase() + c.slice(1),
+        icon: Store,
+      })),
+  ];
+
+  const filteredApps = apps.filter((app) => {
+    const matchesSearch =
+      app.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (app.description ?? "").toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesCategory =
+      selectedCategory === "all" || app.category === selectedCategory;
+    return matchesSearch && matchesCategory;
+  });
+
+  const connectedApps = apps.filter((app) => appConnections[app.id]);
+
+  // Integrations pending setup (orphans)
+  const pendingSetupIntegrations = integrations.filter(
+    (i) => i.setup_status === "pending" && i.status === "active" && !i.deactivated_at,
+  );
+
+  // ---------------------------------------------------------------------------
+  // Handlers
+  // ---------------------------------------------------------------------------
+
+  const handleConnect = (app: App) => {
+    if (!app.providerKey) {
+      toast({
+        title: "Integração não suportada",
+        description: "Este aplicativo ainda não suporta o fluxo universal de conexão.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setConnectingApp(app);
+    setStoreNameDialogOpen(true);
+  };
+
+  const handleOAuthSuccess = (payload: OAuthSuccessPayload) => {
+    setPendingIntegration(payload);
+    setQuickSetupOpen(true);
+  };
+
+  const handleQuickSetupClose = useCallback(
+    (open: boolean) => {
+      setQuickSetupOpen(open);
+      if (!open) {
+        setPendingIntegration(null);
+        // Invalidate integrations to refresh connected apps list
+        queryClient.invalidateQueries({
+          queryKey: intKeys.list(organizationId ?? ""),
+        });
+        navigate("/aplicativos/conectados");
+      }
+    },
+    [navigate, organizationId, queryClient],
+  );
+
+  const handleFinalizeOrphan = (integrationId: string, providerKey: string) => {
+    const app = apps.find((a) => a.providerKey === providerKey);
+    setConnectingApp(app ?? null);
+    setPendingIntegration({
+      integrationId,
+      providerKey,
+      externalAccountId: "",
+      ok: true,
+    });
+    setQuickSetupOpen(true);
+  };
+
+  const disconnectApp = async (appId: string) => {
+    if (!organizationId) {
+      navigate("/auth");
+      return;
+    }
+    const app = apps.find((a) => a.id === appId);
+    if (!app) return;
+    const providerKey = app.providerKey;
+    try {
+      if (providerKey) {
+        const { error } = await supabase.rpc("disconnect_marketplace_by_provider", {
+          p_organizations_id: organizationId,
+          p_provider_key: providerKey,
+        });
+        if (error) {
+          const msg = String(error?.message ?? "").toLowerCase();
+          if (msg.includes("reserved_stock_present")) {
+            setCannotDisconnectMessage(
+              "Não é possível desconectar. Existem reservas de estoque ativas vinculadas a anúncios deste aplicativo.",
+            );
+            setIsCannotDisconnectOpen(true);
+            return;
+          }
+          throw error;
+        }
+      } else {
+        await supabase.rpc("disconnect_marketplace_cascade", {
+          p_organizations_id: organizationId,
+          p_marketplace_name: app.name,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: intKeys.list(organizationId) });
+      toast({
+        title: "Aplicativo desconectado",
+        description: `${app.name} foi removido da sua organização.`,
+      });
+    } catch (e) {
+      toast({
+        title: "Erro ao desconectar",
+        description: e instanceof Error ? e.message : "Tente novamente.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const getConnectionInfo = (app: App) => {
+    const conn = appConnections[app.id];
+    if (!conn) return { conn: undefined, status: "inactive" as const, color: "bg-red-500" };
+    const exp = new Date(conn.expiresAt);
+    const now = new Date();
+    if (exp < now) return { conn, status: "inactive" as const, color: "bg-red-500" };
+    const daysLeft = Math.ceil((exp.getTime() - now.getTime()) / 86400000);
+    if (daysLeft <= 7) return { conn, status: "reconnect" as const, color: "bg-yellow-500" };
+    return { conn, status: "active" as const, color: "bg-green-500" };
+  };
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  return (
+    <SidebarProvider>
+      <div className="min-h-screen flex w-full bg-gray-50">
+        <AppSidebar disableChat />
+        <div className="flex-1 flex flex-col">
+          <GlobalHeader />
+          <main className="flex-1 p-6 overflow-auto">
+            <CleanNavigation items={navigationItems} basePath="/aplicativos" />
+
+            <Routes>
+              {/* App Store */}
+              <Route
+                path="/"
+                element={
+                  <>
+                    <div className="relative max-w-md">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+                      <Input
+                        placeholder="Buscar aplicativos..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
+
+                    {/* Dynamic category chips */}
+                    <div className="flex space-x-2 overflow-x-auto pb-2 mt-6">
+                      {categories.map((category) => (
+                        <Button
+                          key={category.id}
+                          variant={selectedCategory === category.id ? "default" : "outline"}
+                          onClick={() => setSelectedCategory(category.id)}
+                          className="flex items-center space-x-2 whitespace-nowrap"
+                          size="sm"
+                        >
+                          <category.icon className="w-4 h-4" />
+                          <span>{category.name}</span>
+                        </Button>
+                      ))}
+                    </div>
+
+                    {loadingApps ? (
+                      <div className="flex items-center gap-2 mt-6 text-sm text-gray-600">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Carregando catálogo...
+                      </div>
+                    ) : filteredApps.length === 0 ? (
+                      <div className="mt-6 text-center py-12">
+                        <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                          <Settings className="w-8 h-8 text-gray-400" />
+                        </div>
+                        <p className="text-gray-500">Nenhum app encontrado</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-6">
+                        {filteredApps.map((app) => (
+                          <AppCard key={app.id} app={app} onConnect={handleConnect} />
+                        ))}
+                      </div>
+                    )}
+                  </>
+                }
+              />
+
+              {/* Connected Apps */}
+              <Route
+                path="/conectados"
+                element={
+                  <>
+                    {/* Orphan integration alerts */}
+                    {pendingSetupIntegrations.length > 0 && (
+                      <div className="mb-6 space-y-2">
+                        {pendingSetupIntegrations.map((integration) => {
+                          const provKey = (integration as Record<string, unknown>)?.marketplace_providers
+                            ? (integration as any).marketplace_providers?.key
+                            : null;
+                          return (
+                            <div
+                              key={integration.id}
+                              className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-3"
+                            >
+                              <div className="flex items-center gap-2">
+                                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                                <div>
+                                  <p className="text-sm font-medium text-amber-900">
+                                    Integração pendente de configuração
+                                  </p>
+                                  <p className="text-xs text-amber-700">
+                                    {integration.store_name ?? integration.marketplace_name} — configure a empresa e o armazém.
+                                  </p>
+                                </div>
+                              </div>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="border-amber-400 text-amber-800 hover:bg-amber-100"
+                                onClick={() => handleFinalizeOrphan(integration.id, provKey ?? "")}
+                              >
+                                Finalizar configuração
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {loadingIntegrations ? (
+                      <div className="flex items-center gap-2 mt-6 text-sm text-gray-600">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Carregando integrações...
+                      </div>
+                    ) : connectedApps.length === 0 ? (
+                      <div className="text-center py-12">
+                        <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                          <Settings className="w-8 h-8 text-gray-400" />
+                        </div>
+                        <p className="text-gray-500">Nenhum aplicativo conectado ainda</p>
+                        <Button
+                          variant="outline"
+                          className="mt-4"
+                          onClick={() => navigate("/aplicativos")}
+                        >
+                          Ver catálogo de apps
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
+                        {connectedApps.map((app) => {
+                          const { conn, status, color } = getConnectionInfo(app);
+                          return (
+                            <ConnectedAppCard
+                              key={app.id}
+                              app={app}
+                              conn={conn}
+                              status={status}
+                              color={color}
+                              onDisconnect={disconnectApp}
+                              integrationId={conn?.integrationId ?? null}
+                              organizationId={organizationId}
+                            />
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                }
+              />
+            </Routes>
+          </main>
+        </div>
+      </div>
+
+      {/* Step 1: Store name + OAuth popup */}
+      {connectingApp && (
+        <StoreNameDialog
+          open={storeNameDialogOpen}
+          onOpenChange={setStoreNameDialogOpen}
+          providerKey={connectingApp.providerKey ?? ""}
+          providerDisplayName={connectingApp.providerDisplayName ?? connectingApp.name}
+          redirectUri={
+            connectingApp.providerKey === "shopee"
+              ? (SHOPEE_REDIRECT_URI || SHOPEE_REDIRECT_FALLBACK)
+              : connectingApp.providerKey === "mercado_livre"
+              ? MELI_REDIRECT_URI
+              : undefined
+          }
+          onSuccess={handleOAuthSuccess}
+        />
+      )}
+
+      {/* Step 2: Company + Warehouse quick setup */}
+      {pendingIntegration && (
+        <QuickSetupModal
+          open={quickSetupOpen}
+          onOpenChange={handleQuickSetupClose}
+          integrationId={pendingIntegration.integrationId}
+          providerKey={pendingIntegration.providerKey}
+          providerDisplayName={
+            connectingApp?.providerDisplayName ??
+            connectingApp?.name ??
+            pendingIntegration.providerKey
+          }
+          defaultCompanyId={searchParams.get("company") ?? undefined}
+          initialTab="company"
+        />
+      )}
+
+      <CannotDisconnectDialog
+        open={isCannotDisconnectOpen}
+        onOpenChange={setIsCannotDisconnectOpen}
+        message={cannotDisconnectMessage}
+      />
+    </SidebarProvider>
+  );
 }
