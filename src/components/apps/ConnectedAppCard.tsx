@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Settings, Warehouse } from "lucide-react";
+import { Settings } from "lucide-react";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -13,7 +13,7 @@ import {
     AlertDialogTitle,
     AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { WarehouseConfigModal } from "@/components/apps/WarehouseConfigModal";
+import { QuickSetupModal } from "@/components/apps/QuickSetupModal";
 import type { App, AppConnection } from "@/types/apps";
 
 interface ConnectedAppCardProps {
@@ -36,11 +36,15 @@ export function ConnectedAppCard({
     integrationId,
     organizationId,
 }: ConnectedAppCardProps) {
-    const [warehouseModalOpen, setWarehouseModalOpen] = useState(false);
+    const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+    const shortDescription = (app.description || "").slice(0, 96);
+    const descriptionText = app.description && app.description.length > 96
+        ? `${shortDescription}...`
+        : (app.description || "");
 
     return (
         <>
-            <Card className="hover:shadow-md transition-shadow">
+            <Card className="h-full hover:shadow-md transition-shadow flex flex-col">
                 <CardHeader className="pb-4">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-3">
@@ -63,30 +67,32 @@ export function ConnectedAppCard({
                         </div>
                     </div>
                 </CardHeader>
-                <CardContent className="pt-0">
-                    <CardDescription className="text-sm mb-4">{app.description}</CardDescription>
-                    <div className="grid grid-cols-1 gap-2 text-xs text-gray-600 mb-4">
+                <CardContent className="pt-0 flex flex-col flex-1">
+                    <CardDescription className="text-sm mb-4 min-h-[40px]">
+                        {descriptionText}
+                    </CardDescription>
+                    <div className="grid grid-cols-1 gap-2 text-xs text-gray-600 mb-4 min-h-[64px]">
                         <div>Autenticado em: {conn?.authenticatedAt ? new Date(conn.authenticatedAt).toLocaleDateString('pt-BR') : '—'}</div>
                         <div>Expira em: {conn?.expiresAt ? new Date(conn.expiresAt).toLocaleDateString('pt-BR') : '—'}</div>
                         <div>Nome da loja: {conn?.storeName || '—'}</div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                        {/* Warehouse config button — shown only when integrationId is known */}
+                    <div className="mt-auto flex flex-col sm:flex-row gap-2">
+                        {/* Unified settings modal button */}
                         {integrationId && (
                             <Button
                                 variant="outline"
                                 size="sm"
-                                className="text-novura-primary border-novura-primary/40 hover:bg-novura-primary/5"
-                                onClick={() => setWarehouseModalOpen(true)}
+                                className="h-9 sm:flex-1 text-novura-primary border-novura-primary/40 hover:bg-novura-primary/5"
+                                onClick={() => setSettingsModalOpen(true)}
                             >
-                                <Warehouse className="w-3.5 h-3.5 mr-1.5" />
-                                Configurar Estoque
+                                <Settings className="w-3.5 h-3.5 mr-1.5" />
+                                Configurações
                             </Button>
                         )}
 
                         <AlertDialog>
                             <AlertDialogTrigger asChild>
-                                <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700">
+                                <Button variant="outline" size="sm" className="h-9 sm:flex-1 text-red-600 hover:text-red-700">
                                     Desconectar
                                 </Button>
                             </AlertDialogTrigger>
@@ -111,13 +117,15 @@ export function ConnectedAppCard({
                 </CardContent>
             </Card>
 
-            {/* Warehouse config modal */}
+            {/* Unified settings modal */}
             {integrationId && (
-                <WarehouseConfigModal
-                    open={warehouseModalOpen}
-                    onOpenChange={setWarehouseModalOpen}
+                <QuickSetupModal
+                    open={settingsModalOpen}
+                    onOpenChange={setSettingsModalOpen}
                     integrationId={integrationId}
-                    marketplaceName={app.name}
+                    providerKey={app.providerKey ?? ""}
+                    providerDisplayName={app.providerDisplayName ?? app.name}
+                    initialTab="store"
                 />
             )}
         </>

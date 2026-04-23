@@ -105,6 +105,31 @@ export function NovaEmpresa() {
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const navigate = useNavigate();
 
+  // returnToApp: after creating a company, return to the Apps QuickSetupModal
+  // with the new company pre-selected.
+  const returnToApp = searchParams.get("returnToApp");
+  const returnProviderKey = searchParams.get("providerKey");
+
+  const navigateAfterSave = (newCompanyId?: string) => {
+    if (returnToApp) {
+      const params = new URLSearchParams();
+      if (newCompanyId) params.set("company", newCompanyId);
+      // Navigate back to /aplicativos/conectados, App.tsx will open QuickSetupModal
+      // via the pending integration stored in sessionStorage
+      try {
+        sessionStorage.setItem(
+          `novura:pending_setup`,
+          JSON.stringify({ integrationId: returnToApp, providerKey: returnProviderKey }),
+        );
+      } catch {
+        // sessionStorage unavailable — user will need to configure manually
+      }
+      navigate(`/aplicativos/conectados?company=${newCompanyId ?? ""}`);
+      return;
+    }
+    navigate("/configuracoes");
+  };
+
   const updateEmpresaData = (data: Partial<EmpresaData>) => {
     setEmpresaData(prev => ({ ...prev, ...data }));
   };
@@ -690,7 +715,7 @@ export function NovaEmpresa() {
         }
 
         toast.success('Empresa atualizada com sucesso!');
-        navigate('/configuracoes');
+        navigateAfterSave();
       } else {
         // Inserção
         const insertPayload: any = {
@@ -802,7 +827,7 @@ export function NovaEmpresa() {
         }
 
         toast.success('Empresa cadastrada com sucesso!');
-        navigate('/configuracoes');
+        navigateAfterSave(inserted?.id);
       }
     } catch (error) {
       console.error('Erro ao salvar empresa:', error);

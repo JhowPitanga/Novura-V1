@@ -1,216 +1,36 @@
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
-import { getField } from "../_shared/adapters/infra/object-utils.ts";
-import { importAesGcmKey, aesGcmEncryptToString, hmacSha256Hex } from "../_shared/adapters/infra/token-utils.ts";
+// @deprecated — thin wrapper. Delegates to the generic oauth-callback function.
+// Shopee will redirect to this URL until the redirect_uri is updated in the Shopee Partner Portal.
 
-function htmlPostMessageSuccess(siteUrl: string, payload: unknown) {
-  const origin = (() => { try { return new URL(siteUrl).origin; } catch (_) { return "*"; } })();
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Conexão autorizada</title></head><body><p>Conexão autorizada. Você pode fechar esta janela.</p><script>(function(){try{var targetOrigin=${JSON.stringify(origin)};if(window.opener){window.opener.postMessage({type:'shopee_oauth_success', payload:${JSON.stringify(payload)}}, targetOrigin);} }catch(e){} setTimeout(function(){try{window.close();}catch(e){} window.location.href=${JSON.stringify(siteUrl)};}, 200);})();</script></body></html>`;
-  return new Response(html, { status: 200, headers: { "content-type": "text/html" } });
-}
-
-serve(async (req) => {
-  if (req.method === "OPTIONS") return handleOptions();
-
-  try {
-    const correlationId = req.headers.get("x-correlation-id") || req.headers.get("x-request-id") || crypto.randomUUID();
-    const method = req.method;
-    const url = new URL(req.url);
-    
-    // Parse do Body ou Query Params
-    type CallbackBody = { code?: string; shop_id?: string; state?: string; error?: string };
-    const body = method === "GET" ? null : (await req.json() as CallbackBody);
-    const code = method === "GET" ? url.searchParams.get("code") : body?.code ?? null;
-    const shopId = method === "GET" ? url.searchParams.get("shop_id") : body?.shop_id ?? null;
-    const stateStr = method === "GET" ? url.searchParams.get("state") : body?.state ?? null;
-    const errorParam = method === "GET" ? url.searchParams.get("error") : body?.error ?? null;
-
-    console.log("[shopee-callback] inbound", {
-      correlationId,
-      method,
-      has_code: !!code,
-      has_shop_id: !!shopId,
-      error_param: errorParam,
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+      },
     });
-
-    if (errorParam) return jsonResponse({ error: errorParam }, 400);
-    if (!code || !shopId) return jsonResponse({ error: "Missing code or shop_id" }, 400);
-
-    // Decodifica o State (Organization ID, etc)
-    type StatePayload = { organizationId?: string; companyId?: string; storeName?: string; connectedByUserId?: string };
-    let state: StatePayload | null = null;
-    if (stateStr) {
-      try { state = JSON.parse(atob(stateStr)) as StatePayload; } catch (_) { state = null; }
-    }
-
-    const organizationId: string | null = state?.organizationId ?? null;
-    const stateCompanyId: string | null = state?.companyId ?? null;
-    const storeName: string | null = state?.storeName ?? null;
-    const connectedByUserId: string | null = state?.connectedByUserId ?? null;
-
-    const admin = createAdminClient() as any;
-
-    const ENC_KEY = Deno.env.get("TOKENS_ENCRYPTION_KEY") || "";
-    if (!ENC_KEY) return jsonResponse({ error: "Missing TOKENS_ENCRYPTION_KEY" }, 500);
-    const aesKey = await importAesGcmKey(ENC_KEY);
-
-    // Busca Credenciais do App Shopee (Tabela APPS)
-    const { data: appRow, error: appErr } = await admin
-      .from("apps")
-      .select("client_id, client_secret")
-      .eq("name", "Shopee")
-      .single();
-    if (appErr || !appRow) return jsonResponse({ error: appErr?.message || "App not found" }, 404);
-
-    // --- CORREÇÃO: Recuperação segura do client_id (Partner ID) ---
-    // Remove espaços em branco e garante que é string
-    const partnerIdStr = String(appRow.client_id || "").trim();
-    const partnerKey = String(appRow.client_secret || "").trim();
-    
-    // Validação extra
-    const partnerIdNum = Number(partnerIdStr);
-    const shopIdNum = Number(shopId);
-
-    console.log("[shopee-callback] credentials_check", {
-      correlationId,
-      partnerId_from_db: partnerIdStr,
-      partnerId_is_valid_num: Number.isInteger(partnerIdNum),
-      has_key: !!partnerKey
-    });
-
-    if (!partnerIdStr || !partnerKey || isNaN(partnerIdNum)) {
-        return jsonResponse({ error: "Invalid partner_id (client_id) in apps table configuration" }, 400);
-    }
-
-    // --- CONFIGURAÇÃO DE PRODUÇÃO ---
-    // Documentação: https://partner.shopeemobile.com/api/v2/auth/token/get
-    const prodHost = "https://partner.shopeemobile.com";
-    const tokenPath = "/api/v2/auth/token/get"; 
-    const timestamp = Math.floor(Date.now() / 1000);
-    
-    // BaseString: partner_id + path + timestamp
-    // Usa a string limpa do partnerId
-    const baseString = `${partnerIdStr}${tokenPath}${timestamp}`;
-    
-    // Assinatura (HMAC-SHA256, lowercase)
-    const sign = await hmacSha256Hex(partnerKey, baseString); 
-
-    console.log("[shopee-callback] token_exchange_init", { correlationId, host: prodHost, path: tokenPath });
-
-    let tokenJson: Record<string, unknown> | null = null;
-    let errorMsg: string | null = null;
-
-    try {
-      // Query Params: Usa a string (partnerIdStr)
-      const tokenUrl = `${prodHost}${tokenPath}?partner_id=${encodeURIComponent(partnerIdStr)}&timestamp=${timestamp}&sign=${sign}`;
-      
-      const tokenResp = await fetch(tokenUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        // IMPORTANTE: IDs devem ser NÚMEROS no JSON Body 
-        body: JSON.stringify({ 
-          code, 
-          shop_id: shopIdNum, 
-          partner_id: partnerIdNum // Envia como inteiro
-        }),
-      });
-
-      const json = await tokenResp.json();
-      
-      if (tokenResp.ok && !getField(json, "error")) {
-        tokenJson = json as Record<string, unknown>;
-        console.log("[shopee-callback] token_success", { correlationId });
-      } else {
-        errorMsg = (getField(json, "message") as string) || (getField(json, "error") as string) || "Unknown error";
-        console.warn("[shopee-callback] token_error", { correlationId, status: tokenResp.status, error: errorMsg });
-      }
-    } catch (e) {
-      errorMsg = e instanceof Error ? e.message : String(e);
-      console.error("[shopee-callback] token_exception", { correlationId, message: errorMsg });
-    }
-
-    if (!tokenJson) {
-      return jsonResponse({ error: errorMsg || "Token exchange failed" }, 400);
-    }
-
-    // Processa o Token Recebido
-    const accessToken = String(getField(tokenJson, "access_token") || "").trim();
-    const refreshToken = String(getField(tokenJson, "refresh_token") || "").trim();
-    const ttl = Number((getField(tokenJson, "expire_in") as number) || (getField(tokenJson, "expires_in") as number) || 14400);
-    const expiresAtIso = new Date(Date.now() + (Number.isFinite(ttl) ? ttl : 14400) * 1000).toISOString();
-
-    // Prefer explicit companyId from state; fall back to default company for backward compat.
-    let companyId: string | null = stateCompanyId;
-    if (!companyId && organizationId) {
-      console.warn("[shopee-callback] companyId missing from state — falling back to default company");
-      const { data: defCompany } = await admin
-        .from("companies")
-        .select("id")
-        .eq("organization_id", organizationId)
-        .eq("is_default", true)
-        .limit(1)
-        .single();
-      if (defCompany?.id) {
-        companyId = String(defCompany.id);
-      } else {
-        // Final fallback: oldest active company
-        const { data: fallback } = await admin
-          .from("companies")
-          .select("id")
-          .eq("organization_id", organizationId)
-          .eq("is_active", true)
-          .order("created_at", { ascending: true })
-          .limit(1)
-          .single();
-        if (fallback?.id) companyId = String(fallback.id);
-      }
-    }
-
-    // Prepara dados para salvar no banco
-    const config = {
-      storeName,
-      connectedByUserId,
-      connectedAt: new Date().toISOString(),
-      shopee_shop_id: String(shopId), // String no JSON config para consistência visual
-    };
-
-    // Criptografa os tokens antes de salvar
-    const accessTokenEnc = await aesGcmEncryptToString(aesKey, accessToken);
-    const refreshTokenEnc = await aesGcmEncryptToString(aesKey, refreshToken);
-
-    const insertPayload: Record<string, unknown> = {
-      organizations_id: organizationId,
-      company_id: companyId,
-      marketplace_name: "Shopee",
-      access_token: accessTokenEnc,
-      refresh_token: refreshTokenEnc,
-      expires_in: expiresAtIso,
-      meli_user_id: shopIdNum, // Salva como INTEIRO na coluna numérica
-      config,
-    };
-
-    // UPSERT: ON CONFLICT on the multi-company constraint (org, marketplace, company).
-    // Reconnecting the same shop updates the existing row.
-    const { error: insertErr } = await admin
-      .from("marketplace_integrations")
-      .upsert([insertPayload], { onConflict: "organizations_id,marketplace_name,company_id" });
-    if (insertErr) {
-      console.error("[shopee-callback] upsert_failed", { correlationId, message: insertErr.message });
-      return jsonResponse({ error: insertErr.message }, 500);
-    }
-
-    console.log("[shopee-callback] success_saved_db", { correlationId, shopId, companyId });
-
-    // Retorno Final (HTML ou JSON)
-    if (method === "POST") return jsonResponse({ ok: true });
-    
-    const siteUrl = Deno.env.get("SITE_URL") || "http://novuraerp.com.br/aplicativos/conectados";
-    return htmlPostMessageSuccess(siteUrl, { ok: true });
-
-  } catch (e) {
-    const message = e instanceof Error ? e.message : "Unknown error";
-    console.error("[shopee-callback] unexpected_fatal_error", { message });
-    return jsonResponse({ error: message }, 500);
   }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const targetUrl = `${supabaseUrl}/functions/v1/oauth-callback`;
+
+  const originalUrl = new URL(req.url);
+  const targetWithParams = new URL(targetUrl);
+  originalUrl.searchParams.forEach((value, key) => {
+    targetWithParams.searchParams.set(key, value);
+  });
+  targetWithParams.searchParams.set("provider_key", "shopee");
+
+  const resp = await fetch(targetWithParams.toString(), {
+    method: req.method,
+    headers: req.headers,
+    body: req.method !== "GET" ? req.body : undefined,
+  });
+
+  return new Response(resp.body, {
+    status: resp.status,
+    headers: {
+      "content-type": resp.headers.get("content-type") ?? "text/html",
+    },
+  });
 });
