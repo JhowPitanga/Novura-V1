@@ -19,8 +19,10 @@ import {
     filterListings,
     sortListings,
 } from "@/hooks/useListings";
+import { getVariationMatchHintsFromItemRow, getVariationSkuFromItemRow } from "@/utils/listingUtils";
 import type { SortKey, SortDir, ListingItem } from "@/types/listings";
 
+import { LinkPickerDrawer, type LinkPickerContext } from "@/components/shared/LinkPickerDrawer";
 import { StockEditModal, type StockVariation } from "@/components/listings/StockEditModal";
 import { DeleteListingDialog } from "@/components/listings/DeleteListingDialog";
 import { DraftsList } from "@/components/listings/DraftsList";
@@ -50,6 +52,8 @@ export default function Anuncios() {
     const [confirmDeleteItemId, setConfirmDeleteItemId] = useState<string | null>(null);
     const [bulkDeleteDraftsOpen, setBulkDeleteDraftsOpen] = useState(false);
     const [confirmPauseFor, setConfirmPauseFor] = useState<string | null>(null);
+    const [linkPickerContext, setLinkPickerContext] = useState<LinkPickerContext | null>(null);
+    const [pendingLinkQueue, setPendingLinkQueue] = useState<string[]>([]);
 
     // Sync active status from URL
     useEffect(() => {
@@ -281,6 +285,40 @@ export default function Anuncios() {
                                             variations={stockModal?.variations || []}
                                             onSuccess={handleStockSuccess}
                                         />
+                                        <LinkPickerDrawer
+                                            open={!!linkPickerContext}
+                                            onOpenChange={(open) => { if (!open) setLinkPickerContext(null); }}
+                                            context={linkPickerContext}
+                                            onLinked={() => {
+                                                if (!linkPickerContext) return;
+                                                if (pendingLinkQueue.length > 1) {
+                                                    const [, ...rest] = pendingLinkQueue;
+                                                    const nextVariationId = rest[0];
+                                                    setPendingLinkQueue(rest);
+                                                    const row = rawItems.find(
+                                                        (r) =>
+                                                            String(r?.marketplace_item_id || r?.id) ===
+                                                            String(linkPickerContext.marketplaceItemId)
+                                                    );
+                                                    const nextSku = getVariationSkuFromItemRow(row, nextVariationId);
+                                                    const nextHints = getVariationMatchHintsFromItemRow(row, nextVariationId);
+                                                    const nextStep = (linkPickerContext.currentStep || 1) + 1;
+                                                    setLinkPickerContext({
+                                                        ...linkPickerContext,
+                                                        variationId: nextVariationId,
+                                                        adSku: nextSku || linkPickerContext.adSku,
+                                                        matchHints: nextHints.length > 0 ? nextHints : [],
+                                                        progressLabel: `${nextStep}/${linkPickerContext.totalSteps || 1}`,
+                                                        currentStep: nextStep,
+                                                        pendingVariationIds: rest,
+                                                    });
+                                                } else {
+                                                    setPendingLinkQueue([]);
+                                                    setLinkPickerContext(null);
+                                                }
+                                                refetch();
+                                            }}
+                                        />
                                         <DeleteListingDialog
                                             itemId={confirmDeleteItemId}
                                             onClose={() => setConfirmDeleteItemId(null)}
@@ -397,6 +435,35 @@ export default function Anuncios() {
                                                                     onDuplicate={handleDuplicate}
                                                                     onDeleteRequest={setConfirmDeleteItemId}
                                                                     onSetConfirmPause={setConfirmPauseFor}
+                                                                    onOpenLinkPicker={({ ad: a, variationId, variationSku, variationTypes, pendingVariationIds }) => {
+                                                                        const queue = pendingVariationIds && pendingVariationIds.length > 0
+                                                                            ? pendingVariationIds
+                                                                            : (variationId ? [variationId] : []);
+                                                                        setPendingLinkQueue(queue);
+                                                                        const stepIndex = variationId ? Math.max(queue.indexOf(variationId), 0) + 1 : 1;
+                                                                        const resolvedSku =
+                                                                            variationSku ||
+                                                                            getVariationSkuFromItemRow(itemRow, variationId) ||
+                                                                            (a.sku && String(a.sku).trim()) ||
+                                                                            undefined;
+                                                                        const resolvedHints =
+                                                                            variationTypes && variationTypes.length > 0
+                                                                                ? variationTypes
+                                                                                : getVariationMatchHintsFromItemRow(itemRow, variationId);
+                                                                        setLinkPickerContext({
+                                                                            marketplace: a.marketplace,
+                                                                            marketplaceItemId: a.marketplaceId,
+                                                                            variationId,
+                                                                            adSku: resolvedSku,
+                                                                            adTitle: variationId ? `${a.title} (variação ${variationId})` : a.title,
+                                                                            adImage: a.image,
+                                                                            matchHints: resolvedHints,
+                                                                            pendingVariationIds: queue,
+                                                                            currentStep: stepIndex,
+                                                                            totalSteps: queue.length || 1,
+                                                                            progressLabel: `${stepIndex}/${queue.length || 1}`,
+                                                                        });
+                                                                    }}
                                                                 />
                                                             );
                                                         })

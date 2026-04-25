@@ -10,19 +10,7 @@ export async function getCompanyIdForOrg(
 ): Promise<string | null> {
   if (!organizationId) return null;
 
-  // First: try the explicit default company
-  const { data: defaultData } = await (supabase as any)
-    .from("companies")
-    .select("id")
-    .eq("organization_id", organizationId)
-    .eq("is_default", true)
-    .limit(1);
-
-  if (Array.isArray(defaultData) && defaultData.length > 0) {
-    return String(defaultData[0].id);
-  }
-
-  // Fallback: oldest active company (handles orgs created before is_default was backfilled)
+  // Compatible query for environments where companies.is_default does not exist.
   const { data } = await (supabase as any)
     .from("companies")
     .select("id")

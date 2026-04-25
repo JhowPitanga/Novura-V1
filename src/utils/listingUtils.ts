@@ -305,7 +305,7 @@ export function formatVariationData(variations: any[], itemRow?: any): Variation
 
         return {
             id: variation.model_id || variation.id || `var-${index}`,
-            sku: variation.model_sku || variation.seller_sku || variation.sku || 'N/A',
+            sku: variation.model_sku || variation.seller_sku || variation.sku || "N/A",
             available_quantity: availableQty,
             seller_stock_total: Number.isFinite(Number(sellerTotal)) ? Number(sellerTotal) : availableQty,
             types,
@@ -315,6 +315,24 @@ export function formatVariationData(variations: any[], itemRow?: any): Variation
             image: imageUrl || fallbackImage,
         };
     });
+}
+
+/** Variation SKU from raw item row (same ids as formatVariationData) for LinkPicker Auto-Match */
+export function getVariationSkuFromItemRow(itemRow: any, variationId?: string): string | undefined {
+    if (!variationId || !itemRow) return undefined;
+    const vars = formatVariationData(Array.isArray(itemRow.variations) ? itemRow.variations : [], itemRow);
+    const row = vars.find((x) => String(x.id) === String(variationId));
+    const sku = row?.sku;
+    if (!sku || sku === "N/A") return undefined;
+    return String(sku).trim();
+}
+
+/** Attribute values for name-based Auto-Match hints */
+export function getVariationMatchHintsFromItemRow(itemRow: any, variationId?: string): string[] {
+    if (!variationId || !itemRow) return [];
+    const vars = formatVariationData(Array.isArray(itemRow.variations) ? itemRow.variations : [], itemRow);
+    const row = vars.find((x) => String(x.id) === String(variationId));
+    return row?.types?.map((t) => String(t.value || "").trim()).filter(Boolean) || [];
 }
 
 // ─── Shipping Tag Normalization ────────────────────────────────────────────

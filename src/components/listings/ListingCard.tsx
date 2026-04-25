@@ -1,4 +1,4 @@
-import { ExternalLink, Edit, TrendingUp, BarChart, ShoppingCart, Heart, Copy, MoreHorizontal, Package, Zap, Trash2, Pencil, ChevronDown } from "lucide-react";
+import { ExternalLink, Edit, TrendingUp, BarChart, ShoppingCart, Heart, Copy, MoreHorizontal, Package, Zap, Trash2, Pencil, ChevronDown, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -35,6 +35,13 @@ interface ListingCardProps {
     onDuplicate: (ad: ListingItem) => void;
     onDeleteRequest: (id: string) => void;
     onSetConfirmPause: (id: string | null) => void;
+    onOpenLinkPicker?: (params: {
+        ad: ListingItem;
+        variationId?: string;
+        variationSku?: string;
+        variationTypes?: string[];
+        pendingVariationIds?: string[];
+    }) => void;
 }
 
 function QualityGauge({ quality, qualityLevel }: { quality: number; qualityLevel: any }) {
@@ -71,7 +78,26 @@ function QualityGauge({ quality, qualityLevel }: { quality: number; qualityLevel
     );
 }
 
-function VariationRows({ variations }: { variations: VariationItem[] }) {
+function VariationRows({
+    variations,
+    ad,
+    linkedVariationMap,
+    onOpenLinkPicker,
+}: {
+    variations: VariationItem[];
+    ad: ListingItem;
+    linkedVariationMap?: Record<string, string>;
+    onOpenLinkPicker?: (params: {
+        ad: ListingItem;
+        variationId?: string;
+        variationSku?: string;
+        variationTypes?: string[];
+        pendingVariationIds?: string[];
+    }) => void;
+}) {
+    const pendingVariationIds = variations
+        .map((v) => String(v.id))
+        .filter((id) => !linkedVariationMap?.[id]);
     return (
         <div className="space-y-1">
             {variations.map((variation) => (
@@ -81,6 +107,22 @@ function VariationRows({ variations }: { variations: VariationItem[] }) {
                             <img src={variation.image} alt={`Variação ${variation.sku}`} className="w-12 h-12 rounded-md object-cover bg-gray-100" />
                         </div>
                         <div className="col-start-3 col-span-2">
+                            {!linkedVariationMap?.[String(variation.id)] && onOpenLinkPicker && (
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenLinkPicker({
+                                        ad,
+                                        variationId: String(variation.id),
+                                        variationSku: variation.sku,
+                                        variationTypes: variation.types?.map((t) => t.value) || [],
+                                        pendingVariationIds,
+                                    })}
+                                    className="inline-flex items-center gap-1 mb-1 rounded-full border border-[#FF6400] bg-[#FF6400]/12 px-2 py-0.5 text-[10px] font-semibold text-[#FF6400]"
+                                >
+                                    <Link2 className="w-3 h-3" />
+                                    Vincular variação
+                                </button>
+                            )}
                             <div className="text-gray-500 mb-1">SKU</div>
                             <div className="font-medium text-gray-900">{variation.sku}</div>
                             <div className="text-gray-500 mt-2 mb-1">Tipos</div>
@@ -135,10 +177,15 @@ export function ListingCard({
     onDuplicate,
     onDeleteRequest,
     onSetConfirmPause,
+    onOpenLinkPicker,
 }: ListingCardProps) {
     const navigate = useNavigate();
     const variations = formatVariationData(itemRow?.variations || [], itemRow);
     const hasVariations = variations.length > 0;
+    const pendingVariationIds = variations
+        .map((v) => String(v.id))
+        .filter((id) => !ad.linkedVariationMap?.[id]);
+    const pendingVariationCount = pendingVariationIds.length;
 
     const variationRange = (() => {
         if (!hasVariations) return null;
@@ -200,6 +247,31 @@ export function ListingCard({
                     <img src={ad.image} alt={ad.title} className="w-16 h-16 rounded-lg object-cover bg-gray-100" />
                     <div className="flex flex-col h-full justify-between min-w-0">
                         <div className="max-w-full">
+                            {/* "Vincular produto" badge — shown when listing is not linked to an internal product */}
+                            {!hasVariations && !ad.linkedProductId && onOpenLinkPicker && (
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenLinkPicker({ ad })}
+                                    className="inline-flex items-center gap-1 mb-1 rounded-full border border-[#FF6400] bg-[#FF6400]/12 px-2 py-0.5 text-[10px] font-semibold text-[#FF6400]"
+                                >
+                                    <Link2 className="w-3 h-3" />
+                                    Vincular produto
+                                </button>
+                            )}
+                            {hasVariations && pendingVariationCount > 0 && onOpenLinkPicker && (
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenLinkPicker({
+                                        ad,
+                                        variationId: pendingVariationIds[0],
+                                        pendingVariationIds,
+                                    })}
+                                    className="inline-flex items-center gap-1 mb-1 rounded-full border border-[#FF6400] bg-[#FF6400]/12 px-2 py-0.5 text-[10px] font-semibold text-[#FF6400]"
+                                >
+                                    <Link2 className="w-3 h-3" />
+                                    Pendente de vínculo ({pendingVariationCount})
+                                </button>
+                            )}
                             {ad.permalink ? (
                                 <a href={ad.permalink} target="_blank" rel="noopener noreferrer" className="font-semibold text-sm text-gray-900 break-words whitespace-normal hover:text-novura-primary">
                                     {ad.title}
@@ -456,9 +528,48 @@ export function ListingCard({
                 <div className="border-t border-gray-100 bg-gray-50">
                     <Collapsible open={isExpanded}>
                         <CollapsibleContent className="px-0.5 pb-3">
-                            <VariationRows variations={variations} />
+                            <VariationRows
+                                variations={variations}
+                                ad={ad}
+                                linkedVariationMap={ad.linkedVariationMap}
+                                onOpenLinkPicker={onOpenLinkPicker}
+                            />
                         </CollapsibleContent>
                     </Collapsible>
+                </div>
+            )}
+
+            {/* Stock distribution panel — shown when expanded and data is available */}
+            {isExpanded && ad.stockDistribution && ad.stockDistribution.length > 0 && (
+                <div className="border-t border-gray-100 bg-gray-50 px-4 py-3">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                        Distribuição de estoque
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                        {ad.stockDistribution.map((entry) => {
+                            const type = String(entry.shipping_type || entry.warehouse_name || "").toLowerCase();
+                            const isFullWh = type.includes("full") || type.includes("fulfillment");
+                            const isFlex = type.includes("flex");
+                            const isEnvios = type.includes("envios");
+                            const badgeClass = isFullWh
+                                ? "bg-violet-100 text-violet-700 border-violet-200"
+                                : isFlex
+                                ? "bg-blue-100 text-blue-700 border-blue-200"
+                                : isEnvios
+                                ? "bg-cyan-100 text-cyan-700 border-cyan-200"
+                                : "bg-gray-100 text-gray-700 border-gray-200";
+                            const label = isFullWh ? "Full" : isFlex ? "Flex" : isEnvios ? "Envios" : entry.warehouse_name;
+                            return (
+                                <span
+                                    key={entry.warehouse_id}
+                                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${badgeClass}`}
+                                >
+                                    <span>{label}</span>
+                                    <span className="font-bold">{entry.quantity}</span>
+                                </span>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
         </div>

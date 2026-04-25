@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
-import { X, Lock } from "lucide-react";
+import { Lock } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useQuery } from "@tanstack/react-query";
 import { fetchMarketplaceIntegrations } from "@/services/inventory.service";
@@ -164,18 +164,13 @@ export function StorageManagementDrawer({
         role="dialog"
         aria-modal="true"
         tabIndex={-1}
-        className="fixed inset-y-0 right-0 flex h-full w-3/5 flex-col max-h-screen"
+        className="fixed inset-y-0 right-0 flex h-full w-full sm:w-[90%] md:w-[60%] lg:w-[42%] xl:w-[35%] flex-col max-h-screen"
       >
-        <DrawerHeader className="flex items-start justify-between">
-          <div>
-            <DrawerTitle id={titleId}>{existingStorage ? "Editar Armazém" : "Novo Armazém"}</DrawerTitle>
-            <DrawerDescription id={descriptionId}>
-              {existingStorage ? "Atualize os dados do armazém selecionado." : "Preencha os dados para criar um novo armazém."}
-            </DrawerDescription>
-          </div>
-          <Button aria-label="Fechar" variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => onOpenChange(false)}>
-            <X className="w-4 h-4" />
-          </Button>
+        <DrawerHeader>
+          <DrawerTitle id={titleId}>{existingStorage ? "Editar Armazém" : "Novo Armazém"}</DrawerTitle>
+          <DrawerDescription id={descriptionId}>
+            {existingStorage ? "Atualize os dados do armazém selecionado." : "Preencha os dados para criar um novo armazém."}
+          </DrawerDescription>
         </DrawerHeader>
         <div className="p-6 space-y-4">
           <div className="space-y-2">
@@ -219,13 +214,17 @@ export function StorageManagementDrawer({
           )}
 
           {isFulfillment && (
-            <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 p-3">
-              <Lock className="w-4 h-4 text-amber-600 shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-amber-800">Somente leitura</p>
-                <p className="text-xs text-amber-700">Armazéns fulfillment não permitem entrada/saída manual. Estoque sincronizado via API do marketplace.</p>
+            <div className="flex items-center gap-2 rounded-md border-2 border-[#FF6400] bg-[#FF6400]/12 p-3 shadow-sm">
+              <Lock className="w-4 h-4 shrink-0 text-[#FF6400]" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-[#FF6400]">Somente leitura</p>
+                <p className="text-xs font-medium leading-snug text-gray-900 mt-0.5">
+                  Armazéns fulfillment não permitem entrada/saída manual. Estoque sincronizado via API do marketplace.
+                </p>
               </div>
-              <Badge variant="outline" className="ml-auto shrink-0 border-amber-300 text-amber-700">Readonly</Badge>
+              <Badge variant="outline" className="ml-auto shrink-0 border-2 border-[#FF6400] bg-[#FF6400]/10 text-[#FF6400] font-semibold">
+                Readonly
+              </Badge>
             </div>
           )}
 
