@@ -296,3 +296,21 @@ export async function fetchMarketplaceIntegrations(organizationId: string) {
   if (error) throw error;
   return (data || []) as Array<{ id: string; marketplace_name: string; is_active: boolean }>;
 }
+
+/** True if any products_stock row for this storage has current, reserved, or in_transit > 0. */
+export async function storageHasAnyStock(storageId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("products_stock")
+    .select("id")
+    .eq("storage_id", storageId)
+    .or("current.gt.0,reserved.gt.0,in_transit.gt.0")
+    .limit(1);
+
+  if (error) throw error;
+  return (data?.length ?? 0) > 0;
+}
+
+export async function deleteStorageById(storageId: string): Promise<void> {
+  const { error } = await supabase.from("storage").delete().eq("id", storageId);
+  if (error) throw error;
+}

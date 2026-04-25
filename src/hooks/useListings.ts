@@ -14,7 +14,10 @@ import {
     updateItemStatus,
     updateShopeeStock,
     fetchFulfillmentStockForListings,
+    fetchStockDistributionForListings,
+    type StockDistributionEntry,
 } from "@/services/listings.service";
+import { fetchListingLinks } from "@/services/listingLinks.service";
 import { parseListingRow } from "@/utils/listingUtils";
 import type { ListingItem, ShippingCaps, SortKey, SortDir } from "@/types/listings";
 
@@ -181,16 +184,62 @@ export function useListingItems({ orgId, selectedDisplayName, selectedPath, ship
         staleTime: 5 * 60 * 1000,
     });
 
-    // Merge fulfillmentQty into parsedItems
+    // Derive marketplace name from selectedDisplayName for link queries
+    const marketplaceNameForLinks = selectedDisplayName || '';
+
+    // Fetch permanent product links for this marketplace
+    const linksQuery = useQuery({
+        queryKey: ['listing-links', orgId, marketplaceNameForLinks],
+        queryFn: () => fetchListingLinks(orgId!, marketplaceNameForLinks),
+        enabled: !!orgId && !!marketplaceNameForLinks,
+        staleTime: 5 * 60 * 1000,
+        gcTime: 30 * 60 * 1000,
+    });
+
+    // Collect all item IDs for stock distribution fetch (ML only; Shopee uses stock_info_v2)
+    const allItemIds = useMemo(
+        () => parsedItems.map(ad => ad.marketplaceId).filter(Boolean),
+        [parsedItems]
+    );
+    const isShopeeSelected = String(selectedDisplayName || '').toLowerCase() === 'shopee';
+
+    // Fetch ML stock distribution per warehouse
+    const stockDistributionQuery = useQuery({
+        queryKey: ['stock-distribution', orgId, allItemIds],
+        queryFn: () => fetchStockDistributionForListings(orgId!, allItemIds),
+        enabled: !!orgId && allItemIds.length > 0 && !isShopeeSelected,
+        staleTime: 5 * 60 * 1000,
+    });
+
+    // Merge fulfillmentQty, linkedProductId and stockDistribution into parsedItems
     const enrichedItems: ListingItem[] = useMemo(() => {
         const fsMap = fulfillmentStockQuery.data;
-        if (!fsMap || fsMap.size === 0) return parsedItems;
+        const linksMap = linksQuery.data;
+        const distMap = stockDistributionQuery.data;
         return parsedItems.map(ad => {
-            const fs = fsMap.get(ad.marketplaceId);
-            if (!fs) return ad;
-            return { ...ad, fulfillmentQty: fs.qty, fulfillmentWarehouseName: fs.warehouseName };
+            const fs = fsMap?.get(ad.marketplaceId);
+            const linkKey = `${ad.marketplaceId}:`;
+            const linkedProductId = linksMap?.get(linkKey) ?? null;
+            const linkedVariationMap: Record<string, string> = {};
+            if (linksMap) {
+                for (const [k, v] of linksMap.entries()) {
+                    const [itemId, variationId] = String(k).split(":");
+                    if (itemId === ad.marketplaceId && variationId) {
+                        linkedVariationMap[variationId] = v;
+                    }
+                }
+            }
+            const stockDistribution = distMap?.get(ad.marketplaceId) ?? undefined;
+            return {
+                ...ad,
+                fulfillmentQty: fs ? fs.qty : (ad.fulfillmentQty ?? null),
+                fulfillmentWarehouseName: fs ? fs.warehouseName : (ad.fulfillmentWarehouseName ?? null),
+                linkedProductId,
+                linkedVariationMap,
+                stockDistribution,
+            };
         });
-    }, [parsedItems, fulfillmentStockQuery.data]);
+    }, [parsedItems, fulfillmentStockQuery.data, linksQuery.data, stockDistributionQuery.data]);
 
     return {
         parsedItems: enrichedItems,

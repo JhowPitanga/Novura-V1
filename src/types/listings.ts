@@ -58,6 +58,12 @@ export interface ListingItem {
     fulfillmentQty?: number | null;
     /** Name of the fulfillment warehouse, when applicable. */
     fulfillmentWarehouseName?: string | null;
+    /** Internal product_id linked via marketplace_item_product_links (null = not linked) */
+    linkedProductId?: string | null;
+    /** Variation-level links map: variation_id -> product_id */
+    linkedVariationMap?: Record<string, string>;
+    /** Per-warehouse stock distribution from marketplace_stock_distribution (ML) or stock_info_v2 (Shopee) */
+    stockDistribution?: Array<{ warehouse_id: string; warehouse_name: string; quantity: number; shipping_type?: string }>;
 }
 
 /** Variation data formatted for display */
