@@ -1,15 +1,17 @@
-import { useState, useEffect } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Check } from "lucide-react";
-import { useBindableProducts } from '@/hooks/useProducts';
 import { toast } from '@/components/ui/use-toast';
-import { supabase, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { ProductPickerDialog } from './ProductPickerDialog';
 import { useLinkOrderStorage } from '@/hooks/useLinkOrderStorage';
+import { useBindableProducts } from '@/hooks/useProducts';
+import { linkProductToOrderItems } from "@/services/orders.service";
+import { useQueryClient } from "@tanstack/react-query";
+import { Check } from "lucide-react";
+import { useEffect, useState } from 'react';
+import { ProductPickerDialog } from './ProductPickerDialog';
 
 interface Product {
     id: string;
@@ -23,6 +25,8 @@ interface Product {
 
 interface AnuncioParaVincular {
     id: string;
+    /** Real UUID from order_items.id — preferred over synthetic id for backend calls. */
+    dbId?: string;
     nome: string;
     quantidade: number;
     marketplace: string;
@@ -44,6 +48,7 @@ interface VincularPedidoModalProps {
 }
 
 export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosParaVincular }: VincularPedidoModalProps) {
+    const queryClient = useQueryClient();
     const [isProductPickerOpen, setProductPickerOpen] = useState(false);
     const [didProductFetch, setDidProductFetch] = useState(false);
     const enabledProductsFetch = isProductPickerOpen && !didProductFetch;
@@ -118,6 +123,8 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
                 if (!productId) return null;
                 return {
                     anuncioId: anuncio.id,
+                    // dbId is the real order_items.id UUID — required by the edge function
+                    dbId: anuncio.dbId,
                     productId,
                     quantity: anuncio.quantidade,
                     permanent: !!permanenteFlags[anuncio.id],
@@ -129,6 +136,7 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
             })
             .filter(Boolean) as Array<{
                 anuncioId: string;
+                dbId?: string;
                 productId: string;
                 quantity: number;
                 permanent: boolean;
@@ -147,257 +155,48 @@ export function LinkOrderModal({ isOpen, onClose, onSave, pedidoId, anunciosPara
             return;
         }
 
-        const persistErrors: string[] = [];
         try {
             const organizationId: string | null = orgIdFromAuth ? String(orgIdFromAuth) : null;
-
-            let companyId: string | null = null;
-            if (pedidoId) {
-                try {
-                    const { data: ord1, error: err1 } = await (supabase as any)
-                        .from('marketplace_orders_presented')
-                        .select('id, company_id, marketplace_order_id')
-                        .eq('marketplace_order_id', pedidoId)
-                        .maybeSingle();
-                    if (!err1 && ord1?.company_id) {
-                        companyId = String(ord1.company_id);
-                    }
-                    if (!companyId) {
-                        const { data: ord2, error: err2 } = await (supabase as any)
-                            .from('marketplace_orders_presented')
-                            .select('id, company_id')
-                            .eq('id', pedidoId)
-                            .maybeSingle();
-                        if (!err2 && ord2?.company_id) {
-                            companyId = String(ord2.company_id);
-                        }
-                    }
-                } catch {}
+            if (!organizationId) {
+                toast({
+                    title: 'Organização não encontrada',
+                    description: 'Não foi possível identificar a organização atual.',
+                    variant: 'destructive',
+                });
+                return;
             }
 
-            const rowsToPersist = linkedItems
-                .filter(li => li.permanent && !!li.marketplaceItemId)
-                .map(li => ({
-                    organizations_id: organizationId,
-                    company_id: companyId,
-                    marketplace_name: li.marketplace,
-                    marketplace_item_id: li.marketplaceItemId as string,
-                    variation_id: li.variationId || '',
-                    product_id: li.productId,
-                    permanent: li.permanent,
-                    updated_at: new Date().toISOString(),
-                }));
-
-            if (rowsToPersist.length > 0) {
-                const missingContext = rowsToPersist.some(r => !r.organizations_id || !r.company_id);
-                if (missingContext) {
-                    persistErrors.push('Contexto de organização/empresa não resolvido para persistência de vínculo.');
-                } else {
-                    const { error: upsertErr } = await (supabase as any)
-                        .from('marketplace_item_product_links')
-                        .upsert(rowsToPersist, { onConflict: 'organizations_id,marketplace_name,marketplace_item_id,variation_id' });
-                    if (upsertErr) {
-                        persistErrors.push(upsertErr.message);
-                    }
-                }
+            const result = await linkProductToOrderItems({
+                orderId: pedidoId,
+                organizationId,
+                marketplace: anunciosParaVincular[0]?.marketplace || '',
+                links: linkedItems.map((li) => ({
+                    // Prefer dbId (real UUID from order_items); fall back to anuncioId if dbId unavailable
+                    orderItemId: li.dbId || li.anuncioId,
+                    marketplaceItemId: li.marketplaceItemId || '',
+                    variationId: li.variationId || '',
+                    productId: li.productId,
+                    isPermanent: li.permanent,
+                })),
+            });
+            // Invalidate orders cache so UI reflects the new status immediately
+            if (result?.statusChanged) {
+                queryClient.invalidateQueries({ queryKey: ['orders'] });
             }
-        } catch (e: any) {
-            persistErrors.push(e?.message || 'Erro inesperado ao persistir vínculos.');
-        }
-
-        // Use already-resolved storageId from hook; fall back to RPC if not yet available
-        let storageId: string | null = storageIdState;
-        if (!storageId) {
-            try {
-                const { data: orgResX } = await supabase.rpc('get_current_user_organization_id');
-                const orgIdX = Array.isArray(orgResX) ? orgResX?.[0] : orgResX;
-                const resolvedOrgId: string | null = orgIdX ? String(orgIdX) : null;
-
-                const { data: authUserData } = await supabase.auth.getUser();
-                const uid = authUserData?.user?.id;
-                if (uid && resolvedOrgId) {
-                    const { data: userOrgSettings } = await supabase
-                        .from('user_organization_settings')
-                        .select('default_storage_id')
-                        .eq('organization_id', resolvedOrgId)
-                        .eq('user_id', uid)
-                        .maybeSingle();
-                    storageId = (userOrgSettings as any)?.default_storage_id ?? null;
-                }
-            } catch {}
-        }
-
-        if (!storageId && typeof window !== 'undefined') {
-            try { storageId = localStorage.getItem('defaultStorageId') || null; } catch {}
-        }
-
-        if (!storageId) {
-            try {
-                let q: any = supabase
-                    .from('storage')
-                    .select('id')
-                    .eq('active', true)
-                    .order('created_at', { ascending: true })
-                    .limit(1);
-                if (orgIdFromAuth) q = (q as any).eq('organizations_id', orgIdFromAuth);
-                const { data } = await q;
-                if (data && data.length > 0) storageId = String(data[0].id);
-            } catch {}
-        }
-
-        if (!storageId) {
+            onSave({ linkedItems, storageId: storageIdState, pedidoId });
+            onClose();
             toast({
-                title: 'Armazém padrão não encontrado',
-                description: 'Defina o armazém padrão em Estoque para permitir reservas automáticas.',
+                title: 'Vinculação salva!',
+                description: 'Os anúncios foram vinculados corretamente.',
+                variant: 'default',
+            });
+        } catch (e: any) {
+            toast({
+                title: 'Falha na vinculação',
+                description: e?.message || 'Não foi possível concluir a vinculação.',
                 variant: 'destructive',
             });
-            return;
         }
-
-        const payload = { linkedItems, storageId, pedidoId };
-
-        try {
-            const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, 'x-request-id': crypto.randomUUID() };
-            let presentedNewId: string | null = null;
-            let marketplaceName: string | null = null;
-            let marketplaceOrderIdStr: string | null = null;
-
-            {
-                const { data: pres1 } = await (supabase as any)
-                    .from('marketplace_orders_presented_new')
-                    .select('id, marketplace, marketplace_order_id')
-                    .eq('id', pedidoId)
-                    .maybeSingle();
-                if (pres1?.id) {
-                    presentedNewId = String(pres1.id);
-                    marketplaceName = String(pres1.marketplace || '');
-                    marketplaceOrderIdStr = String(pres1.marketplace_order_id || '');
-                } else {
-                    const { data: pres2 } = await (supabase as any)
-                        .from('marketplace_orders_presented_new')
-                        .select('id, marketplace, marketplace_order_id')
-                        .eq('marketplace_order_id', pedidoId)
-                        .maybeSingle();
-                    if (pres2?.id) {
-                        presentedNewId = String(pres2.id);
-                        marketplaceName = String(pres2.marketplace || '');
-                        marketplaceOrderIdStr = String(pres2.marketplace_order_id || '');
-                    }
-                }
-            }
-
-            const ops = linkedItems.map((li) => {
-                const ref = anunciosParaVincular.find((a) => a.id === li.anuncioId);
-                return (async () => {
-                    let updErrMsg: string | null = null;
-                    if (ref?.rowId) {
-                        const upd = await (supabase as any)
-                            .from('marketplace_order_items')
-                            .update({ linked_products: li.productId, has_unlinked_items: false })
-                            .eq('row_id', ref.rowId)
-                            .select('row_id, id, linked_products, has_unlinked_items')
-                            .maybeSingle();
-                        if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por row_id');
-                    } else if (li.variationId && presentedNewId) {
-                        const upd = await (supabase as any)
-                            .from('marketplace_order_items')
-                            .update({ linked_products: li.productId, has_unlinked_items: false })
-                            .eq('id', presentedNewId)
-                            .eq('model_id_externo', li.variationId)
-                            .select('row_id, id, linked_products, has_unlinked_items')
-                            .maybeSingle();
-                        if (upd.error) updErrMsg = String(upd.error.message || 'Falha ao atualizar item por variation_id');
-                    } else {
-                        updErrMsg = 'Item sem referência para atualização';
-                    }
-                    if (updErrMsg) {
-                        toast({ title: 'Falha na vinculação', description: updErrMsg, variant: 'destructive' });
-                        await (supabase as any)
-                            .from('marketplace_orders_presented_new')
-                            .update({ has_unlinked_items: true })
-                            .or(`id.eq.${presentedNewId || pedidoId},marketplace_order_id.eq.${pedidoId}`);
-                    }
-                })();
-            }).filter(Boolean) as Promise<any>[];
-
-            if (ops.length > 0) await Promise.all(ops);
-
-            if (presentedNewId) {
-                const { data: aggRows } = await (supabase as any)
-                    .from('marketplace_order_items')
-                    .select('linked_products, has_unlinked_items')
-                    .eq('id', presentedNewId);
-                const orderHasUnlinked = Array.isArray(aggRows)
-                    ? aggRows.some((r: any) => r?.has_unlinked_items === true || !String(r?.linked_products || '').trim())
-                    : false;
-                await (supabase as any)
-                    .from('marketplace_orders_presented_new')
-                    .update({ has_unlinked_items: orderHasUnlinked })
-                    .eq('id', presentedNewId);
-            }
-
-            if (presentedNewId) {
-                const itemsForRpc = linkedItems.map((li) => ({
-                    product_id: li.productId,
-                    quantity: li.quantity,
-                    marketplace_item_id: li.marketplaceItemId || null,
-                    variation_id: li.variationId || '',
-                    permanent: !!li.permanent,
-                }));
-                const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                if (!uuidRegex.test(storageId)) {
-                    toast({
-                        title: 'Armazém inválido',
-                        description: 'O armazém padrão não está configurado corretamente.',
-                        variant: 'destructive',
-                    });
-                    return;
-                }
-                const { data: reservationResult, error: reservationError } = await (supabase as any).rpc('fn_order_reserva_stock_linked', {
-                    p_order_id: presentedNewId,
-                    p_items: itemsForRpc,
-                    p_storage_id: storageId,
-                });
-                if (reservationError || (reservationResult && (reservationResult as any)?.ok === false)) {
-                    const rawMsg = reservationError?.message || (reservationResult as any)?.error || 'Falha na reserva de estoque';
-                    const msg = String(rawMsg || '').startsWith('RESERVA_FALHA_')
-                        ? `Sem estoque para ${String(rawMsg).replace('RESERVA_FALHA_', '')} item(ns)`
-                        : [
-                            rawMsg,
-                            reservationError?.code ? `Código: ${reservationError.code}` : null,
-                            reservationError?.details ? `Detalhes: ${reservationError.details}` : null,
-                            reservationError?.hint ? `Dica: ${reservationError.hint}` : null,
-                        ].filter(Boolean).join(' | ');
-                    toast({ title: 'Falha na reserva', description: msg, variant: 'destructive' });
-                    return;
-                }
-            }
-
-            if (marketplaceName && marketplaceOrderIdStr) {
-                const fnName = marketplaceName.toLowerCase().includes('mercado')
-                    ? 'mercado-livre-process-presented'
-                    : (marketplaceName.toLowerCase().includes('shopee') ? 'shopee-process-presented' : null);
-                if (fnName) {
-                    const body = fnName === 'mercado-livre-process-presented'
-                        ? { order_id: marketplaceOrderIdStr, status_only: true }
-                        : { order_sn: marketplaceOrderIdStr, status_only: true };
-                    await (supabase as any).functions.invoke(fnName, { body, headers } as any);
-                }
-            }
-        } catch {}
-
-        onSave(payload);
-        onClose();
-
-        const anyErrors = persistErrors.length > 0;
-        const details = persistErrors.length > 0
-            ? `Persistência de vínculos: ${persistErrors.join('; ')}`
-            : '';
-        toast({
-            title: anyErrors ? 'Vinculação concluída com avisos' : 'Vinculação salva!',
-            description: anyErrors ? (details || 'Ocorreram avisos na operação.') : 'Os anúncios foram vinculados corretamente.',
-            variant: 'default',
-        });
     };
 
     useEffect(() => {

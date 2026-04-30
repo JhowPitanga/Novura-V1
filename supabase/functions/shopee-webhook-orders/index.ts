@@ -1,8 +1,14 @@
+/**
+ * @deprecated Use orders-webhook instead. Shopee order notifications are forwarded to orders-webhook
+ * which enqueues to the orders_sync queue; processing is done by orders-queue-worker.
+ * This function will be removed in a future cycle.
+ */
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { getField, getStr } from "../_shared/adapters/object-utils.ts";
-import { importAesGcmKey, aesGcmEncryptToString, tryDecryptToken, hmacSha256Hex } from "../_shared/adapters/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { SupabaseMarketplaceOrdersRawAdapter } from "../_shared/adapters/orders-raw/marketplace-orders-raw.ts";
+import { getField, getStr } from "../_shared/adapters/infra/object-utils.ts";
+import { importAesGcmKey, aesGcmEncryptToString, tryDecryptToken, hmacSha256Hex } from "../_shared/adapters/infra/token-utils.ts";
 
 function tryParseJson(text: string): unknown {
   try { return JSON.parse(text); } catch (_) { return null; }
@@ -111,6 +117,7 @@ serve(async (req) => {
   if (!ENC_KEY_B64) return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
 
   const admin = createAdminClient() as any;
+  const rawAdapter = new SupabaseMarketplaceOrdersRawAdapter(admin);
   const aesKey = await importAesGcmKey(ENC_KEY_B64);
 
   try {
@@ -621,31 +628,17 @@ serve(async (req) => {
         console.warn("shopee-webhook-orders upsert_rpc_failed", { correlationId, message: msg });
       } catch (_) {}
       try {
-        const upsertData = {
-          organizations_id: String(getField(integration, "organizations_id")),
-          company_id: String(getField(integration, "company_id")),
-          marketplace_name: "Shopee",
-          marketplace_order_id: String(orderSn),
+        const orgId = String(getField(integration, "organizations_id"));
+        await rawAdapter.upsert({
+          organizationId: orgId,
+          marketplaceName: "Shopee",
+          marketplaceOrderId: String(orderSn),
           data: combinedData,
-          last_synced_at: nowIso,
-          updated_at: nowIso,
-        } as const;
-        const { error: upErr2 } = await admin
-          .from("marketplace_orders_raw")
-          .upsert(upsertData, { onConflict: "organizations_id,marketplace_name,marketplace_order_id" });
-        if (upErr2) {
-          const emsg = typeof upErr === "object" && upErr !== null && "message" in (upErr as Record<string, unknown>) ? String((upErr as Record<string, unknown>).message) : "Upsert failed";
-          return jsonResponse({ ok: false, error: emsg, correlationId }, 200);
-        }
-        const { data: row } = await admin
-          .from("marketplace_orders_raw")
-          .select("id")
-          .eq("organizations_id", String(getField(integration, "organizations_id")))
-          .eq("marketplace_name", "Shopee")
-          .eq("marketplace_order_id", String(orderSn))
-          .limit(1)
-          .single();
-        const rawId = row?.id || null;
+          lastSyncedAt: nowIso,
+          updatedAt: nowIso,
+          companyId: String(getField(integration, "company_id")) || null,
+        });
+        const rawId = await rawAdapter.getIdByOrderId(orgId, "Shopee", String(orderSn));
         if (rawId) {
           try {
             await (admin as any).functions.invoke("shopee-process-presented", {

@@ -1,8 +1,9 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { getStr, getNum } from "../_shared/adapters/object-utils.ts";
-import { parseBrAddress, toIsoFromEpochSec } from "../_shared/domain/shopee-address.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { SupabaseMarketplaceOrdersRawAdapter } from "../_shared/adapters/orders-raw/marketplace-orders-raw.ts";
+import { getStr, getNum } from "../_shared/adapters/infra/object-utils.ts";
+import { parseBrAddress, toIsoFromEpochSec } from "../_shared/domain/shopee/shopee-address.ts";
 
 function get(obj: unknown, path: string[]): unknown {
   let cur: unknown = obj;
@@ -94,26 +95,20 @@ serve(async (req) => {
     logEvent("input_received", { rawId, orderSnOverride });
     if (!rawId && !orderSnOverride) return jsonResponse({ ok: false, error: "Missing raw_id", correlationId }, 200);
 
+    const rawAdapter = new SupabaseMarketplaceOrdersRawAdapter(admin);
     let rec: any = null;
     if (rawId) {
-      const { data, error } = await admin
-        .from("marketplace_orders_raw")
-        .select("*")
-        .eq("id", rawId)
-        .limit(1)
-        .single();
-      if (error) return jsonResponse({ ok: false, error: error.message, correlationId }, 200);
-      rec = data;
+      try {
+        rec = await rawAdapter.getById(rawId);
+      } catch (e: any) {
+        return jsonResponse({ ok: false, error: e?.message ?? "Lookup failed", correlationId }, 200);
+      }
     } else {
-      const { data, error } = await admin
-        .from("marketplace_orders_raw")
-        .select("*")
-        .eq("marketplace_name", "Shopee")
-        .eq("marketplace_order_id", orderSnOverride)
-        .limit(1)
-        .single();
-      if (error) return jsonResponse({ ok: false, error: error.message, correlationId }, 200);
-      rec = data;
+      try {
+        rec = await rawAdapter.getByMarketplaceAndOrderId("Shopee", orderSnOverride!);
+      } catch (e: any) {
+        return jsonResponse({ ok: false, error: e?.message ?? "Lookup failed", correlationId }, 200);
+      }
     }
     if (!rec) return jsonResponse({ ok: false, error: "Raw not found", correlationId }, 200);
     if (String(rec.marketplace_name) !== "Shopee") return jsonResponse({ ok: false, error: "Only Shopee supported", correlationId }, 200);

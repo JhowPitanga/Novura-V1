@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS public.inventory_transactions (
   company_id uuid REFERENCES public.companies(id) ON DELETE SET NULL,
   product_id uuid NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
   storage_id uuid NOT NULL REFERENCES public.storage(id) ON DELETE CASCADE,
-  order_id uuid REFERENCES public.orders(id) ON DELETE SET NULL,
+  order_id uuid, -- FK to orders added after orders table is created (20260301_000000)
   movement_type text NOT NULL CHECK (movement_type IN ('ENTRADA','SAIDA','RESERVA','CANCELAMENTO_RESERVA')),
   quantity_change numeric NOT NULL,
   timestamp timestamptz DEFAULT now(),

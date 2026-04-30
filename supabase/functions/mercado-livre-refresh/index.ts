@@ -1,6 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString } from "../_shared/adapters/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString } from "../_shared/adapters/infra/token-utils.ts";
 
 const mlRefreshHandler = async (req: Request) => {
   if (req.method === "OPTIONS") return handleOptions();

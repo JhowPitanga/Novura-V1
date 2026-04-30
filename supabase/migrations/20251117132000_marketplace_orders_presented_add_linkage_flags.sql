@@ -275,7 +275,7 @@ LEFT JOIN items_agg ia ON ia.id = b.id
 LEFT JOIN colors ON colors.id = b.id
 LEFT JOIN first_item fi ON fi.id = b.id
 LEFT JOIN link_flags_fallback lff ON lff.id = b.id
-LEFT JOIN public.marketplace_items mi ON mi.organizations_id = b.organizations_id
+LEFT JOIN public.marketplace_items_raw mi ON mi.organizations_id = b.organizations_id
   AND mi.marketplace_name = b.marketplace
   AND mi.marketplace_item_id = COALESCE(first_item_json->'item'->>'id', first_item_json->>'id', '')
 LEFT JOIN LATERAL (

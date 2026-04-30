@@ -1,9 +1,18 @@
+/**
+ * @deprecated Prefer orders-sync-shopee (triggered by orders-queue-worker from the orders_sync queue).
+ * This function remains for backward compatibility and will be removed in a future cycle.
+ */
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { getField, getStr } from "../_shared/adapters/object-utils.ts";
-import { importAesGcmKey, aesGcmEncryptToString, tryDecryptToken, hmacSha256Hex } from "../_shared/adapters/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { SupabaseMarketplaceOrdersRawAdapter } from "../_shared/adapters/orders-raw/marketplace-orders-raw.ts";
+import { getField, getStr } from "../_shared/adapters/infra/object-utils.ts";
+import { importAesGcmKey, aesGcmEncryptToString, tryDecryptToken, hmacSha256Hex } from "../_shared/adapters/infra/token-utils.ts";
+import { ShopeeOrderNormalizeService } from "../_shared/orders-normalize/index.ts";
+import { upsertOrder } from "../_shared/adapters/orders-upsert/index.ts";
+
+const shopeeNormalizer = new ShopeeOrderNormalizeService();
 
 function tryParseJson(text: string): unknown {
   try { return JSON.parse(text); } catch (_) { return null;
@@ -74,6 +83,7 @@ serve(async (req) => {
   if (!ENC_KEY_B64) return jsonResponse({ ok: false, error: "Missing service configuration" }, 200);
 
   const admin = createAdminClient() as any;
+  const rawAdapter = new SupabaseMarketplaceOrdersRawAdapter(admin);
   const aesKey = await importAesGcmKey(ENC_KEY_B64);
 
   try {
@@ -888,6 +898,21 @@ serve(async (req) => {
           const shouldFetchShipParam = !vShpInvPending && ((statusNorm === "READY_TO_SHIP") || (statusNorm === "PROCESSED" && hasLogisticsRequestCreated) || hasLogisticsReady);
           const firstPkgNumber = allPackageNumbers[0] || null;
           const shippingParam = shouldFetchShipParam ? await fetchShippingParameter(ordSn, firstPkgNumber || undefined).catch(() => null) : null;
+          // Cycle 0: write to new orders/order_items/order_shipping/order_status_history
+          try {
+            const normalized = shopeeNormalizer.normalize(ord, escrow ?? undefined);
+            const result = await upsertOrder(admin, {
+              organization_id: organizationsId,
+              order: normalized,
+              source: "sync",
+            });
+            if (!result.success) {
+              console.warn("shopee-sync-orders Cycle 0 upsert failed", { correlationId, integration_id: integrationId, ordSn, error: result.error });
+            }
+          } catch (cycleErr) {
+            console.warn("shopee-sync-orders Cycle 0 upsert error", { correlationId, integration_id: integrationId, ordSn, message: (cycleErr as Error)?.message });
+          }
+
           const combined = escrow
             ? ({ order_list_item: listEntry, order_detail: ord, escrow_detail: escrow, invoice_status_label: invStatusRaw, invoice_pending: vShpInvPending, ...(shippingParam ? { shipping_parameter: shippingParam } : {}), ...(packageDetails.length ? { package_detail_list: packageDetails } : {}), ...(packageDetailResponse ? { package_detail_response: packageDetailResponse } : {}), ...(shipmentListResp ? { shipment_list_response: shipmentListResp } : {}) } as const)
             : ({ order_list_item: listEntry, order_detail: ord, invoice_status_label: invStatusRaw, invoice_pending: vShpInvPending, ...(shippingParam ? { shipping_parameter: shippingParam } : {}), ...(packageDetails.length ? { package_detail_list: packageDetails } : {}), ...(packageDetailResponse ? { package_detail_response: packageDetailResponse } : {}), ...(shipmentListResp ? { shipment_list_response: shipmentListResp } : {}) } as const);
@@ -915,23 +940,21 @@ serve(async (req) => {
               console.log("shopee-sync-orders upsert_rpc_ok", { correlationId, integration_id: integrationId, ordSn, raw_id: rawId });
             } else {
               if (rpcErr) console.warn("shopee-sync-orders upsert_rpc_err", { correlationId, integration_id: integrationId, ordSn, message: (rpcErr as any)?.message, code: (rpcErr as any)?.code });
-              const { error: upErr } = await admin.from("marketplace_orders_raw").upsert(upsertData, { onConflict: "organizations_id,marketplace_name,marketplace_order_id" });
-              if (!upErr) {
+              try {
+                await rawAdapter.upsert({
+                  organizationId: organizationsId,
+                  marketplaceName: "Shopee",
+                  marketplaceOrderId: ordSn,
+                  data: combined,
+                  lastSyncedAt: nowIso,
+                  updatedAt: nowIso,
+                  companyId: companyId || null,
+                });
                 updated++;
-                const { data: row } = await admin
-                  .from("marketplace_orders_raw")
-                  .select("id")
-                  .eq("organizations_id", organizationsId)
-                  .eq("marketplace_name", "Shopee")
-                  .eq("marketplace_order_id", 
-                  
-                  ordSn)
-                  .limit(1)
-                  .single();
-                rawId = row?.id || null;
+                rawId = await rawAdapter.getIdByOrderId(organizationsId, "Shopee", ordSn);
                 console.log("shopee-sync-orders upsert_direct_ok", { correlationId, integration_id: integrationId, ordSn, raw_id: rawId });
-              } else {
-                console.warn("shopee-sync-orders upsert_failed", { integration_id: integrationId, order_sn: ordSn, message: upErr.message });
+              } catch (upErr: any) {
+                console.warn("shopee-sync-orders upsert_failed", { integration_id: integrationId, order_sn: ordSn, message: upErr?.message });
               }
             }
             if (rawId) {

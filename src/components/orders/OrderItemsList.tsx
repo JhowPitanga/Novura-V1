@@ -1,13 +1,14 @@
-import { useState } from "react";
-import { ChevronDown, ChevronUp, Package } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import type { Order } from "@/types/orders";
 import { formatCurrency } from "@/utils/orderUtils";
+import { ChevronDown, ChevronUp, Package } from "lucide-react";
+import { useState } from "react";
 
 interface OrderItemsListProps {
-    pedido: any;
+    order: Order;
 }
 
-export function OrderItemsList({ pedido }: OrderItemsListProps) {
+export function OrderItemsList({ order }: OrderItemsListProps) {
     const [expanded, setExpanded] = useState(false);
 
     return (
@@ -18,7 +19,7 @@ export function OrderItemsList({ pedido }: OrderItemsListProps) {
                         <div className="flex items-center justify-between">
                             <h3 className="text-lg font-semibold text-gray-900 flex items-center">
                                 <Package className="w-5 h-5 mr-2 text-purple-600" />
-                                Itens do Pedido ({pedido.itens.length})
+                                Itens do Pedido ({order.items.length})
                             </h3>
                             {expanded
                                 ? <ChevronUp className="w-5 h-5 text-gray-400" />
@@ -36,24 +37,24 @@ export function OrderItemsList({ pedido }: OrderItemsListProps) {
                                 <span className="text-right hidden sm:inline">Valor Unit.</span>
                                 <span className="text-right">Total</span>
                             </div>
-                            {pedido.itens.map((item: any) => (
+                            {order.items.map((item) => (
                                 <div
                                     key={item.id}
                                     className="grid grid-cols-4 sm:grid-cols-5 gap-4 items-center py-3 hover:bg-gray-50 rounded-lg px-3 transition-colors"
                                 >
                                     <div className="col-span-2">
-                                        <span className="text-gray-900 font-medium">{item.nome}</span>
+                                        <span className="text-gray-900 font-medium">{item.name}</span>
                                         <p className="text-xs text-gray-500 mt-0.5">SKU: {item.sku || "N/A"}</p>
-                                        <p className="text-xs text-gray-500 mt-0.5">SKU Vinculado: {pedido?.linkedSku || "N/A"}</p>
+                                        <p className="text-xs text-gray-500 mt-0.5">SKU Vinculado: {order.linkedSku || "N/A"}</p>
                                     </div>
-                                    <div className={`text-center font-medium ${item.quantidade > 1 ? 'text-purple-600 bg-purple-100 rounded-lg py-1 px-2' : 'text-gray-900'}`}>
-                                        {item.quantidade}
+                                    <div className={`text-center font-medium ${item.quantity > 1 ? 'text-purple-600 bg-purple-100 rounded-lg py-1 px-2' : 'text-gray-900'}`}>
+                                        {item.quantity}
                                     </div>
                                     <div className="text-right text-gray-900 hidden sm:inline">
-                                        {formatCurrency(item.valor)}
+                                        {formatCurrency(item.unitPrice)}
                                     </div>
                                     <div className="text-right font-semibold text-gray-900">
-                                        {formatCurrency(item.quantidade * item.valor)}
+                                        {formatCurrency(item.quantity * item.unitPrice)}
                                     </div>
                                 </div>
                             ))}

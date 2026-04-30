@@ -1,9 +1,9 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { digits as onlyDigits } from "../_shared/domain/focus-status.ts";
-import { mapTributacaoToFocus } from "../_shared/domain/focus-tributacao.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { digits as onlyDigits } from "../_shared/domain/focus/focus-status.ts";
+import { mapTributacaoToFocus } from "../_shared/domain/focus/focus-tributacao.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
