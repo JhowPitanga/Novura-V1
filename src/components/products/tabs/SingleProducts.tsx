@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { ProductTable } from "../ProductTable";
 import { ProductFilters } from "../ProductFilters";
+import { ConvertToKitDrawer } from "../ConvertToKitDrawer";
+import { DuplicateProductDialog } from "../DuplicateProductDialog";
 import { useProducts } from '@/hooks/useProducts';
 import { useCategories } from "@/hooks/useCategories";
 import { supabase } from '@/integrations/supabase/client';
@@ -16,8 +18,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { CategoryTreeSelect } from "../CategoryTreeSelect";
 
 export function ProdutosUnicos() {
   const [searchTerm, setSearchTerm] = useState("");
@@ -32,6 +34,8 @@ export function ProdutosUnicos() {
   const [confirmDeleteOpen2, setConfirmDeleteOpen2] = useState(false);
   const [categorizeOpen, setCategorizeOpen] = useState(false);
   const [targetCategory, setTargetCategory] = useState<string>("");
+  const [convertToKitOpen, setConvertToKitOpen] = useState(false);
+  const [duplicateDialogProduct, setDuplicateDialogProduct] = useState<{ id: string; name: string } | null>(null);
   useEffect(() => {
     setList(products || []);
   }, [products]);
@@ -106,10 +110,10 @@ export function ProdutosUnicos() {
     })
     .filter(product => {
       if (!searchTerm) return true;
-      return (
-        product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        product.sku.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+      const normalizedTerm = searchTerm.toLowerCase();
+      const name = String(product?.name ?? "").toLowerCase();
+      const sku = String(product?.sku ?? "").toLowerCase();
+      return name.includes(normalizedTerm) || sku.includes(normalizedTerm);
     });
   
   return (
@@ -134,6 +138,13 @@ export function ProdutosUnicos() {
             setTargetCategory("");
             setCategorizeOpen(true);
           }
+          if (action === "transformar-em-kit") {
+            if (selectedIds.length < 2) {
+              toast({ title: "Selecione pelo menos 2 produtos", description: "Para criar um kit você precisa selecionar no mínimo 2 produtos únicos.", variant: "destructive" });
+              return;
+            }
+            setConvertToKitOpen(true);
+          }
         }}
       />
 
@@ -144,7 +155,18 @@ export function ProdutosUnicos() {
         onToggleSelect={(productId, checked) => {
           setSelectedIds(prev => (checked ? [...prev, productId] : prev.filter(id => id !== productId)));
         }}
+        onSelectAll={(allIds, checked) => {
+          setSelectedIds(prev =>
+            checked
+              ? Array.from(new Set([...prev, ...allIds]))
+              : prev.filter(id => !allIds.includes(id))
+          );
+        }}
         onDeleteProduct={handleDeleteProduct}
+        onDuplicateProduct={(productId) => {
+          const product = list.find((p) => p.id === productId);
+          if (product) setDuplicateDialogProduct({ id: productId, name: product.name });
+        }}
       />
 
       {/* Confirmação em duas etapas para exclusão em massa */}
@@ -199,16 +221,11 @@ export function ProdutosUnicos() {
             <DialogDescription>Escolha uma categoria para aplicar aos itens selecionados.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <Select value={targetCategory} onValueChange={setTargetCategory}>
-              <SelectTrigger>
-                <SelectValue placeholder="Escolha a categoria" />
-              </SelectTrigger>
-              <SelectContent>
-                {categories.map((cat) => (
-                  <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <CategoryTreeSelect
+              value={targetCategory || null}
+              onChange={(categoryId) => setTargetCategory(categoryId || "")}
+              placeholder="Escolha a categoria"
+            />
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setCategorizeOpen(false)}>Cancelar</Button>
               <Button
@@ -225,6 +242,29 @@ export function ProdutosUnicos() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Convert to kit drawer */}
+      <ConvertToKitDrawer
+        open={convertToKitOpen}
+        onOpenChange={setConvertToKitOpen}
+        selectedProducts={list.filter((p) => selectedIds.includes(p.id)).map((p) => ({
+          id: p.id,
+          name: p.name,
+          sku: p.sku,
+          image_urls: p.image_urls,
+        }))}
+        onSuccess={() => setSelectedIds([])}
+      />
+
+      {/* Duplicate dialog */}
+      {duplicateDialogProduct && (
+        <DuplicateProductDialog
+          productId={duplicateDialogProduct.id}
+          productName={duplicateDialogProduct.name}
+          open={!!duplicateDialogProduct}
+          onOpenChange={(v) => { if (!v) setDuplicateDialogProduct(null); }}
+        />
+      )}
     </div>
   );
 }

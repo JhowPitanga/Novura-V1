@@ -1,5 +1,5 @@
 
-import { X, Link, ExternalLink } from "lucide-react";
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useNavigate } from "react-router-dom";
@@ -9,7 +9,6 @@ import { useState } from "react";
 import { StepIndicator } from "@/components/products/create/StepIndicator";
 import { ProductTypeSelector } from "./ProductTypeSelector";
 import { ProductForm } from "@/components/products/create/ProductForm";
-import { ImageUpload } from "@/components/products/create/ImageUpload";
 import { VariationForm } from "./VariationForm";
 import { KitForm } from "./KitForm";
 import { VariationDimensionsForm } from "./VariationDimensionsForm";
@@ -20,15 +19,30 @@ import { DimensionsForm } from "@/components/products/create/DimensionsForm";
 import { TaxForm } from "@/components/products/create/TaxForm";
 import { NavigationButtons } from "@/components/products/create/NavigationButtons";
 import { CloseConfirmationDialog } from "@/components/products/create/CloseConfirmationDialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 // Import constants and hooks
 import { stepsUnico, stepsVariacoes, stepsKit } from "@/components/products/create/constants";
 import { useProductForm } from "@/hooks/useProductForm";
 import { useProducts } from "@/hooks/useProducts";
+import { ProductImageUploader } from "@/components/products/ProductImageUploader";
+import { useAuth } from "@/hooks/useAuth";
+import { validateEanChecksum } from "@/utils/eanChecksum";
 
 export function CreateProductPage() {
   const navigate = useNavigate();
+  const { organizationId } = useAuth();
   const [showCloseDialog, setShowCloseDialog] = useState(false);
+  const [showCreateAdConfirm, setShowCreateAdConfirm] = useState(false);
   const { products, loading: productsLoading } = useProducts();
   const [showVariationConfigErrors, setShowVariationConfigErrors] = useState(false);
   const [showVariationTaxErrors, setShowVariationTaxErrors] = useState(false);
@@ -56,9 +70,10 @@ export function CreateProductPage() {
     backStep,
     handleInputChange,
     handleProductTypeChange,
+    handleCreateProduct,
     getMaxSteps,
   } = useProductForm({
-    onSuccess: () => navigate('/produtos/kits')
+    onSuccess: () => navigate('/produtos')
   });
 
   const getCurrentSteps = () => {
@@ -68,7 +83,14 @@ export function CreateProductPage() {
   };
 
   const handleSave = () => {
-    navigate('/produtos/kits');
+    void handleCreateProduct();
+  };
+
+  const handleConfirmCreateAd = () => {
+    setShowCreateAdConfirm(false);
+    void handleCreateProduct({
+      onSuccess: () => navigate("/anuncios"),
+    });
   };
 
   const handleCloseRequest = () => {
@@ -274,9 +296,9 @@ export function CreateProductPage() {
                     includeSku={true} 
                     errors={errors}
                   />
-                  <ImageUpload 
-                    selectedImages={selectedImages} 
-                    onImagesChange={setSelectedImages} 
+                  <ProductImageUploader
+                    organizationId={organizationId || "__pending_org__"}
+                    onPendingFilesChange={setSelectedImages}
                   />
                 </div>
               </div>
@@ -304,9 +326,9 @@ export function CreateProductPage() {
                     onInputChange={handleInputChange} 
                     includeSku={true} 
                   />
-                  <ImageUpload 
-                    selectedImages={selectedImages} 
-                    onImagesChange={setSelectedImages} 
+                  <ProductImageUploader
+                    organizationId={organizationId || "__pending_org__"}
+                    onPendingFilesChange={setSelectedImages}
                   />
                 </div>
               </div>
@@ -340,6 +362,7 @@ export function CreateProductPage() {
                 onImagesChange={setSelectedImages}
                 availableProducts={(products || [])}
                 productsLoading={productsLoading}
+                organizationId={organizationId || ""}
               />
             )}
 
@@ -363,7 +386,7 @@ export function CreateProductPage() {
               <ProductLinkingSection 
                 productType={productType} 
                 variations={variations}
-                onNavigateToAds={() => navigate('/anuncios')}
+                onCreateAdRequest={() => setShowCreateAdConfirm(true)}
               />
             )}
           </CardContent>
@@ -383,7 +406,16 @@ export function CreateProductPage() {
               : currentStep === 5 && productType === "variation"
                 ? () => {
                     // Validar NCM e Origem em todas as variações antes de avançar
-                    const invalid = variations.some(v => !v.ncm || !String(v.ncm).trim() || !v.origin || !String(v.origin).trim());
+                    const invalid = variations.some((v) => {
+                      const ncmOk = String(v.ncm || "").replace(/\D/g, "").length === 8;
+                      const eanRaw = String(v.ean || (v as any).barcode || "").replace(/\D/g, "");
+                      const eanOk =
+                        eanRaw.length > 0 &&
+                        eanRaw.length === 13 &&
+                        validateEanChecksum(eanRaw);
+                      const originOk = !!(v.origin && String(v.origin).trim());
+                      return !ncmOk || !eanOk || !originOk;
+                    });
                     if (invalid) {
                       setShowVariationTaxErrors(true);
                       return;
@@ -396,6 +428,7 @@ export function CreateProductPage() {
           onBack={currentStep === 3 && productType === "variation" ? handleVariationBack : backStep}
           kitEtapa={kitStep}
           onSave={handleSave}
+          saveLabel="Salvar produto"
         />
 
         {/* Close Confirmation Dialog */}
@@ -404,6 +437,27 @@ export function CreateProductPage() {
           onOpenChange={setShowCloseDialog}
           onConfirm={handleConfirmClose}
         />
+
+        <AlertDialog open={showCreateAdConfirm} onOpenChange={setShowCreateAdConfirm}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Criar anúncio</AlertDialogTitle>
+              <AlertDialogDescription>
+                Seu produto será salvado com todos os dados adicionados. Para criar anúncios, iremos te redirecionar para o módulo de anúncios, seu produto será salvo após confirmar.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleConfirmCreateAd}
+                className="bg-violet-700 text-white hover:bg-violet-800"
+                disabled={createLoading}
+              >
+                {createLoading ? "Salvando..." : "Confirmar e continuar"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );

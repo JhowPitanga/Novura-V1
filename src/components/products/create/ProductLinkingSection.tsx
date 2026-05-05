@@ -1,153 +1,97 @@
 
+import { useState } from "react";
 import { Link, ExternalLink } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer";
 import { ProductVariation, ProductType } from "@/types/products";
+import { ProductAdLinkingPanel } from "@/components/products/ProductAdLinkingPanel";
 
 interface ProductLinkingSectionProps {
   productType: ProductType | "";
   variations: ProductVariation[];
-  onNavigateToAds: () => void;
+  onCreateAdRequest: () => void;
 }
 
-export function ProductLinkingSection({ 
-  productType, 
-  variations, 
-  onNavigateToAds 
+export function ProductLinkingSection({
+  productType,
+  variations,
+  onCreateAdRequest,
 }: ProductLinkingSectionProps) {
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+
   return (
     <div className="space-y-8">
       <div>
         <h3 className="text-xl font-semibold mb-6">Vincular Anúncios</h3>
         <p className="text-gray-600 mb-8 text-lg">
-          Seu produto foi salvo com sucesso! Agora você pode vinculá-lo aos marketplaces ou criar novos anúncios.
+          Revise anúncios já sincronizados no módulo Anúncios ou crie um novo anúncio após salvar o produto.
         </p>
-        
-        <div className="grid grid-cols-2 gap-8">
-          {/* Card 1: Link Advertisement */}
-          <Drawer>
-            <DrawerTrigger asChild>
-              <Card className="cursor-pointer hover:shadow-lg transition-shadow border-2 hover:border-primary">
-                <CardContent className="p-8 text-center">
-                  <Link className="w-20 h-20 text-primary mx-auto mb-6" />
-                  <h4 className="text-xl font-semibold mb-3">Vincular Anúncio</h4>
-                  <p className="text-gray-600">
-                    Conectar este produto a anúncios existentes nos marketplaces
-                  </p>
-                </CardContent>
-              </Card>
-            </DrawerTrigger>
-            <DrawerContent className="max-h-[80vh]">
-              <DrawerHeader>
-                <DrawerTitle>Vincular Anúncio</DrawerTitle>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <Card
+            className="cursor-pointer border-2 transition-shadow hover:border-violet-300 hover:shadow-lg"
+            onClick={() => setIsDrawerOpen(true)}
+          >
+            <CardContent className="p-8 text-center">
+              <Link className="mx-auto mb-6 h-20 w-20 text-violet-700" />
+              <h4 className="mb-3 text-xl font-semibold">Vincular anúncio</h4>
+              <p className="text-gray-600">
+                Mesmo painel da listagem e da edição: filtros por marketplace e busca nos anúncios cadastrados
+              </p>
+            </CardContent>
+          </Card>
+
+          <Drawer open={isDrawerOpen} onOpenChange={setIsDrawerOpen} direction="right">
+            <DrawerContent className="fixed inset-y-0 right-0 flex h-full w-full max-w-[520px] flex-col overflow-hidden rounded-none border-l bg-white sm:rounded-l-[20px]">
+              <DrawerHeader className="shrink-0 border-b pb-4">
+                <DrawerTitle className="flex items-center gap-2 text-violet-900">
+                  <Link className="h-5 w-5 text-violet-600" />
+                  Vincular anúncio
+                </DrawerTitle>
                 <DrawerDescription>
-                  {productType === "variation" 
-                    ? "Selecione anúncios existentes para vincular às variações deste produto"
-                    : "Selecione anúncios existentes para vincular a este produto"
-                  }
+                  {productType === "variation"
+                    ? "Após salvar o produto, você poderá vincular cada variação na edição. Aqui você só consulta os anúncios disponíveis."
+                    : "Após salvar, volte em Produtos > Editar para confirmar vínculos. Enquanto isso, você pode localizar o anúncio correto aqui."}
                 </DrawerDescription>
               </DrawerHeader>
-              <div className="p-6 overflow-y-auto">
-                <div className="space-y-6">
-                  {/* Filters */}
-                  <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
-                    <div>
-                      <Label>Marketplace</Label>
-                      <Select>
-                        <SelectTrigger className="mt-2">
-                          <SelectValue placeholder="Selecione o marketplace" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="mercadolivre">Mercado Livre</SelectItem>
-                          <SelectItem value="amazon">Amazon</SelectItem>
-                          <SelectItem value="shopee">Shopee</SelectItem>
-                          <SelectItem value="magazineluiza">Magazine Luiza</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label>Busca</Label>
-                      <Input placeholder="Busque por SKU, ID ou descrição..." className="mt-2" />
-                    </div>
-                  </div>
-                  
-                  {productType === "variation" && variations.length > 0 && (
-                    <div>
-                      <Label className="text-base font-medium">Vincular por Variação</Label>
-                      <div className="mt-4 space-y-3">
-                        {variations.map((variation) => (
-                          <Card key={variation.id} className="p-4">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center space-x-3">
-                                {variation.color && (
-                                  <div
-                                    className="w-8 h-8 rounded-full border-2 border-gray-300"
-                                    style={{ backgroundColor: variation.color.toLowerCase() }}
-                                  />
-                                )}
-                                <div>
-                                  <span className="font-medium">{variation.name}</span>
-                                  <p className="text-sm text-gray-500">SKU: {variation.sku}</p>
-                                </div>
-                              </div>
-                              <Select>
-                                <SelectTrigger className="w-64">
-                                  <SelectValue placeholder="Selecione o anúncio" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="anuncio1">Produto Similar - ML123456</SelectItem>
-                                  <SelectItem value="anuncio2">Produto de Teste - AMZ789012</SelectItem>
-                                  <SelectItem value="anuncio3">Produto Exemplo - SHP345678</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                          </Card>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  
-                  <div className="border rounded-lg p-8 bg-gray-50">
-                    <div className="text-center">
-                      <p className="text-gray-500 mb-4">
-                        Selecione um marketplace e pesquise para encontrar anúncios
-                      </p>
-                      <Button variant="outline" className="text-blue-600 border-blue-200">
-                        Pesquisar Anúncios
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-3 pt-4 border-t">
-                    <Button variant="outline" className="flex-1">
-                      Cancelar
-                    </Button>
-                    <Button className="flex-1 bg-blue-600 hover:bg-blue-700">
-                      Confirmar Vínculos
-                    </Button>
-                  </div>
-                </div>
+              <div className="min-h-0 flex-1 p-4">
+                <ProductAdLinkingPanel productId={null} allowMutations={false} />
               </div>
             </DrawerContent>
           </Drawer>
 
-          {/* Card 2: Create Advertisement */}
-          <Card 
-            className="cursor-pointer hover:shadow-lg transition-shadow border-2 hover:border-primary"
-            onClick={onNavigateToAds}
+          <Card
+            className="cursor-pointer border-2 transition-shadow hover:border-violet-300 hover:shadow-lg"
+            onClick={onCreateAdRequest}
           >
             <CardContent className="p-8 text-center">
-              <ExternalLink className="w-20 h-20 text-primary mx-auto mb-6" />
-              <h4 className="text-xl font-semibold mb-3">Criar Anúncio</h4>
-              <p className="text-gray-600">
-                Crie um novo anúncio para este produto nos marketplaces
-              </p>
+              <ExternalLink className="mx-auto mb-6 h-20 w-20 text-violet-700" />
+              <h4 className="mb-3 text-xl font-semibold">Criar anúncio</h4>
+              <p className="text-gray-600">Salvar produto e ir ao módulo de anúncios</p>
             </CardContent>
           </Card>
+        </div>
+
+        {productType === "variation" && variations.length > 0 && (
+          <div className="mt-6 rounded-2xl border border-violet-100 bg-violet-50/30 p-4">
+            <p className="text-sm font-medium text-violet-800">
+              Produto com variações: {variations.length} variação(ões) configurada(s)
+            </p>
+            <p className="mt-1 text-xs text-violet-700">
+              Após salvar, vincule anúncios por variação na tela de edição do produto (mesmo drawer de vínculo).
+            </p>
+          </div>
+        )}
+
+        <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
+          Dica: este passo é opcional. Você pode salvar agora e fazer os vínculos depois na listagem ou na edição do
+          produto.
         </div>
       </div>
     </div>

@@ -35,7 +35,7 @@ export function ImageUpload({ selectedImages, onImagesChange, maxImages = 8, max
   return (
     <div className="mt-6">
       <Label>{label || `Imagens do Produto (até ${maxImages} fotos)`}</Label>
-      <div className="grid grid-cols-8 gap-4 mt-4">
+      <div className={`grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-3 p-3 rounded-xl border-2 border-dashed mt-4 ${isPurple ? "border-violet-200 bg-violet-50/40" : "border-gray-200 bg-gray-50"}`}>
         {/* Imagens selecionadas */}
         {selectedImages.map((item, index) => {
           let src: string = "/placeholder.svg";
@@ -52,7 +52,7 @@ export function ImageUpload({ selectedImages, onImagesChange, maxImages = 8, max
           } catch {}
           return (
             <div key={index} className="relative">
-              <div className={`aspect-square border-2 ${isPurple ? "border-novura-primary/20 bg-purple-50" : "border-gray-300 bg-gray-50"} rounded-lg overflow-hidden`}>
+              <div className={`aspect-square border-2 ${isPurple ? "border-violet-500 bg-purple-50" : "border-gray-300 bg-gray-50"} rounded-xl overflow-hidden`}>
                 <img
                   src={src}
                   alt={`Imagem ${index + 1}`}
@@ -60,14 +60,14 @@ export function ImageUpload({ selectedImages, onImagesChange, maxImages = 8, max
                 />
               </div>
               {showCoverBadge && index === 0 && (
-                <span className="absolute bottom-2 left-2 text-xs px-2 py-0.5 rounded bg-novura-primary text-white shadow">
-                  De capa
+                <span className="absolute bottom-1 left-1 text-[10px] px-1 py-0 h-4 rounded bg-violet-600 text-white shadow">
+                  Capa
                 </span>
               )}
               <button
                 type="button"
                 onClick={() => removeImage(index)}
-                className={`absolute -top-2 -right-2 ${isPurple ? "bg-novura-primary hover:bg-novura-primary/80" : "bg-red-500 hover:bg-red-600"} text-white rounded-full w-6 h-6 flex items-center justify-center transition-colors text-xs`}
+                className={`absolute -top-1.5 -right-1.5 ${isPurple ? "bg-violet-600 hover:bg-violet-700" : "bg-red-500 hover:bg-red-600"} text-white rounded-full w-5 h-5 flex items-center justify-center transition-colors text-xs`}
               >
                 <X className="w-3 h-3" />
               </button>
@@ -88,10 +88,10 @@ export function ImageUpload({ selectedImages, onImagesChange, maxImages = 8, max
             />
             <label
               htmlFor={`image-upload-${index}`}
-              className={`aspect-square border-2 border-dashed ${isPurple ? "border-novura-primary/30 hover:border-novura-primary bg-purple-50" : "border-gray-300 hover:border-gray-400 bg-gray-50"} rounded-lg flex flex-col items-center justify-center cursor-pointer transition-colors`}
+              className={`aspect-square border-2 border-dashed ${isPurple ? "border-violet-300 hover:border-violet-500 bg-white hover:bg-violet-50" : "border-gray-300 hover:border-gray-400 bg-white"} rounded-xl flex flex-col items-center justify-center cursor-pointer transition-colors`}
             >
-              <Plus className={isPurple ? "w-6 h-6 text-novura-primary mb-2" : "w-6 h-6 text-gray-400 mb-2"} />
-              <span className={`text-xs ${isPurple ? "text-novura-primary" : "text-gray-500"} text-center px-2`}>
+              <Plus className={isPurple ? "w-5 h-5 text-violet-500 mb-1" : "w-5 h-5 text-gray-400 mb-1"} />
+              <span className={`text-[11px] ${isPurple ? "text-violet-500" : "text-gray-500"} text-center px-2`}>
                 {addLabel}
               </span>
             </label>
@@ -99,7 +99,7 @@ export function ImageUpload({ selectedImages, onImagesChange, maxImages = 8, max
         ))}
       </div>
       <p className={`text-xs ${isPurple ? "text-gray-700" : "text-gray-500"} mt-3`}>
-        Formatos aceitos: JPG, JPEG e PNG. Tamanho máximo: 2MB por imagem.
+        Formatos aceitos: JPG, JPEG e PNG. Tamanho máximo: {maxSizeMB}MB por imagem.
       </p>
     </div>
   );

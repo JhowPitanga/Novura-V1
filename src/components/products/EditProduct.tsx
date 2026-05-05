@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Save, Plus, Search, Filter, ExternalLink, X } from "lucide-react";
+import { ArrowLeft, Save, Plus, Search, ExternalLink, X, Copy, Loader2, ChevronDown } from "lucide-react";
+import { ProductImageUploader } from "@/components/products/ProductImageUploader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -8,13 +9,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
+import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CategoryTreeSelect } from "@/components/products/CategoryTreeSelect";
+import { ProductCoverImage } from "@/components/products/ProductCoverImage";
+import { ProductAdLinker } from "@/components/products/ProductAdLinker";
 
 const marketplaces = [
   { value: "mercado-livre", label: "Mercado Livre" },
@@ -74,6 +78,7 @@ export function EditarProduto() {
   const [linkingItemId, setLinkingItemId] = useState<string | null>(null);
   const [unlinkingKey, setUnlinkingKey] = useState<string | null>(null);
   const [activeDbMarketplaceNames, setActiveDbMarketplaceNames] = useState<string[]>([]);
+  const [isDuplicating, setIsDuplicating] = useState(false);
 
   const fetchProduct = async () => {
     if (!id) {
@@ -123,12 +128,15 @@ export function EditarProduto() {
       // Transform the data to match the expected structure
       const transformedProduct = {
         id: data.id,
+        tipo: data.type as string | undefined,
         companyId: data.company_id,
         nome: data.name,
         sku: data.sku,
         descricao: data.description || "",
+        categoriaId: data.categories?.id || null,
         categoria: data.categories?.name || "",
-        marca: "", // Not available in current schema
+        marca: data.custom_attributes?.brand || "",
+        custom_attributes: data.custom_attributes || {},
         custoBuyPrice: data.cost_price,
         estoque: data.products_stock?.current || 0,
         armazem: data.products_stock?.[0]?.storage?.name || "Principal",
@@ -436,12 +444,21 @@ export function EditarProduto() {
     if (!produto || !id) return;
 
     try {
+      const rootTypes = ['UNICO', 'VARIACAO_PAI', 'KIT'];
+      const isRootProduct = produto.tipo && rootTypes.includes(String(produto.tipo));
+
       const { error } = await supabase
         .from('products')
         .update({
+          ...(isRootProduct ? { parent_id: null as string | null } : {}),
           name: produto.nome,
           sku: produto.sku,
           description: produto.descricao,
+          category_id: produto.categoriaId || null,
+          custom_attributes: {
+            ...(produto?.custom_attributes || {}),
+            brand: produto.marca || null,
+          },
           cost_price: produto.custoBuyPrice,
           package_height: produto.dimensoes.altura,
           package_width: produto.dimensoes.largura,
@@ -517,18 +534,59 @@ export function EditarProduto() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Editar Produto</h1>
-          <p className="text-gray-600">SKU: {produto.sku}</p>
+      {/* Sticky toolbar */}
+      <div className="sticky top-0 z-10 bg-white border-b border-gray-100 -mx-4 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <ProductCoverImage
+            imageUrl={Array.isArray(produto.imagens) ? produto.imagens[0] : undefined}
+            alt={produto.nome}
+            sizeClassName="h-12 w-12"
+          />
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">{produto.nome || "Editar Produto"}</h1>
+            <p className="text-sm text-gray-500">SKU: {produto.sku || "-"}</p>
+          </div>
         </div>
-        <div className="flex items-center space-x-3">
-          <Button variant="outline" onClick={handleVoltar}>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleVoltar}>
             <ArrowLeft className="w-4 h-4 mr-2" />
             Voltar
           </Button>
-          <Button onClick={handleSalvar} className="bg-novura-primary hover:bg-novura-primary/90">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isDuplicating}
+            onClick={async () => {
+              if (!id) return;
+              try {
+                setIsDuplicating(true);
+                const { data, error } = await supabase.rpc('duplicate_product', {
+                  p_product_id: id,
+                  p_with_images: false,
+                });
+                if (error) throw error;
+                toast({ title: 'Produto duplicado', description: 'Redirecionando para edição da cópia...' });
+                navigate(`/produtos/editar/${data}`);
+              } catch (err: any) {
+                toast({ title: 'Erro', description: err?.message || 'Erro ao duplicar produto', variant: 'destructive' });
+              } finally {
+                setIsDuplicating(false);
+              }
+            }}
+          >
+            {isDuplicating ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Redirecionando...
+              </>
+            ) : (
+              <>
+                <Copy className="w-4 h-4 mr-2" />
+                Duplicar
+              </>
+            )}
+          </Button>
+          <Button onClick={handleSalvar} size="sm" className="bg-violet-700 hover:bg-violet-800 text-white">
             <Save className="w-4 h-4 mr-2" />
             Salvar Alterações
           </Button>
@@ -540,10 +598,10 @@ export function EditarProduto() {
         <CardContent className="p-6">
           <Accordion type="single" collapsible defaultValue="informacoes-basicas" className="w-full">
             {/* Passo 1 - Informações Básicas */}
-            <AccordionItem value="informacoes-basicas">
-              <AccordionTrigger>
+            <AccordionItem value="informacoes-basicas" className="mb-4 rounded-xl border border-violet-100 px-4">
+              <AccordionTrigger className="rounded-lg py-3 hover:no-underline [&[data-state=open]>div>span:first-child]:bg-violet-700">
                 <div className="flex items-center space-x-2">
-                  <span className="flex items-center justify-center w-8 h-8 bg-novura-primary text-white rounded-full text-sm font-medium">1</span>
+                  <span className="flex items-center justify-center w-8 h-8 bg-violet-600 text-white rounded-full text-sm font-medium">1</span>
                   <span className="font-medium">Informações Básicas</span>
                 </div>
               </AccordionTrigger>
@@ -567,11 +625,14 @@ export function EditarProduto() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="categoria">Categoria *</Label>
-                    <Input
-                      id="categoria"
-                      value={produto.categoria}
-                      onChange={(e) => setProduto({...produto, categoria: e.target.value})}
-                      disabled
+                    <CategoryTreeSelect
+                      value={produto.categoriaId}
+                      onChange={(categoryId, category) => setProduto({
+                        ...produto,
+                        categoriaId: categoryId,
+                        categoria: category?.name || "",
+                      })}
+                      placeholder="Selecione uma categoria"
                     />
                   </div>
                   <div className="space-y-2">
@@ -595,79 +656,30 @@ export function EditarProduto() {
               </AccordionContent>
             </AccordionItem>
 
-            <AccordionItem value="fotos">
-              <AccordionTrigger>
+            <AccordionItem value="fotos" className="mb-4 rounded-xl border border-violet-100 px-4">
+              <AccordionTrigger className="rounded-lg py-3 hover:no-underline [&[data-state=open]>div>span:first-child]:bg-violet-700">
                 <div className="flex items-center space-x-2">
-                  <span className="flex items-center justify-center w-8 h-8 bg-novura-primary text-white rounded-full text-sm font-medium">2</span>
+                  <span className="flex items-center justify-center w-8 h-8 bg-violet-700 text-white rounded-full text-sm font-medium">2</span>
                   <span className="font-medium">Fotos do Produto</span>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="pt-4">
-                <div className="space-y-4">
-                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
-                    <input
-                      type="file"
-                      multiple
-                      accept="image/jpeg,image/png"
-                      className="hidden"
-                      id="image-upload"
-                      onChange={(e) => {
-                        const files = Array.from(e.target.files || []);
-                        const allowed = ["image/jpeg", "image/png"]; // JPG, JPEG, PNG
-                        const validFiles = files.filter(f => allowed.includes(f.type) && f.size <= 2 * 1024 * 1024);
-                        validFiles.forEach(file => {
-                          const reader = new FileReader();
-                          reader.onload = (e) => {
-                            const newImage = e.target?.result as string;
-                            setProduto(prev => ({
-                              ...prev,
-                              imagens: [...prev.imagens, newImage]
-                            }));
-                          };
-                          reader.readAsDataURL(file);
-                        });
-                      }}
-                    />
-                    <label htmlFor="image-upload" className="cursor-pointer">
-                      <Plus className="w-8 h-8 mx-auto text-gray-400 mb-2" />
-                      <p className="text-gray-500">Clique para adicionar fotos ou arraste e solte aqui</p>
-                      <p className="text-sm text-gray-400 mt-2">PNG, JPG/JPEG até 2MB cada</p>
-                    </label>
-                  </div>
-                  
-                  {produto.imagens.length > 0 && (
-                    <div className="flex flex-wrap gap-4">
-                      {produto.imagens.map((img, index) => (
-                        <div key={index} className="relative">
-                          <img
-                            src={img}
-                            alt={`Produto ${index + 1}`}
-                            className="w-24 h-24 object-cover rounded-lg border"
-                          />
-                          <button 
-                            onClick={() => {
-                              setProduto(prev => ({
-                                ...prev,
-                                imagens: prev.imagens.filter((_, i) => i !== index)
-                              }));
-                            }}
-                            className="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                {id && organizationId ? (
+                  <ProductImageUploader
+                    productId={id}
+                    organizationId={organizationId}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-400">Salve o produto antes de adicionar imagens.</p>
+                )}
               </AccordionContent>
             </AccordionItem>
 
-            <AccordionItem value="preco-custo">
-              <AccordionTrigger>
+            <AccordionItem value="preco-custo" className="mb-4 rounded-xl border border-violet-100 px-4">
+              <AccordionTrigger className="rounded-lg py-3 hover:no-underline [&[data-state=open]>div>span:first-child]:bg-violet-700">
                 <div className="flex items-center space-x-2">
-                  <span className="flex items-center justify-center w-8 h-8 bg-novura-primary text-white rounded-full text-sm font-medium">3</span>
-                  <span className="font-medium">Preço de Custo</span>
+                  <span className="flex items-center justify-center w-8 h-8 bg-violet-600 text-white rounded-full text-sm font-medium">3</span>
+                  <span className="font-medium">Preço de Custo e Estoque</span>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="pt-4">
@@ -690,6 +702,13 @@ export function EditarProduto() {
                       value={produto.estoque}
                       disabled
                     />
+                    <a
+                      href={`/estoque?tab=controle&openStockDrawer=1&productId=${id}`}
+                      className="inline-flex items-center gap-1 text-sm font-medium text-violet-700 hover:text-violet-800"
+                    >
+                      Altere no módulo de estoque
+                      <ChevronDown className="h-3.5 w-3.5 -rotate-90" />
+                    </a>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="armazem">Armazém</Label>
@@ -703,10 +722,10 @@ export function EditarProduto() {
               </AccordionContent>
             </AccordionItem>
 
-            <AccordionItem value="dimensoes">
-              <AccordionTrigger>
+            <AccordionItem value="dimensoes" className="mb-4 rounded-xl border border-violet-100 px-4">
+              <AccordionTrigger className="rounded-lg py-3 hover:no-underline [&[data-state=open]>div>span:first-child]:bg-violet-700">
                 <div className="flex items-center space-x-2">
-                  <span className="flex items-center justify-center w-8 h-8 bg-novura-primary text-white rounded-full text-sm font-medium">4</span>
+                  <span className="flex items-center justify-center w-8 h-8 bg-violet-600 text-white rounded-full text-sm font-medium">4</span>
                   <span className="font-medium">Dimensões e Peso do Pacote</span>
                 </div>
               </AccordionTrigger>
@@ -764,10 +783,10 @@ export function EditarProduto() {
               </AccordionContent>
             </AccordionItem>
 
-            <AccordionItem value="fiscais">
-              <AccordionTrigger>
+            <AccordionItem value="fiscais" className="mb-4 rounded-xl border border-violet-100 px-4">
+              <AccordionTrigger className="rounded-lg py-3 hover:no-underline [&[data-state=open]>div>span:first-child]:bg-violet-700">
                 <div className="flex items-center space-x-2">
-                  <span className="flex items-center justify-center w-8 h-8 bg-novura-primary text-white rounded-full text-sm font-medium">5</span>
+                  <span className="flex items-center justify-center w-8 h-8 bg-violet-600 text-white rounded-full text-sm font-medium">5</span>
                   <span className="font-medium">Informações Fiscais</span>
                 </div>
               </AccordionTrigger>
@@ -778,7 +797,9 @@ export function EditarProduto() {
                     <Input
                       id="codigoBarras"
                       value={produto.codigoBarras}
-                      onChange={(e) => setProduto({...produto, codigoBarras: e.target.value})}
+                      onChange={(e) => setProduto({...produto, codigoBarras: e.target.value.replace(/\D/g, "").slice(0, 13)})}
+                      inputMode="numeric"
+                      maxLength={13}
                     />
                   </div>
                   <div className="space-y-2">
@@ -828,185 +849,15 @@ export function EditarProduto() {
               </AccordionContent>
             </AccordionItem>
 
-            <AccordionItem value="mapeamento">
-              <AccordionTrigger>
+            <AccordionItem value="mapeamento" className="rounded-xl border border-violet-100 px-4">
+              <AccordionTrigger className="rounded-lg py-3 hover:no-underline [&[data-state=open]>div>span:first-child]:bg-violet-700">
                 <div className="flex items-center space-x-2">
-                  <span className="flex items-center justify-center w-8 h-8 bg-novura-primary text-white rounded-full text-sm font-medium">6</span>
+                  <span className="flex items-center justify-center w-8 h-8 bg-violet-600 text-white rounded-full text-sm font-medium">6</span>
                   <span className="font-medium">Mapeamento de Anúncios</span>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="pt-4">
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center">
-                    <h3 className="text-lg font-medium">Anúncios Vinculados</h3>
-                    <Drawer direction="right" open={openMapeamento} onOpenChange={setOpenMapeamento}>
-                      <DrawerTrigger asChild>
-                        <Button className="bg-novura-primary hover:bg-novura-primary/90">
-                          <Plus className="w-4 h-4 mr-2" />
-                          Adicionar Vínculo
-                        </Button>
-                      </DrawerTrigger>
-                      <DrawerContent className="w-[30%] right-0 overflow-hidden">
-                        <DrawerHeader>
-                          <DrawerTitle>{produto?.sku || 'SKU não definido'}</DrawerTitle>
-                          <DrawerDescription>
-                            Busque e vincule anúncios dos marketplaces
-                          </DrawerDescription>
-                        </DrawerHeader>
-                        <div className="p-6 space-y-4">
-                          <div className="flex space-x-4">
-                            <div className="flex-1">
-                              <Select
-                                value={selectedMarketplace}
-                                onValueChange={setSelectedMarketplace}
-                                disabled={activeDbMarketplaceNames.length === 0}
-                              >
-                                <SelectTrigger disabled={activeDbMarketplaceNames.length === 0}>
-                                  <SelectValue placeholder="Selecione o marketplace" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {activeDbMarketplaceNames.length === 0 ? (
-                                    <SelectItem value="no-integrations" disabled>
-                                      Nenhuma integração ativa encontrada
-                                    </SelectItem>
-                                  ) : (
-                                    activeDbMarketplaceNames.map((dbName) => (
-                                      <SelectItem key={dbName} value={valueByDbName[dbName] || dbName}>
-                                        {labelByDbName[dbName] || dbName}
-                                      </SelectItem>
-                                    ))
-                                  )}
-                                </SelectContent>
-                              </Select>
-                              {activeDbMarketplaceNames.length === 0 && (
-                                <p className="text-xs text-gray-600 mt-2">Nâo existe integrações ativas</p>
-                              )}
-                            </div>
-                          </div>
-                          
-                          <div className="relative">
-                            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                            <Input
-                              placeholder="Buscar por SKU, ID ou descrição..."
-                              value={searchTerm}
-                              onChange={(e) => setSearchTerm(e.target.value)}
-                              className="pl-10"
-                            />
-                          </div>
-
-                          <div className="space-y-2 max-h-[70vh] overflow-y-auto overflow-x-hidden">
-                            {itemsLoading ? (
-                              <Card>
-                                <CardContent className="p-4">
-                                  <p className="text-sm text-gray-500">Carregando anúncios...</p>
-                                </CardContent>
-                              </Card>
-                            ) : items.length === 0 ? (
-                              <Card>
-                                <CardContent className="p-4">
-                                  <p className="font-medium">Nenhum anúncio encontrado</p>
-                                  <p className="text-sm text-gray-500">Ajuste filtros ou a busca para encontrar</p>
-                                </CardContent>
-                              </Card>
-                            ) : (
-                              <Table>
-                                <TableHeader>
-                                  <TableRow>
-                                    <TableHead>Anúncio</TableHead>
-                                    <TableHead className="text-right">Ações</TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {items.map((it: any) => (
-                                    <TableRow key={`${it.marketplace_item_id}::${it.variation_id || ''}`}>
-                                      <TableCell>
-                                        <div className="flex items-center gap-3 min-w-0">
-                                          {it.thumbnail_url ? (
-                                            <img src={it.thumbnail_url} alt="thumbnail" className="w-10 h-10 rounded object-cover bg-gray-100" />
-                                          ) : (
-                                            <div className="w-10 h-10 rounded bg-gray-200" />
-                                          )}
-                                          <div className="min-w-0">
-                                            <p className="font-medium truncate">{it.sku || 'SKU não disponível'}</p>
-                                            {Boolean(it.variation_label) && (
-                                              <p className="text-xs text-gray-500 truncate">{it.variation_label}</p>
-                                            )}
-                                            <p className="text-xs text-gray-500 truncate"><code>{it.marketplace_item_id}</code></p>
-                                          </div>
-                                        </div>
-                                      </TableCell>
-                                      <TableCell className="text-right">
-                                        <Button
-                                          size="sm"
-                                          className="bg-novura-primary hover:bg-novura-primary/90"
-                                          onClick={() => handleLinkItem(it)}
-                                          disabled={linkingItemId === `${it.marketplace_item_id}::${it.variation_id || ''}`}
-                                        >
-                                          {linkingItemId === `${it.marketplace_item_id}::${it.variation_id || ''}` ? 'Vinculando...' : 'Vincular variação'}
-                                        </Button>
-                                      </TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            )}
-                          </div>
-                        </div>
-                      </DrawerContent>
-                    </Drawer>
-                  </div>
-
-                  {existingLinks.length === 0 ? (
-                    <Card>
-                      <CardContent className="p-4 text-center text-gray-500">
-                        <p>Nenhum anúncio vinculado</p>
-                        <p className="text-sm">Use o botão acima para adicionar vínculos com marketplaces</p>
-                      </CardContent>
-                    </Card>
-                  ) : (
-                    <Card>
-                      <CardHeader>
-                        <CardTitle className="text-sm">Vínculos ativos</CardTitle>
-                      </CardHeader>
-                      <CardContent className="p-0">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Marketplace</TableHead>
-                              <TableHead>ID do Anúncio</TableHead>
-                              <TableHead>Variação</TableHead>
-                              <TableHead>Permanente</TableHead>
-                              <TableHead>Atualizado em</TableHead>
-                              <TableHead className="text-right">Ações</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {existingLinks.map((l: any, idx: number) => (
-                              <TableRow key={`${l.marketplace_item_id}-${idx}`}>
-                                <TableCell>{l.marketplace_name}</TableCell>
-                                <TableCell><code className="text-xs">{l.marketplace_item_id}</code></TableCell>
-                                <TableCell>{l.variation_id || '-'}</TableCell>
-                                <TableCell>{l.permanent ? 'Sim' : 'Não'}</TableCell>
-                                <TableCell>{new Date(l.updated_at).toLocaleString()}</TableCell>
-                                <TableCell className="text-right">
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="text-red-600 border-red-200 hover:bg-red-50"
-                                    onClick={() => handleUnlink(l)}
-                                    disabled={unlinkingKey === `${l.marketplace_item_id}::${l.variation_id || ''}`}
-                                  >
-                                    {unlinkingKey === `${l.marketplace_item_id}::${l.variation_id || ''}` ? 'Removendo...' : 'Desvincular'}
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </CardContent>
-                    </Card>
-                  )}
-                </div>
+                <ProductAdLinker productId={produto?.id || null} />
               </AccordionContent>
             </AccordionItem>
           </Accordion>

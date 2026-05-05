@@ -114,8 +114,11 @@ export function VariationForm({
     onVariationsChange(updatedVariations);
   };
 
-  const handleImageUpload = (variacaoId: string, event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files || []);
+  const handleImageUpload = (variacaoId: string, payload: React.ChangeEvent<HTMLInputElement> | File) => {
+    const files =
+      payload instanceof File
+        ? [payload]
+        : Array.from(payload.target.files || []);
     if (files.length === 0) return;
     const allowed = ["image/jpeg", "image/png"]; // JPG, JPEG, PNG
     const validFile = files.find(f => allowed.includes(f.type) && f.size <= 2 * 1024 * 1024);

@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { ProductFormData, KitItem, KitStep } from "@/types/products";
 import { ProductForm } from "@/components/products/create/ProductForm";
-import { ImageUpload } from "@/components/products/create/ImageUpload";
+import { ProductImageUploader } from "@/components/products/ProductImageUploader";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Plus, Trash2, X } from "lucide-react";
+import { ProductCoverImage } from "@/components/products/ProductCoverImage";
 
 interface KitFormProps {
   formData: ProductFormData;
@@ -17,6 +18,7 @@ interface KitFormProps {
   onImagesChange?: (images: File[]) => void;
   availableProducts?: any[];
   productsLoading?: boolean;
+  organizationId: string;
 }
 
 export function KitForm({
@@ -30,6 +32,7 @@ export function KitForm({
   onImagesChange = () => {},
   availableProducts = [],
   productsLoading = false,
+  organizationId,
 }: KitFormProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -78,10 +81,14 @@ export function KitForm({
               onInputChange={onInputChange} 
               includeSku={true} 
             />
-            <ImageUpload 
-              selectedImages={selectedImages} 
-              onImagesChange={onImagesChange} 
-            />
+            {organizationId ? (
+              <ProductImageUploader
+                organizationId={organizationId}
+                onPendingFilesChange={(files) => onImagesChange(files)}
+              />
+            ) : (
+              <p className="text-sm text-gray-500">Organização não identificada para upload de imagens.</p>
+            )}
           </div>
         )}
 
@@ -144,16 +151,12 @@ export function KitForm({
                         .map((p: any) => {
                           const imgSrc = Array.isArray(p.image_urls) && p.image_urls.length > 0
                             ? p.image_urls[0]
-                            : "/placeholder.svg";
+                            : undefined;
                           const tipoLabel = p.type === 'UNICO' ? 'Único' : 'Variação';
                           const alreadyAdded = kitItems.some((i: any) => (i.id ?? i.product_id) === p.id);
                           return (
                             <div key={p.id} className="border rounded-lg p-3 flex items-center gap-3">
-                              <img
-                                src={imgSrc}
-                                alt={p.name}
-                                className="w-12 h-12 rounded object-cover border"
-                              />
+                              <ProductCoverImage imageUrl={imgSrc} alt={p.name} />
                               <div className="flex-1 min-w-0">
                                 <div className="font-medium truncate">{p.name}</div>
                                 <div className="text-sm text-gray-500 truncate">SKU: {p.sku}</div>
@@ -201,10 +204,9 @@ export function KitForm({
                   {kitItems.map((item: any) => (
                     <div key={(item.id ?? item.product_id)} className="border rounded-lg p-3 flex items-center justify-between">
                       <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <img
-                          src={(item.image_url ?? (availableProducts?.find((ap: any) => ap.id === (item.id ?? item.product_id))?.image_urls?.[0]) ?? "/placeholder.svg")}
+                        <ProductCoverImage
+                          imageUrl={item.image_url ?? availableProducts?.find((ap: any) => ap.id === (item.id ?? item.product_id))?.image_urls?.[0]}
                           alt={item.name}
-                          className="w-12 h-12 rounded object-cover border"
                         />
                         <div className="flex-1 min-w-0">
                           <div className="font-medium truncate">{item.name}</div>

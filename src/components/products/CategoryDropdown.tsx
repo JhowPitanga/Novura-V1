@@ -1,24 +1,20 @@
-
-import { useState } from "react";
-import { ChevronDown, Plus, Tag, Trash2, Edit, ArrowLeft, Info, Check, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, FolderTree, Pencil, Plus, Save, Trash2, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger, DrawerDescription } from "@/components/ui/drawer";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 interface Category {
   id: string;
   name: string;
   parent_id?: string;
-  children?: Category[];
 }
 
 interface CategoryDropdownProps {
@@ -33,759 +29,657 @@ interface CategoryDropdownProps {
   onLinkCategory?: (categoryId: string, parentId: string | null) => void;
 }
 
-type DrawerStep = 'filter' | 'create' | 'addChild' | 'edit';
+interface TreeNode extends Category {
+  children: TreeNode[];
+}
 
-export function CategoryDropdown({ categories, selectedCategory = "", selectedCategories = [], onCategoryChange, onCategoriesChange, onAddCategory, onUpdateCategory, onDeleteCategory, onLinkCategory }: CategoryDropdownProps) {
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+type DrawerMode = "home" | "create" | "edit";
+type EditMode = "list" | "detail";
+
+function buildTree(categories: Category[]): TreeNode[] {
+  const map = new Map<string, TreeNode>();
+  const roots: TreeNode[] = [];
+
+  categories.forEach((category) => {
+    map.set(category.id, { ...category, children: [] });
+  });
+
+  const createsCycle = (nodeId: string, parentId: string): boolean => {
+    if (nodeId === parentId) return true;
+    const visited = new Set<string>([nodeId]);
+    let currentParentId: string | undefined = parentId;
+
+    while (currentParentId) {
+      if (visited.has(currentParentId)) return true;
+      visited.add(currentParentId);
+      const parentNode = map.get(currentParentId);
+      if (!parentNode?.parent_id) return false;
+      currentParentId = parentNode.parent_id;
+    }
+
+    return false;
+  };
+
+  map.forEach((node) => {
+    const parentId = node.parent_id;
+    if (parentId && map.has(parentId) && !createsCycle(node.id, parentId)) {
+      map.get(parentId)!.children.push(node);
+      return;
+    }
+    roots.push(node);
+  });
+
+  const sortRecursive = (nodes: TreeNode[], visited = new Set<string>()) => {
+    nodes.sort((a, b) => a.name.localeCompare(b.name));
+    nodes.forEach((n) => {
+      if (visited.has(n.id)) return;
+      visited.add(n.id);
+      sortRecursive(n.children, visited);
+    });
+  };
+
+  sortRecursive(roots);
+  return roots;
+}
+
+export function CategoryDropdown({
+  categories,
+  selectedCategory = "",
+  selectedCategories = [],
+  onCategoryChange,
+  onCategoriesChange,
+  onAddCategory,
+  onUpdateCategory,
+  onDeleteCategory,
+  onLinkCategory,
+}: CategoryDropdownProps) {
+  const tree = useMemo(() => buildTree(categories), [categories]);
+
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
-  const [pendingSelectedCategories, setPendingSelectedCategories] = useState<string[]>(selectedCategories.length ? selectedCategories : (selectedCategory ? [selectedCategory] : []));
-  const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
-  const [currentStep, setCurrentStep] = useState<DrawerStep>('filter');
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [drawerMode, setDrawerMode] = useState<DrawerMode>("home");
+
+  const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [pendingSelectedCategories, setPendingSelectedCategories] = useState<string[]>([]);
+
   const [newCategoryName, setNewCategoryName] = useState("");
-  const [newChildCategoryName, setNewChildCategoryName] = useState("");
-  const [selectedParentCategory, setSelectedParentCategory] = useState("");
+  const [newCategoryType, setNewCategoryType] = useState<"parent" | "child">("parent");
+  const [newCategoryParentId, setNewCategoryParentId] = useState<string>("");
+
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [editingCategoryName, setEditingCategoryName] = useState("");
-  const [expandedEditParents, setExpandedEditParents] = useState<Record<string, boolean>>({});
+  const [editingParentId, setEditingParentId] = useState<string>("none");
+  const [editMode, setEditMode] = useState<EditMode>("list");
 
-  // Organizar categorias em estrutura hierárquica
-  const organizeCategories = (cats: Category[]) => {
-    const categoryMap = new Map<string, Category>();
-    const rootCategories: Category[] = [];
-
-    // Primeiro, criar um mapa de todas as categorias
-    cats.forEach(cat => {
-      categoryMap.set(cat.id, { ...cat, children: [] });
-    });
-
-    // Em seguida, organizar em hierarquia
-    cats.forEach(cat => {
-      const categoryWithChildren = categoryMap.get(cat.id)!;
-      
-      if (cat.parent_id && categoryMap.has(cat.parent_id)) {
-        const parent = categoryMap.get(cat.parent_id)!;
-        parent.children!.push(categoryWithChildren);
-      } else {
-        rootCategories.push(categoryWithChildren);
-      }
-    });
-
-    return rootCategories;
-  };
-
-  const organizedCategories = organizeCategories(categories);
-
-  const toggleParentExpand = (parentId: string) => {
-    setExpandedParents(prev => ({ ...prev, [parentId]: !prev[parentId] }));
-  };
-
-  const handleSaveSelection = () => {
-    const unique = Array.from(new Set(pendingSelectedCategories));
-    if (onCategoriesChange) {
-      onCategoriesChange(unique);
-    } else if (onCategoryChange) {
-      onCategoryChange(unique[0] || "");
-    }
-    setIsPopoverOpen(false);
-  };
-
-  const handleCancelSelection = () => {
-    setPendingSelectedCategories(selectedCategories.length ? selectedCategories : (selectedCategory ? [selectedCategory] : []));
-    setIsPopoverOpen(false);
-  };
-
-  const handleSaveCategory = () => {
-    if (newCategoryName.trim()) {
-      onAddCategory({ name: newCategoryName.trim() });
-      setNewCategoryName("");
-      setCurrentStep('filter');
-      setIsDrawerOpen(false);
-    }
-  };
-
-  const handleSaveChildCategory = () => {
-    if (newChildCategoryName.trim() && selectedParentCategory) {
-      onAddCategory({ 
-        name: newChildCategoryName.trim(), 
-        parent_id: selectedParentCategory 
-      });
-      setNewChildCategoryName("");
-      setSelectedParentCategory("");
-      setCurrentStep('filter');
-      setIsDrawerOpen(false);
-    }
-  };
-
-  const handleDeleteCategory = (categoryId: string) => {
-    if (onDeleteCategory) {
-      onDeleteCategory(categoryId);
-    }
-  };
-
-  const handleStartEdit = (category: Category) => {
-    setEditingCategoryId(category.id);
-    setEditingCategoryName(category.name);
-  };
-
-  const handleSaveEdit = () => {
-    if (editingCategoryId && editingCategoryName.trim() && onUpdateCategory) {
-      onUpdateCategory(editingCategoryId, editingCategoryName.trim());
-      setEditingCategoryId(null);
-      setEditingCategoryName("");
-    }
-  };
-
-  const handleCancelEdit = () => {
-    setEditingCategoryId(null);
-    setEditingCategoryName("");
-  };
-
-  const resetDrawer = () => {
-    setCurrentStep('filter');
-    setNewCategoryName("");
-    setNewChildCategoryName("");
-    setSelectedParentCategory("");
-    setEditingCategoryId(null);
-    setEditingCategoryName("");
-  };
-
-  const renderCategoryItems = (cats: Category[], level = 0) => {
-    return cats.map((category) => {
-      const hasChildren = category.children && category.children.length > 0;
-      
-      if (hasChildren) {
-        return (
-          <DropdownMenu key={category.id}>
-            <DropdownMenuTrigger asChild>
-              <DropdownMenuItem
-                className={`${level > 0 ? 'pl-6' : ''} ${selectedCategory === category.id ? 'bg-muted' : ''} justify-between`}
-                onSelect={(e) => e.preventDefault()}
-              >
-                <span>{category.name}</span>
-                <ChevronDown className="w-4 h-4" />
-              </DropdownMenuItem>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="right" align="start" className="w-56">
-              <DropdownMenuItem
-                onClick={() => onCategoryChange(category.id)}
-                className={selectedCategory === category.id ? 'bg-muted' : ''}
-              >
-                Todas de {category.name}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              {category.children?.map((child) => (
-                <DropdownMenuItem
-                  key={child.id}
-                  onClick={() => onCategoryChange(child.id)}
-                  className={selectedCategory === child.id ? 'bg-muted' : ''}
-                >
-                  {child.name}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        );
-      }
-
-      return (
-        <DropdownMenuItem
-          key={category.id}
-          onClick={() => onCategoryChange(category.id)}
-          className={`${level > 0 ? 'pl-6' : ''} ${selectedCategory === category.id ? 'bg-muted' : ''}`}
-        >
-          {category.name}
-        </DropdownMenuItem>
-      );
-    });
-  };
-
-  // Nova renderização em formato de accordion
-  const renderAccordionFilter = () => {
-    return (
-      <div className="space-y-1">
-        <Accordion type="multiple" collapsible className="w-full">
-          {organizedCategories.map((category) => {
-            const hasChildren = category.children && category.children.length > 0;
-            if (hasChildren) {
-              return (
-                <AccordionItem key={category.id} value={category.id}>
-                  <AccordionTrigger className={`text-sm ${selectedCategory === category.id ? 'bg-muted font-bold rounded-md px-2' : 'font-bold'}`}>
-                    {category.name}
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <div className="flex flex-col">
-                      <DropdownMenuItem
-                        onClick={() => onCategoryChange(category.id)}
-                        className={`${selectedCategory === category.id ? 'bg-muted' : ''}`}
-                      >
-                        Todas de {category.name}
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      {category.children?.map((child) => (
-                        <DropdownMenuItem
-                          key={child.id}
-                          onClick={() => onCategoryChange(child.id)}
-                          className={`${selectedCategory === child.id ? 'bg-muted' : ''}`}
-                        >
-                          {child.name}
-                        </DropdownMenuItem>
-                      ))}
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-              );
-            }
-            return (
-              <DropdownMenuItem
-                key={category.id}
-                onClick={() => onCategoryChange(category.id)}
-                className={`${selectedCategory === category.id ? 'bg-muted font-bold' : ''}`}
-              >
-                {category.name}
-              </DropdownMenuItem>
-            );
-          })}
-        </Accordion>
-      </div>
+  useEffect(() => {
+    if (!isPopoverOpen) return;
+    setPendingSelectedCategories(
+      selectedCategories.length > 0 ? selectedCategories : selectedCategory ? [selectedCategory] : []
     );
+  }, [isPopoverOpen, selectedCategories, selectedCategory]);
+
+  const categoryById = useMemo(() => {
+    const map = new Map<string, Category>();
+    categories.forEach((category) => map.set(category.id, category));
+    return map;
+  }, [categories]);
+
+  const selectedLabel = useMemo(() => {
+    if (pendingSelectedCategories.length === 0) return "Todas as categorias";
+    if (pendingSelectedCategories.length === 1) {
+      return categoryById.get(pendingSelectedCategories[0])?.name || "Categoria";
+    }
+    return `${pendingSelectedCategories.length} categorias`;
+  }, [pendingSelectedCategories, categoryById]);
+
+  const toggleExpand = (categoryId: string) => {
+    setExpanded((prev) => ({ ...prev, [categoryId]: !prev[categoryId] }));
   };
 
-  const selectedLabel = (() => {
-    const current = pendingSelectedCategories.filter(Boolean);
-    if (current.length === 0) return "Todas as categorias";
-    const selectedSet = new Set(current);
-    organizedCategories.forEach(parent => {
-      const childIds = (parent.children || []).map(c => c.id);
-      const allChildrenSelected = childIds.length > 0 && childIds.every(id => selectedSet.has(id));
-      const parentSelected = selectedSet.has(parent.id);
-      if (parentSelected || allChildrenSelected) {
-        childIds.forEach(id => selectedSet.delete(id));
-        selectedSet.add(parent.id);
-      }
+  const collectDescendants = (node: TreeNode): string[] => {
+    const ids: string[] = [];
+    node.children.forEach((child) => {
+      ids.push(child.id);
+      ids.push(...collectDescendants(child));
     });
-    const effectiveIds = Array.from(selectedSet);
-    const names = effectiveIds.map(id => categories.find(c => c.id === id)?.name || "").filter(Boolean);
-    if (names.length === 0) return "Categorias selecionadas";
-    const truncate = (s: string, max = 12) => (s.length <= max ? s : s.slice(0, max - 3) + "...");
-    if (names.length === 1) return truncate(names[0]);
-    const first = truncate(names[0]);
-    const extra = names.length - 1;
-    return `${first}, +${extra}`;
-  })();
+    return ids;
+  };
 
-  const renderPopoverTree = () => {
+  const findNodeById = (nodes: TreeNode[], id: string): TreeNode | null => {
+    for (const node of nodes) {
+      if (node.id === id) return node;
+      const child = findNodeById(node.children, id);
+      if (child) return child;
+    }
+    return null;
+  };
+
+  const collectAncestorIds = (nodes: TreeNode[], id: string, trail: string[] = []): string[] => {
+    for (const node of nodes) {
+      const nextTrail = [...trail, node.id];
+      if (node.id === id) return trail;
+      const found = collectAncestorIds(node.children, id, nextTrail);
+      if (found.length > 0) return found;
+    }
+    return [];
+  };
+
+  const filteredIds = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return new Set(categories.map((c) => c.id));
+
+    const directMatches = categories.filter((c) => c.name.toLowerCase().includes(term)).map((c) => c.id);
+    const ids = new Set<string>(directMatches);
+    directMatches.forEach((id) => {
+      const ancestors = collectAncestorIds(tree, id);
+      ancestors.forEach((a) => ids.add(a));
+    });
+    return ids;
+  }, [search, categories, tree]);
+
+  useEffect(() => {
+    if (!search.trim()) return;
+    const nextExpanded: Record<string, boolean> = {};
+    filteredIds.forEach((id) => {
+      const ancestors = collectAncestorIds(tree, id);
+      ancestors.forEach((a) => {
+        nextExpanded[a] = true;
+      });
+    });
+    setExpanded((prev) => ({ ...prev, ...nextExpanded }));
+  }, [search, filteredIds, tree]);
+
+  const handleToggleNode = (node: TreeNode, checked: boolean) => {
+    const descendants = collectDescendants(node);
+    setPendingSelectedCategories((prev) => {
+      const selected = new Set(prev);
+      if (checked) {
+        selected.add(node.id);
+        descendants.forEach((id) => selected.add(id));
+      } else {
+        selected.delete(node.id);
+        descendants.forEach((id) => selected.delete(id));
+      }
+      return Array.from(selected);
+    });
+  };
+
+  const renderTree = (node: TreeNode, level = 0): JSX.Element | null => {
+    if (!filteredIds.has(node.id)) return null;
+
+    const hasChildren = node.children.length > 0;
+    const isExpanded = !!expanded[node.id];
+    const checked = pendingSelectedCategories.includes(node.id);
+
     return (
-      <div className="space-y-2">
-        <div className="text-sm font-medium text-gray-700">Categorias</div>
-        <ScrollArea className="max-h-80 pr-1">
-          <div className="space-y-1">
-            {/* Todas as categorias */}
-            <div className="flex items-center justify-between px-2 py-1 rounded hover:bg-gray-50">
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  checked={pendingSelectedCategories.length === 0}
-                  onCheckedChange={(checked) => {
-                    if (checked) setPendingSelectedCategories([]);
-                  }}
-                />
-                <span className="text-sm">Todas as categorias</span>
-              </div>
-            </div>
-            {/* Pais e filhos */}
-            {organizedCategories.map((parent) => {
-              const hasChildren = (parent.children || []).length > 0;
-              const expanded = !!expandedParents[parent.id];
-              return (
-                <div key={parent.id} className="px-2 py-1">
-                  <div className="grid grid-cols-[24px_1fr_24px] items-center gap-2 rounded hover:bg-gray-50">
-                    <div className="flex items-center justify-center">
-                      <Checkbox
-                        checked={pendingSelectedCategories.includes(parent.id)}
-                        onCheckedChange={(checked) => {
-                          setPendingSelectedCategories(prev => {
-                            const exists = prev.includes(parent.id);
-                            const childIds = (parent.children || []).map(c => c.id);
-                            if (checked && !exists) {
-                              const withoutAll = prev.filter(id => ![parent.id, ...childIds, ""].includes(id));
-                              return [...withoutAll, parent.id, ...childIds];
-                            }
-                            if (!checked && exists) {
-                              return prev.filter(id => id !== parent.id && !childIds.includes(id));
-                            }
-                            return prev;
-                          });
-                        }}
-                      />
-                    </div>
-                    <div className="text-sm font-medium truncate">{parent.name}</div>
-                    <div className="flex items-center justify-center">
-                      {hasChildren && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-purple-600 hover:text-purple-700 hover:bg-purple-50"
-                          onClick={() => toggleParentExpand(parent.id)}
-                          aria-label="Expandir subcategorias"
-                          title="Expandir subcategorias"
-                        >
-                          <ChevronDown className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                  {hasChildren && expanded && (
-                    <div className="mt-1 ml-6 space-y-1">
-                      {parent.children?.map(child => (
-                        <div key={child.id} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50">
-                          <Checkbox
-                            checked={pendingSelectedCategories.includes(child.id)}
-                            onCheckedChange={(checked) => {
-                              setPendingSelectedCategories(prev => {
-                                const exists = prev.includes(child.id);
-                                if (checked && !exists) return [...prev.filter(id => id !== ""), child.id];
-                                if (!checked && exists) return prev.filter(id => id !== child.id);
-                                return prev;
-                              });
-                            }}
-                          />
-                          <span className="text-sm">{child.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </ScrollArea>
-        <div className="flex items-center justify-between pt-2">
-          <Button variant="outline" size="sm" onClick={handleCancelSelection}>
-            Cancelar
-          </Button>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                (document.activeElement as HTMLElement | null)?.blur();
-                resetDrawer();
-                setIsPopoverOpen(false);
-                setIsDrawerOpen(true);
-              }}
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Adicionar/Editar
-            </Button>
-            <Button size="sm" onClick={handleSaveSelection}>
-              Salvar
-            </Button>
+      <div key={node.id}>
+        <div className="grid grid-cols-[20px_1fr_24px] items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-violet-50/60">
+          <Checkbox
+            checked={checked}
+            onCheckedChange={(value) => handleToggleNode(node, Boolean(value))}
+            className="border-gray-300"
+          />
+          <span className="truncate text-sm text-gray-800" style={{ paddingLeft: `${level * 14}px` }}>
+            {node.name}
+          </span>
+          <div className="flex justify-end">
+            {hasChildren ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-violet-700 hover:bg-violet-100 hover:text-violet-800"
+                onClick={() => toggleExpand(node.id)}
+              >
+                {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </Button>
+            ) : null}
           </div>
         </div>
+
+        {hasChildren && isExpanded && (
+          <div className="ml-3 border-l border-violet-100 pl-2">
+            {node.children.map((child) => renderTree(child, level + 1))}
+          </div>
+        )}
       </div>
     );
   };
 
-  const renderAllCategoriesForEdit = () => {
-    const renderCategory = (category: Category, level = 0): JSX.Element[] => {
-      const elements: JSX.Element[] = [];
-      const hasChildren = category.children && category.children.length > 0;
-      const parentCategory = category.parent_id ? categories.find(c => c.id === category.parent_id) : null;
-      
-      const expanded = !!expandedEditParents[category.id];
-      elements.push(
-        <div key={category.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-          <div className="flex items-center flex-1">
-            {level > 0 && (
-              <ChevronDown className="w-4 h-4 mr-2 text-muted-foreground rotate-90" />
+  const resetDrawerState = () => {
+    setDrawerMode("home");
+    setEditMode("list");
+    setNewCategoryName("");
+    setNewCategoryType("parent");
+    setNewCategoryParentId("");
+    setEditingCategoryId(null);
+    setEditingCategoryName("");
+    setEditingParentId("none");
+  };
+
+  const openEditCategory = (category: Category) => {
+    setEditingCategoryId(category.id);
+    setEditingCategoryName(category.name);
+    setEditingParentId(category.parent_id || "none");
+    setEditMode("detail");
+  };
+
+  const editingCategory = editingCategoryId ? categoryById.get(editingCategoryId) : undefined;
+  const editingParentCategory =
+    editingCategory?.parent_id ? categoryById.get(editingCategory.parent_id) : undefined;
+
+  const renderManageTree = (node: TreeNode, level = 0): JSX.Element => {
+    const hasChildren = node.children.length > 0;
+    const isExpanded = !!expanded[node.id];
+    const category = categoryById.get(node.id);
+
+    return (
+      <div key={`manage-${node.id}`}>
+        <div
+          className="grid grid-cols-[20px_1fr_auto] items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-violet-50/60"
+          style={{ paddingLeft: `${level * 10}px` }}
+        >
+          <div className="flex justify-center">
+            {hasChildren ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-violet-700 hover:bg-violet-100 hover:text-violet-800"
+                onClick={() => toggleExpand(node.id)}
+              >
+                {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </Button>
+            ) : (
+              <span className="inline-block h-4 w-4" />
             )}
-            {hasChildren && (
+          </div>
+          <span className="truncate text-sm text-gray-800">{node.name}</span>
+          {category ? (
+            <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 p-0 ml-2 text-purple-600 hover:text-purple-800 hover:bg-purple-50"
-                onClick={() => setExpandedEditParents(prev => ({ ...prev, [category.id]: !prev[category.id] }))}
-                aria-label="Expandir subcategorias"
-                title="Expandir subcategorias"
+                className="h-8 w-8 text-violet-700 hover:bg-violet-50"
+                onClick={() => openEditCategory(category)}
               >
-                <ChevronDown className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                <Pencil className="h-4 w-4" />
               </Button>
-            )}
-            
-            {editingCategoryId === category.id ? (
-              <div className="flex items-center space-x-2 flex-1">
-                <Input
-                  value={editingCategoryName}
-                  onChange={(e) => setEditingCategoryName(e.target.value)}
-                  className="flex-1"
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter') {
-                      handleSaveEdit();
-                    }
-                  }}
-                />
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={handleSaveEdit}
-                  className="h-8 w-8 p-0 text-green-600"
-                >
-                  <Check className="w-4 h-4" />
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={handleCancelEdit}
-                  className="h-8 w-8 p-0 text-muted-foreground"
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-              </div>
-            ) : (
-              <div className="flex flex-col">
-                <span className="text-sm font-medium">{category.name}</span>
-                {parentCategory && (
-                  <span className="text-xs text-muted-foreground">
-                    Subcategoria de: {parentCategory.name}
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-          
-          {editingCategoryId !== category.id && (
-            <div className="flex items-center space-x-1">
-              <Button 
-                variant="ghost" 
-                size="sm"
-                onClick={() => handleStartEdit(category)}
-                className="h-8 w-8 p-0 text-primary hover:text-primary/80 hover:bg-primary/10"
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-red-600 hover:bg-red-50"
+                onClick={() => onDeleteCategory?.(category.id)}
               >
-                <Edit className="w-4 h-4" />
-              </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button 
-                    variant="ghost" 
-                    size="sm"
-                    className="h-8 w-8 p-0 text-purple-600 hover:text-purple-800 hover:bg-purple-50"
-                  >
-                    <ChevronDown className="w-4 h-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuItem
-                    onClick={() => onLinkCategory?.(category.id, null)}
-                  >
-                    Sem categoria pai
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  {categories
-                    .filter(c => !c.parent_id && c.id !== category.id)
-                    .map(c => (
-                      <DropdownMenuItem
-                        key={c.id}
-                        onClick={() => onLinkCategory?.(category.id, c.id)}
-                      >
-                        Vincular a: {c.name}
-                      </DropdownMenuItem>
-                    ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <Button 
-                variant="ghost" 
-                size="sm"
-                onClick={() => handleDeleteCategory(category.id)}
-                className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
-              >
-                <Trash2 className="w-4 h-4" />
+                <Trash2 className="h-4 w-4" />
               </Button>
             </div>
-          )}
+          ) : null}
         </div>
-      );
 
-      // Adicionar filhos se existirem
-      if (hasChildren && expanded) {
-        category.children?.forEach(child => {
-          elements.push(...renderCategory(child, level + 1));
-        });
-      }
-
-      return elements;
-    };
-
-    const allElements: JSX.Element[] = [];
-    organizedCategories.forEach(category => {
-      allElements.push(...renderCategory(category));
-    });
-
-    return allElements;
-  };
-
-  const renderDrawerContent = () => {
-    switch (currentStep) {
-      case 'filter':
-        return (
-          <div className="p-6 space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <TooltipProvider>
-                {/* Card 1 - Cadastrar Categoria */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Card 
-                      className="cursor-pointer hover:shadow-md transition-shadow border-2 hover:border-primary/20"
-                      onClick={() => setCurrentStep('create')}
-                    >
-                      <CardHeader className="text-center">
-                        <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-2">
-                          <Tag className="w-6 h-6 text-primary" />
-                        </div>
-                        <CardTitle className="text-lg">Cadastrar Categoria</CardTitle>
-                      </CardHeader>
-                      <CardContent className="text-center">
-                        <p className="text-sm text-muted-foreground">
-                          Criar uma nova categoria principal
-                        </p>
-                      </CardContent>
-                    </Card>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Clique para criar uma nova categoria principal para organizar seus produtos</p>
-                  </TooltipContent>
-                </Tooltip>
-
-                {/* Card 2 - Adicionar Categoria Filho */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Card 
-                      className="cursor-pointer hover:shadow-md transition-shadow border-2 hover:border-primary/20"
-                      onClick={() => setCurrentStep('addChild')}
-                    >
-                      <CardHeader className="text-center">
-                        <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-2">
-                          <Plus className="w-6 h-6 text-primary" />
-                        </div>
-                        <CardTitle className="text-lg">Categoria Filho</CardTitle>
-                      </CardHeader>
-                      <CardContent className="text-center">
-                        <p className="text-sm text-muted-foreground">
-                          Adicionar subcategoria a uma categoria existente
-                        </p>
-                      </CardContent>
-                    </Card>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Clique para adicionar uma subcategoria dentro de uma categoria principal existente</p>
-                  </TooltipContent>
-                </Tooltip>
-
-                {/* Card 3 - Editar Categorias */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Card 
-                      className="cursor-pointer hover:shadow-md transition-shadow border-2 hover:border-primary/20"
-                      onClick={() => setCurrentStep('edit')}
-                    >
-                      <CardHeader className="text-center">
-                        <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-2">
-                          <Edit className="w-6 h-6 text-primary" />
-                        </div>
-                        <CardTitle className="text-lg">Editar Categorias</CardTitle>
-                      </CardHeader>
-                      <CardContent className="text-center">
-                        <p className="text-sm text-muted-foreground">
-                          Gerenciar e excluir categorias existentes
-                        </p>
-                      </CardContent>
-                    </Card>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Clique para editar nomes ou excluir categorias já cadastradas</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
+        {hasChildren && isExpanded && (
+          <div className="ml-3 border-l border-violet-100 pl-2">
+            {node.children.map((child) => renderManageTree(child, level + 1))}
           </div>
-        );
-
-      case 'create':
-        return (
-          <div className="p-6 space-y-6">
-            <div className="flex items-center mb-4">
-              <Button 
-                variant="ghost" 
-                size="sm"
-                onClick={() => setCurrentStep('filter')}
-                className="mr-2"
-              >
-                <ArrowLeft className="w-4 h-4 mr-1" />
-                Voltar
-              </Button>
-              <h3 className="text-lg font-semibold">Cadastrar Nova Categoria</h3>
-            </div>
-            
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Tag className="w-5 h-5 mr-2" />
-                  Informações da Categoria
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="category-name">Nome da Categoria</Label>
-                  <Input
-                    id="category-name"
-                    placeholder="Ex: Eletrônicos"
-                    value={newCategoryName}
-                    onChange={(e) => setNewCategoryName(e.target.value)}
-                  />
-                </div>
-                <Button 
-                  onClick={handleSaveCategory}
-                  className="w-full"
-                  disabled={!newCategoryName.trim()}
-                >
-                  Salvar Categoria
-                </Button>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
-      case 'addChild':
-        return (
-          <div className="p-6 space-y-6">
-            <div className="flex items-center mb-4">
-              <Button 
-                variant="ghost" 
-                size="sm"
-                onClick={() => setCurrentStep('filter')}
-                className="mr-2"
-              >
-                <ArrowLeft className="w-4 h-4 mr-1" />
-                Voltar
-              </Button>
-              <h3 className="text-lg font-semibold">Adicionar Categoria Filho</h3>
-            </div>
-            
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Plus className="w-5 h-5 mr-2" />
-                  Subcategoria
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="parent-category">Categoria Pai</Label>
-                  <Select value={selectedParentCategory} onValueChange={setSelectedParentCategory}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecione a categoria pai" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {categories.filter(cat => !cat.parent_id).map((category) => (
-                        <SelectItem key={category.id} value={category.id}>
-                          {category.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="child-category-name">Nome da Subcategoria</Label>
-                  <Input
-                    id="child-category-name"
-                    placeholder="Ex: Celulares"
-                    value={newChildCategoryName}
-                    onChange={(e) => setNewChildCategoryName(e.target.value)}
-                  />
-                </div>
-                <Button 
-                  onClick={handleSaveChildCategory}
-                  className="w-full"
-                  disabled={!newChildCategoryName.trim() || !selectedParentCategory}
-                >
-                  Salvar Subcategoria
-                </Button>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
-      case 'edit':
-        return (
-          <div className="p-6 space-y-6 h-full flex flex-col">
-            <div className="flex items-center mb-4">
-              <Button 
-                variant="ghost" 
-                size="sm"
-                onClick={() => setCurrentStep('filter')}
-                className="mr-2"
-              >
-                <ArrowLeft className="w-4 h-4 mr-1" />
-                Voltar
-              </Button>
-              <h3 className="text-lg font-semibold">Editar Categorias</h3>
-            </div>
-            
-            <Card className="flex-1 flex flex-col">
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Edit className="w-5 h-5 mr-2" />
-                  Categorias Cadastradas
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="flex-1 p-0">
-                <ScrollArea className="h-[calc(100vh-300px)] px-6 pb-6">
-                  <div className="space-y-3">
-                    {renderAllCategoriesForEdit()}
-                    {categories.length === 0 && (
-                      <div className="text-center py-8">
-                        <Info className="w-8 h-8 mx-auto text-muted-foreground mb-2" />
-                        <p className="text-sm text-muted-foreground">Nenhuma categoria cadastrada</p>
-                      </div>
-                    )}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-          </div>
-        );
-
-      default:
-        return null;
-    }
+        )}
+      </div>
+    );
   };
 
   return (
     <>
-      <Popover open={isPopoverOpen} onOpenChange={(open) => {
-        setIsPopoverOpen(open);
-        if (open) setPendingSelectedCategories(selectedCategories.length ? selectedCategories : (selectedCategory ? [selectedCategory] : []));
-      }}>
+      <Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
         <PopoverTrigger asChild>
-          <Button variant="outline" size="sm" className="w-full max-w-[180px] justify-between">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-12 w-full min-w-[260px] justify-between rounded-2xl border-0 bg-white text-gray-700 shadow-lg ring-1 ring-gray-200/60"
+          >
             <span className="truncate">{selectedLabel}</span>
-            <ChevronDown className="w-4 h-4 ml-2 shrink-0" />
+            <ChevronDown className="ml-2 h-4 w-4 shrink-0" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" sideOffset={6} className="w-[420px] p-3">
-          {renderPopoverTree()}
+
+        <PopoverContent align="start" sideOffset={8} className="w-[460px] p-3">
+          <div className="mb-3 flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-700">Categoria pai {'>'} subcategoria</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-violet-700 hover:bg-violet-50 hover:text-violet-800"
+              onClick={() => {
+                setIsPopoverOpen(false);
+                setIsDrawerOpen(true);
+              }}
+            >
+              <FolderTree className="mr-2 h-4 w-4" />
+              Gerenciar
+            </Button>
+          </div>
+
+          <div className="mb-3">
+            <Input
+              placeholder="Buscar categoria ou subcategoria..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-9 border-gray-200 focus-visible:ring-violet-500"
+            />
+          </div>
+
+          <ScrollArea className="max-h-80 pr-1">
+            <div className="space-y-1">
+              <div className="grid grid-cols-[20px_1fr_24px] items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-violet-50/60">
+                <Checkbox
+                  checked={pendingSelectedCategories.length === 0}
+                  onCheckedChange={(value) => {
+                    if (value) setPendingSelectedCategories([]);
+                  }}
+                />
+                <span className="text-sm text-gray-800">Todas as categorias</span>
+                <span />
+              </div>
+
+              {tree.map((node) => renderTree(node))}
+            </div>
+          </ScrollArea>
+
+          <div className="mt-3 flex items-center justify-between">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setPendingSelectedCategories(
+                  selectedCategories.length > 0 ? selectedCategories : selectedCategory ? [selectedCategory] : []
+                );
+                setIsPopoverOpen(false);
+              }}
+            >
+              Cancelar
+            </Button>
+            <Button
+              size="sm"
+              className="bg-violet-700 text-white hover:bg-violet-800"
+              onClick={() => {
+                const unique = Array.from(new Set(pendingSelectedCategories));
+                if (onCategoriesChange) {
+                  onCategoriesChange(unique);
+                } else if (onCategoryChange) {
+                  onCategoryChange(unique[0] || "");
+                }
+                setIsPopoverOpen(false);
+              }}
+            >
+              Aplicar filtro
+            </Button>
+          </div>
         </PopoverContent>
       </Popover>
 
-      <Drawer direction="right" open={isDrawerOpen} onOpenChange={(open) => {
-        setIsDrawerOpen(open);
-        if (!open) resetDrawer();
-      }}>
-        <DrawerContent className="fixed inset-y-0 right-0 h-full w-[35%]">
+      <Drawer
+        open={isDrawerOpen}
+        onOpenChange={(open) => {
+          setIsDrawerOpen(open);
+          if (!open) resetDrawerState();
+        }}
+        direction="right"
+      >
+        <DrawerContent className="fixed inset-y-0 right-0 h-full w-[430px]">
           <DrawerHeader>
-            <DrawerTitle>Gerenciar Categorias</DrawerTitle>
-            <DrawerDescription>Crie, edite e organize categorias e subcategorias.</DrawerDescription>
+            <DrawerTitle>Gerenciar categorias</DrawerTitle>
+            <DrawerDescription>Fluxo por cards com criação e edição em estrutura limpa.</DrawerDescription>
           </DrawerHeader>
-          <div className="flex-1 overflow-hidden">
-            {renderDrawerContent()}
+
+          <div className="space-y-4 overflow-y-auto px-4 pb-6">
+            {drawerMode === "home" && (
+              <div className="grid grid-cols-1 gap-3">
+                <Card className="border-violet-200 transition hover:border-violet-300 hover:bg-violet-50/40">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base text-violet-800">Card de Criação</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-sm text-gray-600">
+                    <p className="mb-3">Criar categoria pai ou categoria filho vinculada a uma categoria pai existente.</p>
+                    <Button size="sm" className="bg-violet-700 text-white hover:bg-violet-800" onClick={() => setDrawerMode("create")}>
+                      Abrir criação
+                    </Button>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-violet-200 transition hover:border-violet-300 hover:bg-violet-50/40">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base text-violet-800">Card de Edição</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-sm text-gray-600">
+                    <p className="mb-3">Editar nome da categoria, alterar vínculo de pai e excluir categoria.</p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-violet-200 text-violet-700 hover:bg-violet-50"
+                      onClick={() => {
+                        setDrawerMode("edit");
+                        setEditMode("list");
+                      }}
+                    >
+                      Abrir edição
+                    </Button>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {drawerMode === "create" && (
+              <div className="space-y-4 rounded-xl border border-gray-200 p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-800">Nova categoria</p>
+                  <Button variant="ghost" size="sm" onClick={() => setDrawerMode("home")}>
+                    Voltar
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Tipo</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      type="button"
+                      variant={newCategoryType === "parent" ? "default" : "outline"}
+                      className={newCategoryType === "parent" ? "bg-violet-700 text-white hover:bg-violet-800" : "border-violet-200 text-violet-700 hover:bg-violet-50"}
+                      onClick={() => setNewCategoryType("parent")}
+                    >
+                      Categoria pai
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={newCategoryType === "child" ? "default" : "outline"}
+                      className={newCategoryType === "child" ? "bg-violet-700 text-white hover:bg-violet-800" : "border-violet-200 text-violet-700 hover:bg-violet-50"}
+                      onClick={() => setNewCategoryType("child")}
+                    >
+                      Subcategoria
+                    </Button>
+                  </div>
+                </div>
+
+                {newCategoryType === "child" && (
+                  <div className="space-y-2">
+                    <Label>Categoria pai existente</Label>
+                    <div className="max-h-44 overflow-auto rounded-lg border border-violet-100 bg-violet-50/30 p-2 space-y-1">
+                      {categories.filter((c) => !c.parent_id).map((category) => {
+                        const selected = newCategoryParentId === category.id;
+                        return (
+                          <button
+                            key={category.id}
+                            type="button"
+                            className={cn(
+                              "w-full rounded-md px-2 py-1.5 text-left text-sm transition flex items-center justify-between",
+                              selected ? "bg-violet-100 text-violet-800" : "hover:bg-violet-50 text-gray-700"
+                            )}
+                            onClick={() => setNewCategoryParentId(category.id)}
+                          >
+                            <span>{category.name}</span>
+                            {selected ? <CheckCircle2 className="h-4 w-4 text-violet-700" /> : null}
+                          </button>
+                        );
+                      })}
+                      {categories.filter((c) => !c.parent_id).length === 0 ? (
+                        <p className="px-2 py-1.5 text-sm text-gray-500">Nenhuma categoria pai disponível.</p>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <Label>Nome</Label>
+                  <Input
+                    placeholder="Digite o nome da categoria"
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                  />
+                </div>
+
+                <Button
+                  className="w-full bg-violet-700 text-white hover:bg-violet-800"
+                  disabled={
+                    !newCategoryName.trim() || (newCategoryType === "child" && !newCategoryParentId)
+                  }
+                  onClick={() => {
+                    onAddCategory({
+                      name: newCategoryName.trim(),
+                      parent_id: newCategoryType === "child" ? newCategoryParentId : undefined,
+                    });
+                    setNewCategoryName("");
+                    setNewCategoryParentId("");
+                    setNewCategoryType("parent");
+                    setDrawerMode("home");
+                  }}
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Criar categoria
+                </Button>
+              </div>
+            )}
+
+            {drawerMode === "edit" && editMode === "list" && (
+              <div className="space-y-3 rounded-xl border border-gray-200 p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-800">Editar categorias na árvore</p>
+                  <Button variant="ghost" size="sm" onClick={() => setDrawerMode("home")}>
+                    Voltar
+                  </Button>
+                </div>
+
+                <div className="max-h-[460px] overflow-auto rounded-lg border border-gray-100 p-2">
+                  <div className="space-y-1">{tree.map((node) => renderManageTree(node))}</div>
+                </div>
+              </div>
+            )}
+
+            {drawerMode === "edit" && editMode === "detail" && editingCategory && (
+              <div className="space-y-3 rounded-xl border border-gray-200 p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-800">Detalhes da edição</p>
+                  <Button variant="ghost" size="sm" onClick={() => setEditMode("list")}>
+                    Voltar para árvore
+                  </Button>
+                </div>
+
+                <Card className="border-violet-200 bg-violet-50/30">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base text-violet-800">Categoria selecionada</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-1 text-sm text-gray-700">
+                    {editingParentCategory ? (
+                      <>
+                        <p>
+                          <span className="font-medium text-gray-900">Categoria:</span> {editingParentCategory.name}
+                        </p>
+                        <p>
+                          <span className="font-medium text-gray-900">Subcategoria:</span> {editingCategory.name}
+                        </p>
+                      </>
+                    ) : (
+                      <p>
+                        <span className="font-medium text-gray-900">Categoria:</span> {editingCategory.name}
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="border-gray-100">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center gap-2 text-base text-violet-800">
+                      <Pencil className="h-4 w-4" />
+                      Editar dados
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <Input value={editingCategoryName} onChange={(e) => setEditingCategoryName(e.target.value)} />
+                    <Select value={editingParentId} onValueChange={setEditingParentId}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Sem categoria pai</SelectItem>
+                        {categories
+                          .filter((c) => c.id !== editingCategory.id)
+                          .map((c) => (
+                            <SelectItem key={c.id} value={c.id}>
+                              {c.name}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        className="bg-violet-700 text-white hover:bg-violet-800"
+                        onClick={() => {
+                          if (!editingCategoryId) return;
+                          if (editingCategoryName.trim()) {
+                            onUpdateCategory?.(editingCategoryId, editingCategoryName.trim());
+                          }
+                          onLinkCategory?.(editingCategoryId, editingParentId === "none" ? null : editingParentId);
+                          setEditingCategoryId(null);
+                          setEditingCategoryName("");
+                          setEditingParentId("none");
+                          setEditMode("list");
+                        }}
+                      >
+                        <Save className="mr-2 h-4 w-4" />
+                        Salvar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setEditingCategoryId(null);
+                          setEditingCategoryName("");
+                          setEditingParentId("none");
+                          setEditMode("list");
+                        }}
+                      >
+                        Cancelar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-red-200 text-red-600 hover:bg-red-50"
+                        onClick={() => {
+                          if (!editingCategoryId) return;
+                          onDeleteCategory?.(editingCategoryId);
+                          setEditingCategoryId(null);
+                          setEditingCategoryName("");
+                          setEditingParentId("none");
+                          setEditMode("list");
+                        }}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Excluir
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
           </div>
         </DrawerContent>
       </Drawer>

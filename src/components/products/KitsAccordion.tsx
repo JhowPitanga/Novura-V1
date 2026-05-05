@@ -8,15 +8,23 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ProductCoverImage } from "@/components/products/ProductCoverImage";
 
 interface KitsAccordionProps {
   kits: any[];
   loading?: boolean;
   selectedIds?: string[];
   onToggleSelect?: (kitId: string, checked: boolean) => void;
+  onDeleteKit?: (kitId: string) => void;
 }
 
-export function KitsAccordion({ kits, loading = false, selectedIds = [], onToggleSelect }: KitsAccordionProps) {
+export function KitsAccordion({
+  kits,
+  loading = false,
+  selectedIds = [],
+  onToggleSelect,
+  onDeleteKit,
+}: KitsAccordionProps) {
   if (loading) {
     return (
       <Card>
@@ -51,12 +59,12 @@ export function KitsAccordion({ kits, loading = false, selectedIds = [], onToggl
   }
 
   return (
-    <Card>
-      <CardContent className="p-6">
+    <Card className="border-gray-200 shadow-sm">
+      <CardContent className="p-4">
         <Accordion type="single" collapsible className="w-full">
           {kits.map((kit) => (
-            <AccordionItem key={kit.id} value={`kit-${kit.id}`}>
-              <div className="flex justify-between items-center w-full p-4 mb-6 rounded-lg border border-gray-200 bg-gray-50">
+            <AccordionItem key={kit.id} value={`kit-${kit.id}`} className="mb-3 rounded-xl border border-gray-200 px-4">
+              <div className="flex justify-between items-center w-full py-3">
                 <div className="flex items-center space-x-5">
                   {/* Coluna vertical: checkbox em cima, seta abaixo */}
                   <div className="flex flex-col items-center justify-center">
@@ -73,15 +81,7 @@ export function KitsAccordion({ kits, loading = false, selectedIds = [], onToggl
 
                   {(() => {
                     const parentImage = Array.isArray(kit.image_urls) && kit.image_urls.length > 0 ? kit.image_urls[0] : undefined;
-                    return parentImage ? (
-                      <img
-                        src={parentImage}
-                        alt={kit.name}
-                        className="w-12 h-12 rounded-lg object-cover bg-gray-100"
-                      />
-                    ) : (
-                      <div className="w-12 h-12 rounded-lg bg-gray-100 border border-gray-200" aria-label="Sem foto" />
-                    );
+                    return <ProductCoverImage imageUrl={parentImage} alt={kit.name} />;
                   })()}
                   <div className="flex flex-col">
                     <span className="font-medium">{kit.name}</span>
@@ -106,7 +106,7 @@ export function KitsAccordion({ kits, loading = false, selectedIds = [], onToggl
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <Badge variant="outline">{kit.kit_items.length} itens</Badge>
+                  <Badge className="bg-violet-100 text-violet-700 hover:bg-violet-100">{kit.kit_items.length} itens</Badge>
                   {/* Menu de ações do produto PAI */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -123,7 +123,7 @@ export function KitsAccordion({ kits, loading = false, selectedIds = [], onToggl
                         <Copy className="w-4 h-4 mr-2" />
                         Duplicar
                       </DropdownMenuItem>
-                      <DropdownMenuItem className="text-red-600" onClick={() => console.log('Excluir kit', kit.id)}>
+                      <DropdownMenuItem className="text-red-600" onClick={() => onDeleteKit?.(kit.id)}>
                         <Trash2 className="w-4 h-4 mr-2" />
                         Excluir
                       </DropdownMenuItem>
@@ -132,7 +132,7 @@ export function KitsAccordion({ kits, loading = false, selectedIds = [], onToggl
                 </div>
               </div>
               <AccordionContent>
-                <div className="pt-4">
+                <div className="pb-3">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -146,15 +146,11 @@ export function KitsAccordion({ kits, loading = false, selectedIds = [], onToggl
                       {kit.kit_items.map((item: any, idx: number) => (
                         <TableRow key={item.id || idx}>
                           <TableCell>
-                            {item.product?.image_urls && item.product.image_urls.length > 0 ? (
-                              <img
-                                src={item.product.image_urls[0]}
-                                alt={item.product.name}
-                                className="w-10 h-10 rounded object-cover bg-gray-100"
-                              />
-                            ) : (
-                              <div className="w-10 h-10 rounded bg-gray-100 border border-gray-200" aria-label="Sem foto" />
-                            )}
+                            <ProductCoverImage
+                              imageUrl={Array.isArray(item.product?.image_urls) ? item.product.image_urls[0] : undefined}
+                              alt={item.product?.name || "Produto"}
+                              sizeClassName="w-10 h-10"
+                            />
                           </TableCell>
                           <TableCell className="font-medium">{item.product.name}</TableCell>
                           <TableCell className="font-mono text-sm">{item.product.sku}</TableCell>
@@ -164,7 +160,7 @@ export function KitsAccordion({ kits, loading = false, selectedIds = [], onToggl
                       ))}
                     </TableBody>
                   </Table>
-                  <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                  <div className="mt-4 p-4 bg-violet-50/40 rounded-lg border border-violet-100">
                     <div className="flex justify-between items-center">
                       <span className="font-medium">Estoque disponível:</span>
                       <span className={kit.available_kits < 10 ? "text-red-600 font-medium" : "text-gray-900 font-medium"}>

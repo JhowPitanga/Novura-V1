@@ -8,15 +8,23 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ProductCoverImage } from "@/components/products/ProductCoverImage";
 
 interface VariationsAccordionProps {
   products: any[];
   loading?: boolean;
   selectedIds?: string[];
   onToggleSelect?: (productId: string, checked: boolean) => void;
+  onDeleteVariationGroup?: (productId: string) => void;
 }
 
-export function VariationsAccordion({ products, loading = false, selectedIds = [], onToggleSelect }: VariationsAccordionProps) {
+export function VariationsAccordion({
+  products,
+  loading = false,
+  selectedIds = [],
+  onToggleSelect,
+  onDeleteVariationGroup,
+}: VariationsAccordionProps) {
   if (loading) {
     return (
       <Card>
@@ -51,12 +59,12 @@ export function VariationsAccordion({ products, loading = false, selectedIds = [
   }
 
   return (
-    <Card>
-      <CardContent className="p-6">
+    <Card className="border-gray-200 shadow-sm">
+      <CardContent className="p-4">
         <Accordion type="single" collapsible className="w-full">
           {products.map((produto) => (
-            <AccordionItem key={produto.id} value={`item-${produto.id}`}>
-              <div className="flex justify-between items-center w-full p-4 mb-6 rounded-lg border border-gray-200 bg-gray-50">
+            <AccordionItem key={produto.id} value={`item-${produto.id}`} className="mb-3 rounded-xl border border-gray-200 px-4">
+              <div className="flex justify-between items-center w-full py-3">
                 <div className="flex items-center space-x-5">
                   {/* Coluna vertical: checkbox em cima, seta abaixo */}
                   <div className="flex flex-col items-center justify-center">
@@ -73,20 +81,15 @@ export function VariationsAccordion({ products, loading = false, selectedIds = [
 
                   {(() => {
                     const parentImage = produto.variations?.find((v: any) => Array.isArray(v.image_urls) && v.image_urls.length > 0)?.image_urls?.[0];
-                    return parentImage ? (
-                      <img
-                        src={parentImage}
-                        alt={produto.name}
-                        className="w-12 h-12 rounded-lg object-cover bg-gray-100"
-                      />
-                    ) : (
-                      <div className="w-12 h-12 rounded-lg bg-gray-100 border border-gray-200" aria-label="Sem foto" />
-                    );
+                    return <ProductCoverImage imageUrl={parentImage} alt={produto.name} />;
                   })()}
-                  <span className="font-medium">{produto.name}</span>
+                  <div>
+                    <span className="font-medium text-gray-900">{produto.name}</span>
+                    <p className="text-xs text-gray-500">SKU base: {produto.sku || "-"}</p>
+                  </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <Badge variant="outline">{produto.total_variations} variações</Badge>
+                  <Badge className="bg-violet-100 text-violet-700 hover:bg-violet-100">{produto.total_variations} variações</Badge>
                   {/* Menu de ações (3 pontinhos) do produto pai */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -103,7 +106,10 @@ export function VariationsAccordion({ products, loading = false, selectedIds = [
                         <Copy className="w-4 h-4 mr-2" />
                         Duplicar
                       </DropdownMenuItem>
-                      <DropdownMenuItem className="text-red-600" onClick={() => console.log('Excluir grupo de variações', produto.id)}>
+                      <DropdownMenuItem
+                        className="text-red-600"
+                        onClick={() => onDeleteVariationGroup?.(produto.id)}
+                      >
                         <Trash2 className="w-4 h-4 mr-2" />
                         Excluir
                       </DropdownMenuItem>
@@ -112,7 +118,7 @@ export function VariationsAccordion({ products, loading = false, selectedIds = [
                 </div>
               </div>
               <AccordionContent>
-                <div className="pt-4">
+                <div className="pb-3">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -142,15 +148,11 @@ export function VariationsAccordion({ products, loading = false, selectedIds = [
                       {produto.variations.map((variacao: any, idx: number) => (
                         <TableRow key={variacao.id || idx}>
                           <TableCell>
-                            {variacao.image_urls && variacao.image_urls.length > 0 ? (
-                              <img
-                                src={variacao.image_urls[0]}
-                                alt="Capa"
-                                className="w-10 h-10 rounded object-cover bg-gray-100"
-                              />
-                            ) : (
-                              <div className="w-10 h-10 rounded bg-gray-100 border border-gray-200" aria-label="Sem foto" />
-                            )}
+                            <ProductCoverImage
+                              imageUrl={Array.isArray(variacao.image_urls) ? variacao.image_urls[0] : undefined}
+                              alt="Capa"
+                              sizeClassName="w-10 h-10"
+                            />
                           </TableCell>
                           <TableCell className="font-mono text-sm">{variacao.sku}</TableCell>
                           {(() => {

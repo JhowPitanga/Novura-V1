@@ -163,7 +163,8 @@ export function useVariations() {
   const duplicateVariationGroup = async (groupId: string) => {
     try {
       const { data, error } = await supabase.rpc('duplicate_product', {
-        original_product_id: groupId
+        p_product_id: groupId,
+        p_with_images: false,
       });
 
       if (error) throw error;

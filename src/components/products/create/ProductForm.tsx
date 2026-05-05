@@ -2,9 +2,8 @@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ProductFormData } from "@/types/products";
-import { useCategories } from "@/hooks/useCategories";
+import { CategoryTreeSelect } from "@/components/products/CategoryTreeSelect";
 
 interface ProductFormProps {
   formData: ProductFormData;
@@ -14,10 +13,8 @@ interface ProductFormProps {
 }
 
 export function ProductForm({ formData, onInputChange, includeSku = true, errors = {} }: ProductFormProps) {
-  const { categories, loading: categoriesLoading } = useCategories();
-
   return (
-    <div className="grid grid-cols-2 gap-6">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <div>
         <Label htmlFor="name">
           Nome do Produto <span className="text-red-500">*</span>
@@ -54,22 +51,12 @@ export function ProductForm({ formData, onInputChange, includeSku = true, errors
       )}
       <div>
         <Label htmlFor="category">Categoria</Label>
-        <Select value={formData.category} onValueChange={(value) => onInputChange("category", value)}>
-          <SelectTrigger className="mt-2">
-            <SelectValue placeholder="Selecione uma categoria" />
-          </SelectTrigger>
-          <SelectContent>
-            {categoriesLoading ? (
-              <SelectItem value="loading" disabled>Carregando...</SelectItem>
-            ) : (
-              categories.map((category) => (
-                <SelectItem key={category.id} value={category.id}>
-                  {category.name}
-                </SelectItem>
-              ))
-            )}
-          </SelectContent>
-        </Select>
+        <CategoryTreeSelect
+          value={formData.category || null}
+          onChange={(categoryId) => onInputChange("category", categoryId || "")}
+          placeholder="Selecione uma categoria"
+          className="mt-2"
+        />
       </div>
       <div>
         <Label htmlFor="brand">Marca</Label>

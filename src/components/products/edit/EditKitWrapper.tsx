@@ -7,6 +7,7 @@ import { EditKitAccordion } from "./kit/EditKitAccordion";
 
 export function EditKitWrapper() {
   const {
+    productId,
     loading,
     formData,
     handleInputChange,
@@ -17,6 +18,9 @@ export function EditKitWrapper() {
     setKitEtapa,
     kitItems,
     setKitItems,
+    availableProducts,
+    productsLoading,
+    organizationId,
     navigate
   } = useKitData();
 
@@ -53,6 +57,7 @@ export function EditKitWrapper() {
       />
 
       <EditKitAccordion
+        productId={productId}
         formData={formDataPT}
         onInputChange={handleInputChangePTWrapper}
         selectedImages={selectedImages}
@@ -61,6 +66,9 @@ export function EditKitWrapper() {
         onKitEtapaChange={setKitEtapa}
         kitItems={kitItemsPT}
         onKitItemsChange={handleKitItemsChangeWrapper}
+        availableProducts={availableProducts}
+        productsLoading={productsLoading}
+        organizationId={organizationId || ""}
       />
     </div>
   );
