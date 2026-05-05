@@ -10,15 +10,24 @@ type MetricPoint = {
   ticketMedio: number;
 };
 
+export type LogisticBreakdown = {
+  marketplace: string;
+  logistic_type: string;
+  count: number;
+  total: number;
+};
+
 export type OrdersMetrics = {
   totals: {
     vendas: number;
     unidades: number;
     pedidos: number;
     ticketMedio: number;
+    margem_pct: number | null;
   };
   series: MetricPoint[];
   byMarketplace: { marketplace: string; total: number }[];
+  byLogistic: LogisticBreakdown[];
 };
 
 function computePaymentDateISO(mq: any): string | null {
@@ -63,7 +72,6 @@ export async function getOrdersMetrics(
   const fromISO = fromMs !== undefined ? new Date(fromMs).toISOString() : undefined;
   const toISO = toMs !== undefined ? new Date(toMs).toISOString() : undefined;
 
-  // Fetch orders from orders table
   let q: any = supabase
     .from('orders')
     .select('id, marketplace_order_id, gross_amount, marketplace, created_at');
@@ -73,50 +81,67 @@ export async function getOrdersMetrics(
   if (selectedMarketplaceDisplay && selectedMarketplaceDisplay !== 'todos') {
     q = q.eq('marketplace', selectedMarketplaceDisplay);
   }
-  if (fromISO) {
-    q = q.gte('created_at', fromISO);
-  }
-  if (toISO) {
-    q = q.lte('created_at', toISO);
-  }
+  if (fromISO) q = q.gte('created_at', fromISO);
+  if (toISO) q = q.lte('created_at', toISO);
+
   const { data: orders, error: ordersErr } = await q;
   if (ordersErr) throw ordersErr;
 
   const orderList = Array.isArray(orders) ? orders : [];
   const orderIds = Array.from(new Set(orderList.map((o: any) => o.id).filter(Boolean)));
 
-  // If there are no orders, return empty aggregates
   if (orderIds.length === 0) {
-    const series: MetricPoint[] = [];
-    const totals = { vendas: 0, unidades: 0, pedidos: 0, ticketMedio: 0 };
-    return { totals, series, byMarketplace: [] };
+    const totals = { vendas: 0, unidades: 0, pedidos: 0, ticketMedio: 0, margem_pct: null };
+    return { totals, series: [], byMarketplace: [], byLogistic: [] };
   }
 
-  // Fetch item quantities per order from order_items (by order_id)
-  const qtyByOrderId: Record<string, number> = {};
   const chunkSize = 200;
+
+  // Fetch quantities + cost from order_items
+  const qtyByOrderId: Record<string, number> = {};
+  const costByOrderId: Record<string, number> = {};
+  const revenueByOrderId: Record<string, number> = {};
+
   for (let i = 0; i < orderIds.length; i += chunkSize) {
     const chunk = orderIds.slice(i, i + chunkSize);
-    const itemsQ: any = supabase
+    const { data: itemsRows, error: itemsErr } = await (supabase as any)
       .from('order_items')
-      .select('order_id, quantity')
+      .select('order_id, quantity, unit_cost, unit_price')
       .in('order_id', chunk);
-    const { data: itemsRows, error: itemsErr } = await itemsQ;
     if (itemsErr) throw itemsErr;
     (itemsRows || []).forEach((it: any) => {
       const k = String(it?.order_id || '');
-      const qn = Number(it?.quantity || 0) || 0;
-      qtyByOrderId[k] = (qtyByOrderId[k] || 0) + qn;
+      const qty = Number(it?.quantity || 0) || 0;
+      const cost = it?.unit_cost != null ? Number(it.unit_cost) * qty : null;
+      const rev = Number(it?.unit_price || 0) * qty;
+      qtyByOrderId[k] = (qtyByOrderId[k] || 0) + qty;
+      if (cost !== null) costByOrderId[k] = (costByOrderId[k] || 0) + cost;
+      revenueByOrderId[k] = (revenueByOrderId[k] || 0) + rev;
     });
   }
 
-  // Prepare buckets
+  // Fetch logistics from order_shipping
+  const logisticByOrderId: Record<string, string> = {};
+  for (let i = 0; i < orderIds.length; i += chunkSize) {
+    const chunk = orderIds.slice(i, i + chunkSize);
+    const { data: shippingRows, error: shippingErr } = await (supabase as any)
+      .from('order_shipping')
+      .select('order_id, logistic_type')
+      .in('order_id', chunk);
+    if (!shippingErr && shippingRows) {
+      (shippingRows as any[]).forEach((s: any) => {
+        if (s?.order_id && s?.logistic_type) {
+          logisticByOrderId[String(s.order_id)] = String(s.logistic_type);
+        }
+      });
+    }
+  }
+
+  // Prepare time-series buckets
   const seriesMap: Record<string, MetricPoint> = {};
   if (from && to) {
     if (isSingleDay) {
       for (let h = 0; h < 24; h++) {
-        const d = new Date(from);
-        d.setHours(h, 0, 0, 0);
         const ms = calendarStartOfDaySPEpochMs(from) + h * 60 * 60 * 1000;
         const label = formatLabelSP(ms, true);
         seriesMap[label] = { label, vendas: 0, unidades: 0, pedidos: 0, ticketMedio: 0 };
@@ -132,28 +157,37 @@ export async function getOrdersMetrics(
     }
   }
 
-  // Aggregate totals and series using created_at
   let totalVendas = 0;
   let totalUnidades = 0;
   let totalPedidos = 0;
+  let totalCost = 0;
+  let hasCostData = false;
   const byMarketplace: Record<string, number> = {};
+  const byLogisticMap: Record<string, LogisticBreakdown> = {};
 
   for (const o of orderList) {
     const evtMs = o?.created_at ? eventToSPEpochMs(o.created_at) : null;
-
     const venda = Number(o?.gross_amount ?? 0) || 0;
-    const unidades = (() => {
-      const k = String(o?.id || '');
-      const v = qtyByOrderId[k];
-      if (typeof v === 'number') return v;
-      return 0;
-    })();
+    const k = String(o?.id || '');
+    const unidades = qtyByOrderId[k] ?? 0;
+    const cost = costByOrderId[k];
+
     totalVendas += venda;
     totalUnidades += unidades;
     totalPedidos += 1;
+    if (cost != null) { totalCost += cost; hasCostData = true; }
 
     const mk = (o?.marketplace || 'Outros') as string;
     byMarketplace[mk] = (byMarketplace[mk] || 0) + venda;
+
+    // Aggregate logistics
+    const logType = logisticByOrderId[k] || 'Não informado';
+    const logKey = `${mk}::${logType}`;
+    if (!byLogisticMap[logKey]) {
+      byLogisticMap[logKey] = { marketplace: mk, logistic_type: logType, count: 0, total: 0 };
+    }
+    byLogisticMap[logKey].count += 1;
+    byLogisticMap[logKey].total += venda;
 
     if (from && to && evtMs !== null) {
       const label = formatLabelSP(evtMs, isSingleDay);
@@ -170,14 +204,20 @@ export async function getOrdersMetrics(
     ticketMedio: pt.pedidos > 0 ? pt.vendas / pt.pedidos : 0,
   }));
 
+  const margem_pct = hasCostData && totalVendas > 0
+    ? ((totalVendas - totalCost) / totalVendas) * 100
+    : null;
+
   const totals = {
     vendas: totalVendas,
     unidades: totalUnidades,
     pedidos: totalPedidos,
     ticketMedio: totalPedidos > 0 ? totalVendas / totalPedidos : 0,
+    margem_pct,
   };
 
   const byMarketplaceArr = Object.entries(byMarketplace).map(([marketplace, total]) => ({ marketplace, total }));
+  const byLogistic = Object.values(byLogisticMap).sort((a, b) => b.total - a.total);
 
-  return { totals, series, byMarketplace: byMarketplaceArr };
+  return { totals, series, byMarketplace: byMarketplaceArr, byLogistic };
 }
