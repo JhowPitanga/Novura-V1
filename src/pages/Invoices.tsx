@@ -1,13 +1,18 @@
+import { useState } from "react";
+import { Download } from "lucide-react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { AppSidebar } from "@/components/AppSidebar";
 import { CleanNavigation } from "@/components/CleanNavigation";
+import { Button } from "@/components/ui/button";
+import { InvoiceExportDialog } from "@/components/invoices/InvoiceExportDialog";
 import { InvoiceTable } from "@/components/invoices/InvoiceTable";
 import { useInvoices } from "@/hooks/useInvoices";
 
 export default function NotasFiscais() {
   const { invoices, isLoading, error } = useInvoices();
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
 
   return (
     <SidebarProvider>
@@ -25,13 +30,26 @@ export default function NotasFiscais() {
               </div>
             </div>
 
-            <CleanNavigation
-              items={[
-                { title: "Todas", path: "/todas", description: "Todas as notas" },
-                { title: "Saída", path: "/saidas", description: "Notas de saída" },
-                { title: "Entrada", path: "/entrada", description: "Notas de entrada" },
-              ]}
-              basePath="/notas-fiscais"
+            <div className="mb-4">
+              <CleanNavigation
+                items={[
+                  { title: "Todas", path: "/todas", description: "Todas as notas" },
+                  { title: "Saída", path: "/saidas", description: "Notas de saída" },
+                  { title: "Entrada", path: "/entrada", description: "Notas de entrada" },
+                ]}
+                basePath="/notas-fiscais"
+                rightContent={(
+                  <Button className="h-11 rounded-2xl bg-primary shadow-lg" onClick={() => setIsExportDialogOpen(true)}>
+                    <Download className="mr-2 h-4 w-4" />
+                    Exportar XML
+                  </Button>
+                )}
+              />
+            </div>
+            <InvoiceExportDialog
+              open={isExportDialogOpen}
+              onOpenChange={setIsExportDialogOpen}
+              invoices={invoices}
             />
 
             <div className="mt-0">
