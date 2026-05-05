@@ -15,19 +15,21 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/integrations/supabase/client";
+import { CategoryTreeSelect } from "../CategoryTreeSelect";
 
 export function ProdutosKits() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const { categories, createCategory, linkCategory } = useCategories();
-  const { kits, loading } = useKits();
+  const { kits, loading, deleteKit } = useKits();
   const [list, setList] = useState<any[]>([]);
   const [confirmDeleteOpen1, setConfirmDeleteOpen1] = useState(false);
   const [confirmDeleteOpen2, setConfirmDeleteOpen2] = useState(false);
+  const [singleDeleteOpen1, setSingleDeleteOpen1] = useState(false);
+  const [singleDeleteOpen2, setSingleDeleteOpen2] = useState(false);
+  const [singleDeleteTarget, setSingleDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [categorizeOpen, setCategorizeOpen] = useState(false);
   const [targetCategory, setTargetCategory] = useState<string>("");
 
@@ -63,10 +65,10 @@ export function ProdutosKits() {
     })
     .filter(kit => {
       if (!searchTerm) return true;
-      return (
-        kit.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        kit.sku.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+      const normalizedTerm = searchTerm.toLowerCase();
+      const name = String(kit?.name ?? "").toLowerCase();
+      const sku = String(kit?.sku ?? "").toLowerCase();
+      return name.includes(normalizedTerm) || sku.includes(normalizedTerm);
     });
   
   return (
@@ -99,6 +101,11 @@ export function ProdutosKits() {
         onToggleSelect={(kitId, checked) => {
           setSelectedIds(prev => (checked ? [...prev, kitId] : prev.filter(id => id !== kitId)));
         }}
+        onDeleteKit={async (kitId) => {
+          const found = list.find((k) => k.id === kitId);
+          setSingleDeleteTarget({ id: kitId, name: found?.name || "Kit" });
+          setSingleDeleteOpen1(true);
+        }}
       />
 
       {/* Confirmação em duas etapas para exclusão em massa */}
@@ -119,6 +126,73 @@ export function ProdutosKits() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* Confirmação em duas etapas para exclusão individual */}
+      <AlertDialog
+        open={singleDeleteOpen1}
+        onOpenChange={(open) => {
+          setSingleDeleteOpen1(open);
+          if (!open && !singleDeleteOpen2) setSingleDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir kit</AlertDialogTitle>
+            <AlertDialogDescription>
+              Você está prestes a excluir o kit <strong className="text-foreground">&quot;{singleDeleteTarget?.name || "-"}&quot;</strong>. Deseja continuar?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setSingleDeleteOpen1(false);
+                setSingleDeleteOpen2(true);
+              }}
+            >
+              Continuar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={singleDeleteOpen2}
+        onOpenChange={(open) => {
+          setSingleDeleteOpen2(open);
+          if (!open) setSingleDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar exclusão permanente</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta ação não poderá ser desfeita. Confirma excluir este kit?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Voltar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={async () => {
+                if (!singleDeleteTarget?.id) return;
+                try {
+                  await deleteKit(singleDeleteTarget.id);
+                  setList((prev) => prev.filter((p) => p.id !== singleDeleteTarget.id));
+                  setSelectedIds((prev) => prev.filter((id) => id !== singleDeleteTarget.id));
+                } catch {
+                  // toast handled in hook
+                } finally {
+                  setSingleDeleteOpen2(false);
+                  setSingleDeleteTarget(null);
+                }
+              }}
+            >
+              Excluir kit
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={confirmDeleteOpen2} onOpenChange={setConfirmDeleteOpen2}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -134,9 +208,9 @@ export function ProdutosKits() {
               onClick={async () => {
                 for (const id of selectedIds) {
                   try {
-                    await supabase.from('products').delete().eq('id', id);
-                  } catch (e) {
-                    // ignore errors; local update below
+                    await deleteKit(id);
+                  } catch {
+                    // toast handled in hook
                   }
                   setList((prev) => prev.filter((p) => p.id !== id));
                 }
@@ -158,16 +232,11 @@ export function ProdutosKits() {
             <DialogDescription>Escolha uma categoria para aplicar aos itens selecionados.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <Select value={targetCategory} onValueChange={setTargetCategory}>
-              <SelectTrigger>
-                <SelectValue placeholder="Escolha a categoria" />
-              </SelectTrigger>
-              <SelectContent>
-                {categories.map((cat) => (
-                  <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <CategoryTreeSelect
+              value={targetCategory || null}
+              onChange={(categoryId) => setTargetCategory(categoryId || "")}
+              placeholder="Escolha a categoria"
+            />
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setCategorizeOpen(false)}>Cancelar</Button>
               <Button

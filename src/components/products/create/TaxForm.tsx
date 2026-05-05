@@ -1,8 +1,10 @@
 
+import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ProductFormData } from "@/types/products";
+import { validateEanChecksum } from "@/utils/eanChecksum";
 
 interface TaxFormProps {
   formData: ProductFormData;
@@ -11,6 +13,19 @@ interface TaxFormProps {
 }
 
 export function TaxForm({ formData, onInputChange, errors = {} }: TaxFormProps) {
+  const [eanTouched, setEanTouched] = useState(false);
+  const [eanFocused, setEanFocused] = useState(false);
+  const eanDigits = (formData.barcode || "").replace(/\D/g, "");
+  const ncmDigits = (formData.ncm || "").replace(/\D/g, "");
+  const cestDigits = (formData.cest || "").replace(/\D/g, "");
+  const eanLenOk = !eanDigits || eanDigits.length === 13;
+  const eanChecksumOk = !eanDigits || (eanLenOk && validateEanChecksum(eanDigits));
+  const invalidEan = formData.barcode ? !eanLenOk || !eanChecksumOk : false;
+  const showInvalidEan = !eanFocused && (eanTouched || errors.barcode) && invalidEan;
+  const showBarcodeRequired = !eanFocused && errors.barcode && !formData.barcode;
+  const invalidNcm = formData.ncm ? ncmDigits.length !== 8 : false;
+  const invalidCest = formData.cest ? cestDigits.length !== 7 : false;
+
   return (
     <div className="space-y-8">
       <div>
@@ -18,17 +33,28 @@ export function TaxForm({ formData, onInputChange, errors = {} }: TaxFormProps) 
         <div className="grid grid-cols-2 gap-6">
           <div className="space-y-4">
             <div>
-              <Label htmlFor="barcode">Código de Barras (EAN)</Label>
+              <Label htmlFor="barcode">Código de barras (EAN-13)</Label>
               <Input
                 id="barcode"
                 value={formData.barcode}
-                onChange={(e) => onInputChange("barcode", e.target.value)}
-                placeholder="Código de barras do produto"
-                className={`mt-2 ${errors.barcode ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
+                onChange={(e) => onInputChange("barcode", e.target.value.replace(/\D/g, "").slice(0, 13))}
+                onFocus={() => setEanFocused(true)}
+                onBlur={() => {
+                  setEanFocused(false);
+                  setEanTouched(true);
+                }}
+                placeholder="13 dígitos"
+                className={`mt-2 ${(showBarcodeRequired || showInvalidEan) ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                maxLength={13}
+                inputMode="numeric"
               />
-              {errors.barcode && (
+              {showInvalidEan ? (
+                <p className="text-red-600 text-sm mt-1">
+                  EAN inválido: informe 13 dígitos com dígito verificador correto.
+                </p>
+              ) : showBarcodeRequired ? (
                 <p className="text-red-600 text-sm mt-1">Campo obrigatório</p>
-              )}
+              ) : null}
             </div>
             <div>
               <Label htmlFor="ncm">
@@ -37,35 +63,39 @@ export function TaxForm({ formData, onInputChange, errors = {} }: TaxFormProps) 
               <Input
                 id="ncm"
                 value={formData.ncm}
-                onChange={(e) => onInputChange("ncm", e.target.value)}
+                onChange={(e) => onInputChange("ncm", e.target.value.replace(/\D/g, "").slice(0, 8))}
                 placeholder="00000000"
-                className={`mt-2 ${errors.ncm ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
+                className={`mt-2 ${errors.ncm || invalidNcm ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                maxLength={8}
+                inputMode="numeric"
                 required
               />
-              {errors.ncm && (
+              {invalidNcm ? (
+                <p className="text-red-600 text-sm mt-1">NCM deve ter exatamente 8 dígitos (classificação fiscal real).</p>
+              ) : errors.ncm ? (
                 <p className="text-red-600 text-sm mt-1">Campo obrigatório</p>
-              )}
+              ) : null}
             </div>
             <div>
               <Label htmlFor="cest">CEST</Label>
               <Input
                 id="cest"
                 value={formData.cest}
-                onChange={(e) => onInputChange("cest", e.target.value)}
+                onChange={(e) => onInputChange("cest", e.target.value.replace(/\D/g, "").slice(0, 13))}
                 placeholder="0000000"
-                className="mt-2"
+                className={`mt-2 ${invalidCest ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                maxLength={13}
+                inputMode="numeric"
               />
+              {invalidCest && <p className="text-red-600 text-sm mt-1">CEST deve ter 7 dígitos.</p>}
             </div>
           </div>
 
           <div className="space-y-4">
             <div>
               <Label htmlFor="unitType">Unidade de Medida</Label>
-              <Select
-                value={formData.unitType}
-                onValueChange={(value) => onInputChange("unitType", value)}
-              >
-                <SelectTrigger className={`mt-2 ${errors.unitType ? 'border-red-500 focus-visible:ring-red-500' : ''}`}>
+              <Select value={formData.unitType} onValueChange={(value) => onInputChange("unitType", value)}>
+                <SelectTrigger className={`mt-2 ${errors.unitType ? "border-red-500 focus-visible:ring-red-500" : ""}`}>
                   <SelectValue placeholder="Selecione a unidade" />
                 </SelectTrigger>
                 <SelectContent>
@@ -75,17 +105,12 @@ export function TaxForm({ formData, onInputChange, errors = {} }: TaxFormProps) 
                   <SelectItem value="KIT">Kit (KIT)</SelectItem>
                 </SelectContent>
               </Select>
-              {errors.unitType && (
-                <p className="text-red-600 text-sm mt-1">Campo obrigatório</p>
-              )}
+              {errors.unitType && <p className="text-red-600 text-sm mt-1">Campo obrigatório</p>}
             </div>
             <div>
               <Label htmlFor="origin">Origem</Label>
-              <Select
-                value={formData.origin}
-                onValueChange={(value) => onInputChange("origin", value)}
-              >
-                <SelectTrigger className={`mt-2 ${errors.origin ? 'border-red-500 focus-visible:ring-red-500' : ''}`}>
+              <Select value={formData.origin} onValueChange={(value) => onInputChange("origin", value)}>
+                <SelectTrigger className={`mt-2 ${errors.origin ? "border-red-500 focus-visible:ring-red-500" : ""}`}>
                   <SelectValue placeholder="Selecione a origem" />
                 </SelectTrigger>
                 <SelectContent>
@@ -93,15 +118,14 @@ export function TaxForm({ formData, onInputChange, errors = {} }: TaxFormProps) 
                   <SelectItem value="1">1 - Estrangeira - Importação direta</SelectItem>
                   <SelectItem value="2">2 - Estrangeira - Adquirida no mercado interno</SelectItem>
                   <SelectItem value="3">3 - Nacional - Conteúdo de importação superior a 40%</SelectItem>
-                  <SelectItem value="4">4 - Nacional - Produção conforme processos produtivos básicos</SelectItem>
-                  <SelectItem value="5">5 - Nacional - Conteúdo de importação até 40%</SelectItem>
-                  <SelectItem value="6">6 - Estrangeira - Importação direta sem similar nacional</SelectItem>
-                  <SelectItem value="7">7 - Estrangeira - Adquirida no mercado interno sem similar nacional</SelectItem>
+                  <SelectItem value="4">4 - Nacional - Processos produtivos básicos</SelectItem>
+                  <SelectItem value="5">5 - Nacional - Conteúdo de importação inferior ou igual a 40%</SelectItem>
+                  <SelectItem value="6">6 - Estrangeira - Importação direta, sem similar nacional</SelectItem>
+                  <SelectItem value="7">7 - Estrangeira - Adquirida no mercado interno, sem similar nacional</SelectItem>
+                  <SelectItem value="8">8 - Nacional - Conteúdo de importação superior a 70%</SelectItem>
                 </SelectContent>
               </Select>
-              {errors.origin && (
-                <p className="text-red-600 text-sm mt-1">Campo obrigatório</p>
-              )}
+              {errors.origin && <p className="text-red-600 text-sm mt-1">Campo obrigatório</p>}
             </div>
           </div>
         </div>

@@ -5,14 +5,26 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useProductSync } from "@/hooks/useProductSync";
+import { uploadProductImages } from "@/services/productImages.service";
+import { validateEanChecksum } from "@/utils/eanChecksum";
 
 interface UseProductFormProps {
+  onSuccess?: () => void;
+}
+
+interface HandleCreateProductOptions {
   onSuccess?: () => void;
 }
 
 export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
   const { createProduct, loading: createLoading } = useCreateProduct();
   const { toast } = useToast();
+  const INT_MAX = 2147483647;
+  const clampInt = (val: any, max = INT_MAX) => {
+    const n = parseInt(String(val));
+    if (Number.isNaN(n) || n < 0) return 0;
+    return n > max ? max : n;
+  };
   // Chame hooks no topo do custom hook
   const { user, organizationId } = useAuth();
   const { triggerSync } = useProductSync();
@@ -137,8 +149,15 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
     // Para produto único, exigir fiscais; em variações, não bloquear o salvamento do grupo
     if (currentStep === 5) {
       if (productType === "single") {
-        const barcodeError = !formData.barcode?.trim();
-        const ncmError = !formData.ncm?.trim();
+        const eanDigits = String(formData.barcode || "").replace(/\D/g, "");
+        const eanOk =
+          eanDigits.length > 0 &&
+          eanDigits.length === 13 &&
+          validateEanChecksum(eanDigits);
+        const ncmDigits = String(formData.ncm || "").replace(/\D/g, "");
+        const ncmOk = ncmDigits.length === 8;
+        const barcodeError = !formData.barcode?.trim() || !eanOk;
+        const ncmError = !formData.ncm?.trim() || !ncmOk;
         const originError = !formData.origin?.trim();
         setFieldError("barcode", barcodeError);
         setFieldError("ncm", ncmError);
@@ -158,7 +177,18 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
   };
 
   const handleInputChange = (field: string, value: string) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
+    if (errors[field]) {
+      setFieldError(field, false);
+    }
+    if (field === "barcode") {
+      setFormData((prev) => ({ ...prev, [field]: value.replace(/\D/g, "").slice(0, 13) }));
+      return;
+    }
+    if (field === "ncm") {
+      setFormData((prev) => ({ ...prev, [field]: value.replace(/\D/g, "").slice(0, 8) }));
+      return;
+    }
+    setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
   const handleProductTypeChange = (type: ProductType) => {
@@ -195,20 +225,20 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
     });
   };
 
-  const getProductTypeForDB = (type: string): 'UNICO' | 'VARIACAO_PAI' | 'VARIACAO_ITEM' | 'ITEM' => {
+  const getProductTypeForDB = (type: string): 'UNICO' | 'VARIACAO_PAI' | 'VARIACAO_ITEM' | 'KIT' => {
     switch (type) {
       case 'single':
         return 'UNICO';
       case 'variation':
         return 'VARIACAO_PAI';
       case 'kit':
-        return 'ITEM';
+        return 'KIT';
       default:
         return 'UNICO';
     }
   };
 
-  const handleCreateProduct = async () => {
+  const handleCreateProduct = async (options?: HandleCreateProductOptions) => {
   try {
     // Validação final por tipo (sem pop-ups; destacar apenas em vermelho)
     const isSingle = productType === "single";
@@ -219,7 +249,13 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
     const basicsInvalid = !formData.name || !formData.sku;
     const stockInvalid = !formData.costPrice || !formData.stock || !formData.warehouse;
     const dimsInvalid = !formData.height || !formData.width || !formData.length || !formData.weight;
-    const taxInvalid = !formData.barcode || !formData.ncm || !formData.origin;
+    const eanDigits = String(formData.barcode || "").replace(/\D/g, "");
+    const eanLenOk = eanDigits.length === 13;
+    const eanChecksumOk = eanLenOk && validateEanChecksum(eanDigits);
+    const ncmDigits = String(formData.ncm || "").replace(/\D/g, "");
+    const ncmOk = ncmDigits.length === 8;
+    const taxInvalid =
+      !formData.barcode || !formData.ncm || !formData.origin || !eanLenOk || !eanChecksumOk || !ncmOk;
 
       setFieldError("name", !formData.name);
       setFieldError("sku", !formData.sku);
@@ -230,8 +266,8 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
       setFieldError("width", !formData.width);
       setFieldError("length", !formData.length);
       setFieldError("weight", !formData.weight);
-      setFieldError("barcode", !formData.barcode);
-      setFieldError("ncm", !formData.ncm);
+      setFieldError("barcode", !formData.barcode || !eanLenOk || !eanChecksumOk);
+      setFieldError("ncm", !formData.ncm || !ncmOk);
       setFieldError("origin", !formData.origin);
 
       if (basicsInvalid || stockInvalid || dimsInvalid || taxInvalid) {
@@ -294,6 +330,8 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
 
     // Monta o payload somente com colunas existentes na tabela 'products'
     const baseProductData = {
+      // Root products must not inherit a stray default parent_id (DB check: UNICO → parent_id IS NULL)
+      parent_id: null as string | null,
       name: formData.name,
       sku: computedSku,
       type: typeForDB,
@@ -331,22 +369,9 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
         }
       }
 
-      if (baseProductData.type === 'UNICO') {
-        baseProductData.image_urls = selectedImages.map(img => img.name);
-      } else if (baseProductData.type === 'VARIACAO_PAI') {
-        // Replicar a foto da primeira variação como capa do PRODUTO PAI
-        const firstChildImageName = (() => {
-          const firstVar = (variations || [])[0] as any;
-          const firstImg = (firstVar?.images || [])[0];
-          return firstImg?.name || undefined;
-        })();
-        const selectedNames = selectedImages.map(img => img.name).filter(Boolean);
-        const combined = firstChildImageName ? [firstChildImageName, ...selectedNames] : selectedNames;
-        // Remover duplicatas mantendo a ordem
-        baseProductData.image_urls = Array.from(new Set(combined));
-      } else if (baseProductData.type === 'ITEM') {
-        baseProductData.image_urls = selectedImages.map(img => img.name);
-      }
+      // Keep image_urls empty on draft/create insert.
+      // Actual image upload + registration in product_images happens after full product save.
+      baseProductData.image_urls = [];
 
       // Vincula o produto ao usuário atual para passar nas políticas de RLS
       // Valida sessão e permissão de criação conforme RLS
@@ -381,6 +406,14 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
         company_id: companyIdForOrg || undefined,
         organizations_id: organizationId || undefined,
       });
+      if (!createdProduct?.id) {
+        toast({
+          title: "Erro ao salvar",
+          description: "Não foi possível criar o produto. Verifique os dados e tente novamente.",
+          variant: "destructive",
+        });
+        return;
+      }
 
       // Pós-criação por tipo
       // Buscar um Armazém padrão priorizando o salvo no navegador (localStorage), e caso não exista, pegar o primeiro ativo
@@ -412,6 +445,8 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
         }
       }
       if (createdProduct && createdProduct.id) {
+        const createdVariationChildren: Array<{ id: string; files: File[] }> = [];
+
         if (baseProductData.type === 'UNICO') {
           // Estoque do produto único: inserir somente se houver armazém
           const storageIdForSingle = formData.warehouse || defaultStorageId;
@@ -477,7 +512,7 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
                   weight_type: (v as any).unit || null,
                   tax_origin_code: clampInt((v as any).origin, INT_MAX),
                   category_id: formData.category || null,
-                  image_urls: Array.isArray(v.images) ? (v.images || []).map(img => img.name || '') : [],
+                  image_urls: [],
                   color: v.color || null,
                   size: v.size || null,
                   custom_attributes: (() => {
@@ -506,20 +541,34 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
               ({ data: child, error: childErr } = await tryInsertChild(childSku));
             }
             if (childErr) throw childErr;
+            const childFiles = (Array.isArray(v.images) ? v.images : []).filter((f: any) => f instanceof File) as File[];
+            if (childFiles.length > 0) {
+              createdVariationChildren.push({ id: child.id, files: childFiles });
+            }
 
-            // Inserir/atualizar estoque da variação usando o armazém selecionado na etapa 3
-            // Prioriza galpão da variação, aceitando tanto "storage" quanto "armazem"; fallback para galpão do pai
-            const childStorageId = (v as any).storage || (v as any).armazem || formData.warehouse || defaultStorageId;
-            if (childStorageId) {
-              const quantityRaw = (v as any).stock ?? (v as any).estoque;
-              const parsed = Number(quantityRaw);
-              const quantity = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
-              const storageId = String(childStorageId);
+            // T05 FIX (B1): Always ensure a products_stock row exists for each variation.
+            // Normalize storage id by accepting all possible field names from the PT/EN form objects.
+            const childStorageId =
+              (v as any).storage ||
+              (v as any).armazem ||
+              (v as any).storageId ||
+              (v as any).warehouseId ||
+              formData.warehouse ||
+              defaultStorageId;
+
+            // Resolve quantity — allow 0, just ensure the row exists
+            const quantityRaw = (v as any).stock ?? (v as any).estoque ?? (v as any).initial_stock;
+            const parsed = Number(quantityRaw);
+            const quantity = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+
+            const resolvedStorageId = childStorageId ? String(childStorageId) : null;
+
+            if (resolvedStorageId) {
               const { data: existingChildStock, error: childSelectErr } = await supabase
                 .from('products_stock')
                 .select('id,current')
                 .eq('product_id', child.id)
-                .eq('storage_id', storageId)
+                .eq('storage_id', resolvedStorageId)
                 .limit(1)
                 .maybeSingle();
               if (childSelectErr) throw childSelectErr;
@@ -534,27 +583,36 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
                   .from('products_stock')
                   .insert({
                     product_id: child.id,
-                    storage_id: storageId,
+                    storage_id: resolvedStorageId,
                     current: quantity,
                     reserved: 0,
                     in_transit: 0,
                   });
                 if (childInsErr) throw childInsErr;
               }
+              console.info('[stock] variation %s → storage %s qty %d', child.id, resolvedStorageId, quantity);
               triggerSync();
+            } else {
+              // No warehouse resolved: create a stock row with current=0 using the first available storage
+              // so the variation is never left without a stock record.
+              console.warn('[stock] variation %s has no storageId — skipping stock insert', child.id);
             }
 
             // Registrar atributos já inseridos diretamente em 'products'
           }
         }
 
-        if (baseProductData.type === 'ITEM') {
+        if (baseProductData.type === 'KIT') {
           const { data: kit, error: kitErr } = await supabase
             .from('product_kits')
             .insert([{ product_id: createdProduct.id }])
             .select()
             .single();
-          const kitId = kit?.id ?? createdProduct.id;
+          if (kitErr) throw kitErr;
+          const kitId = kit?.id;
+          if (!kitId) {
+            throw new Error('Kit não foi registrado (product_kits sem id).');
+          }
           for (const k of kitItems) {
             const { error: kitItemErr } = await supabase
               .from('product_kit_items')
@@ -566,14 +624,53 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
             if (kitItemErr) throw kitItemErr;
           }
         }
+
+        // Upload and persist product images only after the product is fully created.
+        // If the user leaves before saving, nothing is persisted in product_images/storage.
+        if (organizationId) {
+          try {
+            const parentFiles = (selectedImages || []).filter((f: any) => f instanceof File) as File[];
+            if (parentFiles.length > 0) {
+              await uploadProductImages({
+                files: parentFiles,
+                productId: createdProduct.id,
+                organizationId,
+                startPosition: 0,
+                firstIsCover: true,
+              });
+            }
+
+            for (const child of createdVariationChildren) {
+              if (child.files.length === 0) continue;
+              await uploadProductImages({
+                files: child.files,
+                productId: child.id,
+                organizationId,
+                startPosition: 0,
+                firstIsCover: true,
+              });
+            }
+          } catch (uploadErr) {
+            console.error("Erro ao subir imagens após criação:", uploadErr);
+            toast({
+              title: "Produto criado com aviso",
+              description: "O produto foi salvo, mas houve erro no upload de algumas imagens.",
+              variant: "destructive",
+            });
+          }
+        }
+
+        triggerSync();
+        setProductSaved(true);
+        setCurrentStep(currentStep + 1);
+
+        if (options?.onSuccess) {
+          options.onSuccess();
+        } else if (onSuccess) {
+          onSuccess();
+        }
       }
 
-      setProductSaved(true);
-      setCurrentStep(currentStep + 1);
-      
-      if (onSuccess) {
-        onSuccess();
-      }
   } catch (error: unknown) {
     console.error("Erro ao criar produto:", error);
     
@@ -593,12 +690,7 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
   };
 
   const nextStep = async () => {
-    // Permite salvar no último passo (kits usam o passo 4 como final)
     const maxSteps = getMaxSteps();
-    if (productType === "kit" && currentStep === maxSteps && !productSaved) {
-      await handleCreateProduct();
-      return;
-    }
 
     if (currentStep < maxSteps) {
       // Não avançar sem selecionar o tipo de produto no primeiro passo
@@ -648,14 +740,7 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
         } else if (kitStep === "products") {
           setCurrentStep(currentStep + 1);
         }
-      } else if (currentStep === 5 && !productSaved && productType === "single") {
-        await handleCreateProduct();
-      } else if (currentStep === 5 && !productSaved && productType === "variation") {
-        await handleCreateProduct();
-      } else if (currentStep === 4 && !productSaved && productType === "kit") {
-        await handleCreateProduct();
-      }
-      else {
+      } else {
         setCurrentStep(currentStep + 1);
       }
     }
@@ -698,9 +783,3 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
     getMaxSteps,
   };
 }
-    const INT_MAX = 2147483647;
-    const clampInt = (val: any, max = INT_MAX) => {
-      const n = parseInt(String(val));
-      if (Number.isNaN(n) || n < 0) return 0;
-      return n > max ? max : n;
-    };
