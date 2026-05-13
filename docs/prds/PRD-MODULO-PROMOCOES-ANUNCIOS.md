@@ -211,3 +211,27 @@ Todas as funções abaixo são invocadas com **POST** + JSON (`Content-Type: app
 1. **SQL:** correção da migration `20260505_000001_create_marketplace_promotions.sql` (fechamento da tabela `marketplace_promotion_items` + índice único).
 2. **Permissões:** `canCreatePromotion` volta a exigir `promote_create` (ou `owner`), removendo bypass `return true`.
 3. **Código morto:** remoção do fluxo “participating listings” não utilizado na UI (`ParticipatingListingsPanel`, hook `useParticipatingListingRows`, funções correlatas no `promotions.service` e tipo `ParticipatingListingRow`).
+
+---
+
+## 13. Registro de deploy (produção / projeto vinculado)
+
+**Data:** 2026-05-12  
+**Projeto Supabase (ref):** `frwnfukydjwilfobxxhw`
+
+### Migrações (schema)
+
+- No histórico remoto já constavam **`create_marketplace_promotions`** e **`add_ml_kind_to_promotions`** (equivalentes às tabelas `marketplace_promotions` / `marketplace_promotion_items` e coluna `ml_kind`). Nenhuma reaplicação DDL duplicada foi necessária.
+
+### Agendamento pg_cron
+
+- Job **`promotions-sync`** (HTTP POST para `/functions/v1/promotions-cron-sync`, a cada **30 minutos**) foi **criado/atualizado** no banco (equivalente ao SQL em `supabase/migrations/20260505_000002_pgcron_promotions_sync.sql`). Depende dos secrets no Vault: `supabase_url`, `pgcron_service_role_jwt`.
+
+### Edge Functions (redeploy via Supabase CLI)
+
+Todas publicadas na versão atual do repositório (`feat/promocoes-modulo-producao`):
+
+- `promotions-sync`, `promotions-create`, `promotions-update`, `promotions-delete`
+- `promotions-add-items`, `promotions-update-items`, `promotions-remove-item`
+- `promotions-list-flash-slots`, `promotions-cron-sync`
+- `promotions-ml-item-promotions`, `promotions-ml-exclusion-list`
