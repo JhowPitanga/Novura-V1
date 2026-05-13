@@ -23,6 +23,7 @@ import { getVariationMatchHintsFromItemRow, getVariationSkuFromItemRow } from "@
 import type { SortKey, SortDir, ListingItem } from "@/types/listings";
 
 import { LinkPickerDrawer, type LinkPickerContext } from "@/components/shared/LinkPickerDrawer";
+import { PromotionsTab } from "@/components/promotions/PromotionsTab";
 import { StockEditModal, type StockVariation } from "@/components/listings/StockEditModal";
 import { DeleteListingDialog } from "@/components/listings/DeleteListingDialog";
 import { DraftsList } from "@/components/listings/DraftsList";
@@ -478,9 +479,16 @@ export default function Anuncios() {
                                     </TabsContent>
 
                                     <TabsContent value="promocoes" className="mt-0">
-                                        <div className="bg-white rounded-xl border border-gray-200 p-6 text-gray-600">
-                                            Em breve: gestão de promoções.
-                                        </div>
+                                        {organizationId && selectedDisplayName ? (
+                                            <PromotionsTab
+                                                organizationId={organizationId}
+                                                marketplaceDisplayName={selectedDisplayName}
+                                            />
+                                        ) : (
+                                            <div className="bg-white rounded-xl border border-gray-200 p-6 text-gray-500 text-sm">
+                                                Selecione um marketplace para gerenciar promoções.
+                                            </div>
+                                        )}
                                     </TabsContent>
                                 </Tabs>
                             ) : (
