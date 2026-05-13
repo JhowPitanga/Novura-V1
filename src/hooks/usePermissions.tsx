@@ -130,6 +130,22 @@ export function usePermissions() {
         return hasPermission('estoque', 'adjust') || userRole === 'owner';
     };
 
+    const canViewPromotions = (): boolean => {
+        return hasAnyPermission('anuncios', ['view', 'promote_view', 'promote_create', 'promote_edit', 'promote_delete']) || userRole === 'owner';
+    };
+
+    const canCreatePromotion = (): boolean => {
+        return hasPermission('anuncios', 'promote_create') || userRole === 'owner';
+    };
+
+    const canEditPromotion = (): boolean => {
+        return hasPermission('anuncios', 'promote_edit') || userRole === 'owner';
+    };
+
+    const canDeletePromotion = (): boolean => {
+        return hasPermission('anuncios', 'promote_delete') || userRole === 'owner';
+    };
+
     return {
         permissions,
         userRole,
@@ -145,6 +161,10 @@ export function usePermissions() {
         canManageOrders,
         canViewStock,
         canManageStock,
+        canViewPromotions,
+        canCreatePromotion,
+        canEditPromotion,
+        canDeletePromotion,
         globalRole,
     };
 }

@@ -17,6 +17,10 @@ const Performance = lazy(() => import("./pages/Performance"));
 const MarketResearch = lazy(() => import("./pages/MarketResearch"));
 const Products = lazy(() => import("./pages/Products"));
 const Listings = lazy(() => import("./pages/Listings"));
+const ShopeeFlashSaleCreate = lazy(() => import("./pages/ShopeeFlashSaleCreate"));
+const ShopeeFlashSaleManage = lazy(() => import("./pages/ShopeeFlashSaleManage"));
+const PromotionCreate = lazy(() => import("./pages/PromotionCreate"));
+const PromotionManage = lazy(() => import("./pages/PromotionManage"));
 const CreateListingML = lazy(() => import("./pages/CreateListingML"));
 const EditListingML = lazy(() => import("./pages/EditListingML"));
 const SellerResources = lazy(() => import("./pages/SellerResources"));
@@ -173,6 +177,54 @@ const App = () => (
                   <RestrictedRoute module="produtos" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
                       <Products />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/promocoes/nova"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <PromotionCreate />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/promocoes/:promotionId"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <PromotionManage />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/promocoes/shopee/flash/nova"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <ShopeeFlashSaleCreate />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/promocoes/shopee/flash/:promotionId"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <ShopeeFlashSaleManage />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
