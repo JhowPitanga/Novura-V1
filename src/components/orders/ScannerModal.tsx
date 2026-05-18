@@ -1,4 +1,4 @@
-import { Pedido, Item } from "@/types/pedidos";
+import type { Order, OrderItem } from "@/types/orders";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -16,15 +16,15 @@ import {
 interface ScannerModalProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    currentPedido: Pedido | null;
-    scannedItems: Item[];
+    currentPedido: Order | null;
+    scannedItems: OrderItem[];
     onScan: (sku: string) => void;
 }
 
 export function ScannerModal({ open, onOpenChange, currentPedido, scannedItems, onScan }: ScannerModalProps) {
     if (!currentPedido) return null;
 
-    const allItemsScanned = currentPedido.itens.every(item => scannedItems.some(scannedItem => scannedItem.id === item.id));
+    const allItemsScanned = currentPedido.items.every(item => scannedItems.some(scannedItem => scannedItem.id === item.id));
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -32,7 +32,7 @@ export function ScannerModal({ open, onOpenChange, currentPedido, scannedItems, 
                 <DialogHeader>
                     <DialogTitle id="scanner-title">Scanner de Pedidos</DialogTitle>
                     <DialogDescription id="scanner-desc">
-                        Escaneie os itens do pedido {currentPedido.idPlataforma} para verificação.
+                        Escaneie os itens do pedido {currentPedido.platformId} para verificação.
                     </DialogDescription>
                 </DialogHeader>
 
@@ -53,7 +53,7 @@ export function ScannerModal({ open, onOpenChange, currentPedido, scannedItems, 
                         </div>
 
                         <div className="bg-muted p-4 rounded-md">
-                            <h4 className="text-lg font-semibold mb-2">Itens do Pedido ({currentPedido.itens.length})</h4>
+                            <h4 className="text-lg font-semibold mb-2">Itens do Pedido ({currentPedido.items.length})</h4>
                             <ScrollArea className="h-[200px]">
                                 <Table>
                                     <TableHeader>
@@ -64,16 +64,16 @@ export function ScannerModal({ open, onOpenChange, currentPedido, scannedItems, 
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
-                                        {currentPedido.itens.map((item) => (
+                                        {currentPedido.items.map((item) => (
                                             <TableRow key={item.id}>
                                                 <TableCell className="flex items-center gap-2">
-                                                    <img src={item.imagem || "/placeholder.svg"} alt={item.nome} className="w-10 h-10 rounded-md object-cover" />
+                                                    <img src={item.imageUrl || "/placeholder.svg"} alt={item.name} className="w-10 h-10 rounded-md object-cover" />
                                                     <div>
-                                                        <p className="font-medium">{item.nome}</p>
+                                                        <p className="font-medium">{item.name}</p>
                                                         <p className="text-sm text-muted-foreground">{item.sku}</p>
                                                     </div>
                                                 </TableCell>
-                                                <TableCell className="text-center">{item.quantidade}</TableCell>
+                                                <TableCell className="text-center">{item.quantity}</TableCell>
                                                 <TableCell className="text-center">
                                                     {scannedItems.some(scanned => scanned.id === item.id) ? (
                                                         <Check className="h-5 w-5 text-green-500 mx-auto" />
@@ -92,7 +92,7 @@ export function ScannerModal({ open, onOpenChange, currentPedido, scannedItems, 
                     <div className="md:w-1/3 space-y-4">
                         <div className="bg-card p-4 rounded-md border">
                             <h4 className="font-semibold mb-2">Resumo do Pedido</h4>
-                            <p>ID do Pedido: {currentPedido.idPlataforma}</p>
+                            <p>ID do Pedido: {currentPedido.platformId}</p>
                             <p>Marketplace: {currentPedido.marketplace}</p>
                             <p className="mt-2">
                                 Status de verificação:{" "}

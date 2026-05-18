@@ -68,9 +68,9 @@ export async function fetchProductPerformance(
     toISO: string
 ): Promise<ProductPerformanceResult> {
     let oq: any = supabase
-        .from('marketplace_orders_presented_new')
+        .from('orders')
         .select('id, marketplace, created_at');
-    if (orgId) oq = oq.eq('organizations_id', orgId);
+    if (orgId) oq = oq.eq('organization_id', orgId);
     oq = oq.gte('created_at', fromISO).lte('created_at', toISO);
     const { data: orders, error: ordersErr } = await oq;
     if (ordersErr) throw ordersErr;
@@ -94,17 +94,17 @@ export async function fetchProductPerformance(
     for (let i = 0; i < orderIds.length; i += chunkSize) {
         const chunk = orderIds.slice(i, i + chunkSize);
         const iq: any = supabase
-            .from('marketplace_order_items')
-            .select('id, linked_products, model_id_externo, quantity, unit_price, item_name, image_url')
-            .in('id', chunk);
+            .from('order_items')
+            .select('order_id, product_id, marketplace_item_id, quantity, unit_price, title, image_url')
+            .in('order_id', chunk);
         const { data: itemsRows, error: itemsErr } = await iq;
         if (itemsErr) throw itemsErr;
 
         for (const it of (itemsRows || [])) {
-            const oid = String(it?.id || '');
+            const oid = String(it?.order_id || '');
             const qn = Number(it?.quantity || 0) || 0;
             const up = Number(it?.unit_price || 0) || 0;
-            const pid = String(it?.linked_products || '').trim();
+            const pid = String(it?.product_id || '').trim();
 
             if (pid) {
                 if (!byProduct[pid]) byProduct[pid] = { pedidosSet: new Set(), unidades: 0, valor: 0, modelsSet: new Set() };
@@ -112,18 +112,18 @@ export async function fetchProductPerformance(
                 bp.pedidosSet.add(oid);
                 bp.unidades += qn;
                 bp.valor += qn * up;
-                const mid = String(it?.model_id_externo || '').trim();
+                const mid = String(it?.marketplace_item_id || '').trim();
                 if (mid) bp.modelsSet.add(mid);
             }
 
-            const mid = String(it?.model_id_externo || '').trim();
+            const mid = String(it?.marketplace_item_id || '').trim();
             if (mid) {
                 if (!byListing[mid]) byListing[mid] = { pedidosSet: new Set(), unidades: 0, valor: 0, marketplace: marketplaceByOrderId[oid] || 'Outros' };
                 const bl = byListing[mid];
                 bl.pedidosSet.add(oid);
                 bl.unidades += qn;
                 bl.valor += qn * up;
-                if (!bl.title && it?.item_name) bl.title = String(it.item_name);
+                if (!bl.title && it?.title) bl.title = String(it.title);
                 if (!bl.image && it?.image_url) bl.image = String(it.image_url);
                 if (!bl.marketplace) bl.marketplace = marketplaceByOrderId[oid] || 'Outros';
             }

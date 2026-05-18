@@ -52,9 +52,9 @@ export async function fetchExpiringCerts(orgId: string): Promise<ExpiringCert[]>
 
 export async function fetchOrderStatusCounts(orgId: string): Promise<OrderStatusCounts> {
     const { data, error } = await (supabase as any)
-        .from('marketplace_orders_presented_new')
-        .select('id,status_interno,shipment_status,shipment_sla_status,estimated_delivery_limit_at,shipment_sla_expected_date')
-        .eq('organizations_id', orgId);
+        .from('orders')
+        .select('id, status, order_shipping(status, sla_status, sla_expected_date, estimated_delivery)')
+        .eq('organization_id', orgId);
 
     if (error) throw error;
 
@@ -67,25 +67,29 @@ export async function fetchOrderStatusCounts(orgId: string): Promise<OrderStatus
     const cancelArr = ['Cancelado', 'Devolução', 'Devolucao'];
     const nowMs = Date.now();
 
+    const getShipping = (r: any) => (Array.isArray(r?.order_shipping) ? r.order_shipping[0] : r?.order_shipping) || null;
+
     const isDelivered = (s: any) => delivered.includes(String(s || '').toLowerCase());
     const isExpired = (r: any) => {
-        const edStr = r?.estimated_delivery_limit_at || r?.shipment_sla_expected_date;
+        const ship = getShipping(r);
+        const edStr = ship?.sla_expected_date ?? ship?.estimated_delivery ?? null;
         if (!edStr) return false;
         return new Date(edStr).getTime() <= nowMs;
     };
     const isDelayed = (r: any) => {
-        const si = String(r?.status_interno || '');
+        const si = String(r?.status || '');
         if (si === 'Enviado' || cancelArr.includes(si)) return false;
-        if (isDelivered(r?.shipment_status)) return false;
-        const slaStatus = String(r?.shipment_sla_status || '').toLowerCase();
+        const ship = getShipping(r);
+        if (isDelivered(ship?.status)) return false;
+        const slaStatus = String(ship?.sla_status || '').toLowerCase();
         return slaStatus === 'delayed' || isExpired(r);
     };
 
-    const vincRows = rows.filter(r => vincArr.includes(String(r?.status_interno || '')));
-    const emisRows = rows.filter(r => emisArr.includes(String(r?.status_interno || '')));
-    const imprRows = rows.filter(r => imprArr.includes(String(r?.status_interno || '')));
-    const colRows = rows.filter(r => colArr.includes(String(r?.status_interno || '')));
-    const envRows = rows.filter(r => String(r?.status_interno || '') === 'Enviado');
+    const vincRows = rows.filter(r => vincArr.includes(String(r?.status || '')));
+    const emisRows = rows.filter(r => emisArr.includes(String(r?.status || '')));
+    const imprRows = rows.filter(r => imprArr.includes(String(r?.status || '')));
+    const colRows = rows.filter(r => colArr.includes(String(r?.status || '')));
+    const envRows = rows.filter(r => String(r?.status || '') === 'Enviado');
 
     return {
         counts: {

@@ -322,6 +322,21 @@ verify_jwt = false
 [functions.download-nfe-xml]
 verify_jwt = false
 
+[functions.orders-upsert]
+verify_jwt = false
+
+[functions.orders-sync-ml]
+verify_jwt = false
+
+[functions.orders-sync-shopee]
+verify_jwt = false
+
+[functions.orders-webhook]
+verify_jwt = false
+
+[functions.orders-queue-worker]
+verify_jwt = false
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

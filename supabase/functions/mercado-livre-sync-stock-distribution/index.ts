@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString } from "../_shared/adapters/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString } from "../_shared/adapters/infra/token-utils.ts";
 
 function b64UrlToUint8(b64url: string): Uint8Array { let b64 = b64url.replace(/-/g, "+").replace(/_/g, "/"); const pad = b64.length % 4; if (pad) b64 += "=".repeat(4 - pad); const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
 function decodeJwtSub(jwt: string): string | null { try { const parts = jwt.split("."); if (parts.length < 2) return null; const payloadBytes = b64UrlToUint8(parts[1]); const payload = JSON.parse(new TextDecoder().decode(payloadBytes)); return payload?.sub || payload?.user_id || null; } catch { return null; } }

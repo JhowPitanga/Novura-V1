@@ -50,7 +50,24 @@ export async function startMercadoLivreAuth(
   if (error) throw error;
   const authorization_url = (data as any)?.authorization_url as string | undefined;
   const state = (data as any)?.state as string | undefined;
+  const code_verifier = (data as any)?.code_verifier as string | undefined;
   if (!authorization_url) throw new Error((data as any)?.error || 'authorization_url ausente');
+
+  // Store PKCE verifier and CSRF token in sessionStorage before redirecting.
+  // The verifier must stay client-side — it is retrieved by MercadoLivreCallback
+  // and sent directly to the callback edge function (never via URL).
+  if (code_verifier) {
+    try {
+      sessionStorage.setItem('ml_pkce_verifier', code_verifier);
+    } catch (_) { /* sessionStorage unavailable — PKCE will be skipped on callback */ }
+  }
+  if (state) {
+    try {
+      const parsed = JSON.parse(atob(state));
+      if (parsed?.csrf) sessionStorage.setItem('ml_oauth_csrf', parsed.csrf);
+    } catch (_) { /* ignore parse errors */ }
+  }
+
   return { authorization_url, state };
 }
 

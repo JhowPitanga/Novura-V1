@@ -63,19 +63,12 @@ export async function getOrdersMetrics(
   const fromISO = fromMs !== undefined ? new Date(fromMs).toISOString() : undefined;
   const toISO = toMs !== undefined ? new Date(toMs).toISOString() : undefined;
 
-  // Fetch orders from presented_new only
+  // Fetch orders from orders table
   let q: any = supabase
-    .from('marketplace_orders_presented_new')
-    .select(`
-      id,
-      marketplace_order_id,
-      order_total,
-      marketplace,
-      items_total_quantity,
-      created_at
-    `);
+    .from('orders')
+    .select('id, marketplace_order_id, gross_amount, marketplace, created_at');
   if (organizationId) {
-    q = (q as any).eq('organizations_id', organizationId);
+    q = (q as any).eq('organization_id', organizationId);
   }
   if (selectedMarketplaceDisplay && selectedMarketplaceDisplay !== 'todos') {
     q = q.eq('marketplace', selectedMarketplaceDisplay);
@@ -99,19 +92,19 @@ export async function getOrdersMetrics(
     return { totals, series, byMarketplace: [] };
   }
 
-  // Fetch items quantities per order from items table (chunked)
+  // Fetch item quantities per order from order_items (by order_id)
   const qtyByOrderId: Record<string, number> = {};
   const chunkSize = 200;
   for (let i = 0; i < orderIds.length; i += chunkSize) {
     const chunk = orderIds.slice(i, i + chunkSize);
     const itemsQ: any = supabase
-      .from('marketplace_order_items')
-      .select('id, quantity')
-      .in('id', chunk);
+      .from('order_items')
+      .select('order_id, quantity')
+      .in('order_id', chunk);
     const { data: itemsRows, error: itemsErr } = await itemsQ;
     if (itemsErr) throw itemsErr;
     (itemsRows || []).forEach((it: any) => {
-      const k = String(it?.id || '');
+      const k = String(it?.order_id || '');
       const qn = Number(it?.quantity || 0) || 0;
       qtyByOrderId[k] = (qtyByOrderId[k] || 0) + qn;
     });
@@ -148,12 +141,12 @@ export async function getOrdersMetrics(
   for (const o of orderList) {
     const evtMs = o?.created_at ? eventToSPEpochMs(o.created_at) : null;
 
-    const venda = Number(o?.order_total || 0) || 0;
+    const venda = Number(o?.gross_amount ?? 0) || 0;
     const unidades = (() => {
-      const k = String(o?.marketplace_order_id || '');
+      const k = String(o?.id || '');
       const v = qtyByOrderId[k];
       if (typeof v === 'number') return v;
-      return Number(o?.items_total_quantity || 0) || 0;
+      return 0;
     })();
     totalVendas += venda;
     totalUnidades += unidades;

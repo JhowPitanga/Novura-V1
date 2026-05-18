@@ -1,8 +1,9 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { getStr } from "../_shared/adapters/object-utils.ts";
-import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString, hmacSha256Hex } from "../_shared/adapters/token-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { SupabaseMarketplaceOrdersRawAdapter } from "../_shared/adapters/orders-raw/marketplace-orders-raw.ts";
+import { getStr } from "../_shared/adapters/infra/object-utils.ts";
+import { importAesGcmKey, aesGcmDecryptFromString, aesGcmEncryptToString, hmacSha256Hex } from "../_shared/adapters/infra/token-utils.ts";
 
 function get(obj: unknown, path: string[]): unknown {
   let cur: unknown = obj;
@@ -142,16 +143,10 @@ serve(async (req) => {
       return false;
     };
 
+    const rawAdapter = new SupabaseMarketplaceOrdersRawAdapter(admin);
     for (const it of planIds) {
-      const { data: rawRow } = await admin
-        .from("marketplace_orders_raw")
-        .select("data")
-        .eq("organizations_id", String(it.org_id))
-        .eq("marketplace_name", "Shopee")
-        .eq("marketplace_order_id", String(it.order_sn))
-        .limit(1)
-        .maybeSingle();
-      const data = rawRow?.data || {};
+      const dataRaw = await rawAdapter.getDataByOrderId(String(it.org_id), "Shopee", String(it.order_sn));
+      const data = (dataRaw && typeof dataRaw === "object" ? dataRaw : {}) as Record<string, unknown>;
       const infoNeeded = get(data, ["shipping_parameter","response","info_needed"]) ?? get(data, ["shipping_parameter","info_needed"]) ?? {};
       const infoDrop = get(infoNeeded, ["dropoff"]) ?? [];
       const infoPickup = get(infoNeeded, ["pickup"]) ?? [];

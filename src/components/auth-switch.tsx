@@ -193,11 +193,13 @@ export default function AuthSwitch() {
         body {
           background: linear-gradient(135deg, #ffffff 0%, #ffffffff 100%);
           min-height: 100vh;
+          min-height: 100dvh;
           display: flex;
           justify-content: center;
           align-items: center;
           padding: 0px;
-          overflow: hidden;
+          overflow-x: hidden;
+          overflow-y: auto;
         }
         .brand {
           position: absolute;
@@ -218,6 +220,18 @@ export default function AuthSwitch() {
           height: 100%;
           top: 0;
           left: 0;
+        }
+
+        /* Base layout: explicit height so absolute children (forms/panels) fill the viewport. */
+        .container {
+          position: relative;
+          width: 100%;
+          max-width: 100%;
+          height: 100vh;
+          height: 100dvh;
+          min-height: 100vh;
+          min-height: 100dvh;
+          overflow: hidden;
         }
 
         .container, .container * {
@@ -353,7 +367,7 @@ export default function AuthSwitch() {
           height: 100%;
           width: 100%;
           top: 0;
-          left: -12%;
+          left: 0;
           display: grid;
           grid-template-columns: repeat(2, 1fr);
         }
@@ -501,8 +515,9 @@ export default function AuthSwitch() {
 
         @media (max-width: 870px) {
           .container {
-            min-height: 800px;
-            height: 100vh;
+            min-height: max(800px, 100vh);
+            min-height: max(800px, 100dvh);
+            height: auto;
           }
           .signin-signup {
             width: 100%;

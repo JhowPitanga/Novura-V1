@@ -1,6 +1,6 @@
 import type { DateRange } from "react-day-picker";
 import { supabase } from "@/integrations/supabase/client";
-import { calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs } from "@/lib/datetime";
+import { calendarStartOfDaySPEpochMs, calendarEndOfDaySPEpochMs, eventToSPEpochMs } from "@/lib/datetime";
 
 export type ListingRankingItem = {
   marketplace_item_id: string;
@@ -65,25 +65,15 @@ export async function getListingsRanking(
   const fromISO = fromMs !== undefined ? new Date(fromMs).toISOString() : undefined;
   const toISO = toMs !== undefined ? new Date(toMs).toISOString() : undefined;
 
-  // Fetch orders within date range from presented_new
+  // Fetch orders within date range from orders table
   let q: any = supabase
-    .from('marketplace_orders_presented_new')
-    .select(`
-      id,
-      marketplace_order_id,
-      marketplace,
-      order_total,
-      items_total_quantity,
-      items_total_amount,
-      first_item_title,
-      first_item_sku,
-      created_at
-    `);
+    .from('orders')
+    .select('id, marketplace, created_at');
   if (selectedMarketplaceDisplay && selectedMarketplaceDisplay !== 'todos') {
     q = q.eq('marketplace', selectedMarketplaceDisplay);
   }
   if (organizationId) {
-    q = q.eq('organizations_id', organizationId);
+    q = q.eq('organization_id', organizationId);
   }
   if (fromISO) q = q.gte('created_at', fromISO);
   if (toISO) q = q.lte('created_at', toISO);
@@ -91,31 +81,31 @@ export async function getListingsRanking(
   if (ordersErr) throw ordersErr;
 
   const orderList = Array.isArray(orders) ? orders : [];
-  const presentedNewIds = Array.from(new Set(orderList.map((o: any) => o.id).filter(Boolean)));
+  const orderIds = Array.from(new Set(orderList.map((o: any) => o.id).filter(Boolean)));
   const marketplaceByOrderId: Record<string, string> = {};
   for (const o of orderList) {
     const id = String(o.id || '');
     if (id) marketplaceByOrderId[id] = o.marketplace || 'Outros';
   }
 
-  if (presentedNewIds.length === 0) {
+  if (orderIds.length === 0) {
     return [];
   }
 
-  // Fetch items for these orders and aggregate by model_id_externo
-  const byListing: Record<string, { pedidosSet: Set<string>; unidades: number; valor: number; marketplace: string }> = {};
+  // Fetch order_items and aggregate by marketplace_item_id; use title from order_items
+  const byListing: Record<string, { pedidosSet: Set<string>; unidades: number; valor: number; marketplace: string; title?: string }> = {};
   const chunkSize = 200;
-  for (let i = 0; i < presentedNewIds.length; i += chunkSize) {
-    const chunk = presentedNewIds.slice(i, i + chunkSize);
+  for (let i = 0; i < orderIds.length; i += chunkSize) {
+    const chunk = orderIds.slice(i, i + chunkSize);
     const iq: any = supabase
-      .from('marketplace_order_items')
-      .select('id, model_id_externo, quantity, unit_price')
-      .in('id', chunk);
+      .from('order_items')
+      .select('order_id, marketplace_item_id, quantity, unit_price, title')
+      .in('order_id', chunk);
     const { data: itemRows, error: itemErr } = await iq;
     if (itemErr) throw itemErr;
     for (const it of (itemRows || [])) {
-      const orderId = String(it?.id || '');
-      const listingId = String(it?.model_id_externo || '').trim();
+      const orderId = String(it?.order_id || '');
+      const listingId = String(it?.marketplace_item_id || '').trim();
       if (!listingId || !orderId) continue;
       const qn = Number(it?.quantity || 0) || 0;
       const up = Number(it?.unit_price || 0) || 0;
@@ -127,30 +117,18 @@ export async function getListingsRanking(
       agg.unidades += qn;
       agg.valor += qn * up;
       if (!agg.marketplace) agg.marketplace = marketplaceByOrderId[orderId] || 'Outros';
+      if (!agg.title && it?.title) agg.title = String(it.title);
     }
   }
 
   const listingIds = Object.keys(byListing);
   if (listingIds.length === 0) return [];
 
-  // Buscar títulos a partir da tabela unificada
-  let miq: any = supabase
-    .from('marketplace_items_unified')
-    .select('marketplace_item_id, title, marketplace_name')
-    .in('marketplace_item_id', listingIds);
-  if (organizationId) miq = miq.eq('organizations_id', organizationId);
-  const { data: itemsRows, error: itemsErr } = await miq;
-  if (itemsErr) throw itemsErr;
-  const itemTitleById: Record<string, { title: string; marketplace_name?: string }> = {};
-  for (const r of (itemsRows || [])) {
-    itemTitleById[String(r.marketplace_item_id)] = { title: r.title || '', marketplace_name: r.marketplace_name } as any;
-  }
-
   const result: ListingRankingItem[] = listingIds.map((id) => {
     const agg = byListing[id];
     const pedidos = agg.pedidosSet.size;
-    const title = itemTitleById[id]?.title || `Anúncio ${id}`;
-    const mk = itemTitleById[id]?.marketplace_name || agg.marketplace || 'Outros';
+    const title = agg.title || `Anúncio ${id}`;
+    const mk = agg.marketplace || 'Outros';
     const margem = 0;
     return {
       marketplace_item_id: id,

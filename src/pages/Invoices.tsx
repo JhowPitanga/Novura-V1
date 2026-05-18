@@ -1,36 +1,13 @@
-import { useState, useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { AppSidebar } from "@/components/AppSidebar";
 import { CleanNavigation } from "@/components/CleanNavigation";
-import { supabase } from "@/integrations/supabase/client";
 import { InvoiceTable } from "@/components/invoices/InvoiceTable";
+import { useInvoices } from "@/hooks/useInvoices";
 
 export default function NotasFiscais() {
-  const [notasDb, setNotasDb] = useState<any[]>([]);
-  const [loadingDb, setLoadingDb] = useState(true);
-  const [errorDb, setErrorDb] = useState<string | null>(null);
-
-  useEffect(() => {
-    const fetchNotasFiscais = async () => {
-      setLoadingDb(true);
-      setErrorDb(null);
-      const { data, error } = await supabase
-        .from("notas_fiscais")
-        .select("*")
-        .order("authorized_at", { ascending: false })
-        .order("created_at", { ascending: false });
-      if (error) {
-        setErrorDb(error.message);
-        setNotasDb([]);
-      } else {
-        setNotasDb(Array.isArray(data) ? data : []);
-      }
-      setLoadingDb(false);
-    };
-    fetchNotasFiscais();
-  }, []);
+  const { invoices, isLoading, error } = useInvoices();
 
   return (
     <SidebarProvider>
@@ -63,9 +40,9 @@ export default function NotasFiscais() {
                   path="todas"
                   element={
                     <InvoiceTable
-                      notas={notasDb}
-                      loading={loadingDb}
-                      error={errorDb}
+                      notas={invoices}
+                      loading={isLoading}
+                      error={error}
                       searchPlaceholder="Buscar por número, tipo ou marketplace"
                     />
                   }
@@ -74,9 +51,9 @@ export default function NotasFiscais() {
                   path="saidas"
                   element={
                     <InvoiceTable
-                      notas={notasDb}
-                      loading={loadingDb}
-                      error={errorDb}
+                      notas={invoices}
+                      loading={isLoading}
+                      error={error}
                       tipoFilter="saida"
                       searchPlaceholder="Buscar por número ou marketplace"
                     />
@@ -86,9 +63,9 @@ export default function NotasFiscais() {
                   path="entrada"
                   element={
                     <InvoiceTable
-                      notas={notasDb}
-                      loading={loadingDb}
-                      error={errorDb}
+                      notas={invoices}
+                      loading={isLoading}
+                      error={error}
                       tipoFilter="entrada"
                       searchPlaceholder="Buscar por número ou marketplace"
                       showAddButton

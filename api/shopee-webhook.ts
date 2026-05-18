@@ -34,13 +34,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const xShopeeSignature = (req.headers['x-shopee-signature'] as string) || '';
     const xRequestId = (req.headers['x-request-id'] as string) || '';
 
-    const forwardResp = await fetch(`${SUPABASE_URL}/functions/v1/shopee-sync-all`, {
+    const forwardResp = await fetch(`${SUPABASE_URL}/functions/v1/orders-webhook`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'apikey': SUPABASE_PUBLISHABLE_KEY,
-        'authorization': `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
-        'x-internal-call': '1',
         ...(xShopeeSignature ? { 'x-shopee-signature': xShopeeSignature } : {}),
         ...(xRequestId ? { 'x-request-id': xRequestId } : {}),
       },

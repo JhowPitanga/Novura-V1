@@ -1,30 +1,28 @@
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
-DROP TABLE IF EXISTS public.company_tax_configs CASCADE;
-
-CREATE TABLE IF NOT EXISTS public.company_tax_configs (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  organizations_id uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-  company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
-  observacao text,
-  is_default boolean NOT NULL DEFAULT false,
-  payload jsonb NOT NULL,
-  selected_rule_ids uuid[] DEFAULT '{}',
-  created_by uuid,
-  updated_by uuid,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
+-- Rename organization_id → organizations_id to match the rest of the schema.
+-- Uses RENAME COLUMN instead of DROP+CREATE to preserve existing rows.
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'company_tax_configs'
+      AND column_name  = 'organization_id'
+  ) THEN
+    ALTER TABLE public.company_tax_configs
+      RENAME COLUMN organization_id TO organizations_id;
+  END IF;
+END $$;
 
 COMMENT ON TABLE public.company_tax_configs IS 'Per-company tax configuration payloads linked to organization and company.';
 COMMENT ON COLUMN public.company_tax_configs.payload IS 'Full configuration (basics, icms, icmsExtras, ipi, pis, cofins, adicionais).';
 
+-- Recreate unique index (idempotent)
 CREATE UNIQUE INDEX IF NOT EXISTS company_tax_configs_one_default_per_company
   ON public.company_tax_configs (company_id)
   WHERE is_default;
 
+-- Recreate updated_at trigger
 CREATE OR REPLACE FUNCTION public.set_updated_at()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -39,6 +37,7 @@ CREATE TRIGGER set_updated_at_company_tax_configs
 
 ALTER TABLE public.company_tax_configs ENABLE ROW LEVEL SECURITY;
 
+-- Recreate RLS policies using the renamed column
 DROP POLICY IF EXISTS company_tax_configs_select ON public.company_tax_configs;
 DROP POLICY IF EXISTS company_tax_configs_insert ON public.company_tax_configs;
 DROP POLICY IF EXISTS company_tax_configs_update ON public.company_tax_configs;

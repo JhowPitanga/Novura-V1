@@ -52,9 +52,9 @@ export function useOrderCmv(pedido: any): number | null {
                         .filter((n: number) => Number.isFinite(n));
                     const avg = costs.length ? costs.reduce((a: number, b: number) => a + b, 0) / costs.length : 0;
                     const qty =
-                        Number(pedido?.quantidadeTotal) ||
-                        (Array.isArray(pedido?.itens)
-                            ? pedido.itens.reduce((s: number, it: any) => s + (Number(it?.quantidade) || 0), 0)
+                        Number(pedido?.totalQuantity) ||
+                        (Array.isArray(pedido?.items)
+                            ? pedido.items.reduce((s: number, it: any) => s + (Number(it?.quantity) || 0), 0)
                             : 1);
                     if (!cancelled) setCmvLinked(avg * qty);
                 } else {

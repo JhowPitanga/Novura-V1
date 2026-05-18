@@ -1,7 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
-import { getField, getStr, getNum, getArr } from "../_shared/adapters/object-utils.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { SupabaseMarketplaceOrdersRawAdapter } from "../_shared/adapters/orders-raw/marketplace-orders-raw.ts";
+import { getField, getStr, getNum, getArr } from "../_shared/adapters/infra/object-utils.ts";
 
 function tryParseJson(text: string): unknown {
   try { return JSON.parse(text); } catch (_) { return null; }
@@ -78,34 +79,24 @@ serve(async (req) => {
       return jsonResponse({ ok: false, error: "Missing raw_id", correlationId }, 200);
     }
 
+    const rawAdapter = new SupabaseMarketplaceOrdersRawAdapter(admin);
     let rec: any = null;
     if (rawId) {
       logEvent("raw_lookup_by_id_attempt", { id: rawId });
-      const { data, error } = await admin
-        .from("marketplace_orders_raw")
-        .select("*")
-        .eq("id", rawId)
-        .limit(1)
-        .single();
-      if (error) {
-        logEvent("raw_lookup_by_id_error", { id: rawId, error: { message: error.message, details: error.details, hint: error.hint, code: error.code } });
-        return jsonResponse({ ok: false, error: error.message, correlationId }, 200);
+      try {
+        rec = await rawAdapter.getById(rawId);
+      } catch (e: any) {
+        logEvent("raw_lookup_by_id_error", { id: rawId, error: { message: e?.message } });
+        return jsonResponse({ ok: false, error: e?.message ?? "Lookup failed", correlationId }, 200);
       }
-      rec = data;
     } else {
       logEvent("raw_lookup_by_order_id_attempt", { marketplace_order_id: orderIdOverride });
-      const { data, error } = await admin
-        .from("marketplace_orders_raw")
-        .select("*")
-        .eq("marketplace_name", "Mercado Livre")
-        .eq("marketplace_order_id", orderIdOverride)
-        .limit(1)
-        .single();
-      if (error) {
-        logEvent("raw_lookup_by_order_id_error", { marketplace_order_id: orderIdOverride, error: { message: error.message, details: error.details, hint: error.hint, code: error.code } });
-        return jsonResponse({ ok: false, error: error.message, correlationId }, 200);
+      try {
+        rec = await rawAdapter.getByMarketplaceAndOrderId("Mercado Livre", orderIdOverride!);
+      } catch (e: any) {
+        logEvent("raw_lookup_by_order_id_error", { marketplace_order_id: orderIdOverride, error: { message: e?.message } });
+        return jsonResponse({ ok: false, error: e?.message ?? "Lookup failed", correlationId }, 200);
       }
-      rec = data;
     }
     if (!rec) {
       logEvent("raw_not_found", { rawId, marketplace_order_id: orderIdOverride });
