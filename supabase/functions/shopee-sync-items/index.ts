@@ -3,6 +3,7 @@ import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-util
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
 import { getField, getStr, getNum } from "../_shared/adapters/infra/object-utils.ts";
 import { importAesGcmKey, aesGcmEncryptToString, tryDecryptToken, hmacSha256Hex } from "../_shared/adapters/infra/token-utils.ts";
+import { syncCanonicalFromPayload } from "../_shared/listing-adapters/syncCanonicalFromPayload.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return handleOptions();
@@ -836,6 +837,14 @@ serve(async (req) => {
           .upsert(row, { onConflict: "organizations_id,marketplace_name,marketplace_item_id" });
         if (!upErr) {
           updated++;
+          await syncCanonicalFromPayload(admin, {
+            organizationId: organizationsId,
+            integrationId,
+            marketplaceName: "Shopee",
+            marketplaceItemId: id,
+            payload: { data: combined, pictures: imageList ?? undefined },
+            payloadSource: "sync-items",
+          });
         } else {
           try {
             const msg = typeof upErr === "object" && upErr !== null && "message" in (upErr as Record<string, unknown>) ? String((upErr as Record<string, unknown>).message) : null;

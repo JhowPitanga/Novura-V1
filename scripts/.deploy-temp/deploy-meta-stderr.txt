@@ -1,0 +1,1 @@
+{"fn":"listings-sync-one","file_count":16,"bytes":150983,"outPath":"C:\\Users\\jonat\\OneDrive\\Documentos\\GitHub\\Novura-V1\\scripts\\.deploy-temp\\callmcp-args\\listings-sync-one.json"}

@@ -39,12 +39,14 @@ O módulo centraliza campanhas promocionais do **Mercado Livre** e da **Shopee**
 
 Definidas em `src/hooks/usePermissions.tsx` (módulo `anuncios`):
 
-| Função | Permissão | Uso na UI |
-|--------|-----------|-----------|
-| Ver promoções (conceito) | `promote_view` ou outras `promote_*` ou `view` | `canViewPromotions` — hoje pouco usado na aba |
-| Criar | `promote_create` ou `owner` | Botões “Criar” nos cards (`canCreatePromotion`) |
-| Editar campanha / itens | `promote_edit` ou `owner` | Drawer, manage page |
-| Encerrar / excluir | `promote_delete` ou `owner` | Ações destrutivas na lista e drawer |
+
+| Função                   | Permissão                                      | Uso na UI                                       |
+| ------------------------ | ---------------------------------------------- | ----------------------------------------------- |
+| Ver promoções (conceito) | `promote_view` ou outras `promote_*` ou `view` | `canViewPromotions` — hoje pouco usado na aba   |
+| Criar                    | `promote_create` ou `owner`                    | Botões “Criar” nos cards (`canCreatePromotion`) |
+| Editar campanha / itens  | `promote_edit` ou `owner`                      | Drawer, manage page                             |
+| Encerrar / excluir       | `promote_delete` ou `owner`                    | Ações destrutivas na lista e drawer             |
+
 
 **Nota:** As rotas em `App.tsx` para páginas de promoção usam `RestrictedRoute module="anuncios" actions={["view"]}` — reforço de permissões finas nas rotas é gap documentado na seção 2.3.
 
@@ -60,17 +62,17 @@ Definidas em `src/hooks/usePermissions.tsx` (módulo `anuncios`):
 1. **Busca** — filtra campanhas por nome ou `external_id` (texto local).
 2. **Sincronizar** — chama Edge Function `promotions-sync` com `integrationId` da integração ativa (`marketplace_integrations`).
 3. **Cards por segmento** — definição em `promotionSegments.ts`:
-   - **Mercado Livre:** até 7 segmentos (campanha do vendedor, campanhas ML, relâmpago, oferta do dia, desconto individual, smart/competitivos, PIX/cupons) + placeholders de grid.
-   - **Shopee:** 2 segmentos — desconto na loja (`STANDARD_DISCOUNT`) e oferta relâmpago (`FLASH_SALE`).
+  - **Mercado Livre:** até 7 segmentos (campanha do vendedor, campanhas ML, relâmpago, oferta do dia, desconto individual, smart/competitivos, PIX/cupons) + placeholders de grid.
+  - **Shopee:** 2 segmentos — desconto na loja (`STANDARD_DISCOUNT`) e oferta relâmpago (`FLASH_SALE`).
 4. **Seleção de card** — alterna filtro: nenhum card = “Todas as campanhas”; card selecionado = lista apenas campanhas cujo `Promotion` satisfaz `segment.matches(p)`.
 5. **Lista** — `PromotionsList` / `PromotionRow`: ver detalhes, editar, adicionar itens, encerrar (conforme permissões).
 6. **Modais globais do tab** — `PromotionDetailDrawer`, `AddItemsToPromotionDialog`, confirmação de encerramento.
 
 ### 4.2 Fluxos auxiliares (fora da aba)
 
-- **`PromotionCreate`** — `/anuncios/promocoes/nova?marketplace=...` — desconto padrão ML/Shopee.
-- **`PromotionManage`** — `/anuncios/promocoes/:promotionId` — gestão de campanha + itens.
-- **`ShopeeFlashSaleCreate` / `ShopeeFlashSaleManage`** — rotas dedicadas flash Shopee (`promotions-list-flash-slots`, `promotions-create` com `slotId`).
+- `**PromotionCreate`** — `/anuncios/promocoes/nova?marketplace=...` — desconto padrão ML/Shopee.
+- `**PromotionManage**` — `/anuncios/promocoes/:promotionId` — gestão de campanha + itens.
+- `**ShopeeFlashSaleCreate` / `ShopeeFlashSaleManage**` — rotas dedicadas flash Shopee (`promotions-list-flash-slots`, `promotions-create` com `slotId`).
 
 ---
 
@@ -78,20 +80,22 @@ Definidas em `src/hooks/usePermissions.tsx` (módulo `anuncios`):
 
 ### 5.1 `public.marketplace_promotions`
 
-| Campo | Tipo | Descrição |
-|-------|------|-----------|
-| `id` | uuid | PK |
-| `organizations_id` | uuid | FK `organizations` |
-| `integration_id` | uuid | FK `marketplace_integrations` (nullable on delete) |
-| `marketplace_key` | text | `mercado_livre` \| `shopee` |
-| `external_id` | text | ID da campanha no marketplace |
-| `promotion_type` | text | `STANDARD_DISCOUNT` \| `FLASH_SALE` |
-| `ml_kind` | text | Tipo nativo ML (`DEAL`, `LIGHTNING`, …); **NULL** na Shopee |
-| `source` | text | `seller_created` \| `platform_invite` \| `time_slot` |
-| `status` | text | `draft` … `candidate` |
-| `name`, datas, percentuais | diversos | Metadados de exibição e negócio |
-| `raw` | jsonb | Payload bruto da API |
-| `last_synced_at` | timestamptz | Última sincronização bem-sucedida |
+
+| Campo                      | Tipo        | Descrição                                                   |
+| -------------------------- | ----------- | ----------------------------------------------------------- |
+| `id`                       | uuid        | PK                                                          |
+| `organizations_id`         | uuid        | FK `organizations`                                          |
+| `integration_id`           | uuid        | FK `marketplace_integrations` (nullable on delete)          |
+| `marketplace_key`          | text        | `mercado_livre` | `shopee`                                  |
+| `external_id`              | text        | ID da campanha no marketplace                               |
+| `promotion_type`           | text        | `STANDARD_DISCOUNT` | `FLASH_SALE`                          |
+| `ml_kind`                  | text        | Tipo nativo ML (`DEAL`, `LIGHTNING`, …); **NULL** na Shopee |
+| `source`                   | text        | `seller_created` | `platform_invite` | `time_slot`          |
+| `status`                   | text        | `draft` … `candidate`                                       |
+| `name`, datas, percentuais | diversos    | Metadados de exibição e negócio                             |
+| `raw`                      | jsonb       | Payload bruto da API                                        |
+| `last_synced_at`           | timestamptz | Última sincronização bem-sucedida                           |
+
 
 **Unique:** `(organizations_id, marketplace_key, external_id)`.
 
@@ -101,15 +105,17 @@ Definidas em `src/hooks/usePermissions.tsx` (módulo `anuncios`):
 
 ### 5.2 `public.marketplace_promotion_items`
 
-| Campo | Tipo | Descrição |
-|-------|------|-----------|
-| `id` | uuid | PK |
-| `promotion_id` | uuid | FK `marketplace_promotions` ON DELETE CASCADE |
-| `marketplace_item_id` | text | ID do anúncio no marketplace |
-| `variation_id` | text | Variação (Shopee model / ML variation), opcional |
-| `status` | text | `candidate` \| `pending` \| `started` \| `finished` \| `paused` |
-| Preços / estoque / limites | numeric/int | Espelho do contrato universal |
-| `raw` | jsonb | Detalhes específicos do provider |
+
+| Campo                      | Tipo        | Descrição                                                   |
+| -------------------------- | ----------- | ----------------------------------------------------------- |
+| `id`                       | uuid        | PK                                                          |
+| `promotion_id`             | uuid        | FK `marketplace_promotions` ON DELETE CASCADE               |
+| `marketplace_item_id`      | text        | ID do anúncio no marketplace                                |
+| `variation_id`             | text        | Variação (Shopee model / ML variation), opcional            |
+| `status`                   | text        | `candidate` | `pending` | `started` | `finished` | `paused` |
+| Preços / estoque / limites | numeric/int | Espelho do contrato universal                               |
+| `raw`                      | jsonb       | Detalhes específicos do provider                            |
+
 
 **Unique:** `(promotion_id, marketplace_item_id, COALESCE(variation_id,''))`.
 
@@ -130,19 +136,21 @@ Todas as funções abaixo são invocadas com **POST** + JSON (`Content-Type: app
 
 **Secrets comuns:** `TOKENS_ENCRYPTION_KEY` (obrigatório para adapters de token), `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_URL` no runtime Deno.
 
-| Função | Papel | Corpo principal | Resposta resumida |
-|--------|--------|-------------------|---------------------|
-| `promotions-sync` | Lista campanhas no provider, upsert `marketplace_promotions`, para status “vivos” busca itens e upsert `marketplace_promotion_items` | `{ integrationId }` | `{ ok, campaigns, items, upsertedCampaigns, failedCampaigns, failedItems, … }` — UI usa `campaigns` e `items` para toast |
-| `promotions-cron-sync` | Itera integrações ML+Shopee ativas; mesmo fluxo de sync | `{}` (cron) | Resumo por integração |
-| `promotions-create` | Cria campanha no marketplace + `upsertCampaign` local | `STANDARD_DISCOUNT`: `integrationId`, `promotionType`, `name`, `startDate`, `endDate`; Flash Shopee: `slotId` | `{ ok, id, … }` |
-| `promotions-update` | Atualiza nome/datas | `integrationId`, `externalId`, `promotionType`, `name?`, `startDate?`, `endDate?` | `{ ok, campaign }` |
-| `promotions-delete` | Encerra/remove no provider; marca `status=ended` local | `integrationId`, `externalId`, `promotionType`, `force?` (`auto`\|`end`\|`delete`) | `{ ok }` |
-| `promotions-add-items` | Adiciona itens à campanha; resolve `discountPercent`→preço | `integrationId`, `externalId`, `promotionType`, `items[]` | `{ ok, successful[], failed[] }` |
-| `promotions-update-items` | Atualiza preços/limites de itens já na campanha | `integrationId`, `externalId`, `promotionType`, `items[]` | `{ successful[], failed[] }` |
-| `promotions-remove-item` | Remove item (e variação opcional); opcional `mlKind` | `integrationId`, `externalId`, `promotionType`, `marketplaceItemId`, `variationId?`, `mlKind?` | `{ ok }` |
-| `promotions-list-flash-slots` | Shopee: slots disponíveis | `{ integrationId }` | `{ ok, slots[] }` ou lista vazia se não suportado |
-| `promotions-ml-item-promotions` | ML: visão 360° por item | `{ integrationId, marketplaceItemId }` | `{ ok, promotions[] }` |
-| `promotions-ml-exclusion-list` | ML: ler/toggle lista de exclusão campanhas automáticas | `{ integrationId, target: "seller"|"item", itemId?, exclusionStatus? }` | `{ ok, excluded }` |
+
+| Função                          | Papel                                                                                                                                | Corpo principal                                                                                               | Resposta resumida                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `promotions-sync`               | Lista campanhas no provider, upsert `marketplace_promotions`, para status “vivos” busca itens e upsert `marketplace_promotion_items` | `{ integrationId }`                                                                                           | `{ ok, campaigns, items, upsertedCampaigns, failedCampaigns, failedItems, … }` — UI usa `campaigns` e `items` para toast |
+| `promotions-cron-sync`          | Itera integrações ML+Shopee ativas; mesmo fluxo de sync                                                                              | `{}` (cron)                                                                                                   | Resumo por integração                                                                                                    |
+| `promotions-create`             | Cria campanha no marketplace + `upsertCampaign` local                                                                                | `STANDARD_DISCOUNT`: `integrationId`, `promotionType`, `name`, `startDate`, `endDate`; Flash Shopee: `slotId` | `{ ok, id, … }`                                                                                                          |
+| `promotions-update`             | Atualiza nome/datas                                                                                                                  | `integrationId`, `externalId`, `promotionType`, `name?`, `startDate?`, `endDate?`                             | `{ ok, campaign }`                                                                                                       |
+| `promotions-delete`             | Encerra/remove no provider; marca `status=ended` local                                                                               | `integrationId`, `externalId`, `promotionType`, `force?` (`auto`|`end`|`delete`)                              | `{ ok }`                                                                                                                 |
+| `promotions-add-items`          | Adiciona itens à campanha; resolve `discountPercent`→preço                                                                           | `integrationId`, `externalId`, `promotionType`, `items[]`                                                     | `{ ok, successful[], failed[] }`                                                                                         |
+| `promotions-update-items`       | Atualiza preços/limites de itens já na campanha                                                                                      | `integrationId`, `externalId`, `promotionType`, `items[]`                                                     | `{ successful[], failed[] }`                                                                                             |
+| `promotions-remove-item`        | Remove item (e variação opcional); opcional `mlKind`                                                                                 | `integrationId`, `externalId`, `promotionType`, `marketplaceItemId`, `variationId?`, `mlKind?`                | `{ ok }`                                                                                                                 |
+| `promotions-list-flash-slots`   | Shopee: slots disponíveis                                                                                                            | `{ integrationId }`                                                                                           | `{ ok, slots[] }` ou lista vazia se não suportado                                                                        |
+| `promotions-ml-item-promotions` | ML: visão 360° por item                                                                                                              | `{ integrationId, marketplaceItemId }`                                                                        | `{ ok, promotions[] }`                                                                                                   |
+| `promotions-ml-exclusion-list`  | ML: ler/toggle lista de exclusão campanhas automáticas                                                                               | `{ integrationId, target: "seller"                                                                            | "item", itemId?, exclusionStatus? }`                                                                                     |
+
 
 ### 6.1 Código compartilhado (Deno)
 
@@ -167,16 +175,18 @@ Todas as funções abaixo são invocadas com **POST** + JSON (`Content-Type: app
 
 ## 8. Frontend — camadas
 
-| Camada | Arquivos |
-|--------|----------|
-| Tipos | `src/types/promotions.ts` |
-| Serviço (invoke + queries Supabase) | `src/services/promotions.service.ts`, `promotionKeys` |
-| Hooks React Query | `src/hooks/usePromotions.ts` |
-| UI promoções | `src/components/promotions/*` — `PromotionsTab`, `PromotionsList`, `PromotionDetailDrawer`, `AddItemsToPromotionDialog`, `PromotionTypeCard`, `promotionSegments`, `validators`, … |
-| Páginas | `PromotionCreate.tsx`, `PromotionManage.tsx`, `ShopeeFlashSaleCreate.tsx`, `ShopeeFlashSaleManage.tsx` |
-| Listagens | `src/pages/Listings.tsx` (aba Promoções) |
-| Rotas | `src/App.tsx` |
-| Util | `src/utils/marketplaceUtils.ts` — `normalizeMarketplaceKey`, `marketplaceListingsDataTable` |
+
+| Camada                              | Arquivos                                                                                                                                                                           |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tipos                               | `src/types/promotions.ts`                                                                                                                                                          |
+| Serviço (invoke + queries Supabase) | `src/services/promotions.service.ts`, `promotionKeys`                                                                                                                              |
+| Hooks React Query                   | `src/hooks/usePromotions.ts`                                                                                                                                                       |
+| UI promoções                        | `src/components/promotions/*` — `PromotionsTab`, `PromotionsList`, `PromotionDetailDrawer`, `AddItemsToPromotionDialog`, `PromotionTypeCard`, `promotionSegments`, `validators`, … |
+| Páginas                             | `PromotionCreate.tsx`, `PromotionManage.tsx`, `ShopeeFlashSaleCreate.tsx`, `ShopeeFlashSaleManage.tsx`                                                                             |
+| Listagens                           | `src/pages/Listings.tsx` (aba Promoções)                                                                                                                                           |
+| Rotas                               | `src/App.tsx`                                                                                                                                                                      |
+| Util                                | `src/utils/marketplaceUtils.ts` — `normalizeMarketplaceKey`, `marketplaceListingsDataTable`                                                                                        |
+
 
 **Padrão:** páginas/componentes não chamam `supabase.from` direto para domínio de promoções; usam hooks → serviço.
 
@@ -221,11 +231,11 @@ Todas as funções abaixo são invocadas com **POST** + JSON (`Content-Type: app
 
 ### Migrações (schema)
 
-- No histórico remoto já constavam **`create_marketplace_promotions`** e **`add_ml_kind_to_promotions`** (equivalentes às tabelas `marketplace_promotions` / `marketplace_promotion_items` e coluna `ml_kind`). Nenhuma reaplicação DDL duplicada foi necessária.
+- No histórico remoto já constavam `**create_marketplace_promotions`** e `**add_ml_kind_to_promotions**` (equivalentes às tabelas `marketplace_promotions` / `marketplace_promotion_items` e coluna `ml_kind`). Nenhuma reaplicação DDL duplicada foi necessária.
 
 ### Agendamento pg_cron
 
-- Job **`promotions-sync`** (HTTP POST para `/functions/v1/promotions-cron-sync`, a cada **30 minutos**) foi **criado/atualizado** no banco (equivalente ao SQL em `supabase/migrations/20260505_000002_pgcron_promotions_sync.sql`). Depende dos secrets no Vault: `supabase_url`, `pgcron_service_role_jwt`.
+- Job `**promotions-sync**` (HTTP POST para `/functions/v1/promotions-cron-sync`, a cada **30 minutos**) foi **criado/atualizado** no banco (equivalente ao SQL em `supabase/migrations/20260505_000002_pgcron_promotions_sync.sql`). Depende dos secrets no Vault: `supabase_url`, `pgcron_service_role_jwt`.
 
 ### Edge Functions (redeploy via Supabase CLI)
 
@@ -235,3 +245,4 @@ Todas publicadas na versão atual do repositório (`feat/promocoes-modulo-produc
 - `promotions-add-items`, `promotions-update-items`, `promotions-remove-item`
 - `promotions-list-flash-slots`, `promotions-cron-sync`
 - `promotions-ml-item-promotions`, `promotions-ml-exclusion-list`
+

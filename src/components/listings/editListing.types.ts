@@ -16,6 +16,8 @@ export interface EditListingStepPriceProps {
   priceEditable: boolean;
   savingKey: string | null;
   loadingListing: boolean;
+  showListingTypes: boolean;
+  marketplaceLabel: string;
   listingTypes: any[];
   listingTypeId: string;
   listingPriceOptions: any[];
@@ -71,9 +73,11 @@ export interface EditListingStepVariationsMediaProps {
   onConfirmPictures: () => void;
   onVideoChange: (value: File | string | null) => void;
   onConfirmVideo: () => void;
+  supportsVideo?: boolean;
 }
 
 export interface EditListingStepAttributesProps {
+  marketplaceLabel: string;
   filteredAttrs: { required: any[]; tech: any[] };
   attributes: any[];
   showAllTechAttrs: boolean;

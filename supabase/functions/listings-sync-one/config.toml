@@ -1,0 +1,2 @@
+[functions.listings-sync-one]
+verify_jwt = true

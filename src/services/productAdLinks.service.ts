@@ -5,15 +5,39 @@ import { normalizeMarketplaceKey } from "@/utils/marketplaceName";
 export type MarketplaceItemRow = Record<string, unknown>;
 
 /**
- * Loads listing rows the same way the Anúncios module does:
- * marketplace_items_unified plus raw marketplace rows as a fallback for channels
- * that are not fully represented by the unified view yet.
+ * Loads listing rows for product ↔ ad linking (canonical first, legacy fallback).
  */
 export async function fetchMarketplaceItemsForAdLinking(
   organizationId: string,
   limit = 500
 ): Promise<{ rows: MarketplaceItemRow[]; error: Error | null }> {
   try {
+    const canonicalSelect = `
+      id, marketplace_item_id, title, sku, marketplace_name, updated_at,
+      pictures:marketplace_listing_pictures(url, secure_url, position),
+      variations:marketplace_listing_variations(variation_id, sku, price, image_url)
+    `;
+    const { data: canonical, error: canonicalErr } = await (supabase as any)
+      .from("marketplace_listings")
+      .select(canonicalSelect)
+      .eq("organizations_id", organizationId)
+      .order("updated_at", { ascending: false })
+      .limit(limit);
+
+    if (!canonicalErr && Array.isArray(canonical) && canonical.length > 0) {
+      const rows = canonical.map((r: Record<string, unknown>) => {
+        const pics = Array.isArray(r.pictures) ? r.pictures : [];
+        return {
+          ...r,
+          pictures: pics.map((p: Record<string, unknown>) => ({
+            url: p.secure_url ?? p.url,
+          })),
+          variations: r.variations,
+        } as MarketplaceItemRow;
+      });
+      return { rows, error: null };
+    }
+
     const columns = "id, marketplace_item_id, title, sku, marketplace_name, pictures, variations, updated_at";
     const [unifiedRes, rawRes] = await Promise.all([
       (supabase as any)

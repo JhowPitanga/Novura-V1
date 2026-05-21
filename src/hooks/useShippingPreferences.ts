@@ -51,7 +51,17 @@ export function useShippingPreferences({
         const allowed = ["xd_drop_off", "drop_off"];
         const onlyAllowed = unique.filter((u) => allowed.includes(String(u)));
         setAvailableLogisticTypes(onlyAllowed.length > 0 ? onlyAllowed : allowed);
-        const sel = allowed.includes(defType) ? defType : (onlyAllowed[0] || "xd_drop_off");
+        const fromItem = String(
+          (itemRow as any)?.shipping?.logistic_type ||
+            (itemRow as any)?.logistic_type ||
+            "",
+        );
+        const sel =
+          fromItem && allowed.includes(fromItem)
+            ? fromItem
+            : allowed.includes(defType)
+              ? defType
+              : onlyAllowed[0] || "xd_drop_off";
         setSelectedLogisticType(sel);
         const hasSelfService = unique.includes("self_service");
         const canFlex = hasSelfService && ((data as any)?.self_service === true);

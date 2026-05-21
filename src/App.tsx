@@ -23,6 +23,8 @@ const PromotionCreate = lazy(() => import("./pages/PromotionCreate"));
 const PromotionManage = lazy(() => import("./pages/PromotionManage"));
 const CreateListingML = lazy(() => import("./pages/CreateListingML"));
 const EditListingML = lazy(() => import("./pages/EditListingML"));
+const CreateListing = lazy(() => import("./pages/CreateListing"));
+const EditListing = lazy(() => import("./pages/EditListing"));
 const SellerResources = lazy(() => import("./pages/SellerResources"));
 const Apps = lazy(() => import("./pages/Apps"));
 const Inventory = lazy(() => import("./pages/Inventory"));
@@ -248,7 +250,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["create","publish","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <CreateListingML />
+                      <CreateListing />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -260,7 +262,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["create","publish","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <CreateListingML />
+                      <CreateListing />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -272,7 +274,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["edit","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <EditListingML />
+                      <EditListing />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
