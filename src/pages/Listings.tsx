@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,17 +10,34 @@ import { GlobalHeader } from "@/components/GlobalHeader";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate, useLocation } from "react-router-dom";
+import { Plus } from "lucide-react";
 
 import {
     useConnectedMarketplaces,
+    useMarketplaceStores,
     useListingItems,
     useListingDrafts,
     useListingMutations,
     filterListings,
+    filterListingsByScope,
     sortListings,
+    countListingsByLogistic,
+    countListingsByLink,
+    countListingsByStatus,
+    countListingsByStock,
+    resolveMarketplacePathFromUrl,
+    marketplaceSlugForPath,
 } from "@/hooks/useListings";
-import { getVariationMatchHintsFromItemRow, getVariationSkuFromItemRow } from "@/utils/listingUtils";
+import {
+    getVariationMatchHintsFromItemRow,
+    getVariationSkuFromItemRow,
+    slugFromMarketplacePath,
+} from "@/utils/listingUtils";
 import type { SortKey, SortDir, ListingItem } from "@/types/listings";
+import {
+    DEFAULT_LISTING_FILTERS,
+    type ListingAppliedFilters,
+} from "@/types/listings";
 
 import { LinkPickerDrawer, type LinkPickerContext } from "@/components/shared/LinkPickerDrawer";
 import { PromotionsTab } from "@/components/promotions/PromotionsTab";
@@ -39,12 +56,15 @@ export default function Anuncios() {
 
     // URL-driven state
     const [activeStatus, setActiveStatus] = useState<string>("todos");
-    const [selectedMarketplacePath, setSelectedMarketplacePath] = useState<string>("");
 
     // UI state
     const [searchTerm, setSearchTerm] = useState("");
-    const [sortKey, setSortKey] = useState<SortKey>('sales');
-    const [sortDir, setSortDir] = useState<SortDir>('desc');
+    const [sortKey, setSortKey] = useState<SortKey>("sales");
+    const [sortDir, setSortDir] = useState<SortDir>("desc");
+    const [appliedFilters, setAppliedFilters] = useState<ListingAppliedFilters>(DEFAULT_LISTING_FILTERS);
+    const [draftFilters, setDraftFilters] = useState<ListingAppliedFilters>(DEFAULT_LISTING_FILTERS);
+    const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+    const [selectedIntegrationIds, setSelectedIntegrationIds] = useState<Set<string>>(new Set());
     const [activeTab, setActiveTab] = useState<string>("anuncios");
     const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
     const [expandedVariations, setExpandedVariations] = useState<Set<string>>(new Set());
@@ -68,16 +88,55 @@ export default function Anuncios() {
     const shippingCaps = marketplacesData?.shippingCaps || null;
     const hasIntegration = marketplacesData?.hasIntegration || false;
 
+    const selectedMarketplacePath = useMemo(
+        () => resolveMarketplacePathFromUrl(location.pathname, location.search, navItems),
+        [location.pathname, location.search, navItems],
+    );
+
+    const marketplaceSlug = marketplaceSlugForPath(selectedMarketplacePath);
+
+    // Persist marketplace in URL (?marketplace=) so tab switches refetch reliably
     useEffect(() => {
-        if (navItems.length > 0 && !selectedMarketplacePath) {
-            setSelectedMarketplacePath(navItems[0].path);
+        if (!navItems.length) return;
+        const params = new URLSearchParams(location.search);
+        if (params.get("marketplace")) return;
+        params.set("marketplace", slugFromMarketplacePath(selectedMarketplacePath || navItems[0].path));
+        navigate({ pathname: location.pathname, search: params.toString() }, { replace: true });
+    }, [navItems, selectedMarketplacePath, location.pathname, location.search, navigate]);
+
+    const handleMarketplaceNavigate = useCallback(
+        (path: string) => {
+            const params = new URLSearchParams(location.search);
+            params.set("marketplace", slugFromMarketplacePath(path));
+            setSelectedItems(new Set());
+            setExpandedVariations(new Set());
+            navigate({ pathname: location.pathname, search: params.toString() });
+        },
+        [location.pathname, location.search, navigate],
+    );
+
+    useEffect(() => {
+        setAppliedFilters(DEFAULT_LISTING_FILTERS);
+        setDraftFilters(DEFAULT_LISTING_FILTERS);
+        setSearchTerm("");
+        setSelectedIntegrationIds(new Set());
+        setSelectedItems(new Set());
+        setExpandedVariations(new Set());
+    }, [marketplaceSlug]);
+
+    useEffect(() => {
+        if (filterDrawerOpen) {
+            setDraftFilters(appliedFilters);
         }
-    }, [navItems, selectedMarketplacePath]);
+    }, [filterDrawerOpen, appliedFilters]);
 
     const selectedDisplayName = navItems.find(n => n.path === selectedMarketplacePath)?.displayName || '';
     const isShopee = selectedDisplayName.toLowerCase() === 'shopee';
 
-    const { parsedItems, rawItems, setRawItems, listingTypeByItemId, isLoading, refetch } = useListingItems({
+    const { data: storesData } = useMarketplaceStores(organizationId, selectedDisplayName);
+    const marketplaceStores = storesData || [];
+
+    const { parsedItems, rawItems, patchRawItems, listingTypeByItemId, isLoading, refetch } = useListingItems({
         orgId: organizationId,
         selectedDisplayName,
         selectedPath: selectedMarketplacePath,
@@ -91,7 +150,22 @@ export default function Anuncios() {
     const syncing = mutations.syncAll.isPending || mutations.syncSelected.isPending;
 
     // Filtering + sorting
-    const filteredAds = filterListings(parsedItems, activeStatus, isShopee, selectedDisplayName, searchTerm);
+    const scopedAds = filterListingsByScope(parsedItems, activeStatus, selectedDisplayName);
+    const filterCounts = {
+        logistic: countListingsByLogistic(scopedAds),
+        link: countListingsByLink(scopedAds),
+        status: countListingsByStatus(scopedAds),
+        stock: countListingsByStock(scopedAds),
+    };
+    const filteredAds = filterListings(
+        parsedItems,
+        activeStatus,
+        isShopee,
+        selectedDisplayName,
+        searchTerm,
+        appliedFilters,
+        selectedIntegrationIds,
+    );
     const sortedAds = sortListings(filteredAds, sortKey, sortDir);
     const isAllSelected = sortedAds.length > 0 && sortedAds.every(a => selectedItems.has(a.id));
     const isAllDraftsSelected = drafts.length > 0 && drafts.every((d: any) => selectedDraftIds.has(String(d.id)));
@@ -121,9 +195,20 @@ export default function Anuncios() {
         }
     };
 
+    const handleSyncSingle = async (ad: ListingItem) => {
+        if (!organizationId) return;
+        try {
+            await mutations.syncSingle.mutateAsync({ marketplaceItemId: ad.marketplaceId, scope: 'full' });
+            toast({ title: "Anúncio sincronizado", description: ad.title });
+            refetch();
+        } catch (e: any) {
+            toast({ title: "Falha ao sincronizar", description: e?.message || "Erro inesperado", variant: "destructive" });
+        }
+    };
+
     const handleToggleStatus = async (ad: ListingItem, makeActive: boolean) => {
         const targetStatus = makeActive ? 'active' : 'paused';
-        setRawItems(prev => prev.map(r => {
+        patchRawItems(prev => prev.map(r => {
             const mlId = r?.marketplace_item_id || r?.id;
             return String(mlId) === String(ad.marketplaceId) ? { ...r, status: targetStatus } : r;
         }));
@@ -131,7 +216,7 @@ export default function Anuncios() {
             await mutations.toggleStatus.mutateAsync({ itemId: ad.marketplaceId, targetStatus });
             toast({ title: makeActive ? 'Anúncio ativado' : 'Anúncio pausado' });
         } catch (e: any) {
-            setRawItems(prev => prev.map(r => {
+            patchRawItems(prev => prev.map(r => {
                 const mlId = r?.marketplace_item_id || r?.id;
                 return String(mlId) === String(ad.marketplaceId) ? { ...r, status: makeActive ? 'paused' : 'active' } : r;
             }));
@@ -180,7 +265,7 @@ export default function Anuncios() {
     };
 
     const handleStockSuccess = (itemId: string, updates: Array<{ model_id: number; seller_stock: number }>) => {
-        setRawItems(prev => prev.map(r => {
+        patchRawItems(prev => prev.map(r => {
             const rid = String(r?.marketplace_item_id || r?.id);
             if (rid !== itemId) return r;
             const vars = Array.isArray(r?.variations) ? r.variations : [];
@@ -250,7 +335,18 @@ export default function Anuncios() {
                         items={navItems}
                         basePath="/anuncios"
                         activePath={selectedMarketplacePath}
-                        onNavigate={(path) => { setSelectedMarketplacePath(path); navigate('/anuncios' + path); }}
+                        onNavigate={handleMarketplaceNavigate}
+                        rightContent={
+                            hasIntegration && activeTab === "anuncios" ? (
+                                <Button
+                                    className="h-10 px-4 rounded-2xl bg-novura-primary hover:bg-novura-primary/90 shadow-lg"
+                                    onClick={() => navigate("/anuncios/criar/")}
+                                >
+                                    <Plus className="w-4 h-4 mr-2" />
+                                    Criar um anúncio
+                                </Button>
+                            ) : null
+                        }
                     />
 
                     <main className="flex-1 overflow-auto">
@@ -276,7 +372,7 @@ export default function Anuncios() {
                                         </div>
                                     </div>
 
-                                    <TabsContent value="anuncios" className="mt-0">
+                                    <TabsContent key={`anuncios-${marketplaceSlug}`} value="anuncios" className="mt-0">
                                         {/* Modals */}
                                         <StockEditModal
                                             open={!!stockModal}
@@ -347,12 +443,31 @@ export default function Anuncios() {
                                             onSearchChange={setSearchTerm}
                                             sortKey={sortKey}
                                             sortDir={sortDir}
-                                            onSort={(key, dir) => { setSortKey(key); setSortDir(dir); }}
+                                            onSort={(key, dir) => {
+                                                setSortKey(key);
+                                                setSortDir(dir);
+                                            }}
+                                            appliedFilters={appliedFilters}
+                                            draftFilters={draftFilters}
+                                            onDraftFiltersChange={setDraftFilters}
+                                            filterDrawerOpen={filterDrawerOpen}
+                                            onFilterDrawerOpenChange={setFilterDrawerOpen}
+                                            onConfirmFilters={() => {
+                                                setAppliedFilters(draftFilters);
+                                                setFilterDrawerOpen(false);
+                                            }}
+                                            onClearFilters={() => {
+                                                setAppliedFilters(DEFAULT_LISTING_FILTERS);
+                                                setDraftFilters(DEFAULT_LISTING_FILTERS);
+                                            }}
+                                            filterCounts={filterCounts}
+                                            stores={marketplaceStores}
+                                            selectedIntegrationIds={selectedIntegrationIds}
+                                            onSelectedIntegrationIdsChange={setSelectedIntegrationIds}
                                             syncing={syncing}
                                             selectedCount={selectedItems.size}
                                             onSyncAll={handleSync}
                                             onSyncSelected={handleSyncSelected}
-                                            onCreateListing={() => navigate('/anuncios/criar/')}
                                         />
 
                                         <div className="mt-4">
@@ -363,7 +478,11 @@ export default function Anuncios() {
                                                 onNavigate={(path) => {
                                                     const seg = path.split('/').pop() || 'todos';
                                                     setActiveStatus(seg);
-                                                    navigate(path);
+                                                    const params = new URLSearchParams(location.search);
+                                                    navigate({
+                                                        pathname: path,
+                                                        search: params.toString(),
+                                                    });
                                                 }}
                                             />
                                         </div>
@@ -381,7 +500,10 @@ export default function Anuncios() {
                                             />
                                         </div>
 
-                                        <Card className="mt-2 border border-gray-200 shadow-sm">
+                                        <Card
+                                            key={`listings-panel-${organizationId}-${marketplaceSlug}`}
+                                            className="mt-2 border border-gray-200 shadow-sm"
+                                        >
                                             <CardContent className="p-0">
                                                 <div className="space-y-2">
                                                     <div className="grid grid-cols-12 gap-x-2 items-center px-3 py-2 border-b border-gray-200">
@@ -436,6 +558,7 @@ export default function Anuncios() {
                                                                     onDuplicate={handleDuplicate}
                                                                     onDeleteRequest={setConfirmDeleteItemId}
                                                                     onSetConfirmPause={setConfirmPauseFor}
+                                                                    onSyncSingle={handleSyncSingle}
                                                                     onOpenLinkPicker={({ ad: a, variationId, variationSku, variationTypes, pendingVariationIds }) => {
                                                                         const queue = pendingVariationIds && pendingVariationIds.length > 0
                                                                             ? pendingVariationIds
@@ -470,7 +593,9 @@ export default function Anuncios() {
                                                         })
                                                     ) : (
                                                         <div className="p-10 text-center text-gray-500">
-                                                            {isLoading ? 'Carregando...' : 'Nenhum anúncio encontrado.'}
+                                                            {isLoading || (!marketplaceSlug && hasIntegration)
+                                                                ? 'Carregando...'
+                                                                : 'Nenhum anúncio encontrado.'}
                                                         </div>
                                                     )}
                                                 </div>
@@ -478,9 +603,10 @@ export default function Anuncios() {
                                         </Card>
                                     </TabsContent>
 
-                                    <TabsContent value="promocoes" className="mt-0">
+                                    <TabsContent key={`promocoes-${marketplaceSlug}`} value="promocoes" className="mt-0">
                                         {organizationId && selectedDisplayName ? (
                                             <PromotionsTab
+                                                key={`promotions-tab-${marketplaceSlug}`}
                                                 organizationId={organizationId}
                                                 marketplaceDisplayName={selectedDisplayName}
                                             />

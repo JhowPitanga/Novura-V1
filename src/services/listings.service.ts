@@ -46,34 +46,120 @@ export async function fetchConnectedMarketplaces(orgId: string): Promise<Connect
     return { navItems, shippingCaps, hasIntegration: names.length > 0 };
 }
 
+export interface MarketplaceStoreOption {
+    id: string;
+    store_name: string | null;
+    marketplace_name: string;
+}
+
+/** Connected stores for the listings store filter (by marketplace tab). */
+export async function fetchMarketplaceStores(
+    orgId: string,
+    marketplaceDisplayName: string,
+): Promise<MarketplaceStoreOption[]> {
+    const name = String(marketplaceDisplayName || "").trim();
+    if (!name) return [];
+
+    const { data, error } = await (supabase as any)
+        .from("marketplace_integrations")
+        .select("id, store_name, marketplace_name")
+        .eq("organizations_id", orgId)
+        .eq("marketplace_name", name)
+        .order("store_name", { ascending: true });
+
+    if (error) throw error;
+    return (data || []) as MarketplaceStoreOption[];
+}
+
 // ─── Listings Items ────────────────────────────────────────────────────────
 
 export interface FetchListingsResult {
     rows: any[];
     isShopee: boolean;
+    isCanonical?: boolean;
+}
+
+const MARKETPLACE_DISPLAY: Record<string, string> = {
+    shopee: 'Shopee',
+    'mercado livre': 'Mercado Livre',
+};
+
+function resolveMarketplaceName(displayName: string): string {
+    const key = String(displayName).toLowerCase().trim();
+    return MARKETPLACE_DISPLAY[key] ?? displayName;
+}
+
+/** Reads marketplace_integrations.config.listings_canonical (PRD §8 Fase 3). */
+export async function isListingsCanonicalEnabled(
+    orgId: string,
+    marketplaceName: string,
+): Promise<boolean> {
+    const { data, error } = await (supabase as any)
+        .from('marketplace_integrations')
+        .select('config')
+        .eq('organizations_id', orgId)
+        .eq('marketplace_name', marketplaceName)
+        .maybeSingle();
+    if (error) {
+        console.warn('[isListingsCanonicalEnabled]', error.message);
+        return false;
+    }
+    const cfg = data?.config;
+    if (cfg && typeof cfg === 'object') {
+        return (cfg as Record<string, unknown>).listings_canonical === true;
+    }
+    return false;
+}
+
+/** Legacy path — marketplace_items_unified / marketplace_items_raw */
+async function fetchListingsLegacy(orgId: string, marketplaceName: string, isShopee: boolean): Promise<any[]> {
+    const { data, error } = isShopee
+        ? await (supabase as any)
+            .from('marketplace_items_raw')
+            .select('*')
+            .eq('organizations_id', orgId)
+            .eq('marketplace_name', 'Shopee')
+            .order('updated_at', { ascending: false })
+            .limit(400)
+        : await (supabase as any)
+            .from('marketplace_items_unified')
+            .select('*')
+            .eq('organizations_id', orgId)
+            .order('updated_at', { ascending: false })
+            .limit(400);
+    if (error) throw error;
+    return data || [];
 }
 
 export async function fetchListings(orgId: string, selectedDisplayName: string): Promise<FetchListingsResult> {
     const isShopee = String(selectedDisplayName).toLowerCase() === 'shopee';
+    const marketplaceName = resolveMarketplaceName(selectedDisplayName);
+    const flagEnabled = await isListingsCanonicalEnabled(orgId, marketplaceName);
+
+    const tryCanonical = async (): Promise<FetchListingsResult | null> => {
+        try {
+            const canonical = await fetchListingsCanonical(orgId, marketplaceName);
+            if (flagEnabled || canonical.rows.length > 0) {
+                return { rows: canonical.rows, isShopee, isCanonical: true };
+            }
+        } catch (err) {
+            console.warn('[fetchListings] canonical read failed', err);
+        }
+        return null;
+    };
+
+    if (flagEnabled) {
+        const canonicalResult = await tryCanonical();
+        if (canonicalResult) return canonicalResult;
+    } else {
+        const canonicalResult = await tryCanonical();
+        if (canonicalResult && canonicalResult.rows.length > 0) return canonicalResult;
+    }
+
     try {
-        const { data, error } = isShopee
-            ? await (supabase as any)
-                .from('marketplace_items_raw')
-                .select('*')
-                .eq('organizations_id', orgId)
-                .eq('marketplace_name', 'Shopee')
-                .order('updated_at', { ascending: false })
-                .limit(400)
-            : await (supabase as any)
-                .from('marketplace_items_unified')
-                .select('*')
-                .eq('organizations_id', orgId)
-                .order('updated_at', { ascending: false })
-                .limit(400);
-        if (error) throw error;
-        return { rows: data || [], isShopee };
+        const rows = await fetchListingsLegacy(orgId, marketplaceName, isShopee);
+        return { rows, isShopee, isCanonical: false };
     } catch {
-        // Fallback to original table
         const { data, error: fallbackErr } = await (supabase as any)
             .from('marketplace_items')
             .select('*')
@@ -81,7 +167,7 @@ export async function fetchListings(orgId: string, selectedDisplayName: string):
             .order('updated_at', { ascending: false })
             .limit(400);
         if (fallbackErr) throw fallbackErr;
-        return { rows: data || [], isShopee };
+        return { rows: data || [], isShopee, isCanonical: false };
     }
 }
 
@@ -303,6 +389,58 @@ export async function fetchStockDistributionForListings(
   }
 
   return result;
+}
+
+// ─── Canonical listings (new schema) ──────────────────────────────────────
+
+export interface FetchListingsCanonicalResult {
+    rows: any[];
+    isCanonical: true;
+}
+
+/**
+ * Reads listings from the new canonical schema (marketplace_listings + joins).
+ * This replaces fetchListings once the backfill is complete and the feature flag
+ * is active for the organisation. Falls back gracefully if the table is empty.
+ */
+export async function fetchListingsCanonical(
+    orgId: string,
+    marketplaceName: string,
+): Promise<FetchListingsCanonicalResult> {
+    const { data, error } = await (supabase as any)
+        .from('marketplace_listings')
+        .select(`
+            *,
+            shipping:marketplace_listing_shipping(*),
+            metrics:marketplace_listing_metrics(*),
+            quality:marketplace_listing_quality(*),
+            fees:marketplace_listing_fees(*),
+            variations:marketplace_listing_variations(*),
+            pictures:marketplace_listing_pictures(*)
+        `)
+        .eq('organizations_id', orgId)
+        .eq('marketplace_name', marketplaceName)
+        .order('marketplace_updated_at', { ascending: false })
+        .limit(400);
+
+    if (error) throw error;
+    return { rows: data || [], isCanonical: true };
+}
+
+/**
+ * Triggers a full synchronisation for a single listing item via the
+ * listings-sync-one edge function. Returns the canonical listing id.
+ */
+export async function syncSingleListing(
+    orgId: string,
+    marketplaceItemId: string,
+    scope: 'full' | 'metrics' | 'fees' | 'quality' = 'full',
+): Promise<{ listingId: string }> {
+    const { data, error } = await (supabase as any).functions.invoke('listings-sync-one', {
+        body: { organizationId: orgId, marketplaceItemId, scope },
+    });
+    if (error) throw error;
+    return { listingId: String(data?.listingId ?? '') };
 }
 
 // ─── Sync ──────────────────────────────────────────────────────────────────

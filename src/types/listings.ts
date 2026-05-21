@@ -43,6 +43,8 @@ export interface ListingItem {
     likes: number;
     stock: number;
     marketplaceId: string;
+    /** marketplace_integrations.id for this listing's connected store */
+    integrationId?: string | null;
     image: string;
     shippingTags: string[];
     quality: number;
@@ -90,5 +92,42 @@ export interface ListingDraft {
     status: string;
 }
 
-export type SortKey = 'sales' | 'visits' | 'price' | 'quality' | 'margin';
+export type SortKey = 'sales' | 'visits' | 'price' | 'quality' | 'stock' | 'title';
 export type SortDir = 'asc' | 'desc';
+
+export type ListingLogisticFilter = 'all' | 'full' | 'flex' | 'envios' | 'correios' | 'xpress' | 'retire';
+export type ListingLinkFilter = 'all' | 'linked' | 'unlinked';
+export type ListingStatusFilter = 'all' | 'active' | 'inactive';
+export type ListingStockFilter = 'all' | 'out_of_stock';
+
+export interface ListingAppliedFilters {
+    logistic: ListingLogisticFilter;
+    link: ListingLinkFilter;
+    status: ListingStatusFilter;
+    stock: ListingStockFilter;
+}
+
+export const DEFAULT_LISTING_FILTERS: ListingAppliedFilters = {
+    logistic: 'all',
+    link: 'all',
+    status: 'all',
+    stock: 'all',
+};
+
+export function hasActiveListingFilters(filters: ListingAppliedFilters): boolean {
+    return (
+        filters.logistic !== 'all' ||
+        filters.link !== 'all' ||
+        filters.status !== 'all' ||
+        filters.stock !== 'all'
+    );
+}
+
+export function countActiveListingFilters(filters: ListingAppliedFilters): number {
+    let n = 0;
+    if (filters.logistic !== 'all') n += 1;
+    if (filters.link !== 'all') n += 1;
+    if (filters.status !== 'all') n += 1;
+    if (filters.stock !== 'all') n += 1;
+    return n;
+}
