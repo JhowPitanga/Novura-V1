@@ -1,0 +1,2 @@
+[functions.listings-backfill]
+verify_jwt = false

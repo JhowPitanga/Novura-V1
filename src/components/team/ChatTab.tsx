@@ -515,8 +515,9 @@ return (
                                                                 items = (data as any[]) || [];
                                                             } else if (m.id === 'Anúncios') {
                                                                 const { data } = await (supabase as any)
-                                                                    .from('marketplace_items_unified')
+                                                                    .from('marketplace_listings')
                                                                     .select('id, title, sku, price, available_quantity, marketplace_item_id')
+                                                                    .eq('organizations_id', organizationId)
                                                                     .order('updated_at', { ascending: false })
                                                                     .limit(10);
                                                                 items = (data as any[]) || [];

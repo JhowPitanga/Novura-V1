@@ -30,8 +30,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "@/hooks/use-toast";
 import { deleteStorageById, storageHasAnyStock } from "@/services/inventory.service";
+import { useLocation } from "react-router-dom";
 
 export default function Estoque() {
+  const location = useLocation();
   const { storageLocations, loading: storageLoading, refetch: refetchStorage } = useStorage();
   const { organizationId } = useAuth();
   const [searchTerm, setSearchTerm] = useState("");
@@ -44,12 +46,32 @@ export default function Estoque() {
   const [activeFilter, setActiveFilter] = useState("estoque");
   const [activeNav, setActiveNav] = useState<'controle' | 'fulfillment' | 'armazem' | 'relatorios'>("controle");
   const [isStorageDrawerOpen, setIsStorageDrawerOpen] = useState(false);
+  const [stockDrawerProductId, setStockDrawerProductId] = useState<string | null>(null);
   const [deleteStorageModal, setDeleteStorageModal] = useState<{
     open: boolean;
     storage: { id: string; name: string } | null;
     phase: "idle" | "checking" | "ready" | "blocked";
   }>({ open: false, storage: null, phase: "idle" });
   const [deletingStorage, setDeletingStorage] = useState(false);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const tab = searchParams.get("tab");
+    const openStorageDrawer = searchParams.get("openStorageDrawer");
+    const openStockDrawer = searchParams.get("openStockDrawer");
+    const productId = searchParams.get("productId");
+
+    if (tab === "controle" || tab === "fulfillment" || tab === "armazem" || tab === "relatorios") {
+      setActiveNav(tab);
+    }
+    if (openStorageDrawer === "1") {
+      setEditingStorageId(null);
+      setIsStorageDrawerOpen(true);
+    }
+    if (openStockDrawer === "1" && productId) {
+      setStockDrawerProductId(productId);
+    }
+  }, [location.search]);
 
   useEffect(() => {
     if (!deleteStorageModal.open || deleteStorageModal.phase !== "checking" || !deleteStorageModal.storage) {
@@ -171,6 +193,8 @@ export default function Estoque() {
                   searchTerm={searchTerm}
                   selectedWarehouseFilter={selectedWarehouseFilter}
                   selectedCategory={selectedCategory}
+                  initialProductIdToManage={stockDrawerProductId}
+                  onInitialProductIdHandled={() => setStockDrawerProductId(null)}
                 />
                 <StorageManagementDrawer
                   open={isStorageDrawerOpen}

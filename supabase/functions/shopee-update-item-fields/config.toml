@@ -1,0 +1,2 @@
+[functions.shopee-update-item-fields]
+verify_jwt = true

@@ -19,10 +19,17 @@ export function isMercadoLivreMarketplace(displayName: string): boolean {
 }
 
 /**
- * PostgREST source for synced listing rows (matches `fetchListings` in listings.service).
- * Prefer over `marketplace_items`, which may not be exposed on the API (404).
+ * Primary PostgREST source for listing rows (canonical schema).
+ * Legacy tables kept for fallback until rollout completes.
  */
 export function marketplaceListingsDataTable(
+  _displayName?: string,
+): "marketplace_listings" | "marketplace_items_raw" | "marketplace_items_unified" {
+  return "marketplace_listings";
+}
+
+/** Legacy table used before canonical rollout (per channel). */
+export function marketplaceListingsLegacyDataTable(
   displayName: string,
 ): "marketplace_items_raw" | "marketplace_items_unified" {
   return isShopeeMarketplace(displayName) ? "marketplace_items_raw" : "marketplace_items_unified";

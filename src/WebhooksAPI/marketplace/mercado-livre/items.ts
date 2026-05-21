@@ -28,9 +28,9 @@ export async function fetchMercadoLivreItems(
   opts?: { limit?: number }
 ): Promise<MarketplaceItem[]> {
   const limit = opts?.limit ?? 200;
-  const { data, error } = await supabase
-    .from('marketplace_items_unified')
-    .select('*')
+  const { data, error } = await (supabase as any)
+    .from('marketplace_listings')
+    .select('id, marketplace_item_id, title, sku, status, status_raw, price, available_quantity, sold_quantity, thumbnail_url, listing_type_id, permalink, updated_at')
     .eq('organizations_id', organizationId)
     .eq('marketplace_name', 'Mercado Livre')
     .order('updated_at', { ascending: false })

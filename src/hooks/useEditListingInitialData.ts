@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { fetchListingDetailRow } from "@/services/listingDetail.service";
 import type { VariationLite } from "@/components/listings/editListing.types";
 
 export interface UseEditListingInitialDataParams {
@@ -39,29 +39,8 @@ export function useEditListingInitialData({
       if (!organizationId || !itemId) return;
       setLoading(true);
       try {
-        let mi: any = null;
-        try {
-          const { data, error } = await (supabase as any)
-            .from("marketplace_items_unified")
-            .select("*")
-            .eq("organizations_id", organizationId)
-            .eq("marketplace_name", "Mercado Livre")
-            .eq("marketplace_item_id", String(itemId))
-            .single();
-          if (!error) mi = data;
-        } catch {}
-
-        if (!mi) {
-          const { data, error } = await (supabase as any)
-            .from("marketplace_items")
-            .select("*")
-            .eq("organizations_id", organizationId)
-            .eq("marketplace_name", "Mercado Livre")
-            .eq("marketplace_item_id", String(itemId))
-            .single();
-          if (error) throw error;
-          mi = data;
-        }
+        const mi = await fetchListingDetailRow(organizationId, "Mercado Livre", String(itemId));
+        if (!mi) throw new Error("Anúncio não encontrado");
 
         setItemRow(mi);
         setSoldQty(typeof mi?.sold_quantity === "number" ? mi.sold_quantity : 0);

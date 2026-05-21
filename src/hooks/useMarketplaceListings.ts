@@ -3,9 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { marketplaceListingsDataTable } from "@/utils/marketplaceUtils";
 
-/** Columns exposed on both marketplace_items_raw and marketplace_items_unified (legacy marketplace_items may include more). */
+/** Canonical columns + embedded joins for variations and pictures. */
 const LISTING_PICKER_COLUMNS =
-  "id, marketplace_item_id, title, sku, status, price, pictures, variations";
+  "id, marketplace_item_id, title, sku, status, price, available_quantity, " +
+  "variations:marketplace_listing_variations(variation_id, sku, price, available_quantity, attributes), " +
+  "pictures:marketplace_listing_pictures(url, secure_url, position, external_picture_id)";
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -57,43 +59,24 @@ async function fetchMarketplaceListings(
   search: string,
   onlyActive: boolean,
 ): Promise<MarketplaceListing[]> {
-  // Same sources as listings.service / productAdLinks: base table is often not exposed on PostgREST (404).
-  const primaryTable = marketplaceListingsDataTable(marketplaceName);
+  let q = (supabase as any)
+    .from(marketplaceListingsDataTable(marketplaceName))
+    .select(LISTING_PICKER_COLUMNS)
+    .eq("organizations_id", orgId)
+    .eq("marketplace_name", marketplaceName)
+    .order("title", { ascending: true })
+    .limit(200);
 
-  const run = (table: string) => {
-    let q = (supabase as any)
-      .from(table)
-      .select(
-        table === "marketplace_items"
-          ? "id, marketplace_item_id, title, sku, status, price, available_quantity, pictures, variations"
-          : LISTING_PICKER_COLUMNS,
-      )
-      .eq("organizations_id", orgId)
-      .eq("marketplace_name", marketplaceName)
-      .order("title", { ascending: true })
-      .limit(200);
-
-    if (onlyActive) {
-      q = q.eq("status", "active");
-    }
-
-    if (search.trim()) {
-      const t = search.trim();
-      q = q.or(`title.ilike.%${t}%,sku.ilike.%${t}%,marketplace_item_id.ilike.%${t}%`);
-    }
-    return q;
-  };
-
-  let { data, error } = await run(primaryTable);
-
-  if (error) {
-    const legacy = await run("marketplace_items");
-    if (!legacy.error) {
-      data = legacy.data;
-      error = null;
-    }
+  if (onlyActive) {
+    q = q.eq("status", "active");
   }
 
+  if (search.trim()) {
+    const t = search.trim();
+    q = q.or(`title.ilike.%${t}%,sku.ilike.%${t}%,marketplace_item_id.ilike.%${t}%`);
+  }
+
+  const { data, error } = await q;
   if (error) throw error;
   return (data ?? []).map((r: Record<string, unknown>) => mapListingRow(r));
 }

@@ -40,17 +40,28 @@ async function resolveItemPrices(
   if (needLookup.length > 0) {
     const ids = needLookup.map(i => i.marketplaceItemId);
     const isShopee = String(marketplaceName).toLowerCase() === "shopee";
-    const primaryTable = isShopee ? "marketplace_items_raw" : "marketplace_items_unified";
+    const legacyTable = isShopee ? "marketplace_items_raw" : "marketplace_items_unified";
 
     let rows: { marketplace_item_id: string; price: number | null }[] | null = null;
-    const primary = await admin
-      .from(primaryTable)
+    const canonical = await admin
+      .from("marketplace_listings")
       .select("marketplace_item_id, price")
       .eq("organizations_id", organizationId)
       .eq("marketplace_name", marketplaceName)
       .in("marketplace_item_id", ids);
-    if (!primary.error && Array.isArray(primary.data)) {
-      rows = primary.data as { marketplace_item_id: string; price: number | null }[];
+    if (!canonical.error && Array.isArray(canonical.data) && canonical.data.length) {
+      rows = canonical.data as { marketplace_item_id: string; price: number | null }[];
+    }
+    if (!rows?.length) {
+      const primary = await admin
+        .from(legacyTable)
+        .select("marketplace_item_id, price")
+        .eq("organizations_id", organizationId)
+        .eq("marketplace_name", marketplaceName)
+        .in("marketplace_item_id", ids);
+      if (!primary.error && Array.isArray(primary.data)) {
+        rows = primary.data as { marketplace_item_id: string; price: number | null }[];
+      }
     }
     if (!rows?.length) {
       const leg = await admin

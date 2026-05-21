@@ -1,5 +1,5 @@
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,8 @@ interface EstoqueTabProps {
   /** "todos" or storage row id — aligns filter with stock_by_location.storage_id */
   selectedWarehouseFilter: string;
   selectedCategory: string;
+  initialProductIdToManage?: string | null;
+  onInitialProductIdHandled?: () => void;
 }
 
 /** Resolve catalog storage id for a stock row (prefer storage_id; fallback name match). */
@@ -32,7 +34,14 @@ function resolveStorageIdForRow(
   return hit ? String(hit.id) : null;
 }
 
-export function StockTab({ activeFilter, searchTerm, selectedWarehouseFilter, selectedCategory }: EstoqueTabProps) {
+export function StockTab({
+  activeFilter,
+  searchTerm,
+  selectedWarehouseFilter,
+  selectedCategory,
+  initialProductIdToManage = null,
+  onInitialProductIdHandled,
+}: EstoqueTabProps) {
   const { stockData, loading, error, refetch } = useStockData();
   const { storageLocations } = useStorage();
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
@@ -168,6 +177,16 @@ export function StockTab({ activeFilter, searchTerm, selectedWarehouseFilter, se
     // Por enquanto, vamos apenas recarregar os dados
     await refetch();
   };
+
+  useEffect(() => {
+    if (!initialProductIdToManage) return;
+    const target = transformedData.find((item) => String(item.id) === String(initialProductIdToManage));
+    if (target) {
+      setSelectedProduct(target);
+      setIsDrawerOpen(true);
+    }
+    onInitialProductIdHandled?.();
+  }, [initialProductIdToManage, transformedData, onInitialProductIdHandled]);
 
   if (loading) {
     return (
