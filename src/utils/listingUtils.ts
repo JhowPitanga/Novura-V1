@@ -1,4 +1,4 @@
-import type { ListingItem, ShippingCaps } from "@/types/listings";
+import type { ListingItem, PublicationFeeDetails, ShippingCaps } from "@/types/listings";
 
 // ─── Marketplace slug / display name ────────────────────────────────────────
 
@@ -22,6 +22,24 @@ export function marketplaceDisplayNameFromSlug(slug: string): string {
 
 // ─── Price parsing ─────────────────────────────────────────────────────────
 
+const feeFmt = (val: number) =>
+    new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(val);
+
+/** Inline label for marketplace_listing_fees (commission % + fixed fee). */
+export function formatListingFeeLine(details: PublicationFeeDetails | null | undefined): string {
+    if (!details) return "—";
+    const pct =
+        details.percentage != null && Number.isFinite(Number(details.percentage))
+            ? `${String(details.percentage).replace(".", ",")}%`
+            : null;
+    const fixed =
+        details.fixedFee != null && Number(details.fixedFee) > 0 ? feeFmt(Number(details.fixedFee)) : null;
+    if (pct && fixed) return `${pct} + ${fixed}`;
+    if (pct) return pct;
+    if (fixed) return fixed;
+    return "—";
+}
+
 /** Parses a price string (pt-BR or plain number) to a number. */
 export function parsePriceToNumber(price: string): number {
   const s = String(price || "").replace(/\./g, "").replace(/,/g, ".");
@@ -39,8 +57,8 @@ export function getQualityStrokeColor(level?: any): string {
         return '#6B7280';
     }
     const s = String(level || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    if (s === '1' || s.includes('bas') || s === 'to_be_improved') return '#EF4444';
-    if (s === '2' || s.includes('satis') || s === 'qualified') return '#F59E0B';
+    if (s === '1' || s.includes('bas') || s === 'to_be_improved' || s === 'low' || s === 'incomplete') return '#EF4444';
+    if (s === '2' || s.includes('satis') || s === 'qualified' || s === 'good' || s === 'medium') return '#F59E0B';
     if (s === '3' || s.includes('prof') || s === 'excellent') return '#7C3AED';
     return '#6B7280';
 }
@@ -52,10 +70,25 @@ export function getQualityLabel(level?: any): string {
         if (level === 3) return 'Excelente';
     }
     const s = String(level || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    if (s === '1' || s.includes('bas') || s === 'to_be_improved') return 'Precisa de Melhoria';
-    if (s === '2' || s.includes('satis') || s === 'qualified') return 'Qualificado';
+    if (s === '1' || s.includes('bas') || s === 'to_be_improved' || s === 'low' || s === 'incomplete') return 'Precisa de Melhoria';
+    if (s === '2' || s.includes('satis') || s === 'qualified' || s === 'good' || s === 'medium') return 'Qualificado';
     if (s === '3' || s.includes('prof') || s === 'excellent') return 'Excelente';
     return '';
+}
+
+/** Maps canonical enum (or Shopee numeric tier) to gauge display tier 1|2|3. */
+export function qualityLevelForGauge(level: string | number | null | undefined, marketplace?: string): number | string | null {
+    if (level == null) return null;
+    const mkt = String(marketplace || '').toLowerCase();
+    const num = typeof level === 'number' ? level : Number(level);
+    if (Number.isFinite(num) && num >= 1 && num <= 3) return num;
+    const s = String(level).toLowerCase();
+    if (mkt.includes('shopee')) {
+        if (s === 'excellent') return 3;
+        if (s === 'good' || s === 'medium') return 2;
+        if (s === 'low' || s === 'incomplete') return 1;
+    }
+    return level;
 }
 
 // ─── Translation Helpers ───────────────────────────────────────────────────
@@ -130,6 +163,17 @@ export function toSlug(displayName: string): string {
         .replace(/\p{Diacritic}/gu, '')
         .replace(/\s+/g, '_')
         .replace(/[^a-z0-9_]/g, '');
+}
+
+/** Nav path `/mercado_livre` → slug `mercado_livre` for URL search params */
+export function slugFromMarketplacePath(path: string): string {
+    return String(path || "").replace(/^\//, "").trim();
+}
+
+/** Slug `mercado_livre` → nav path `/mercado_livre` */
+export function marketplacePathFromSlug(slug: string): string {
+    const s = String(slug || "").replace(/^\//, "").trim();
+    return s ? `/${s}` : "";
 }
 
 export function toPublicationLabel(listingTypeId?: string | null): string | null {
@@ -256,7 +300,15 @@ export function formatVariationData(variations: any[], itemRow?: any): Variation
         : (itemRow?.thumbnail || "/placeholder.svg");
 
     return variations.map((variation, index) => {
-        const attributes = Array.isArray(variation.attribute_combinations) ? variation.attribute_combinations : [];
+        const attributes = Array.isArray(variation.attribute_combinations)
+            ? variation.attribute_combinations
+            : Array.isArray(variation.attributes)
+              ? variation.attributes.map((a: any) => ({
+                  id: a.id ?? a.attribute_id,
+                  name: a.name ?? a.attribute_name,
+                  value_name: a.value_name ?? a.value,
+                }))
+              : [];
         const types = attributes.length > 0
             ? attributes.map((attr: any) => ({ name: attr.name || attr.id || 'Tipo', value: attr.value_name || attr.value || 'N/A' }))
             : (() => {
@@ -264,7 +316,7 @@ export function formatVariationData(variations: any[], itemRow?: any): Variation
                 return vname ? [{ name: 'Variação', value: vname }] : [];
               })();
 
-        let imageUrl: string | null = null;
+        let imageUrl: string | null = variation?.image_url ?? null;
         const pictureIds = Array.isArray(variation?.picture_ids) ? variation.picture_ids : (variation?.picture_id ? [variation.picture_id] : []);
         if (pictureIds.length > 0) {
             const pid = pictureIds[0];
@@ -304,7 +356,7 @@ export function formatVariationData(variations: any[], itemRow?: any): Variation
         }
 
         return {
-            id: variation.model_id || variation.id || `var-${index}`,
+            id: variation.model_id || variation.variation_id || variation.id || `var-${index}`,
             sku: variation.model_sku || variation.seller_sku || variation.sku || "N/A",
             available_quantity: availableQty,
             seller_stock_total: Number.isFinite(Number(sellerTotal)) ? Number(sellerTotal) : availableQty,
@@ -411,8 +463,153 @@ interface ParseListingRowContext {
     shippingCaps: ShippingCaps | null;
 }
 
+function isCanonicalListingRow(row: any): boolean {
+    return (
+        row != null &&
+        typeof row === 'object' &&
+        row.marketplace_item_id != null &&
+        (row.shipping != null || row.metrics != null || row.quality != null)
+    );
+}
+
+function canonicalLogisticToTag(t: string): string {
+    const x = String(t || '').toLowerCase();
+    if (x === 'shopee_xpress') return 'xpress';
+    return x;
+}
+
+function qualityLevelToPercent(level: string | null | undefined, score: number | null | undefined): number {
+    if (score != null && Number.isFinite(Number(score))) {
+        const n = Number(score);
+        return Math.max(0, Math.min(100, n <= 1 ? n * 100 : n));
+    }
+    const map: Record<string, number> = {
+        excellent: 100,
+        good: 76,
+        medium: 50,
+        low: 25,
+        incomplete: 10,
+        unknown: 0,
+    };
+    return map[String(level || '').toLowerCase()] ?? 0;
+}
+
+/** Parse a row from marketplace_listings + joined child tables. */
+function parseCanonicalListingRow(row: any, ctx: ParseListingRowContext): ListingItem {
+    const idVal = String(row?.marketplace_item_id || row?.id || '');
+    const mktLower = String(row?.marketplace_name || '').toLowerCase();
+    const shipping = row?.shipping ?? {};
+    const metrics = row?.metrics ?? {};
+    const quality = row?.quality ?? {};
+    const fees = row?.fees ?? {};
+
+    const pics = Array.isArray(row?.pictures) ? row.pictures : [];
+    const firstPic =
+        row?.thumbnail_url ||
+        (pics[0]?.secure_url || pics[0]?.url) ||
+        '/placeholder.svg';
+
+    const priceNum = typeof row?.price === 'number' ? row.price : (Number(row?.price) || 0);
+    const originalPrice =
+        row?.original_price != null ? Number(row.original_price) : null;
+    const promoPrice = row?.promo_price != null ? Number(row.promo_price) : null;
+
+    let shippingTags: string[] = [];
+    if (Array.isArray(shipping?.logistic_types) && shipping.logistic_types.length) {
+        shippingTags = shipping.logistic_types.map((t: string) => canonicalLogisticToTag(t));
+    } else if (shipping?.logistic_type) {
+        shippingTags = [canonicalLogisticToTag(shipping.logistic_type)];
+    }
+    if (ctx.shippingCaps && shippingTags.length) {
+        const has = (v?: boolean) => v === undefined || v === true;
+        shippingTags = shippingTags.filter((t) => {
+            if (t === 'full') return has(ctx.shippingCaps!.full);
+            if (t === 'flex') return has(ctx.shippingCaps!.flex);
+            if (t === 'envios') return has(ctx.shippingCaps!.envios);
+            if (t === 'correios') return has(ctx.shippingCaps!.correios);
+            return true;
+        });
+    }
+
+    const listingTypeId = row?.listing_type_id ? String(row.listing_type_id) : null;
+    const publicationTypeLabel = toPublicationLabel(listingTypeId);
+
+    const commission = Number(fees?.commission_amount ?? fees?.total_fees_estimated ?? 0);
+    const shippingSubsidy = Number(fees?.shipping_subsidy ?? 0);
+    const publicationCosts = {
+        currency: String(fees?.currency || 'BRL'),
+        commission,
+        shippingCost: shippingSubsidy,
+        tax: 0,
+        total: commission + shippingSubsidy,
+    };
+    const publicationFeeDetails = {
+        currency: String(fees?.currency || 'BRL'),
+        percentage: fees?.commission_percentage ?? null,
+        fixedFee: fees?.commission_fixed_fee ?? null,
+        grossAmount: fees?.total_fees_estimated ?? null,
+    };
+
+    const qualityPercent = qualityLevelToPercent(quality?.quality_level, quality?.quality_score);
+    const persistedLevel = qualityLevelForGauge(quality?.quality_level, row?.marketplace_name) ?? quality?.quality_level ?? null;
+
+    const visitsVal = Number(metrics?.visits_total ?? 0);
+    const salesVal = Number(metrics?.sales_total ?? row?.sold_quantity ?? 0);
+    const likesVal = Number(metrics?.likes_total ?? 0);
+    const stockVal = Number(row?.available_quantity ?? 0);
+
+    const displayStatus = String(row?.status_raw || row?.status || '');
+
+    const convRaw = Number(metrics?.conversion_rate ?? 0);
+    const conversionPct =
+        convRaw > 0 && convRaw <= 1
+            ? convRaw * 100
+            : convRaw > 1
+              ? convRaw
+              : visitsVal > 0
+                ? (salesVal / visitsVal) * 100
+                : 0;
+
+    return {
+        id: idVal,
+        title: row?.title || 'Sem título',
+        sku: row?.sku || '',
+        marketplace: String(row?.marketplace_name || 'Mercado Livre'),
+        price: priceNum,
+        originalPrice: originalPrice && originalPrice > priceNum ? originalPrice : null,
+        promoPrice: promoPrice ?? (originalPrice && originalPrice > priceNum ? priceNum : null),
+        status: displayStatus,
+        visits: visitsVal,
+        questions: 0,
+        sales: salesVal,
+        likes: likesVal,
+        stock: stockVal,
+        marketplaceId: idVal,
+        integrationId: row?.integration_id ?? null,
+        image: firstPic,
+        shippingTags,
+        quality: Math.round(qualityPercent),
+        qualityLevel: persistedLevel,
+        performanceData: {
+            quality_level: persistedLevel,
+            unfinished_tasks: quality?.unfinished_tasks,
+        },
+        conversion: conversionPct,
+        pauseReason: row?.pause_reason ? translatePauseReason(String(row.pause_reason)) : null,
+        publicationType: publicationTypeLabel,
+        publicationCosts,
+        publicationFeeDetails,
+        permalink: row?.permalink || null,
+        fulfillmentQty: null,
+        fulfillmentWarehouseName: null,
+    };
+}
+
 /** Transform a raw DB row into an enriched ListingItem for display. */
 export function parseListingRow(row: any, ctx: ParseListingRowContext): ListingItem {
+    if (isCanonicalListingRow(row)) {
+        return parseCanonicalListingRow(row, ctx);
+    }
     const idVal = String(row?.marketplace_item_id || row?.id || '');
     const mktLower = String(row?.marketplace_name || '').toLowerCase();
 
@@ -561,6 +758,7 @@ export function parseListingRow(row: any, ctx: ParseListingRowContext): ListingI
         likes: likesVal,
         stock: stockVal,
         marketplaceId: row?.marketplace_item_id || "",
+        integrationId: row?.integration_id ?? null,
         image: firstPic || "/placeholder.svg",
         shippingTags,
         quality: Math.round(qualityPercent),
