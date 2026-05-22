@@ -1,19 +1,28 @@
 import { User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
+import { ACCESS_CONTEXT_CACHE_TTL_MS } from "@/lib/accessContext";
 
 export interface AccessContext {
   organization_id: string | null;
   permissions: Record<string, Record<string, boolean>>;
   role: string;
+  /** @deprecated Use global_role — now derived from JWT app_metadata.role */
   global_role: string | null;
+  /** admin_role from JWT app_metadata.role (super_admin or null) */
+  admin_role: string | null;
   module_switches: Record<string, any>;
   display_name: string | null;
+  org_blocked: boolean;
 }
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_TTL_MS = ACCESS_CONTEXT_CACHE_TTL_MS;
 
 function getCacheKey(userId: string): string {
   return `access_context:${userId}`;
+}
+
+export function clearAccessContextCache(userId: string): void {
+  sessionStorage.removeItem(getCacheKey(userId));
 }
 
 export function getCachedAccessContext(
@@ -34,9 +43,11 @@ export function getCachedAccessContext(
         organization_id: parsed.organization_id || null,
         permissions: parsed.permissions || {},
         role: parsed.role || "member",
-        global_role: parsed.global_role || null,
+        global_role: parsed.admin_role || parsed.global_role || null,
+        admin_role: parsed.admin_role || null,
         module_switches: parsed.module_switches || {},
         display_name: parsed.display_name || null,
+        org_blocked: parsed.org_blocked || false,
       };
     }
   } catch {
@@ -57,15 +68,19 @@ export function cacheAccessContext(
 }
 
 export async function fetchAccessContext(
-  userId: string
+  userId: string,
+  options?: { bypassCache?: boolean },
 ): Promise<AccessContext> {
+  if (options?.bypassCache) clearAccessContextCache(userId);
   const defaults: AccessContext = {
     organization_id: null,
     permissions: {},
     role: "member",
     global_role: null,
+    admin_role: null,
     module_switches: {},
     display_name: null,
+    org_blocked: false,
   };
 
   // @ts-expect-error – RPC not typed by Supabase codegen yet
@@ -73,24 +88,65 @@ export async function fetchAccessContext(
     p_user_id: userId,
   });
 
-  if (error) return defaults;
+  if (error) {
+    console.warn("[auth] rpc_get_user_access_context failed:", error.message);
+    return defaults;
+  }
 
   const ctx = Array.isArray(data) ? data?.[0] : data;
   if (!ctx) return defaults;
 
+  const organizationId = ctx.organization_id || null;
+  let moduleSwitches = ctx.module_switches || {};
+
+  if (organizationId) {
+    moduleSwitches = await resolveEffectiveModuleSwitches(
+      organizationId,
+      moduleSwitches as Record<string, unknown>,
+    );
+  }
+
   const result: AccessContext = {
-    organization_id: ctx.organization_id || null,
+    organization_id: organizationId,
     permissions: ctx.permissions || {},
     role: ctx.role || "member",
-    global_role: ctx.global_role || null,
-    module_switches: ctx.module_switches || {},
+    global_role: ctx.admin_role || ctx.global_role || null,
+    admin_role: ctx.admin_role || null,
+    module_switches: moduleSwitches,
     display_name: ctx.display_name || null,
+    org_blocked: ctx.org_blocked || false,
   };
 
-  cacheAccessContext(userId, ctx);
+  cacheAccessContext(userId, {
+    ...ctx,
+    organization_id: organizationId,
+    module_switches: moduleSwitches,
+  });
   return result;
 }
 
+/** Recomputes switches from system_modules + organization_features (server-side truth). */
+async function resolveEffectiveModuleSwitches(
+  organizationId: string,
+  memberSwitches: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  try {
+    // @ts-expect-error – RPC not in generated types yet
+    const { data, error } = await supabase.rpc("build_effective_module_switches", {
+      p_organization_id: organizationId,
+      p_member_switches: memberSwitches ?? {},
+    });
+    if (!error && data && typeof data === "object") {
+      return data as Record<string, unknown>;
+    }
+    if (error) {
+      console.warn("[auth] build_effective_module_switches:", error.message);
+    }
+  } catch (e) {
+    console.warn("[auth] build_effective_module_switches exception:", e);
+  }
+  return memberSwitches;
+}
 export async function loadAccessContext(
   user: User | null
 ): Promise<AccessContext | null> {

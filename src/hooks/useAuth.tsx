@@ -1,15 +1,20 @@
 import { useToast } from '@/hooks/use-toast';
 import { Session, User } from '@supabase/supabase-js';
-import { ReactNode, createContext, useContext, useEffect, useRef, useState } from 'react';
+import { ReactNode, createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '../integrations/supabase/client';
 import {
     loadAccessContext as loadAccessContextService,
+    fetchAccessContext,
     ensureEditorRecord,
     ensurePublicUserRecord,
     bootstrapUserOrg,
-    cacheAccessContext,
+    clearAccessContextCache,
     type AccessContext,
 } from '@/services/auth.service';
+import {
+    ACCESS_CONTEXT_POLL_INTERVAL_MS,
+    ACCESS_CONTEXT_REALTIME_DEBOUNCE_MS,
+} from '@/lib/accessContext';
 
 interface AuthState {
     organizationId: string | null;
@@ -34,8 +39,9 @@ interface AuthContextType {
     session: Session | null;
     loading: boolean;
     signUp: (email: string, password: string, meta?: Record<string, any>) => Promise<{ error: any, userId?: string }>;
-    signIn: (email: string, password: string) => Promise<{ error: any }>;
+    signIn: (email: string, password: string) => Promise<{ error: any; globalRole?: string | null }>;
     signOut: () => Promise<void>;
+    refreshAccessContext: () => Promise<void>;
     organizationId: string | null;
     permissions: Record<string, Record<string, boolean>> | null;
     userRole: string | null;
@@ -65,65 +71,124 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [authState, setAuthState] = useState<AuthState>(emptyAuthState);
     const { toast } = useToast();
     const initDoneRef = useRef(false);
+    const userRef = useRef<User | null>(null);
 
-    async function loadContext(u: User | null) {
+    useEffect(() => {
+        userRef.current = user;
+    }, [user]);
+
+    const loadContext = useCallback(async (u: User | null, forceRefresh = false) => {
+        if (!u) {
+            setAuthState(emptyAuthState);
+            return;
+        }
         try {
-            const ctx = await loadAccessContextService(u);
+            if (forceRefresh) clearAccessContextCache(u.id);
+            const ctx = forceRefresh
+                ? await fetchAccessContext(u.id, { bypassCache: true })
+                : await loadAccessContextService(u);
             setAuthState(applyAccessContext(ctx));
         } catch {
             setAuthState({ ...emptyAuthState, permissions: {}, userRole: 'member' });
         }
-    }
+    }, []);
 
-    // Real-time membership updates
+    const refreshAccessContext = useCallback(async () => {
+        const u = userRef.current;
+        if (!u) return;
+        await loadContext(u, true);
+    }, [loadContext]);
+
+    // Realtime + poll: module flags, org features, membership, global modules
     useEffect(() => {
-        if (!user || !authState.organizationId) return;
+        const u = user;
+        const orgId = authState.organizationId;
+        const isSuperAdmin = authState.globalRole === 'super_admin';
+
+        if (!u?.id || !orgId || isSuperAdmin) return;
+
+        let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+        const scheduleRefresh = () => {
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                loadContext(u, true).catch((e) => {
+                    console.warn('Failed to refresh access context:', e);
+                });
+            }, ACCESS_CONTEXT_REALTIME_DEBOUNCE_MS);
+        };
 
         const channel = supabase
-            .channel(`org-membership-${user.id}`)
+            .channel(`access-context-${u.id}`)
             .on(
                 'postgres_changes',
                 {
                     event: '*',
                     schema: 'public',
                     table: 'organization_members',
-                    filter: `user_id=eq.${user.id}`,
+                    filter: `user_id=eq.${u.id}`,
                 },
-                (payload) => {
-                    try {
-                        const row = (payload.new as any) ?? (payload.old as any) ?? {};
-                        if (row?.organization_id !== authState.organizationId) return;
-
-                        setAuthState(prev => ({
-                            ...prev,
-                            permissions: row?.permissions || {},
-                            userRole: row?.role || 'member',
-                            moduleSwitches: row?.module_switches || {},
-                        }));
-
-                        // Update cache
-                        const cacheKey = `access_context:${user.id}`;
-                        const raw = sessionStorage.getItem(cacheKey);
-                        let prev: any = null;
-                        if (raw) { try { prev = JSON.parse(raw); } catch {} }
-                        cacheAccessContext(user.id, {
-                            ...(prev || {}),
-                            organization_id: authState.organizationId,
-                            permissions: row?.permissions || {},
-                            role: row?.role || 'member',
-                            module_switches: row?.module_switches || {},
-                        });
-                    } catch (e) {
-                        console.warn('Failed to process real-time permission update:', e);
-                    }
-                }
+                scheduleRefresh,
+            )
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'organization_features',
+                    filter: `organization_id=eq.${orgId}`,
+                },
+                scheduleRefresh,
+            )
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'organization_status',
+                    filter: `organization_id=eq.${orgId}`,
+                },
+                scheduleRefresh,
+            )
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'system_modules' },
+                scheduleRefresh,
+            )
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'system_features' },
+                scheduleRefresh,
             )
             .subscribe();
 
-        return () => {
-            try { supabase.removeChannel(channel); } catch { /* noop */ }
+        const pollIfVisible = () => {
+            if (document.visibilityState !== 'visible') return;
+            loadContext(u, true).catch((e) => {
+                console.warn('Failed to poll access context:', e);
+            });
         };
-    }, [user?.id, authState.organizationId]);
+
+        const pollId = window.setInterval(pollIfVisible, ACCESS_CONTEXT_POLL_INTERVAL_MS);
+        const onFocus = () => pollIfVisible();
+        const onVisibility = () => {
+            if (document.visibilityState === 'visible') pollIfVisible();
+        };
+
+        window.addEventListener('focus', onFocus);
+        document.addEventListener('visibilitychange', onVisibility);
+
+        return () => {
+            if (debounceTimer) clearTimeout(debounceTimer);
+            window.clearInterval(pollId);
+            window.removeEventListener('focus', onFocus);
+            document.removeEventListener('visibilitychange', onVisibility);
+            try {
+                supabase.removeChannel(channel);
+            } catch {
+                /* noop */
+            }
+        };
+    }, [user?.id, authState.organizationId, authState.globalRole, loadContext]);
 
     useEffect(() => {
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -136,6 +201,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                         await loadContext(currentUser);
                         setLoading(false);
                         initDoneRef.current = true;
+                    } else if (event === 'SIGNED_IN' && currentUser) {
+                        await loadContext(currentUser, true);
                     }
                 })();
             }
@@ -153,7 +220,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
 
         return () => subscription.unsubscribe();
-    }, []);
+    }, [loadContext]);
 
     const signUp = async (email: string, password: string, meta?: Record<string, any>) => {
         try {
@@ -187,7 +254,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 await ensureEditorRecord(createdUser);
                 await ensurePublicUserRecord(createdUser);
                 await bootstrapUserOrg(createdUser.id);
-                await loadContext(createdUser);
+                await loadContext(createdUser, true);
             }
 
             return { error: null, userId: createdUser?.id };
@@ -200,6 +267,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const signIn = async (email: string, password: string) => {
         try {
             const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+            let globalRole: string | null = null;
 
             if (error) {
                 let message = 'Erro ao fazer login';
@@ -217,13 +285,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 toast({ title: "Login realizado com sucesso!", description: "Bem-vindo de volta." });
                 const currentUser = data?.user ?? (await supabase.auth.getUser()).data.user;
                 if (currentUser) {
+                    globalRole = String((currentUser.app_metadata as any)?.role || "") || null;
                     await ensureEditorRecord(currentUser);
                     await ensurePublicUserRecord(currentUser);
-                    await loadContext(currentUser);
+                    await loadContext(currentUser, true);
                 }
             }
 
-            return { error };
+            return { error, globalRole };
         } catch (err) {
             console.error('SignIn error:', err);
             return { error: err };
@@ -237,6 +306,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const signOut = async () => {
         try {
+            const userId = userRef.current?.id;
             const { data: { session } } = await supabase.auth.getSession();
 
             if (!session) {
@@ -246,17 +316,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 if (error) throw error;
             }
 
+            if (userId) clearAccessContextCache(userId);
             resetAndToastLogout();
         } catch (err: any) {
             const msg = String(err?.message || '').toLowerCase();
 
             if (msg.includes('auth session missing')) {
                 try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* no-op */ }
+                if (userRef.current?.id) clearAccessContextCache(userRef.current.id);
                 resetAndToastLogout();
                 return;
             }
 
             if (err?.name === 'AbortError' || msg.includes('abort') || msg.includes('aborted')) {
+                if (userRef.current?.id) clearAccessContextCache(userRef.current.id);
                 resetAndToastLogout();
                 return;
             }
@@ -273,6 +346,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signUp,
         signIn,
         signOut,
+        refreshAccessContext,
         organizationId: authState.organizationId,
         permissions: authState.permissions,
         userRole: authState.userRole,

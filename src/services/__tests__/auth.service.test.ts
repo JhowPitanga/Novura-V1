@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { ACCESS_CONTEXT_CACHE_TTL_MS } from "@/lib/accessContext";
 import {
   getCachedAccessContext,
   cacheAccessContext,
@@ -40,7 +41,7 @@ describe("auth.service", () => {
         global_role: null,
         module_switches: {},
         display_name: "Test",
-        cachedAt: Date.now() - 6 * 60 * 1000, // 6 minutes ago
+        cachedAt: Date.now() - ACCESS_CONTEXT_CACHE_TTL_MS - 1000,
       };
       sessionStorage.setItem(
         "access_context:user-1",
@@ -58,7 +59,7 @@ describe("auth.service", () => {
         global_role: "nv_superadmin",
         module_switches: {},
         display_name: "Test User",
-        cachedAt: Date.now() - 2 * 60 * 1000, // 2 minutes ago
+        cachedAt: Date.now() - Math.floor(ACCESS_CONTEXT_CACHE_TTL_MS / 2),
       };
       sessionStorage.setItem(
         "access_context:user-1",

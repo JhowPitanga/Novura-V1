@@ -67,17 +67,17 @@ describe("usePermissions", () => {
       expect(result.current.hasPermission("produtos", "delete")).toBe(false);
     });
 
-    it("returns true for novura_admin only for nv_superadmin", () => {
+    it("returns true for novura_admin only for super_admin", () => {
       mockAuthReturn.globalRole = null;
       const { result: r1 } = renderHook(() => usePermissions());
       expect(r1.current.hasPermission("novura_admin", "view")).toBe(false);
 
-      mockAuthReturn.globalRole = "nv_superadmin";
+      mockAuthReturn.globalRole = "super_admin";
       const { result: r2 } = renderHook(() => usePermissions());
       expect(r2.current.hasPermission("novura_admin", "view")).toBe(true);
     });
 
-    it("restricts to view-only when module switch is disabled", () => {
+    it("blocks access when module switch is disabled", () => {
       mockAuthReturn.permissions = {
         produtos: { view: true, edit: true },
       };
@@ -85,13 +85,46 @@ describe("usePermissions", () => {
         global: { produtos: { active: false } },
       };
       const { result } = renderHook(() => usePermissions());
-      expect(result.current.hasPermission("produtos", "view")).toBe(true);
+      expect(result.current.hasPermission("produtos", "view")).toBe(false);
       expect(result.current.hasPermission("produtos", "edit")).toBe(false);
+    });
+
+    it("blocks owner when module switch is disabled", () => {
+      mockAuthReturn.permissions = { produtos: { view: true, edit: true } };
+      mockAuthReturn.userRole = "owner";
+      mockAuthReturn.moduleSwitches = {
+        global: { produtos: { active: false } },
+      };
+      const { result } = renderHook(() => usePermissions());
+      expect(result.current.hasModuleAccess("produtos")).toBe(false);
+    });
+
+    it("grants access when org module switch is on even without member permissions", () => {
+      mockAuthReturn.permissions = {};
+      mockAuthReturn.userRole = "member";
+      mockAuthReturn.moduleSwitches = {
+        global: { anuncios: { active: true } },
+      };
+      const { result } = renderHook(() => usePermissions());
+      expect(result.current.hasModuleAccess("anuncios")).toBe(true);
+      expect(result.current.hasPermission("anuncios", "view")).toBe(true);
+      expect(result.current.hasAnyPermission("anuncios", ["view"])).toBe(true);
+    });
+
+    it("denies access when org module switch is off even with member view permission", () => {
+      mockAuthReturn.permissions = { anuncios: { view: true } };
+      mockAuthReturn.userRole = "member";
+      mockAuthReturn.moduleSwitches = {
+        global: { anuncios: { active: false } },
+      };
+      const { result } = renderHook(() => usePermissions());
+      expect(result.current.hasModuleAccess("anuncios")).toBe(false);
+      expect(result.current.hasPermission("anuncios", "view")).toBe(false);
     });
 
     it("superadmin bypasses disabled module switch", () => {
       mockAuthReturn.permissions = { produtos: { view: true } };
-      mockAuthReturn.globalRole = "nv_superadmin";
+      mockAuthReturn.globalRole = "super_admin";
       mockAuthReturn.moduleSwitches = {
         global: { produtos: { active: false } },
       };

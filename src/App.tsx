@@ -11,7 +11,10 @@ import { Suspense, lazy } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
+import { AdminLoadingShell } from "@/components/admin/shell/AdminLoadingShell";
+import { isAdminConsolePath } from "@/lib/adminConsole";
 import { Loader2 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Performance = lazy(() => import("./pages/Performance"));
 const MarketResearch = lazy(() => import("./pages/MarketResearch"));
@@ -35,7 +38,17 @@ const Landing = lazy(() => import("./pages/Landing"));
 const Login = lazy(() => import("./pages/Login"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const NovuraAcademy = lazy(() => import("./pages/NovuraAcademy"));
-const NovuraAdmin = lazy(() => import("./pages/NovuraAdmin"));
+import { AdminLayout } from "./pages/admin/AdminLayout";
+const AdminOverview = lazy(() =>
+  import("./pages/admin/AdminOverview").then((m) => ({ default: m.AdminOverview })),
+);
+const AdminOrganizations = lazy(() =>
+  import("./pages/admin/AdminOrganizations").then((m) => ({ default: m.AdminOrganizations })),
+);
+const AdminFeatureFlagsPlans = lazy(() =>
+  import("./pages/admin/AdminFeatureFlagsPlans").then((m) => ({ default: m.AdminFeatureFlagsPlans })),
+);
+const AdminOrders = lazy(() => import("./pages/admin/AdminOrders").then((m) => ({ default: m.AdminOrders })));
 const ProductDetailsPage = lazy(() => import("./pages/ProductDetailsPage"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NewCompany = lazy(() => import("./pages/NewCompany"));
@@ -57,23 +70,43 @@ const queryClient = new QueryClient({
   },
 });
 
-// Fallback de carregamento para módulos protegidos mantendo o Sidebar fixo
-const ModuleLoadingFallback = () => (
-  <SidebarProvider>
-    <div className="min-h-screen flex w-full bg-gray-50">
-      <AppSidebar />
-      <div className="flex-1 flex flex-col">
-        <GlobalHeader />
-        <main className="flex-1 p-6 overflow-auto flex items-center justify-center">
-          <div className="text-center">
-            <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
-            <p className="text-gray-600">Carregando módulo...</p>
-          </div>
-        </main>
-      </div>
+const AdminPageFallback = () => (
+  <div className="space-y-4">
+    <Skeleton className="h-8 w-48" />
+    <div className="grid grid-cols-4 gap-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <Skeleton key={i} className="h-24 rounded-lg" />
+      ))}
     </div>
-  </SidebarProvider>
+    <Skeleton className="h-64 rounded-lg" />
+  </div>
 );
+
+// Fallback de carregamento para módulos protegidos mantendo o Sidebar fixo
+const ModuleLoadingFallback = () => {
+  const { pathname } = useLocation();
+
+  if (isAdminConsolePath(pathname)) {
+    return <AdminLoadingShell message="Carregando módulo..." />;
+  }
+
+  return (
+    <SidebarProvider>
+      <div className="min-h-screen flex w-full bg-gray-50">
+        <AppSidebar />
+        <div className="flex-1 flex flex-col">
+          <GlobalHeader />
+          <main className="flex-1 p-6 overflow-auto flex items-center justify-center">
+            <div className="text-center">
+              <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
+              <p className="text-gray-600">Carregando módulo...</p>
+            </div>
+          </main>
+        </div>
+      </div>
+    </SidebarProvider>
+  );
+};
 
 const LegacyCompanyRouteRedirect = () => {
   const location = useLocation();
@@ -483,17 +516,53 @@ const App = () => (
               }
             />
             <Route
-              path="/novura-admin/*"
+              path="/novura-admin"
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="novura_admin" actions={["view"]}>
-                    <Suspense fallback={<ModuleLoadingFallback />}>
-                      <NovuraAdmin />
-                    </Suspense>
+                    <AdminLayout />
                   </RestrictedRoute>
                 </ProtectedRoute>
               }
-            />
+            >
+              <Route
+                index
+                element={
+                  <Suspense fallback={<AdminPageFallback />}>
+                    <AdminOverview />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="organizacoes"
+                element={
+                  <Suspense fallback={<AdminPageFallback />}>
+                    <AdminOrganizations />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="flags-planos"
+                element={
+                  <Suspense fallback={<AdminPageFallback />}>
+                    <AdminFeatureFlagsPlans />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="status-engine"
+                element={
+                  <Suspense fallback={<AdminPageFallback />}>
+                    <AdminOrders />
+                  </Suspense>
+                }
+              />
+              <Route path="pedidos" element={<Navigate to="/novura-admin/status-engine" replace />} />
+              <Route path="features" element={<Navigate to="/novura-admin/flags-planos" replace />} />
+              <Route path="modulos" element={<Navigate to="/novura-admin/flags-planos" replace />} />
+              <Route path="planos" element={<Navigate to="/novura-admin/flags-planos" replace />} />
+              <Route path="*" element={<Navigate to="/novura-admin" replace />} />
+            </Route>
             <Route
               path="/comunidade/*"
               element={

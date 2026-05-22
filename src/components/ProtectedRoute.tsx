@@ -2,18 +2,26 @@
 import { useAuth } from '@/hooks/useAuth';
 import { Loader2 } from 'lucide-react';
 import { GlobalHeader } from '@/components/GlobalHeader';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { SidebarProvider } from '@/components/ui/sidebar';
 import { AppSidebar } from '@/components/AppSidebar';
+import { AdminLoadingShell } from '@/components/admin/shell/AdminLoadingShell';
+import { isAdminConsolePath } from '@/lib/adminConsole';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
 }
 
 export function ProtectedRoute({ children }: ProtectedRouteProps) {
-  const { user, loading } = useAuth();
+  const { user, loading, globalRole } = useAuth();
+  const { pathname } = useLocation();
+  const isAdmin = isAdminConsolePath(pathname);
 
   if (loading) {
+    if (isAdmin) {
+      return <AdminLoadingShell message="Carregando..." />;
+    }
+
     // Keep sidebar fixed during auth loading; show loader only in content area
     return (
       <SidebarProvider>
@@ -37,6 +45,10 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
 
   if (!user) {
     return <Navigate to="/auth" replace />;
+  }
+
+  if (globalRole === 'super_admin' && !isAdmin) {
+    return <Navigate to="/novura-admin" replace />;
   }
 
   return <>{children}</>;

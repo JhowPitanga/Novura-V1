@@ -10,15 +10,14 @@ type RestrictedRouteProps = {
 };
 
 export function RestrictedRoute({ module, actions, children, redirectTo = "/" }: RestrictedRouteProps) {
-  const { hasModuleAccess, hasAnyPermission, globalRole } = usePermissions();
+  const { hasModuleAccess, hasAnyPermission, isSuperAdmin } = usePermissions();
 
   const allowed = actions && actions.length > 0
     ? hasAnyPermission(module, actions)
     : hasModuleAccess(module);
 
   if (module === "novura_admin") {
-    if (globalRole === "nv_superadmin") return <>{children}</>;
-    if (globalRole === null) return <>{children}</>;
+    if (isSuperAdmin) return <>{children}</>;
     return <Navigate to={redirectTo} replace />;
   }
   if (!allowed) {
