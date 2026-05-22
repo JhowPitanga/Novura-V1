@@ -15,6 +15,8 @@ import { SupabaseAppCredentialsAdapter } from "../_shared/adapters/integrations/
 import { resolvePromotionsAdapter, normalizeMarketplaceKey } from "../_shared/adapters/promotions/factory.ts";
 import { upsertCampaign, getIntegrationMeta } from "../_shared/adapters/promotions/db-upsert.ts";
 import { ProviderUnsupportedError } from "../_shared/domain/promotions/promotion-types.ts";
+import { HasCapabilityUseCase } from "../_shared/application/admin/HasCapabilityUseCase.ts";
+import { SupabaseAdminRepository } from "../_shared/adapters/admin/SupabaseAdminRepository.ts";
 
 function logPromotionsCreate(event: string, data: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({
@@ -111,6 +113,19 @@ serve(async (req) => {
 
   try {
     const { organizationId, marketplaceName } = await getIntegrationMeta(admin, integrationId);
+
+    // ── Capability check: anuncios.can_create ──────────────────────────────
+    const capUseCase = new HasCapabilityUseCase(new SupabaseAdminRepository(admin));
+    const capResult = await capUseCase.execute({
+      organizationId,
+      featureKey: "anuncios",
+      capabilityKey: "can_create",
+    });
+    if (!capResult.allowed) {
+      logPromotionsCreateWarn("capability_denied", { requestId, organizationId, reason: capResult.reason });
+      return jsonResponse({ ok: false, error: "Operação não permitida para esta organização", code: "CAPABILITY_DENIED" }, 403);
+    }
+    // ──────────────────────────────────────────────────────────────────────
     const marketplaceKey = normalizeMarketplaceKey(marketplaceName);
     const adapter = resolvePromotionsAdapter(integrationId, marketplaceName, ENC_KEY_B64, integrations, appCredentials);
     logPromotionsCreate("adapter_resolved", {
