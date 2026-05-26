@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "lib": ["deno.ns", "deno.unstable", "dom"],
+    "strict": true
+  },
+  "test": {
+    "include": ["**/*.test.ts", "_shared/**/*.test.ts"]
+  }
+}

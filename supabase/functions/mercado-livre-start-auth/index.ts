@@ -1,6 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
-import { jsonResponse, handleOptions } from "../_shared/adapters/http-utils.ts";
-import { createAdminClient } from "../_shared/adapters/supabase-client.ts";
+import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
+import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
 
 function base64UrlEncode(bytes: Uint8Array): string {
   // @ts-ignore
@@ -55,7 +55,10 @@ Deno.serve(async (req) => {
     const codeVerifier = generateCodeVerifier(64);
     const codeChallenge = await sha256(codeVerifier);
 
-    // Generate state for CSRF protection and pass-through context
+    // Generate state for CSRF protection and pass-through context.
+    // IMPORTANT: pkce_verifier is NOT included in state — state travels through
+    // the browser URL (visible in history, logs, proxies). The verifier is returned
+    // directly to the caller and must be stored in sessionStorage client-side.
     const csrf = crypto.randomUUID();
     const statePayload = {
       csrf,
@@ -64,7 +67,6 @@ Deno.serve(async (req) => {
       storeName: storeName ?? null,
       connectedByUserId: connectedByUserId ?? null,
       redirect_uri: finalRedirect ?? null,
-      pkce_verifier: codeVerifier,
     };
     const state = btoa(JSON.stringify(statePayload));
 
@@ -79,7 +81,9 @@ Deno.serve(async (req) => {
       base.searchParams.set("redirect_uri", finalRedirect);
     }
 
-    return jsonResponse({ authorization_url: base.toString(), state });
+    // Return code_verifier separately so the client can store it in sessionStorage.
+    // It must never be embedded in `state` or any URL parameter.
+    return jsonResponse({ authorization_url: base.toString(), state, code_verifier: codeVerifier });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";
     return jsonResponse({ error: message }, 500);

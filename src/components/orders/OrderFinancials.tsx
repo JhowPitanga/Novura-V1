@@ -6,6 +6,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Separator } from "@/components/ui/separator";
 import { formatCurrency } from "@/utils/orderUtils";
+import type { Order } from "@/types/orders";
 
 interface FinancialDetailRowProps {
     icon: React.ElementType;
@@ -39,36 +40,37 @@ function FinancialDetailRow({ icon: Icon, label, value, isNegative, percent }: F
 }
 
 interface OrderFinancialsProps {
-    pedido: any;
-    cmvLinked: number | null;
+  order: Order;
+  cmvLinked: number | null;
 }
 
-export function OrderFinancials({ pedido, cmvLinked }: OrderFinancialsProps) {
+export function OrderFinancials({ order, cmvLinked }: OrderFinancialsProps) {
     const [expanded, setExpanded] = useState(true);
 
     const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
 
+    const fin = order.financial;
     const valorBrutoItens =
-        (pedido?.itens || []).reduce((sum: number, it: any) => sum + (toNum(it?.valor) * (toNum(it?.quantidade) || 0)), 0) ||
-        toNum(pedido?.financeiro?.valorPedido) ||
-        toNum(pedido?.valor);
+        (order.items ?? []).reduce((sum: number, it) => sum + (toNum(it.unitPrice) * (toNum(it.quantity) || 0)), 0) ||
+        toNum(fin?.orderAmount) ||
+        toNum(order.totalAmount);
 
-    const valorRecebidoFrete = toNum(pedido?.financeiro?.freteRecebido);
-    const freteCusto = toNum(pedido?.financeiro?.taxaFrete);
-    const comissaoMarketplace = toNum(pedido?.financeiro?.taxaMarketplace);
-    const saleFeeReportado = toNum(pedido?.financeiro?.saleFee);
-    const shippingFeeBuyer = toNum(pedido?.financeiro?.shippingFeeBuyer);
+    const valorRecebidoFrete = toNum(fin?.shippingReceived);
+    const freteCusto = toNum(fin?.shippingCost);
+    const comissaoMarketplace = toNum(fin?.marketplaceFee);
+    const saleFeeReportado = toNum(fin?.saleFee);
+    const shippingFeeBuyer = toNum(fin?.shippingFeeBuyer);
     const freteRecebidoLiquido = toNum(
-        pedido?.financeiro?.freteRecebidoLiquido ?? (valorRecebidoFrete - shippingFeeBuyer)
+        fin?.shippingNetReceived ?? (valorRecebidoFrete - shippingFeeBuyer)
     );
-    const impostosCalculados = toNum(pedido?.financeiro?.impostos);
-    const custoProdutosFixo = toNum(cmvLinked ?? pedido?.financeiro?.custoProdutos);
-    const custosExtras = toNum(pedido?.financeiro?.custosExtras);
-    const cupomFixo = toNum(pedido?.financeiro?.cupom);
+    const impostosCalculados = toNum(fin?.taxAmount);
+    const custoProdutosFixo = toNum(cmvLinked ?? fin?.productCost);
+    const custosExtras = toNum(fin?.extraCosts);
+    const cupomFixo = toNum(fin?.couponAmount);
 
     const isZeroed =
-        String(pedido?.status || '').toLowerCase() === 'cancelado' ||
-        String(pedido?.status || '').toLowerCase() === 'devolução';
+        String(order.status || '').toLowerCase() === 'cancelado' ||
+        String(order.status || '').toLowerCase() === 'devolução';
     const zeroIfNeeded = (n: number) => (isZeroed ? 0 : n);
 
     const impostosPercentual = valorBrutoItens > 0 ? impostosCalculados / valorBrutoItens : 0;

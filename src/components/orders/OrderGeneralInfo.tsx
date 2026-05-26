@@ -4,6 +4,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Badge } from "@/components/ui/badge";
 import { formatDateTimeSP } from "@/lib/datetime";
 import { formatShipmentStatus } from "@/utils/orderUtils";
+import type { Order } from "@/types/orders";
 
 // Light-colored badge styles used in the detail panel (distinct from table badges)
 function getDetailStatusColor(status: string): string {
@@ -45,14 +46,14 @@ function getDetailShipmentStatusColor(status: string): string {
 }
 
 interface OrderGeneralInfoProps {
-    pedido: any;
+  order: Order;
 }
 
-export function OrderGeneralInfo({ pedido }: OrderGeneralInfoProps) {
+export function OrderGeneralInfo({ order }: OrderGeneralInfoProps) {
     const [expanded, setExpanded] = useState(false);
     const [copiadoPlataforma, setCopiadoPlataforma] = useState(false);
 
-    const dataBase = pedido?.dataPagamento || pedido.data;
+    const dataBase = order.paidAt ?? order.createdAt;
     const dataFormatada = formatDateTimeSP(dataBase);
 
     return (
@@ -79,13 +80,13 @@ export function OrderGeneralInfo({ pedido }: OrderGeneralInfoProps) {
                                 <div className="flex justify-between items-center">
                                     <span className="text-gray-600 text-sm">ID da Plataforma:</span>
                                     <span className="font-mono font-semibold text-gray-900 flex items-center gap-2">
-                                        {pedido.idPlataforma}
+                                        {order.platformId}
                                         <button
                                             type="button"
                                             className="inline-flex items-center p-1 text-xs text-gray-400 hover:text-gray-600"
                                             onClick={() => {
                                                 try {
-                                                    navigator.clipboard?.writeText(String(pedido.idPlataforma ?? ""));
+                                                    navigator.clipboard?.writeText(String(order.platformId ?? ""));
                                                     setCopiadoPlataforma(true);
                                                     setTimeout(() => setCopiadoPlataforma(false), 1500);
                                                 } catch {}
@@ -105,15 +106,15 @@ export function OrderGeneralInfo({ pedido }: OrderGeneralInfoProps) {
                                 </div>
                                 <div className="flex justify-between items-center">
                                     <span className="text-gray-600 text-sm">Cidade:</span>
-                                    <span className="text-gray-900">{pedido?.shippingCity || '-'}</span>
+                                    <span className="text-gray-900">{order.shippingCity ?? '-'}</span>
                                 </div>
                                 <div className="flex justify-between items-center">
                                     <span className="text-gray-600 text-sm">Estado:</span>
-                                    <span className="text-gray-900">{pedido?.shippingState || '-'}</span>
+                                    <span className="text-gray-900">{order.shippingStateName ?? '-'}</span>
                                 </div>
                                 <div className="flex justify-between items-center">
                                     <span className="text-gray-600 text-sm">UF:</span>
-                                    <span className="text-gray-900">{pedido?.shippingUF || '-'}</span>
+                                    <span className="text-gray-900">{order.shippingStateUf ?? '-'}</span>
                                 </div>
                             </div>
                             <div className="space-y-3">
@@ -121,25 +122,25 @@ export function OrderGeneralInfo({ pedido }: OrderGeneralInfoProps) {
                                     <span className="text-gray-600 text-sm">Cliente:</span>
                                     <span className="text-gray-900 font-medium flex items-center">
                                         <User className="w-4 h-4 mr-1 text-gray-400" />
-                                        {pedido?.billing_name || pedido.cliente}
+                                        {order.customerName}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center">
                                     <span className="text-gray-600 text-sm">Status:</span>
-                                    <Badge className={getDetailStatusColor(pedido.status) + " font-bold"}>
-                                        {pedido.status}
+                                    <Badge className={getDetailStatusColor(order.status) + " font-bold"}>
+                                        {order.status}
                                     </Badge>
                                 </div>
                                 <div className="flex justify-between items-center">
                                     <span className="text-gray-600 text-sm">Status de Envio:</span>
                                     <Badge
                                         className={
-                                            pedido?.shipment_status
-                                                ? getDetailShipmentStatusColor(pedido.shipment_status) + " font-medium"
+                                            order.shipmentStatus
+                                                ? getDetailShipmentStatusColor(order.shipmentStatus) + " font-medium"
                                                 : "bg-gray-100 text-gray-800 border-gray-300"
                                         }
                                     >
-                                        {formatShipmentStatus(pedido?.shipment_status) || '-'}
+                                        {formatShipmentStatus(order.shipmentStatus) || '-'}
                                     </Badge>
                                 </div>
                             </div>

@@ -41,9 +41,9 @@ async function resolveOrderId(nota: any, organizationId: string): Promise<string
     if (mpOrderId) {
       try {
         const { data: row } = await (supabase as any)
-          .from('marketplace_orders_presented_new')
+          .from('orders')
           .select('id')
-          .eq('organizations_id', organizationId)
+          .eq('organization_id', organizationId)
           .eq('marketplace_order_id', mpOrderId)
           .limit(1)
           .maybeSingle();

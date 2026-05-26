@@ -1,4 +1,4 @@
-import { Pedido } from "@/types/orders";
+import type { Order } from "@/types/orders";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerDescription, DrawerFooter, DrawerClose } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7,10 +7,10 @@ import { OrderDetails } from "@/components/orders/OrderDetails";
 import { Copy } from "lucide-react";
 
 export interface OrderDetailsDrawerProps {
-    pedido: Pedido | null;
+    pedido: Order | null;
     onOpenChange: (open: boolean) => void;
     open: boolean;
-    onArrangeShipment?: (pedido: Pedido) => void;
+    onArrangeShipment?: (pedido: Order) => void;
 }
 
 export function OrderDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipment }: OrderDetailsDrawerProps) {
@@ -49,7 +49,7 @@ export function OrderDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipme
     if (!pedido) return null;
 
     const shippingLabel = (() => {
-        const s = String((pedido as any)?.tipoEnvio || '').toLowerCase();
+        const s = String(pedido?.shippingType ?? '').toLowerCase();
         if (s === 'full') return 'Full';
         if (s === 'flex') return 'Flex';
         if (s === 'envios') return 'Envios';
@@ -76,13 +76,13 @@ export function OrderDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipme
                     <DrawerHeader>
                         <div className="flex items-center justify-between">
                             <DrawerTitle id={titleId} tabIndex={0} data-autofocus className="flex items-center gap-2">
-                                Detalhes do Pedido #{pedido.idPlataforma}
+                                Detalhes do Pedido #{pedido.platformId}
                                 <button
                                     type="button"
                                     className="inline-flex items-center p-1 text-xs text-gray-400 hover:text-gray-600"
                                     onClick={() => {
                                         try {
-                                            const value = String(pedido.idPlataforma ?? "");
+                                            const value = String(pedido.platformId ?? "");
                                             navigator.clipboard?.writeText(value);
                                             setCopiadoPedido(true);
                                             setTimeout(() => setCopiadoPedido(false), 1500);
@@ -112,7 +112,7 @@ export function OrderDetailsDrawer({ pedido, onOpenChange, open, onArrangeShipme
                         <DrawerDescription id={descriptionId}>Informações detalhadas sobre o pedido e seus itens.</DrawerDescription>
                     </DrawerHeader>
                     <div className="p-4 space-y-6">
-                        <OrderDetails pedido={pedido} />
+                        <OrderDetails order={pedido} />
                     </div>
                     <DrawerFooter>
                         {String(pedido.marketplace || '').toLowerCase().includes('shopee') && (

@@ -8,6 +8,8 @@ import { CommandDialog, Command, CommandGroup, CommandItem, CommandInput, Comman
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { Popover, PopoverTrigger, PopoverContent, PopoverAnchor } from "@/components/ui/popover";
+import { fetchRecentOrdersSummary } from "@/services/orders.service";
+import { fetchRecentInvoicesSummary } from "@/services/invoices.service";
 
 type ChatTabProps = { channelId: string; channelName?: string; channelType?: 'dm' | 'team' };
 
@@ -503,12 +505,7 @@ return (
                                                         try {
                                                             let items: any[] = [];
                                                             if (m.id === 'Pedidos') {
-                                                                const { data } = await (supabase as any)
-                                                                    .from('marketplace_orders_presented')
-                                                                    .select('id, marketplace_order_id, customer_name, created_at, order_total')
-                                                                    .order('created_at', { ascending: false })
-                                                                    .limit(10);
-                                                                items = (data as any[]) || [];
+                                                                items = await fetchRecentOrdersSummary();
                                                             } else if (m.id === 'Produtos') {
                                                                 const { data } = await (supabase as any)
                                                                     .from('products')
@@ -524,12 +521,7 @@ return (
                                                                     .limit(10);
                                                                 items = (data as any[]) || [];
                                                             } else if (m.id === 'NotasFiscais') {
-                                                                const { data } = await (supabase as any)
-                                                                    .from('notas_fiscais')
-                                                                    .select('id, nfe_number, nfe_key, status, emission_date')
-                                                                    .order('emission_date', { ascending: false })
-                                                                    .limit(10);
-                                                                items = (data as any[]) || [];
+                                                                items = await fetchRecentInvoicesSummary();
                                                             }
                                                             setModuleItems(items);
                                                         } catch {
@@ -576,7 +568,7 @@ return (
                                                         >
                                                             <div className="flex items-center justify-between">
                                                                 <span className="truncate">
-                                                                    {selectedModule === 'Pedidos' && `${it.marketplace_order_id || it.id} — ${it.customer_name || ''}`}
+                                                                    {selectedModule === 'Pedidos' && `${it.marketplace_order_id || it.id} — ${it.buyer_name || ''}`}
                                                                     {selectedModule === 'Produtos' && `${it.sku || it.name || it.id}`}
                                                                     {selectedModule === 'Anúncios' && `${it.sku || it.title || it.marketplace_item_id || it.id}`}
                                                                     {selectedModule === 'NotasFiscais' && `${it.nfe_number || ''} ${it.nfe_key ? '— ' + String(it.nfe_key).slice(0,12)+'...' : ''}`}

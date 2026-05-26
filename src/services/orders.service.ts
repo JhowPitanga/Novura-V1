@@ -1,4 +1,5 @@
-import { supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL, supabase } from "@/integrations/supabase/client";
+import type { Order, OrderFinancialInfo, OrderItem } from "@/types/orders";
 import { buildFinancials, buildLabelInfo, ensureHttpUrl, normalizeShippingType, resolveLinkedSku } from "@/utils/orderUtils";
 
 async function getAuthToken(): Promise<string> {
@@ -103,24 +104,24 @@ export async function submitXmlSend(
   organizationId: string,
   companyId: string,
   marketplaceOrderId: string,
-): Promise<{ notaFiscalId: string; nfeKey: string; marketplace: string }> {
-  const { data: nfSel, error: nfErr } = await (supabase as any)
-    .from("notas_fiscais")
+): Promise<{ invoiceId: string; nfeKey: string; marketplace: string }> {
+  const { data: inv, error: invErr } = await (supabase as any)
+    .from("invoices")
     .select("id, nfe_key, marketplace, marketplace_order_id")
     .eq("company_id", companyId)
     .eq("marketplace_order_id", marketplaceOrderId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (nfErr || !nfSel) {
-    throw new Error(nfErr?.message || "Nota fiscal não encontrada para este pedido.");
+  if (invErr || !inv) {
+    throw new Error(invErr?.message || "Invoice não encontrada para este pedido.");
   }
-  const marketplace = String((nfSel as any)?.marketplace || "");
-  const queueMessage: any = {
+  const marketplace = String((inv as any)?.marketplace || "");
+  const queueMessage: Record<string, unknown> = {
     organizations_id: organizationId,
     company_id: companyId,
-    nota_fiscal_id: String((nfSel as any)?.id || ""),
-    nfe_key: String((nfSel as any)?.nfe_key || ""),
+    invoice_id: String((inv as any)?.id || ""),
+    nfe_key: String((inv as any)?.nfe_key || ""),
     marketplace,
   };
   const { error: sendErr } = await (supabase as any).rpc("q_submit_xml_send", {
@@ -128,8 +129,8 @@ export async function submitXmlSend(
   } as any);
   if (sendErr) throw sendErr;
   return {
-    notaFiscalId: String(nfSel.id),
-    nfeKey: String(nfSel.nfe_key || ""),
+    invoiceId: String(inv.id),
+    nfeKey: String(inv.nfe_key || ""),
     marketplace,
   };
 }
@@ -196,11 +197,17 @@ export async function fetchShopeeShops(
   return opts;
 }
 
-export async function markOrdersPrinted(orderIds: string[]): Promise<void> {
+export async function markOrdersPrinted(
+  orderIds: string[],
+  organizationId: string,
+): Promise<void> {
   if (!orderIds || orderIds.length === 0) return;
-  await (supabase as any).rpc("rpc_marketplace_order_print_label", {
-    p_order_ids: orderIds,
+  const { error } = await (supabase as any).functions.invoke("mark-labels-printed", {
+    body: { orderIds, organizationId },
   });
+  if (error) {
+    throw new Error(`markOrdersPrinted failed: ${error.message}`);
+  }
 }
 
 export async function updateOrdersInternalStatus(
@@ -209,19 +216,48 @@ export async function updateOrdersInternalStatus(
 ): Promise<void> {
   if (!orderIds || orderIds.length === 0) return;
   await (supabase as any)
-    .from("marketplace_orders_presented_new")
-    .update({ status_interno: status })
+    .from("orders")
+    .update({ status })
     .in("id", orderIds);
+}
+
+/** Row shape returned by fetchNfeStatusRows. */
+export interface NfeStatusRow {
+  order_id: string | null;
+  marketplace_order_id: string | null;
+  /** Normalised status (was status_focus in notas_fiscais). */
+  status_focus: string | null;
+  /** Emission environment (was emissao_ambiente in notas_fiscais). */
+  emissao_ambiente: string | null;
+  marketplace: string | null;
+  xml_url: string | null;
+  marketplace_submission_status: string | null;
+  /** Plain-text error message (was error_details jsonb in notas_fiscais). */
+  error_details: string | null;
+}
+
+/** Maps an invoices row to the NfeStatusRow shape consumed by useNfeStatus. */
+function normalizeInvoiceToNfeRow(row: Record<string, unknown>): NfeStatusRow {
+  return {
+    order_id: row.order_id != null ? String(row.order_id) : null,
+    marketplace_order_id: row.marketplace_order_id != null ? String(row.marketplace_order_id) : null,
+    status_focus: row.status != null ? String(row.status) : null,
+    emissao_ambiente: row.emission_environment != null ? String(row.emission_environment) : null,
+    marketplace: row.marketplace != null ? String(row.marketplace) : null,
+    xml_url: row.xml_url != null ? String(row.xml_url) : null,
+    marketplace_submission_status: row.marketplace_submission_status != null ? String(row.marketplace_submission_status) : null,
+    error_details: row.error_message != null ? String(row.error_message) : null,
+  };
 }
 
 export async function fetchNfeStatusRows(
   companyId: string,
   orderIds: string[],
   marketplaceOrderIds: string[],
-): Promise<any[]> {
+): Promise<NfeStatusRow[]> {
   let q: any = (supabase as any)
-    .from("notas_fiscais")
-    .select("order_id, marketplace_order_id, status_focus, emissao_ambiente, marketplace, xml_base64, xml_url, marketplace_submission_status, error_details")
+    .from("invoices")
+    .select("order_id, marketplace_order_id, status, emission_environment, marketplace, xml_url, marketplace_submission_status, error_message")
     .eq("company_id", companyId);
   if (orderIds.length > 0 && marketplaceOrderIds.length > 0) {
     const a = orderIds.join(",");
@@ -233,203 +269,252 @@ export async function fetchNfeStatusRows(
     q = q.in("marketplace_order_id", marketplaceOrderIds);
   }
   const { data } = await q;
-  return Array.isArray(data) ? data : [];
+  const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
+  return rows.map(normalizeInvoiceToNfeRow);
 }
 
 export async function fetchOrderByInternalId(
   orderId: string,
 ): Promise<{ marketplace_order_id: string; marketplace: string }> {
   const { data: row, error: rowErr } = await (supabase as any)
-    .from("marketplace_orders_presented_new")
+    .from("orders")
     .select("marketplace_order_id, marketplace")
     .eq("id", orderId)
     .limit(1)
     .single();
   if (rowErr || !row) throw new Error(rowErr?.message || "Pedido não encontrado");
   return {
-    marketplace_order_id: String(row.marketplace_order_id || ""),
-    marketplace: String(row.marketplace || ""),
+    marketplace_order_id: String((row as any).marketplace_order_id || ""),
+    marketplace: String((row as any).marketplace || ""),
   };
 }
 
 // --- Order row parsing (shared between initial load and real-time updates) ---
 
 const ORDERS_SELECT_FIELDS = `
-  id,
-  pack_id,
-  marketplace_order_id,
-  customer_name,
-  billing_name,
-  first_name_buyer,
-  order_total,
-  status,
-  status_interno,
-  created_at,
-  marketplace,
-  shipping_type,
-  payment_status,
-  payment_date_created,
-  payment_date_approved,
-  items_total_quantity,
-  items_total_amount,
-  items_total_sale_fee,
-  first_item_id,
-  first_item_title,
-  first_item_permalink,
-  first_item_sku,
-  first_item_variation_id,
-  variation_color_names,
-  has_unlinked_items,
-  unlinked_items_count,
-  shipment_status,
-  shipment_substatus,
-  shipping_method_name,
-  shipment_sla_status,
-  shipment_sla_service,
-  shipment_sla_expected_date,
-  shipment_sla_last_updated,
-  shipment_delays,
-  label_cached,
-  label_response_type,
-  label_fetched_at,
-  label_size_bytes,
-  label_content_base64,
-  label_content_type,
-  label_pdf_base64,
-  label_zpl2_base64,
-  printed_label,
-  printed_schedule,
-  pack_id,
-  linked_products,
-  marketplace_order_items:marketplace_order_items!fk_moi_presented_new_id(
-    row_id,
-    model_sku_externo,
-    model_id_externo,
-    variation_name,
-    pack_id,
-    item_name,
-    quantity,
-    unit_price,
-    image_url
-  )
+  id, organization_id, marketplace, marketplace_order_id, pack_id,
+  status, marketplace_status, payment_status,
+  gross_amount, marketplace_fee, shipping_cost, shipping_subsidy, net_amount,
+  buyer_name, buyer_document, buyer_email, buyer_phone, buyer_state,
+  created_at, shipped_at, delivered_at, canceled_at, last_synced_at,
+  is_printed_label, label_printed_at, has_invoice, is_fulfillment,
+  order_items (
+    id, marketplace_item_id, sku, title, quantity, unit_price,
+    unit_cost, variation_name, image_url, product_id
+  ),
+  order_shipping (
+    shipment_id, logistic_type, tracking_number, carrier,
+    status, substatus, street_name, street_number, complement,
+    neighborhood, city, state_uf, zip_code, sla_expected_date,
+    sla_status, estimated_delivery
+  ),
+  order_labels (id)
 `;
 
-/** Parse a single raw DB/realtime row into the UI order model. */
-export function parseOrderRow(o: any): any {
-  const itemsFromDb: any[] = Array.isArray(o?.marketplace_order_items) ? o.marketplace_order_items : [];
-  const varLabelFromItems = itemsFromDb
-    .map((it: any) => String(it?.variation_name || '').trim())
-    .filter(Boolean)
-    .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
-    .join(' • ');
-  const varLabel = varLabelFromItems;
 
-  const items = itemsFromDb.length > 0
-    ? itemsFromDb.map((it: any, idx: number) => ({
-        id: `${o.marketplace_order_id || o.id}-ITEM-${idx + 1}`,
-        rowId: it?.row_id || null,
-        nome: it.item_name || 'Item',
-        sku: it.sku || it.model_sku_externo || null,
-        quantidade: (typeof it?.quantity === 'number' ? it.quantity : Number(it?.quantity)) || 1,
-        valor: (typeof it?.unit_price === 'number' ? it.unit_price : Number(it?.unit_price)) || 0,
-        bipado: false,
-        vinculado: Boolean(it?.sku),
-        imagem: ensureHttpUrl(it?.image_url) || "/placeholder.svg",
-        marketplace: o.marketplace,
-        marketplaceItemId: null,
-        variationId: it?.model_id_externo || '',
-        permalink: o.first_item_permalink || null,
-        variationLabel: it?.variation_name || varLabel,
-      }))
-    : (() => {
-        const qtyAgg = (typeof o?.items_total_quantity === 'number' ? o.items_total_quantity : Number(o?.items_total_quantity)) || 1;
-        const amtAgg = (typeof o?.items_total_amount === 'number' ? o.items_total_amount : Number(o?.items_total_amount)) || 0;
-        const unitPriceAgg = qtyAgg > 0 ? amtAgg / qtyAgg : amtAgg;
-        const varLabelAgg = Array.isArray(o?.variation_color_names) ? (o.variation_color_names as any[]).filter(Boolean).join(' • ') : String(o?.variation_color_names || '');
-        return [{
-          id: `${o.marketplace_order_id || o.id}-ITEM-1`,
-          nome: o.first_item_title || 'Item',
-          sku: o.first_item_sku || null,
-          quantidade: qtyAgg,
-          valor: unitPriceAgg,
-          bipado: false,
-          vinculado: !!o.first_item_sku,
-          imagem: "/placeholder.svg",
-          marketplace: o.marketplace,
-          marketplaceItemId: o.first_item_id || null,
-          variationId: (typeof o?.first_item_variation_id === 'number' || typeof o?.first_item_variation_id === 'string') ? o.first_item_variation_id : '',
-          permalink: o.first_item_permalink || null,
-          variationLabel: varLabelAgg,
-        }];
-      })();
+function mapInternalStatusToLabel(value: unknown): string {
+  const status = String(value || "").trim().toLowerCase();
+  const labels: Record<string, string> = {
+    pending: "Pendente",
+    unlinked: "A vincular",
+    invoice_pending: "Emissao NF",
+    ready_to_print: "Impressao",
+    awaiting_pickup: "Aguardando Coleta",
+    shipped: "Enviado",
+    cancelled: "Cancelado",
+    returned: "Devolução",
+  };
+  if (labels[status]) return labels[status];
+  return String(value || "Pendente");
+}
 
-  const orderTotal = typeof o.order_total === 'number' ? o.order_total : Number(o.order_total) || 0;
-  const toNum = (v: any): number => (typeof v === 'number' ? v : Number(v)) || 0;
-  const valorRecebidoFrete = toNum(o?.payment_shipping_cost);
-  const saleFeeOrderItems = (typeof o?.items_total_sale_fee === 'number' ? o.items_total_sale_fee : Number(o?.items_total_sale_fee)) || 0;
-  const taxaMarketplace = saleFeeOrderItems;
-
-  const shipmentStatusLower = String(o?.shipment_status || '').toLowerCase();
-  const statusUI = shipmentStatusLower === 'delivered' ? 'Entregue' : (o.status_interno ?? o.status ?? 'Pendente');
-
-  const labelInfo = buildLabelInfo(o);
-  const linkedProductsArr: any[] = Array.isArray(o?.linked_products) ? o.linked_products : [];
-  const skuLinked = resolveLinkedSku(o, linkedProductsArr);
-
+/** Maps buildFinancials (Portuguese keys) result to OrderFinancialInfo. */
+function toOrderFinancialInfo(raw: {
+  valorPedido?: number;
+  taxaFrete?: number;
+  taxaMarketplace?: number;
+  cupom?: number;
+  impostos?: number;
+  liquido?: number;
+  margem?: number;
+  freteRecebido?: number;
+  freteRecebidoLiquido?: number;
+  saleFee?: number;
+  shippingFeeBuyer?: number;
+  custoProdutos?: number;
+  custosExtras?: number;
+}): OrderFinancialInfo {
+  const toNum = (v: unknown): number => (typeof v === "number" ? v : Number(v)) || 0;
   return {
-    id: o.id,
-    marketplace_order_id: o.marketplace_order_id || null,
-    marketplace: o.marketplace,
-    produto: items[0]?.nome || "",
-    sku: items[0]?.sku || null,
-    permalink: o.first_item_permalink || null,
-    cliente: o?.billing_name || o.first_name_buyer || o.customer_name || '',
-    valor: orderTotal,
-    data: o.created_at,
-    status: statusUI,
-    status_interno: o?.status_interno ?? null,
-    has_unlinked_items: Boolean(o?.has_unlinked_items),
-    shipment_status: o?.shipment_status || null,
-    slaDespacho: {
-      status: o?.shipment_sla_status ?? null,
-      service: o?.shipment_sla_service ?? null,
-      expected_date: o?.estimated_delivery_limit_at ?? o?.shipment_sla_expected_date ?? null,
-      last_updated: o?.shipment_sla_last_updated ?? null,
-    },
-    variationColorNames: varLabel,
-    atrasos: Array.isArray(o?.shipment_delays) ? o.shipment_delays : null,
-    dataPagamento: o?.payment_date_approved || o?.payment_date_created || o?.created_at || null,
-    payment_status: o?.payment_status || null,
-    payment_date_approved: o?.payment_date_approved || null,
-    tipoEnvio: normalizeShippingType(o?.shipping_type),
-    idPlataforma: o?.pack_id || o.pack_id || o.marketplace_order_id || "",
-    shippingCity: o?.shipping_city_name || null,
-    shippingState: o?.shipping_state_name || null,
-    shippingUF: o?.shipping_state_uf || null,
-    quantidadeTotal: items.reduce((sum: number, it: any) => sum + (it.quantidade || 0), 0),
-    imagem: (items[0]?.imagem || "/placeholder.svg"),
-    itens: items,
-    linked_products: o?.linked_products || null,
-    financeiro: buildFinancials(items, orderTotal, valorRecebidoFrete, taxaMarketplace, o?.shipping_method_name || null),
-    impressoEtiqueta: Boolean(o?.printed_label),
-    impressoLista: false,
-    label: labelInfo,
-    linkedSku: skuLinked,
+    orderAmount: toNum(raw.valorPedido),
+    shippingCost: toNum(raw.taxaFrete),
+    marketplaceFee: toNum(raw.taxaMarketplace),
+    couponAmount: toNum(raw.cupom),
+    taxAmount: toNum(raw.impostos),
+    netAmount: toNum(raw.liquido),
+    marginPercent: toNum(raw.margem),
+    shippingReceived: raw.freteRecebido,
+    shippingNetReceived: raw.freteRecebidoLiquido,
+    saleFee: raw.saleFee,
+    shippingFeeBuyer: raw.shippingFeeBuyer,
+    productCost: raw.custoProdutos,
+    extraCosts: raw.custosExtras,
   };
 }
 
-/** Fetch all orders for an organization. Returns raw parsed order objects. */
-export async function fetchAllOrders(orgId: string): Promise<any[]> {
-  const q = (supabase as any)
-    .from("marketplace_orders_presented_new")
+/** Parse a single raw DB row from orders + nested order_items/order_shipping into Order. */
+export function parseOrderRow(row: Record<string, unknown>): Order {
+  const itemsRaw: Record<string, unknown>[] = Array.isArray(row?.order_items) ? row.order_items as Record<string, unknown>[] : [];
+  const shippingRaw: Record<string, unknown> | null = Array.isArray(row?.order_shipping)
+    ? (row.order_shipping as Record<string, unknown>[])[0] ?? null
+    : null;
+
+  const toNum = (v: unknown): number => (typeof v === "number" ? v : Number(v)) || 0;
+
+  const mappedItems: OrderItem[] =
+    itemsRaw.length > 0
+      ? itemsRaw.map((it: Record<string, unknown>, idx: number) => ({
+          id: `${row.marketplace_order_id || row.id}-ITEM-${idx + 1}`,
+          // dbId holds the real order_items.id UUID — required by link-order-product edge function
+          dbId: it.id ? String(it.id) : undefined,
+          name: (it.title as string) || "Item",
+          sku: (it.sku as string) ?? null,
+          quantity: typeof it.quantity === "number" ? it.quantity : Number(it.quantity ?? 1) || 1,
+          unitPrice: typeof it.unit_price === "number" ? it.unit_price : Number(it.unit_price ?? 0) || 0,
+          linked: Boolean(it.product_id),
+          marketplace: row.marketplace as string,
+          scanned: false,
+          imageUrl: ensureHttpUrl(it.image_url as string) || "/placeholder.svg",
+          marketplaceItemId: (it.marketplace_item_id as string) ?? null,
+          variationId: (it.variation_name as string) ?? null,
+          permalink: null,
+          variationLabel: (it.variation_name as string) ?? null,
+        }))
+      : [
+          {
+            id: `${row.marketplace_order_id || row.id}-ITEM-1`,
+            name: (row.buyer_name as string) || "Item",
+            sku: null,
+            quantity: 1,
+            unitPrice: toNum(row.gross_amount),
+            linked: false,
+            marketplace: row.marketplace as string,
+            scanned: false,
+            imageUrl: "/placeholder.svg",
+            marketplaceItemId: null,
+            variationId: null,
+            permalink: null,
+            variationLabel: null,
+          },
+        ];
+
+  const orderTotal = toNum(row.gross_amount);
+  const totalQuantity = mappedItems.reduce((sum, it) => sum + it.quantity, 0);
+  const shipmentStatusLower = String(shippingRaw?.status || "").toLowerCase();
+  const statusUI =
+    shipmentStatusLower === "delivered"
+      ? "Entregue"
+      : mapInternalStatusToLabel(row.status) || (row.marketplace_status as string) || "Pendente";
+
+  const shippingReceived = toNum(row.shipping_subsidy);
+  const marketplaceFee = toNum(row.marketplace_fee);
+  const legacyItems = mappedItems.map((it) => ({ valor: it.unitPrice, quantidade: it.quantity }));
+  const rawFinancials = buildFinancials(
+    legacyItems,
+    orderTotal,
+    shippingReceived,
+    marketplaceFee,
+    (shippingRaw?.carrier as string) ?? null,
+  );
+  const financial = toOrderFinancialInfo(rawFinancials);
+
+  const labelInfo = buildLabelInfo(row);
+  // Build linked-products array from order_items when row.linked_products is absent (new schema)
+  const linkedProductsArr: unknown[] = Array.isArray(row?.linked_products)
+    ? (row.linked_products as unknown[])
+    : itemsRaw
+        .filter((it: Record<string, unknown>) => it.product_id)
+        .map((it: Record<string, unknown>) => ({
+          marketplace_item_id: it.marketplace_item_id,
+          variation_id: it.variation_name,
+          sku: it.sku,
+        }));
+  const rowForSku = {
+    ...row,
+    first_item_id: itemsRaw[0]?.marketplace_item_id ?? row.first_item_id,
+    first_item_variation_id: itemsRaw[0]?.variation_name ?? row.first_item_variation_id,
+  };
+  const skuLinked = resolveLinkedSku(rowForSku, linkedProductsArr);
+
+  // is_printed_label (new schema) takes precedence; fallback to order_labels join count (legacy)
+  const printedLabel =
+    Boolean(row?.is_printed_label) ||
+    (Array.isArray(row?.order_labels) ? row.order_labels.length > 0 : Boolean(row?.printed_label));
+
+  return {
+    id: String(row.id),
+    marketplace: String(row.marketplace),
+    marketplaceOrderId: row.marketplace_order_id != null ? String(row.marketplace_order_id) : null,
+    productTitle: mappedItems[0]?.name ?? "",
+    sku: mappedItems[0]?.sku ?? null,
+    customerName: String(row.buyer_name ?? ""),
+    totalAmount: orderTotal,
+    createdAt: String(row.created_at),
+    paidAt: row.created_at != null ? String(row.created_at) : null,
+    status: statusUI,
+    internalStatus: row.status != null ? String(row.status) : null,
+    subStatus: undefined,
+    shippingType: normalizeShippingType(shippingRaw?.logistic_type as string),
+    platformId: String(row.pack_id || row.marketplace_order_id || row.id),
+    totalQuantity,
+    imageUrl: mappedItems[0]?.imageUrl ?? "/placeholder.svg",
+    items: mappedItems,
+    financial,
+    shippingCity: (shippingRaw?.city as string) ?? null,
+    shippingStateName: null,
+    shippingStateUf: (shippingRaw?.state_uf as string) ?? null,
+    labelPrinted: printedLabel,
+    pickingListPrinted: false,
+    linkedSku: skuLinked ?? undefined,
+    label: labelInfo,
+    linkedProducts: undefined,
+    hasUnlinkedItems: itemsRaw.some((it) => !it.product_id),
+    shipmentStatus: (shippingRaw?.status as string) ?? null,
+    shippingSla: {
+      status: (shippingRaw?.sla_status as string) ?? null,
+      service: (shippingRaw?.carrier as string) ?? null,
+      expectedDate: (shippingRaw?.sla_expected_date ?? shippingRaw?.estimated_delivery) as string ?? null,
+      lastUpdated: null,
+    },
+    shippingDelays: undefined,
+  };
+}
+
+/** Fetch all orders for an organization. Returns Order[] from normalized tables. */
+export async function fetchAllOrders(orgId: string): Promise<Order[]> {
+  const { data, error } = await (supabase as any)
+    .from("orders")
     .select(ORDERS_SELECT_FIELDS)
-    .eq('organizations_id', orgId);
+    .eq("organization_id", orgId)
+    .order("created_at", { ascending: false });
 
-  const { data, error } = await q;
-  if (error) throw error;
-
-  const rows: any[] = Array.isArray(data) ? data : [];
+  if (error) throw new Error(`fetchAllOrders failed: ${error.message}`);
+  const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
   return rows.map(parseOrderRow);
+}
+
+/** Fetch a single order by id (for realtime updates). Returns full Order with items and shipping. */
+export async function fetchOrderById(orgId: string, orderId: string): Promise<Order> {
+  const { data, error } = await (supabase as any)
+    .from("orders")
+    .select(ORDERS_SELECT_FIELDS)
+    .eq("organization_id", orgId)
+    .eq("id", orderId)
+    .single();
+
+  if (error) throw error;
+  if (!data) throw new Error("Pedido não encontrado");
+  return parseOrderRow(data as Record<string, unknown>);
 }
 
 /** Resolve organization ID from user if not directly available. */
@@ -440,4 +525,164 @@ export async function resolveOrgId(userId: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/** Fetch the 10 most recent orders — used by the chat module picker. */
+export async function fetchRecentOrdersSummary(): Promise<Array<{
+  id: string;
+  marketplace_order_id: string | null;
+  buyer_name: string | null;
+  created_at: string;
+  gross_amount: number | null;
+}>> {
+  const { data, error } = await (supabase as any)
+    .from('orders')
+    .select('id, marketplace_order_id, buyer_name, created_at, gross_amount')
+    .order('created_at', { ascending: false })
+    .limit(10);
+
+  if (error) {
+    console.error('[orders.service] fetchRecentOrdersSummary error:', error.message);
+    return [];
+  }
+  const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
+  return rows.map((r) => ({
+    id: String(r.id ?? ''),
+    marketplace_order_id: r.marketplace_order_id != null ? String(r.marketplace_order_id) : null,
+    buyer_name: r.buyer_name != null ? String(r.buyer_name) : null,
+    created_at: String(r.created_at ?? ''),
+    gross_amount: r.gross_amount != null ? Number(r.gross_amount) : null,
+  }));
+}
+
+/** Minimal order + first-item row needed to build a marketplace item link. */
+interface OrderItemLinkRow {
+  marketplace: string;
+  firstItemPermalink: string | null;
+  firstItemId: string | null;
+  firstItemTitle: string | null;
+}
+
+/** Fetch the data required to build a marketplace product link for a given order. */
+export async function fetchOrderItemLinkData(orderId: string): Promise<OrderItemLinkRow | null> {
+  if (!orderId) return null;
+
+  const { data, error } = await (supabase as any)
+    .from('orders')
+    .select('marketplace, order_items ( marketplace_item_id, title )')
+    .eq('id', orderId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[orders.service] fetchOrderItemLinkData error:', error.message);
+    return null;
+  }
+  if (!data) return null;
+
+  const firstItem = Array.isArray(data.order_items) ? data.order_items[0] ?? null : null;
+  return {
+    marketplace: String(data.marketplace ?? ''),
+    firstItemPermalink: null, // order_items does not store a permalink
+    firstItemId: firstItem ? String(firstItem.marketplace_item_id ?? '') : null,
+    firstItemTitle: firstItem ? String(firstItem.title ?? '') : null,
+  };
+}
+
+/** Row shape returned by fetchNfeEmissionOrders, used by NfeEmissionList. */
+export interface NfeEmissionOrderData {
+  id: string;
+  marketplace_order_id: string;
+  customer_name: string;
+  order_total: number;
+  status: string;
+  created_at: string;
+  order_items: Array<{ product_name: string; quantity: number; sku: string }>;
+  marketplace: string;
+  platform_id: string;
+  shipping_type: string;
+}
+
+export interface NfeEmissionOrdersResult {
+  orders: NfeEmissionOrderData[];
+  count: number;
+}
+
+/** Fetch orders pending NFe emission for a given organization. */
+export async function fetchNfeEmissionOrders(
+  orgId: string | null,
+  offset: number,
+  limit: number,
+): Promise<NfeEmissionOrdersResult> {
+  const NFE_STATUSES = ['invoice_pending'];
+  let q: any = (supabase as any)
+    .from('orders')
+    .select(
+      `id, marketplace_order_id, created_at, marketplace, gross_amount, status, buyer_name, pack_id,
+       order_items (title, quantity, sku, marketplace_item_id),
+       order_shipping (logistic_type)`,
+      { count: 'exact' },
+    )
+    .in('status', NFE_STATUSES)
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+  if (orgId) q = q.eq('organization_id', orgId);
+  const { data, error, count } = await q;
+  if (error) throw new Error(`fetchNfeEmissionOrders failed: ${error.message}`);
+  const rows: any[] = Array.isArray(data) ? data : [];
+  const orders: NfeEmissionOrderData[] = rows.map((o: any) => {
+    const items: any[] = Array.isArray(o?.order_items) ? o.order_items : [];
+    const firstItem = items[0];
+    const shipping = Array.isArray(o?.order_shipping) ? o.order_shipping[0] : o?.order_shipping;
+    const totalQty = items.reduce((sum: number, it: any) => sum + Number(it?.quantity ?? 0), 0) || 1;
+    return {
+      id: String(o.id),
+      marketplace_order_id: String(o.marketplace_order_id || o.id),
+      customer_name: String(o.buyer_name ?? ''),
+      order_total: Number(o.gross_amount ?? 0),
+      status: String(o.status ?? ''),
+      created_at: String(o.created_at),
+      order_items: items.length > 0
+        ? items.map((it: any) => ({
+            product_name: String(it?.title ?? ''),
+            quantity: Number(it?.quantity ?? 1),
+            sku: String(it?.sku ?? ''),
+          }))
+        : [{ product_name: '', quantity: totalQty, sku: '' }],
+      marketplace: String(o.marketplace ?? ''),
+      platform_id: String(firstItem?.marketplace_item_id ?? o.pack_id ?? o.marketplace_order_id ?? o.id),
+      shipping_type: String(shipping?.logistic_type ?? ''),
+    };
+  });
+  return { orders, count: count ?? 0 };
+}
+
+export interface LinkProductToOrderItemsParams {
+  orderId: string;
+  organizationId: string;
+  marketplace: string;
+  links: Array<{
+    orderItemId: string;
+    marketplaceItemId: string;
+    variationId: string;
+    productId: string;
+    isPermanent: boolean;
+  }>;
+}
+
+export interface LinkProductToOrderItemsResult {
+  remainingUnlinkedCount: number;
+  statusChanged: boolean;
+  newStatus?: string;
+}
+
+export async function linkProductToOrderItems(
+  params: LinkProductToOrderItemsParams,
+): Promise<LinkProductToOrderItemsResult> {
+  const { data, error } = await (supabase as any).functions.invoke("link-order-product", {
+    body: params,
+  });
+  if (error) {
+    throw new Error(`linkProductToOrderItems failed: ${error.message}`);
+  }
+  return data as LinkProductToOrderItemsResult;
 }

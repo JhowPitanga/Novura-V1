@@ -8,8 +8,8 @@ import { formatDateSP } from "@/lib/datetime";
 import { Printer, Settings } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ConfiguracoesImpressaoModal } from './ConfiguracoesImpressaoModal';
-import { Paginacao } from "./Paginacao";
+import { PrintSettingsModal } from "./PrintSettingsModal";
+import { OrderPagination as Paginacao } from "./Pagination";
 
 interface OrderItem {
   product_name: string;
@@ -44,7 +44,13 @@ export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
   const [loading, setLoading] = useState(true);
   const [searchParams] = useSearchParams();
   const { toast } = useToast();
-  const { settings, loading: settingsLoading, refetch: refetchSettings } = usePrintingSettings();
+  const { printSettings, handleSavePrintSettings } = usePrintingSettings();
+  const settings = {
+    print_type: printSettings.labelPrinter === "zebra" ? "Impressão Zebra" : "Impressão comum PDF",
+    label_format: printSettings.separateLabelPerItem ? "Imprimir etiqueta com DANFE SIMPLIFICADA" : "Impressão comum",
+  };
+  const settingsLoading = false;
+  const refetchSettings = handleSavePrintSettings;
 
   const page = parseInt(searchParams.get('page') || '1');
   const limit = 10;
@@ -444,7 +450,7 @@ export function PrintList({ onOpenDetalhesPedido }: ImpressaoListaProps) {
         currentPage={page}
       />
 
-      <ConfiguracoesImpressaoModal
+      <PrintSettingsModal
         open={isConfigModalOpen}
         onClose={() => setIsConfigModalOpen(false)}
         onSettingsSaved={refetchSettings}
