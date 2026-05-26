@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ProductFormData } from "@/types/products";
 import { useStorage } from "@/hooks/useStorage";
+import { BrMoneyInput } from "@/components/products/create/BrMoneyInput";
 
 interface StockFormProps {
   formData: ProductFormData;
@@ -25,34 +26,31 @@ export function StockForm({ formData, onInputChange, errors = {} }: StockFormPro
   return (
     <div className="space-y-8">
       <div>
-        <h3 className="text-xl font-semibold mb-6">Preço e Estoque</h3>
-        <div className="grid grid-cols-2 gap-6">
+        <h3 className="text-xl font-semibold mb-6">Preço e estoque</h3>
+        <p className="text-sm text-gray-500 mb-4">Valores em reais (R$): use vírgula para centavos, ex.: 1.234,56</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
             <Label htmlFor="costPrice">
-              Preço de Custo <span className="text-red-500">*</span>
+              Preço de custo (R$) <span className="text-red-500">*</span>
             </Label>
-            <Input
+            <BrMoneyInput
               id="costPrice"
-              type="number"
-              step="0.01"
               value={formData.costPrice}
-              onChange={(e) => onInputChange("costPrice", e.target.value)}
+              onChange={(v) => onInputChange("costPrice", v)}
               placeholder="0,00"
-              className={`mt-2 ${errors.costPrice ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
-              required
+              className={`mt-2 ${errors.costPrice ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+              aria-invalid={errors.costPrice}
             />
             {errors.costPrice && (
               <p className="text-red-600 text-sm mt-1">Campo obrigatório</p>
             )}
           </div>
           <div>
-            <Label htmlFor="sellPrice">Preço de Venda</Label>
-            <Input
+            <Label htmlFor="sellPrice">Preço de venda (R$)</Label>
+            <BrMoneyInput
               id="sellPrice"
-              type="number"
-              step="0.01"
               value={formData.sellPrice}
-              onChange={(e) => onInputChange("sellPrice", e.target.value)}
+              onChange={(v) => onInputChange("sellPrice", v)}
               placeholder="0,00"
               className="mt-2"
             />

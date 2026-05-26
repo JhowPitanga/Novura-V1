@@ -113,4 +113,62 @@ export class InvoicesAdapter implements InvoicesPort {
       throw new Error(error.message)
     }
   }
+
+  async markCanceled(admin: SupabaseClient, id: string): Promise<void> {
+    const { error } = await admin
+      .from('invoices')
+      .update({
+        status: 'canceled',
+        canceled_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } as never)
+      .eq('id', id)
+
+    if (error) {
+      console.error('[invoices-adapter] markCanceled failed', { id, error: error.message })
+      throw new Error(error.message)
+    }
+  }
+
+  async findByFocusId(admin: SupabaseClient, focusId: string): Promise<InvoiceRow | null> {
+    const { data, error } = await admin
+      .from('invoices')
+      .select('*')
+      .eq('focus_id', focusId)
+      .maybeSingle()
+
+    if (error) {
+      console.error('[invoices-adapter] findByFocusId failed', { focusId, error: error.message })
+      throw new Error(error.message)
+    }
+
+    return (data as InvoiceRow | null) ?? null
+  }
+
+  async findByNfeKey(admin: SupabaseClient, nfeKey: string): Promise<InvoiceRow | null> {
+    const { data, error } = await admin
+      .from('invoices')
+      .select('*')
+      .eq('nfe_key', nfeKey)
+      .maybeSingle()
+
+    if (error) {
+      console.error('[invoices-adapter] findByNfeKey failed', { nfeKey, error: error.message })
+      throw new Error(error.message)
+    }
+
+    return (data as InvoiceRow | null) ?? null
+  }
+
+  async updateFields(admin: SupabaseClient, id: string, fields: Partial<InvoiceRow>): Promise<void> {
+    const { error } = await admin
+      .from('invoices')
+      .update({ ...fields, updated_at: new Date().toISOString() } as never)
+      .eq('id', id)
+
+    if (error) {
+      console.error('[invoices-adapter] updateFields failed', { id, error: error.message })
+      throw new Error(error.message)
+    }
+  }
 }

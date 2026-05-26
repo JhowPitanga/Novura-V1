@@ -2,6 +2,7 @@
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { reconcileCanonicalFromStoredRaw } from "../_shared/listing-adapters/reconcileCanonical.ts";
 import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString } from "../_shared/adapters/infra/token-utils.ts";
 
 // Decode base64url (JWT payload)
@@ -208,6 +209,15 @@ serve(async (req) => {
           updated_at: nowIso,
         }, { onConflict: "organizations_id,marketplace_name,marketplace_item_id" });
       if (upErr) return { ok: false, error: upErr.message };
+
+      reconcileCanonicalFromStoredRaw(admin, {
+        organizationId,
+        marketplaceName: 'Mercado Livre',
+        marketplaceItemId: itemId,
+        payloadSource: 'prices-sync',
+      }).then((r) => {
+        if (!r.ok) console.warn('[ml-sync-prices] canonical reconcile', itemId, r.error);
+      });
 
       try {
         const { data: rawRow } = await admin

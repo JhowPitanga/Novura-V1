@@ -1,6 +1,7 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MoreHorizontal, Edit, Copy, Trash2, Link } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ProductCoverImage } from "@/components/products/ProductCoverImage";
+import { ProductAdLinker } from "@/components/products/ProductAdLinker";
+import { supabase } from "@/integrations/supabase/client";
 
 interface ProductTableProps {
   products: any[];
@@ -17,11 +21,54 @@ interface ProductTableProps {
   onDuplicateProduct?: (productId: string) => void;
   selectedIds?: string[];
   onToggleSelect?: (productId: string, checked: boolean) => void;
+  onSelectAll?: (allIds: string[], checked: boolean) => void;
 }
 
-export function ProductTable({ products, loading, onDeleteProduct, onDuplicateProduct, selectedIds = [], onToggleSelect }: ProductTableProps) {
+export function ProductTable({ products, loading, onDeleteProduct, onDuplicateProduct, selectedIds = [], onToggleSelect, onSelectAll }: ProductTableProps) {
+  const navigate = useNavigate();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [productToDelete, setProductToDelete] = useState<any>(null);
+  const [linksByProduct, setLinksByProduct] = useState<Record<string, Array<{ marketplace_name: string; marketplace_item_id: string }>>>({});
+  const [linksDrawerProduct, setLinksDrawerProduct] = useState<any | null>(null);
+  const [isLinksDrawerOpen, setIsLinksDrawerOpen] = useState(false);
+  const [linksVersion, setLinksVersion] = useState(0);
+
+  const allPageIds = products.map((p) => p.id);
+  const allSelected = allPageIds.length > 0 && allPageIds.every((id) => selectedIds.includes(id));
+  const someSelected = allPageIds.some((id) => selectedIds.includes(id)) && !allSelected;
+
+  useEffect(() => {
+    const productIds = products.map((p) => p.id).filter(Boolean);
+    if (productIds.length === 0) {
+      setLinksByProduct({});
+      return;
+    }
+
+    let isCancelled = false;
+    (async () => {
+      const { data, error } = await (supabase as any)
+        .from("marketplace_item_product_links")
+        .select("product_id, marketplace_name, marketplace_item_id")
+        .in("product_id", productIds);
+      if (error || isCancelled) return;
+
+      const grouped: Record<string, Array<{ marketplace_name: string; marketplace_item_id: string }>> = {};
+      (Array.isArray(data) ? data : []).forEach((row: any) => {
+        const pid = String(row.product_id || "");
+        if (!grouped[pid]) grouped[pid] = [];
+        grouped[pid].push({
+          marketplace_name: String(row.marketplace_name || ""),
+          marketplace_item_id: String(row.marketplace_item_id || ""),
+        });
+      });
+      setLinksByProduct(grouped);
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [products, linksVersion]);
+
   if (loading) {
     return (
       <Card>
@@ -49,12 +96,19 @@ export function ProductTable({ products, loading, onDeleteProduct, onDuplicatePr
   return (
     <>
       <Card>
-        <CardContent className="p-0">
-          <Table>
+        <CardContent className="p-0 overflow-x-auto">
+          <Table className="min-w-[700px]">
             <TableHeader>
               <TableRow className="border-b border-gray-100">
                 <TableHead className="w-10">
-                  <Checkbox aria-label="Selecionar todos" disabled />
+                  <Checkbox
+                    aria-label="Selecionar todos da página"
+                    checked={allSelected}
+                    ref={(el) => { if (el) (el as any).indeterminate = someSelected; }}
+                    onCheckedChange={(checked) => {
+                      onSelectAll?.(allPageIds, !!checked);
+                    }}
+                  />
                 </TableHead>
                 <TableHead className="w-20">Imagem</TableHead>
                 <TableHead>Produto</TableHead>
@@ -80,13 +134,13 @@ export function ProductTable({ products, loading, onDeleteProduct, onDuplicatePr
                     : (product.products_stock?.current || 0);
                   
                   const categoryName = product.categories?.name || 'Sem categoria';
-                  const imageUrl = product.image_urls?.[0] || 'https://images.unsplash.com/photo-1560472354-b33ff0c44a43?w=300&h=300&fit=crop';
+                  const imageUrl = Array.isArray(product.image_urls) ? product.image_urls[0] : undefined;
                   
                   return (
                     <TableRow 
                       key={product.id} 
                       className="hover:bg-gray-50/50 cursor-pointer"
-                      onClick={() => window.location.href = `/produtos/editar/${product.id}`}
+                      onClick={() => navigate(`/produtos/editar/${product.id}`)}
                     >
                       <TableCell onClick={(e) => e.stopPropagation()}>
                         <Checkbox
@@ -96,14 +150,7 @@ export function ProductTable({ products, loading, onDeleteProduct, onDuplicatePr
                         />
                       </TableCell>
                       <TableCell>
-                        <img
-                          src={imageUrl}
-                          alt={product.name}
-                          className="w-12 h-12 rounded-lg object-cover bg-gray-100"
-                          onError={(e) => {
-                            e.currentTarget.src = 'https://images.unsplash.com/photo-1560472354-b33ff0c44a43?w=300&h=300&fit=crop';
-                          }}
-                        />
+                        <ProductCoverImage imageUrl={imageUrl} alt={product.name} />
                       </TableCell>
                       <TableCell>
                         <div>
@@ -123,18 +170,25 @@ export function ProductTable({ products, loading, onDeleteProduct, onDuplicatePr
                         </span>
                       </TableCell>
                       <TableCell>
+                        {(() => {
+                          const productLinks = linksByProduct[product.id] || [];
+                          return (
                         <Button 
                           variant="ghost" 
                           size="sm" 
-                          className="text-blue-600 hover:text-blue-800"
+                          type="button"
+                          className="text-violet-700 hover:text-violet-800"
                           onClick={(e) => {
                             e.stopPropagation();
-                            // TODO: Open vinculos modal
+                            setLinksDrawerProduct(product);
+                            setIsLinksDrawerOpen(true);
                           }}
                         >
                           <Link className="w-4 h-4 mr-1" />
-                          0 vínculos
+                              {productLinks.length} vínculo{productLinks.length === 1 ? "" : "s"}
                         </Button>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>
                         <DropdownMenu>
@@ -146,7 +200,7 @@ export function ProductTable({ products, loading, onDeleteProduct, onDuplicatePr
                           <DropdownMenuContent align="end" className="w-40">
                             <DropdownMenuItem onClick={(e) => {
                               e.stopPropagation();
-                              window.location.href = `/produtos/editar/${product.id}`;
+                              navigate(`/produtos/editar/${product.id}`);
                             }}>
                               <Edit className="w-4 h-4 mr-2" />
                               Editar
@@ -208,6 +262,20 @@ export function ProductTable({ products, loading, onDeleteProduct, onDuplicatePr
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {linksDrawerProduct?.id ? (
+        <ProductAdLinker
+          key={linksDrawerProduct.id}
+          productId={linksDrawerProduct.id}
+          hideOuterChrome
+          drawerOpen={isLinksDrawerOpen}
+          onDrawerOpenChange={(open) => {
+            setIsLinksDrawerOpen(open);
+            if (!open) setLinksDrawerProduct(null);
+          }}
+          onLinksMutation={() => setLinksVersion((v) => v + 1)}
+        />
+      ) : null}
     </>
   );
 }

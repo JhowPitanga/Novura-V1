@@ -24,6 +24,13 @@ export function useProducts() {
           .from('products')
           .select(`
             *,
+            product_images (
+              public_url,
+              is_cover,
+              position,
+              created_at,
+              deleted_at
+            ),
             categories (
               id,
               name
@@ -38,7 +45,7 @@ export function useProducts() {
               )
             )
           `)
-          .in('type', ['UNICO', 'VARIACAO_ITEM', 'ITEM'])
+          .in('type', ['UNICO', 'VARIACAO_ITEM', 'KIT', 'ITEM'])
           .order('name', { ascending: true });
 
         if (organizationId) {
@@ -65,7 +72,40 @@ export function useProducts() {
           throw error;
         }
 
-        setProducts(data);
+        const normalized = (data ?? []).map((product: any) => {
+          const normalizedImageUrls = Array.isArray(product.image_urls)
+            ? product.image_urls.filter((url: string) => typeof url === 'string' && /^https?:\/\//i.test(url))
+            : [];
+
+          const productImages = Array.isArray(product.product_images)
+            ? product.product_images
+                .filter((img: any) => !img?.deleted_at && typeof img?.public_url === 'string')
+                .sort((a: any, b: any) => {
+                  if ((a?.is_cover ? 1 : 0) !== (b?.is_cover ? 1 : 0)) {
+                    return (b?.is_cover ? 1 : 0) - (a?.is_cover ? 1 : 0);
+                  }
+                  if ((a?.position ?? 0) !== (b?.position ?? 0)) {
+                    return (a?.position ?? 0) - (b?.position ?? 0);
+                  }
+                  return String(a?.created_at ?? '').localeCompare(String(b?.created_at ?? ''));
+                })
+            : [];
+
+          const coverFromProductImages = productImages[0]?.public_url;
+          const mergedImages = Array.from(
+            new Set([
+              ...(coverFromProductImages ? [coverFromProductImages] : []),
+              ...normalizedImageUrls,
+            ])
+          );
+
+          return {
+            ...product,
+            image_urls: mergedImages,
+          };
+        });
+
+        setProducts(normalized);
       } catch (err: any) {
         setError(err.message);
       } finally {
@@ -93,7 +133,12 @@ export const useCreateProduct = () => {
         if (!authUserId) {
           throw new Error('Sessão inválida ou expirada');
         }
-        let payload = { ...productData, user_id: productData?.user_id ?? authUserId };
+        let payload: Record<string, unknown> = { ...productData, user_id: productData?.user_id ?? authUserId };
+        // Never let DB default fill parent_id for root product types (UNICO check + integrity)
+        const t = payload.type as string | undefined;
+        if (t === 'UNICO' || t === 'VARIACAO_PAI' || t === 'KIT') {
+          payload = { ...payload, parent_id: null };
+        }
         if (!payload.company_id) {
           try {
             const { data: orgId } = await supabase.rpc('get_current_user_organization_id');
@@ -124,7 +169,7 @@ export const useCreateProduct = () => {
         return data;
       } catch (err: any) {
         setError(err.message);
-        return null;
+        throw err;
       } finally {
         setLoading(false);
       }
@@ -163,7 +208,7 @@ export function useBindableProducts(enabled: boolean = true) {
                         reserved
                       )
                     `)
-                    .in('type', ['UNICO', 'VARIACAO_ITEM', 'ITEM'])
+                    .in('type', ['UNICO', 'VARIACAO_ITEM', 'KIT', 'ITEM'])
                     .order('name', { ascending: true });
 
                 if (organizationId) {

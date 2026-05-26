@@ -4,9 +4,10 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { ProductForm } from "@/components/products/create/ProductForm";
 import { ImageUpload } from "@/components/products/create/ImageUpload";
 import { KitForm } from "@/components/products/create/KitForm";
-import { Button } from "@/components/ui/button";
+import { ProductAdLinker } from "@/components/products/ProductAdLinker";
 
 interface EditKitAccordionProps {
+  productId: string | null;
   formData: any;
   onInputChange: (field: string, value: string) => void;
   selectedImages: File[];
@@ -15,9 +16,13 @@ interface EditKitAccordionProps {
   onKitEtapaChange: (etapa: "info" | "produtos") => void;
   kitItems: any[];
   onKitItemsChange: (items: any[]) => void;
+  availableProducts: any[];
+  productsLoading: boolean;
+  organizationId: string;
 }
 
 export function EditKitAccordion({
+  productId,
   formData,
   onInputChange,
   selectedImages,
@@ -25,7 +30,10 @@ export function EditKitAccordion({
   kitEtapa,
   onKitEtapaChange,
   kitItems,
-  onKitItemsChange
+  onKitItemsChange,
+  availableProducts,
+  productsLoading,
+  organizationId,
 }: EditKitAccordionProps) {
   return (
     <Card>
@@ -76,11 +84,15 @@ export function EditKitAccordion({
               <KitForm 
                 formData={formData} 
                 onInputChange={onInputChange}
-                etapaAtual={kitEtapa}
-                onEtapaChange={onKitEtapaChange}
+                currentStep="products"
+                onStepChange={() => onKitEtapaChange("produtos")}
                 kitItems={kitItems}
                 onKitItemsChange={onKitItemsChange}
-                editMode={true}
+                selectedImages={selectedImages}
+                onImagesChange={onImagesChange}
+                availableProducts={availableProducts}
+                productsLoading={productsLoading}
+                organizationId={organizationId}
               />
             </AccordionContent>
           </AccordionItem>
@@ -94,12 +106,7 @@ export function EditKitAccordion({
               </div>
             </AccordionTrigger>
             <AccordionContent className="pt-4">
-              <div className="text-center py-8">
-                <p className="text-gray-500 mb-4">Funcionalidade de vínculo em desenvolvimento</p>
-                <Button variant="outline" disabled>
-                  Gerenciar Vínculos
-                </Button>
-              </div>
+              <ProductAdLinker productId={productId} />
             </AccordionContent>
           </AccordionItem>
         </Accordion>

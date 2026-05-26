@@ -1,10 +1,13 @@
 /**
  * Normalizer adapter: implements OrdersUpsertPort. All order upsert logic (orders, order_items, order_shipping, order_status_history) in one place.
  * C0-T12: computes internal_status + has_unlinked_items after writing items.
- * C0-T14: detects internal_status transitions and calls stock RPCs directly (no inventory_jobs).
+ * Stock side effects (reserve, consume, refund) are handled exclusively by
+ * HandleStockSideEffectsUseCase via RecalculateOrderStatusUseCase, which runs
+ * AFTER ResolveOrderWarehouseUseCase sets orders.storage_id. Never call stock
+ * RPCs directly here to avoid using wrong storage or double-deducting stock.
  */
 
-import { computeInternalStatus, OrderStatus } from "../../domain/orders/order-status.ts";
+import { computeInternalStatus } from "../../domain/orders/order-status.ts";
 import type {
   NormalizedOrder,
   NormalizedOrderItem,
@@ -21,9 +24,10 @@ import type { SupabaseClient } from "../infra/supabase-client.ts";
 const ORDERS_CONFLICT = "organization_id,marketplace,marketplace_order_id";
 const ITEMS_CONFLICT = "order_id,marketplace_item_id";
 
-function mapOrderRow(organizationId: string, order: NormalizedOrder): OrderInsertRow {
+function mapOrderRow(organizationId: string, order: NormalizedOrder, companyId?: string | null): OrderInsertRow {
   return {
     organization_id: organizationId,
+    company_id: companyId ?? null,
     marketplace: order.marketplace,
     marketplace_order_id: order.marketplace_order_id,
     pack_id: order.pack_id,
@@ -105,10 +109,10 @@ type EnsureOrderRowError = { error: string };
 
 export class OrdersUpsertAdapter implements OrdersUpsertPort {
   async upsert(admin: SupabaseClient, input: UpsertOrderInput): Promise<UpsertOrderResult> {
-    const { organization_id, order, source } = input;
+    const { organization_id, company_id, order, source } = input;
 
     try {
-      const rowResult = await this.ensureOrderRow(admin, organization_id, order);
+      const rowResult = await this.ensureOrderRow(admin, organization_id, order, company_id);
       if ("error" in rowResult) {
         return { success: false, order_id: null, created: false, error: rowResult.error };
       }
@@ -135,11 +139,6 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
       const newInternalStatus = computeInternalStatus(order.marketplace, order.marketplace_status, hasUnlinked);
       await this.updateInternalStatus(admin, orderId, newInternalStatus, hasUnlinked);
 
-      // C0-T14: trigger stock RPCs on internal_status transitions.
-      if (newInternalStatus !== previousInternalStatus) {
-        await this.handleStockTransition(admin, orderId, newInternalStatus, organization_id);
-      }
-
       if (order.shipping) {
         await this.upsertOrderShipping(admin, orderId, order.shipping);
       }
@@ -155,6 +154,7 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
     supabase: SupabaseClient,
     organizationId: string,
     order: NormalizedOrder,
+    companyId?: string | null,
   ): Promise<EnsureOrderRowOk | EnsureOrderRowError> {
     const { data: existingData } = await supabase
       .from("orders")
@@ -170,7 +170,7 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
     const previousStatus = existing?.status ?? null;
     const previousInternalStatus = existing?.internal_status ?? null;
 
-    const row = mapOrderRow(organizationId, order);
+    const row = mapOrderRow(organizationId, order, companyId);
     const { data: upsertedData, error: orderErr } = await supabase
       .from("orders")
       .upsert(row as never, { onConflict: ORDERS_CONFLICT })
@@ -242,40 +242,6 @@ export class OrdersUpsertAdapter implements OrdersUpsertPort {
       .update({ internal_status: internalStatus, has_unlinked_items: hasUnlinkedItems } as never)
       .eq("id", orderId);
     if (error) console.error("[orders-upsert] internal_status update failed", error.message);
-  }
-
-  /**
-   * C0-T14: Call stock RPCs synchronously when internal_status transitions.
-   * reserve is NOT called here — it's triggered during manual product linking.
-   */
-  private async handleStockTransition(
-    admin: SupabaseClient,
-    orderId: string,
-    newInternalStatus: string,
-    organizationId: string,
-  ): Promise<void> {
-    try {
-      const { data: storageId } = await (admin as any).rpc("fn_get_default_storage", {
-        p_org_id: organizationId,
-      });
-      if (!storageId) return;
-
-      if (newInternalStatus === OrderStatus.CANCELLED || newInternalStatus === OrderStatus.RETURNED) {
-        const { error } = await (admin as any).rpc("refund_stock_for_order_v2", {
-          p_order_id: orderId,
-          p_storage_id: storageId,
-        });
-        if (error) console.error("[orders-upsert] refund_stock_for_order_v2 failed", error.message);
-      } else if (newInternalStatus === OrderStatus.SHIPPED) {
-        const { error } = await (admin as any).rpc("consume_stock_for_order_v2", {
-          p_order_id: orderId,
-          p_storage_id: storageId,
-        });
-        if (error) console.error("[orders-upsert] consume_stock_for_order_v2 failed", error.message);
-      }
-    } catch (e) {
-      console.error("[orders-upsert] handleStockTransition error", e instanceof Error ? e.message : String(e));
-    }
   }
 
   private async upsertOrderShipping(

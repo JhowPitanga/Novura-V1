@@ -39,15 +39,38 @@ serve(async (req) => {
     console.log("[SHOPEE-SUBMIT-XML] auth_mode", { rid, internal_worker: internalWorker, authorization_present: authHeaderPresent });
     const organizationId: string = String(body?.organizationId || "");
     const companyId: string = String(body?.companyId || "");
+    // Accept both invoiceId (new) and notaFiscalId (legacy) for backward compatibility
+    const invoiceId: string = String(body?.invoiceId || "");
     const notaFiscalId: string = String(body?.notaFiscalId || "");
-    if (!organizationId || !companyId || !notaFiscalId) return jsonResponse({ error: "Missing required fields" }, 200);
-    const { data: nf } = await admin
-      .from("notas_fiscais")
-      .select("id, marketplace, marketplace_order_id, xml_url, xml_base64, pdf_url, pdf_base64, nfe_number, emissao_ambiente")
-      .eq("id", notaFiscalId)
-      .eq("company_id", companyId)
-      .limit(1)
-      .maybeSingle();
+    const lookupId = invoiceId || notaFiscalId;
+    if (!organizationId || !companyId || !lookupId) return jsonResponse({ error: "Missing required fields" }, 200);
+
+    // Dual-lookup: try invoices first, then notas_fiscais for backward compat
+    let nf: any = null;
+    let nfSource: "invoices" | "notas_fiscais" = "invoices";
+    {
+      const { data: invRow } = await admin
+        .from("invoices")
+        .select("id, marketplace, marketplace_order_id, xml_url, pdf_url, nfe_number, emission_environment")
+        .eq("id", lookupId)
+        .eq("company_id", companyId)
+        .limit(1)
+        .maybeSingle();
+      if (invRow) {
+        nf = { ...invRow, xml_base64: null, pdf_base64: null, emissao_ambiente: invRow.emission_environment };
+        nfSource = "invoices";
+      }
+    }
+    if (!nf) {
+      const { data: legacyRow } = await admin
+        .from("notas_fiscais")
+        .select("id, marketplace, marketplace_order_id, xml_url, xml_base64, pdf_url, pdf_base64, nfe_number, emissao_ambiente")
+        .eq("id", lookupId)
+        .eq("company_id", companyId)
+        .limit(1)
+        .maybeSingle();
+      if (legacyRow) { nf = legacyRow; nfSource = "notas_fiscais"; }
+    }
     if (!nf) return jsonResponse({ error: "Nota fiscal not found" }, 200);
     const marketplace = String(nf?.marketplace || "").toLowerCase();
     if (!marketplace.includes("shopee")) return jsonResponse({ error: "Not a Shopee invoice" }, 200);
@@ -303,10 +326,12 @@ serve(async (req) => {
             try { retryJson = retryText ? JSON.parse(retryText) : {}; } catch { retryJson = { raw: retryText }; }
             console.log("[SHOPEE-SUBMIT-XML] retry_response", { rid, status: retryResp.status, ok: retryResp.ok, request_id: (retryJson && retryJson.request_id) || null, body_preview: (retryText || "").slice(0, 512) });
             if (!retryResp.ok) return jsonResponse({ ok: false, error: retryJson?.message || retryJson?.error || `HTTP ${retryResp.status}`, error_code: retryJson?.error || null, rid }, 200);
-            await admin
-              .from("notas_fiscais")
-              .update({ marketplace_submission_status: "sent" })
-              .eq("id", notaFiscalId);
+            // Update submission status on invoices (primary) or notas_fiscais (legacy)
+            if (nfSource === "invoices") {
+              await admin.from("invoices").update({ marketplace_submission_status: "sent", marketplace_submission_at: new Date().toISOString() }).eq("id", nf.id);
+            } else {
+              await admin.from("notas_fiscais").update({ marketplace_submission_status: "sent" }).eq("id", nf.id);
+            }
             console.log("[SHOPEE-SUBMIT-XML] success", { rid, order_sn: orderSn });
             return jsonResponse({ ok: true, status: "sent", order_sn: orderSn, rid }, 200);
           }
@@ -314,10 +339,12 @@ serve(async (req) => {
       }
       return jsonResponse({ ok: false, error: jsonResp?.message || jsonResp?.error || `HTTP ${resp.status}`, error_code: jsonResp?.error || null, rid }, 200);
     }
-    await admin
-      .from("notas_fiscais")
-      .update({ marketplace_submission_status: "sent" })
-      .eq("id", notaFiscalId);
+    // Update submission status on invoices (primary) or notas_fiscais (legacy)
+    if (nfSource === "invoices") {
+      await admin.from("invoices").update({ marketplace_submission_status: "sent", marketplace_submission_at: new Date().toISOString() }).eq("id", nf.id);
+    } else {
+      await admin.from("notas_fiscais").update({ marketplace_submission_status: "sent" }).eq("id", nf.id);
+    }
     console.log("[SHOPEE-SUBMIT-XML] success", { rid, order_sn: orderSn });
     return jsonResponse({ ok: true, status: "sent", order_sn: orderSn, rid }, 200);
   } catch (e) {

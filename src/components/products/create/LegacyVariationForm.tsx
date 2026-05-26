@@ -26,8 +26,8 @@ export function VariationForm({
   onTiposVariacaoChange,
   editMode = false
 }: VariationFormProps) {
-  const handleImageUpload = (variacaoId: string, event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = (event.target.files && event.target.files[0]) || null;
+  const handleImageUpload = (variacaoId: string, payload: React.ChangeEvent<HTMLInputElement> | File) => {
+    const file = payload instanceof File ? payload : (payload.target.files && payload.target.files[0]) || null;
     if (!file) return;
 
     // Validação: apenas JPG/PNG e até 2MB
@@ -57,7 +57,9 @@ export function VariationForm({
     // Normaliza estoque para aceitar apenas números inteiros não negativos
     const normalizedValue = field === "estoque"
       ? (value || "").replace(/\D/g, "")
-      : value;
+      : field === "ean"
+        ? (value || "").replace(/\D/g, "").slice(0, 13)
+        : value;
 
     onVariacoesChange(variacoes.map(v => 
       v.id === variacaoId ? { ...v, [field]: normalizedValue } : v

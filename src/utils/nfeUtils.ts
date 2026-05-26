@@ -38,6 +38,14 @@ export function normalizeTipo(tipoRaw: string): string {
   return tipoRaw || "-";
 }
 
+export function normalizeText(value: string): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
 export function padLeftNum(value: string | number, size: number): string {
   const s = String(value ?? "").replace(/\D/g, "");
   if (!s) return "".padStart(size, "0");
@@ -57,14 +65,54 @@ export function normalizeFocusUrl(path: string | null | undefined): string {
 }
 
 export function resolveNotaStatusLabel(nota: any): string {
-  const sf = String(nota?.status_focus || "").toLowerCase();
-  const ss = String(nota?.status || "").toLowerCase();
-  if (ss === "cancelada" || ss === "cancelado") return "Cancelada";
-  if (sf === "autorizado") return "Autorizada";
-  if (sf === "pendente") return "Pendente";
-  if (sf === "cancelada" || sf === "cancelado") return "Cancelada";
-  if (ss) return ss.charAt(0).toUpperCase() + ss.slice(1);
-  return sf || "";
+  switch (resolveNotaStatusKey(nota)) {
+    case "authorized":
+      return "Autorizada";
+    case "pending":
+      return "Pendente";
+    case "processing":
+      return "Processando";
+    case "queued":
+      return "Na fila";
+    case "canceled":
+      return "Cancelada";
+    case "rejected":
+      return "Rejeitada";
+    case "error":
+      return "Erro";
+    default:
+      return "Sem status";
+  }
+}
+
+export function resolveNotaStatusKey(nota: any): string {
+  const rawStatus = normalizeText(String(nota?.status || ""));
+  const rawFocus = normalizeText(String(nota?.status_focus || ""));
+  const candidates = [rawStatus, rawFocus].filter(Boolean);
+
+  if (candidates.some((s) => ["authorized", "autorizado", "autorizada", "autorizado_uso"].includes(s))) {
+    return "authorized";
+  }
+  if (candidates.some((s) => ["pending", "pendente"].includes(s))) {
+    return "pending";
+  }
+  if (candidates.some((s) => ["processing", "processando", "processando_autorizacao"].includes(s))) {
+    return "processing";
+  }
+  if (candidates.some((s) => ["queued", "emissao nf", "emissao_nf", "na fila"].includes(s))) {
+    return "queued";
+  }
+  if (candidates.some((s) => ["canceled", "cancelado", "cancelada"].includes(s))) {
+    return "canceled";
+  }
+  if (candidates.some((s) => ["rejected", "rejeitado", "rejeitada", "denegado", "denegada"].includes(s))) {
+    return "rejected";
+  }
+  if (candidates.some((s) => ["error", "erro", "erro_autorizacao", "falha na emissao", "falha_na_emissao"].includes(s))) {
+    return "error";
+  }
+
+  return rawStatus || rawFocus || "unknown";
 }
 
 export function resolveNotaValor(nota: any): number | undefined {

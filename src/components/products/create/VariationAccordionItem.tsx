@@ -7,7 +7,7 @@ import { VariationDetailsForm } from "./VariationDetailsForm";
 
 interface VariationAccordionItemProps {
   variacao: Variacao;
-  onImageUpload: (variacaoId: string, event: React.ChangeEvent<HTMLInputElement>) => void;
+  onImageUpload: (variacaoId: string, payload: React.ChangeEvent<HTMLInputElement> | File) => void;
   onRemoveImage: (variacaoId: string, imageIndex: number) => void;
   onUpdate: (variacaoId: string, field: string, value: string) => void;
 }

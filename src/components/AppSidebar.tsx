@@ -19,6 +19,7 @@ import {
   Award,
 } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { isAdminConsolePath } from "@/lib/adminConsole";
 
 import {
   Sidebar,
@@ -67,6 +68,16 @@ interface AppSidebarProps {
 }
 
 export function AppSidebar({ disableChat = false }: AppSidebarProps) {
+  const { pathname } = useLocation();
+  // Tenant ERP sidebar must never appear on the internal admin console.
+  if (isAdminConsolePath(pathname)) {
+    return null;
+  }
+
+  return <TenantAppSidebar disableChat={disableChat} />;
+}
+
+function TenantAppSidebar({ disableChat = false }: AppSidebarProps) {
   const latestChannelRef = useRef<string | null>(null);
   const [hasChatNotif, setHasChatNotif] = useState(false);
   const [unreadTotal, setUnreadTotal] = useState<number>(0);
@@ -329,9 +340,7 @@ export function AppSidebar({ disableChat = false }: AppSidebarProps) {
               <SidebarGroupContent>
                 <SidebarMenu className="space-y-1">
                   {toolsModules
-                    .filter((m) => {
-                      return m.module ? hasModuleAccess(m.module) : true;
-                    })
+                    .filter((m) => (m.module ? hasModuleAccess(m.module) : true))
                     .map((item) => (
                     <SidebarMenuItem key={item.title}>
                       <SidebarMenuButton tooltip={item.title} asChild isActive={isActive(item.url)}>

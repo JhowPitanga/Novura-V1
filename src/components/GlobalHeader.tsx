@@ -6,7 +6,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Bell, BookOpen, MessageSquare, Hash, Image as ImageIcon, Paperclip, ArrowRight, Settings, LogOut, ChevronDown } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { isAdminConsolePath } from "@/lib/adminConsole";
 
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -14,10 +15,15 @@ import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 
 export function GlobalHeader() {
+  const { pathname } = useLocation();
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifTab, setNotifTab] = useState("novidades");
   const { user } = useAuth();
   const navigate = useNavigate();
+
+  if (isAdminConsolePath(pathname)) {
+    return null;
+  }
   const displayName = String((user as any)?.user_metadata?.full_name || (user as any)?.user_metadata?.name || (user as any)?.email?.split("@")[0] || "Usuário");
   const email = String((user as any)?.email || "");
   const avatarUrl = String((user as any)?.user_metadata?.avatar_url || (user as any)?.user_metadata?.picture || "");

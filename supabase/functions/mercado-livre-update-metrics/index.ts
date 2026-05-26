@@ -4,6 +4,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
 import { importAesGcmKey, aesGcmDecryptFromString } from "../_shared/adapters/infra/token-utils.ts";
+import { reconcileCanonicalFromStoredRaw } from "../_shared/listing-adapters/reconcileCanonical.ts";
 
 type UpdateBody = {
   organizationId?: string; // pass '*' to update all orgs
@@ -276,7 +277,18 @@ serve(async (req) => {
           console.warn('[ml-metrics]', rid, 'legacy quality update error', id, legacyQualityErr.message);
         }
 
-      } catch (e) { 
+        if (!upErr) {
+          reconcileCanonicalFromStoredRaw(admin, {
+            organizationId: orgIdForUpdate,
+            marketplaceName: 'Mercado Livre',
+            marketplaceItemId: id,
+            payloadSource: 'metrics-sync',
+          }).then((r) => {
+            if (!r.ok) console.warn('[ml-metrics]', rid, 'canonical reconcile', id, r.error);
+          });
+        }
+
+      } catch (e) {
         console.warn('[ml-metrics]', rid, 'worker error', (e as any)?.message || e); 
       }
     };

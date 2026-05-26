@@ -72,7 +72,7 @@ export function useKits() {
             name
           )
         `)
-        .eq('type', 'ITEM')
+        .in('type', ['KIT', 'ITEM'])
         .order('created_at', { ascending: false });
       kitQuery = companyId ? kitQuery.eq('company_id', companyId) : kitQuery.eq('user_id', user.id);
       const { data: kitProducts, error: kitError } = await kitQuery;
@@ -216,7 +216,8 @@ export function useKits() {
   const duplicateKit = async (kitId: string) => {
     try {
       const { data, error } = await supabase.rpc('duplicate_product', {
-        original_product_id: kitId
+        p_product_id: kitId,
+        p_with_images: false,
       });
 
       if (error) throw error;

@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { StepShipping } from "@/components/listings/StepShipping";
+import { EditListingShippingDimensions } from "@/components/listings/edit/EditListingShippingDimensions";
 import type { EditListingStepShippingProps } from "./editListing.types";
 
 /**
@@ -32,6 +33,12 @@ export function EditListingStepShippingWrapper({
         availableLogisticTypes={availableLogisticTypes}
         selectedLogisticType={selectedLogisticType}
         setSelectedLogisticType={onSelectLogisticType}
+        showPackageDimensions={false}
+      />
+      <EditListingShippingDimensions
+        shipping={shipping}
+        setShipping={onShippingChange}
+        weightUnit="g"
       />
       {canUseFlex && (
         <div className="space-y-2">

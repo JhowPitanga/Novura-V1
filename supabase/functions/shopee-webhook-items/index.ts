@@ -3,6 +3,7 @@ import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-util
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
 import { getField, getStr, getNum } from "../_shared/adapters/infra/object-utils.ts";
 import { importAesGcmKey, aesGcmEncryptToString, tryDecryptToken, hmacSha256Hex } from "../_shared/adapters/infra/token-utils.ts";
+import { syncCanonicalFromPayload } from "../_shared/listing-adapters/syncCanonicalFromPayload.ts";
 
 function tryParseJson(text: string): unknown {
   try { return JSON.parse(text); } catch (_) { return null; }
@@ -618,6 +619,18 @@ serve(async (req) => {
         .upsert(row, { onConflict: "organizations_id,marketplace_name,marketplace_item_id" });
       if (!upErr) {
         updatedCount++;
+        syncCanonicalFromPayload(admin, {
+          organizationId: String(getField(integration, "organizations_id")),
+          integrationId: String(getField(integration, "id") || "") || null,
+          marketplaceName: "Shopee",
+          marketplaceItemId: String(id),
+          payload: { data: combined, pictures: imageList ?? undefined },
+          payloadSource: "webhook-items",
+        }).then((r) => {
+          if (!r.ok) {
+            console.warn("shopee-webhook-items canonical_sync", { correlationId, item_id: id, error: r.error });
+          }
+        });
       } else {
         try {
           const msg = typeof upErr === "object" && upErr !== null && "message" in (upErr as Record<string, unknown>) ? String((upErr as Record<string, unknown>).message) : null;

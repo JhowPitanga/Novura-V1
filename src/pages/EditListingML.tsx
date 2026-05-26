@@ -222,13 +222,13 @@ export default function AnunciosEditarML() {
       await callUpdate({ listing_type_id: listingTypeId });
       try {
         const { data: refreshed } = await (supabase as any)
-          .from("marketplace_items_unified")
-          .select("*")
+          .from("marketplace_listings")
+          .select("listing_type_id, status, status_raw, price, title")
           .eq("organizations_id", organizationId)
           .eq("marketplace_name", "Mercado Livre")
           .eq("marketplace_item_id", String(itemId))
           .limit(1)
-          .single();
+          .maybeSingle();
         const nextType = String((refreshed as any)?.listing_type_id || "");
         if (nextType && nextType === String(itemRow?.listing_type_id || "")) {
           toast({ title: "Alteração não aplicada", description: "O Mercado Livre não permitiu alterar o tipo de publicação para este anúncio.", variant: "destructive" });

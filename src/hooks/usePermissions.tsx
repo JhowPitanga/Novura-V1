@@ -1,5 +1,11 @@
 import { useAuth } from './useAuth';
 import { useMemo } from 'react';
+import {
+  isModuleSwitchAllowing,
+  isOrgModuleDisabled,
+  isOrgModuleEnabled,
+  parseModuleActiveMap,
+} from '@/lib/moduleAccess';
 
 type PermissionValue = boolean | Record<string, boolean> | string[];
 
@@ -35,68 +41,75 @@ function resolvePermission(
 export function usePermissions() {
     const { permissions, userRole, organizationId, moduleSwitches, globalRole } = useAuth();
 
-    const activeMap = useMemo(() => {
-        const raw = moduleSwitches || {};
-        const global = (raw && typeof raw === 'object') ? (raw as any).global || {} : {};
-        const map: Record<string, boolean> = {};
-        for (const key of Object.keys(global || {})) {
-            const v = (global as any)[key];
-            map[key] = Boolean(v?.active);
-        }
-        return map;
-    }, [moduleSwitches]);
+    const activeMap = useMemo(
+      () => parseModuleActiveMap(moduleSwitches),
+      [moduleSwitches],
+    );
 
-    const hasPermission = (module: string, action: string): boolean => {
-        if (module === 'novura_admin') return globalRole === 'nv_superadmin';
+  const isSuperAdmin = globalRole === 'super_admin';
 
-        const mod = (permissions as any)?.[module] as PermissionValue | undefined;
+  const hasPermission = (module: string, action: string): boolean => {
+    if (module === 'novura_admin') return isSuperAdmin;
 
-        // Module switch is disabled — only superadmin or view-only access
-        if (activeMap && module in activeMap && activeMap[module] === false) {
-            if (globalRole === 'nv_superadmin') return true;
-            if (!permissions || !organizationId) return false;
-            return action === 'view' && resolvePermission(mod, 'view');
-        }
+    if (isOrgModuleDisabled(module, activeMap)) {
+      return isSuperAdmin;
+    }
 
-        if (!permissions || !organizationId) return false;
-        if (userRole === 'owner') return true;
+    // Org/platform switch ON → baseline access (matches admin "liberado para org")
+    if (isOrgModuleEnabled(module, activeMap)) {
+      if (action === 'view') return true;
+      if (userRole === 'owner' || userRole === 'admin') return true;
+    }
 
-        return resolvePermission(mod, action);
-    };
+    const mod = (permissions as any)?.[module] as PermissionValue | undefined;
 
-    const hasModuleAccess = (module: string): boolean => {
-        if (module === 'novura_admin') return globalRole === 'nv_superadmin';
+    if (!permissions || !organizationId) return false;
+    if (userRole === 'owner') return true;
 
-        const mod = (permissions as any)?.[module] as PermissionValue | undefined;
+    return resolvePermission(mod, action);
+  };
 
-        if (activeMap && module in activeMap && activeMap[module] === false) {
-            if (globalRole === 'nv_superadmin') return true;
-            if (!permissions || !organizationId) return false;
-            return resolvePermission(mod, 'view');
-        }
+  const hasModuleAccess = (module: string): boolean => {
+    if (module === 'novura_admin') return isSuperAdmin;
 
-        if (!permissions || !organizationId) return false;
-        if (userRole === 'owner') return true;
+    if (isOrgModuleDisabled(module, activeMap)) {
+      return isSuperAdmin;
+    }
 
-        return resolvePermission(mod, null);
-    };
+    if (isOrgModuleEnabled(module, activeMap)) {
+      return true;
+    }
 
-    const hasAnyPermission = (module: string, actions: string[]): boolean => {
-        if (module === 'novura_admin') return globalRole === 'nv_superadmin';
+    const mod = (permissions as any)?.[module] as PermissionValue | undefined;
 
-        const mod = (permissions as any)?.[module] as PermissionValue | undefined;
+    if (!permissions || !organizationId) return false;
+    if (userRole === 'owner' || userRole === 'admin') {
+      return isModuleSwitchAllowing(module, activeMap);
+    }
 
-        if (activeMap && module in activeMap && activeMap[module] === false) {
-            if (globalRole === 'nv_superadmin') return true;
-            if (!permissions || !organizationId) return false;
-            return actions.includes('view') && resolvePermission(mod, 'view');
-        }
+    if (resolvePermission(mod, 'view')) return true;
+    return resolvePermission(mod, null);
+  };
 
-        if (!permissions || !organizationId) return false;
-        if (userRole === 'owner') return true;
+  const hasAnyPermission = (module: string, actions: string[]): boolean => {
+    if (module === 'novura_admin') return isSuperAdmin;
 
-        return actions.some((action) => resolvePermission(mod, action));
-    };
+    if (isOrgModuleDisabled(module, activeMap)) {
+      return isSuperAdmin;
+    }
+
+    if (isOrgModuleEnabled(module, activeMap)) {
+      if (actions.includes('view')) return true;
+      if (userRole === 'owner' || userRole === 'admin') return true;
+    }
+
+    const mod = (permissions as any)?.[module] as PermissionValue | undefined;
+
+    if (!permissions || !organizationId) return false;
+    if (userRole === 'owner') return true;
+
+    return actions.some((action) => resolvePermission(mod, action));
+  };
 
     const canManageUsers = (): boolean => {
         return hasPermission('usuarios', 'manage_permissions') || userRole === 'owner' || userRole === 'admin';
@@ -130,6 +143,22 @@ export function usePermissions() {
         return hasPermission('estoque', 'adjust') || userRole === 'owner';
     };
 
+    const canViewPromotions = (): boolean => {
+        return hasAnyPermission('anuncios', ['view', 'promote_view', 'promote_create', 'promote_edit', 'promote_delete']) || userRole === 'owner';
+    };
+
+    const canCreatePromotion = (): boolean => {
+        return hasPermission('anuncios', 'promote_create') || userRole === 'owner';
+    };
+
+    const canEditPromotion = (): boolean => {
+        return hasPermission('anuncios', 'promote_edit') || userRole === 'owner';
+    };
+
+    const canDeletePromotion = (): boolean => {
+        return hasPermission('anuncios', 'promote_delete') || userRole === 'owner';
+    };
+
     return {
         permissions,
         userRole,
@@ -145,6 +174,12 @@ export function usePermissions() {
         canManageOrders,
         canViewStock,
         canManageStock,
-        globalRole,
-    };
+        canViewPromotions,
+        canCreatePromotion,
+        canEditPromotion,
+        canDeletePromotion,
+    globalRole,
+    isSuperAdmin,
+    moduleSwitchState: (module: string) => getModuleSwitchState(module, activeMap),
+  };
 }

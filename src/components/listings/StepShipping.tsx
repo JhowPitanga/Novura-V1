@@ -8,6 +8,8 @@ interface StepShippingProps {
   availableLogisticTypes: string[];
   selectedLogisticType: string;
   setSelectedLogisticType: (v: string) => void;
+  /** When false, package dimensions are rendered by the parent (edit flow). */
+  showPackageDimensions?: boolean;
 }
 
 export function StepShipping({
@@ -17,6 +19,7 @@ export function StepShipping({
   availableLogisticTypes,
   selectedLogisticType,
   setSelectedLogisticType,
+  showPackageDimensions = true,
 }: StepShippingProps) {
   const isMe2 = String((shipping as any)?.mode || "").toLowerCase() === "me2";
   const logisticLabel = (t: string) =>
@@ -32,29 +35,32 @@ export function StepShipping({
   const singlePrincipal = principals.length <= 1;
 
   const handleWeightChange = (value: string) => {
-    const w = Number(value) || 0;
     const dims = (shipping as any)?.dimensions || {};
     setShipping({
       ...(shipping || {}),
-      weight: w,
-      dimensions: { ...dims, weight: w },
+      weight: value,
+      dimensions: { ...dims, weight: value },
     });
   };
 
   const handleHeightChange = (value: string) => {
     const dims = (shipping as any)?.dimensions || {};
-    setShipping({ ...(shipping || {}), dimensions: { ...dims, height: Number(value) || 0 } });
+    setShipping({ ...(shipping || {}), dimensions: { ...dims, height: value } });
   };
 
   const handleWidthChange = (value: string) => {
     const dims = (shipping as any)?.dimensions || {};
-    setShipping({ ...(shipping || {}), dimensions: { ...dims, width: Number(value) || 0 } });
+    setShipping({ ...(shipping || {}), dimensions: { ...dims, width: value } });
   };
 
   const handleLengthChange = (value: string) => {
     const dims = (shipping as any)?.dimensions || {};
-    setShipping({ ...(shipping || {}), dimensions: { ...dims, length: Number(value) || 0 } });
+    setShipping({ ...(shipping || {}), dimensions: { ...dims, length: value } });
   };
+
+  const dims = (shipping as any)?.dimensions || {};
+  const weightVal = (shipping as any)?.weight ?? dims?.weight ?? "";
+  const dimStr = (v: unknown) => (v === "" || v == null ? "" : String(v));
 
   return (
     <div className="space-y-4">
@@ -124,46 +130,52 @@ export function StepShipping({
         </div>
       </div>
 
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <div className="text-sm text-gray-700">Dimensões e peso</div>
-          {isMe2 ? (
-            <span className="inline-flex items-center rounded-full bg-novura-primary text-white px-2 py-0.5 text-[10px]">
-              Obrigatório
-            </span>
-          ) : null}
+      {showPackageDimensions && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="text-sm text-gray-700">Dimensões e peso</div>
+            {isMe2 ? (
+              <span className="inline-flex items-center rounded-full bg-novura-primary text-white px-2 py-0.5 text-[10px]">
+                Obrigatório
+              </span>
+            ) : null}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Input
+              type="number"
+              step="any"
+              min="0"
+              placeholder="Peso (g)"
+              value={dimStr(weightVal)}
+              onChange={(e) => handleWeightChange(e.target.value)}
+            />
+            <Input
+              type="number"
+              step="any"
+              min="0"
+              placeholder="Altura (cm)"
+              value={dimStr(dims?.height)}
+              onChange={(e) => handleHeightChange(e.target.value)}
+            />
+            <Input
+              type="number"
+              step="any"
+              min="0"
+              placeholder="Largura (cm)"
+              value={dimStr(dims?.width)}
+              onChange={(e) => handleWidthChange(e.target.value)}
+            />
+            <Input
+              type="number"
+              step="any"
+              min="0"
+              placeholder="Comprimento (cm)"
+              value={dimStr(dims?.length)}
+              onChange={(e) => handleLengthChange(e.target.value)}
+            />
+          </div>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Input
-            type="number"
-            step="1"
-            min="1"
-            placeholder="Peso (g)"
-            onChange={(e) => handleWeightChange(e.target.value)}
-          />
-          <Input
-            type="number"
-            step="1"
-            min="1"
-            placeholder="Altura (cm)"
-            onChange={(e) => handleHeightChange(e.target.value)}
-          />
-          <Input
-            type="number"
-            step="1"
-            min="1"
-            placeholder="Largura (cm)"
-            onChange={(e) => handleWidthChange(e.target.value)}
-          />
-          <Input
-            type="number"
-            step="1"
-            min="1"
-            placeholder="Comprimento (cm)"
-            onChange={(e) => handleLengthChange(e.target.value)}
-          />
-        </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { RestrictedRoute } from "@/components/RestrictedRoute";
@@ -11,14 +11,23 @@ import { Suspense, lazy } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
+import { AdminLoadingShell } from "@/components/admin/shell/AdminLoadingShell";
+import { isAdminConsolePath } from "@/lib/adminConsole";
 import { Loader2 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Performance = lazy(() => import("./pages/Performance"));
 const MarketResearch = lazy(() => import("./pages/MarketResearch"));
 const Products = lazy(() => import("./pages/Products"));
 const Listings = lazy(() => import("./pages/Listings"));
+const ShopeeFlashSaleCreate = lazy(() => import("./pages/ShopeeFlashSaleCreate"));
+const ShopeeFlashSaleManage = lazy(() => import("./pages/ShopeeFlashSaleManage"));
+const PromotionCreate = lazy(() => import("./pages/PromotionCreate"));
+const PromotionManage = lazy(() => import("./pages/PromotionManage"));
 const CreateListingML = lazy(() => import("./pages/CreateListingML"));
 const EditListingML = lazy(() => import("./pages/EditListingML"));
+const CreateListing = lazy(() => import("./pages/CreateListing"));
+const EditListing = lazy(() => import("./pages/EditListing"));
 const SellerResources = lazy(() => import("./pages/SellerResources"));
 const Apps = lazy(() => import("./pages/Apps"));
 const Inventory = lazy(() => import("./pages/Inventory"));
@@ -29,7 +38,17 @@ const Landing = lazy(() => import("./pages/Landing"));
 const Login = lazy(() => import("./pages/Login"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const NovuraAcademy = lazy(() => import("./pages/NovuraAcademy"));
-const NovuraAdmin = lazy(() => import("./pages/NovuraAdmin"));
+import { AdminLayout } from "./pages/admin/AdminLayout";
+const AdminOverview = lazy(() =>
+  import("./pages/admin/AdminOverview").then((m) => ({ default: m.AdminOverview })),
+);
+const AdminOrganizations = lazy(() =>
+  import("./pages/admin/AdminOrganizations").then((m) => ({ default: m.AdminOrganizations })),
+);
+const AdminFeatureFlagsPlans = lazy(() =>
+  import("./pages/admin/AdminFeatureFlagsPlans").then((m) => ({ default: m.AdminFeatureFlagsPlans })),
+);
+const AdminOrders = lazy(() => import("./pages/admin/AdminOrders").then((m) => ({ default: m.AdminOrders })));
 const ProductDetailsPage = lazy(() => import("./pages/ProductDetailsPage"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NewCompany = lazy(() => import("./pages/NewCompany"));
@@ -51,23 +70,48 @@ const queryClient = new QueryClient({
   },
 });
 
-// Fallback de carregamento para módulos protegidos mantendo o Sidebar fixo
-const ModuleLoadingFallback = () => (
-  <SidebarProvider>
-    <div className="min-h-screen flex w-full bg-gray-50">
-      <AppSidebar />
-      <div className="flex-1 flex flex-col">
-        <GlobalHeader />
-        <main className="flex-1 p-6 overflow-auto flex items-center justify-center">
-          <div className="text-center">
-            <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
-            <p className="text-gray-600">Carregando módulo...</p>
-          </div>
-        </main>
-      </div>
+const AdminPageFallback = () => (
+  <div className="space-y-4">
+    <Skeleton className="h-8 w-48" />
+    <div className="grid grid-cols-4 gap-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <Skeleton key={i} className="h-24 rounded-lg" />
+      ))}
     </div>
-  </SidebarProvider>
+    <Skeleton className="h-64 rounded-lg" />
+  </div>
 );
+
+// Fallback de carregamento para módulos protegidos mantendo o Sidebar fixo
+const ModuleLoadingFallback = () => {
+  const { pathname } = useLocation();
+
+  if (isAdminConsolePath(pathname)) {
+    return <AdminLoadingShell message="Carregando módulo..." />;
+  }
+
+  return (
+    <SidebarProvider>
+      <div className="min-h-screen flex w-full bg-gray-50">
+        <AppSidebar />
+        <div className="flex-1 flex flex-col">
+          <GlobalHeader />
+          <main className="flex-1 p-6 overflow-auto flex items-center justify-center">
+            <div className="text-center">
+              <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
+              <p className="text-gray-600">Carregando módulo...</p>
+            </div>
+          </main>
+        </div>
+      </div>
+    </SidebarProvider>
+  );
+};
+
+const LegacyCompanyRouteRedirect = () => {
+  const location = useLocation();
+  return <Navigate to={`/configuracoes/empresa${location.search || ""}`} replace />;
+};
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -174,6 +218,54 @@ const App = () => (
               }
             />
             <Route
+              path="/anuncios/promocoes/nova"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <PromotionCreate />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/promocoes/:promotionId"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <PromotionManage />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/promocoes/shopee/flash/nova"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <ShopeeFlashSaleCreate />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/anuncios/promocoes/shopee/flash/:promotionId"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="anuncios" actions={["view"]}>
+                    <Suspense fallback={<ModuleLoadingFallback />}>
+                      <ShopeeFlashSaleManage />
+                    </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/anuncios/*"
               element={
                 <ProtectedRoute>
@@ -191,7 +283,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["create","publish","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <CreateListingML />
+                      <CreateListing />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -203,7 +295,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["create","publish","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <CreateListingML />
+                      <CreateListing />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -215,7 +307,7 @@ const App = () => (
                 <ProtectedRoute>
                   <RestrictedRoute module="anuncios" actions={["edit","view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
-                      <EditListingML />
+                      <EditListing />
                     </Suspense>
                   </RestrictedRoute>
                 </ProtectedRoute>
@@ -390,13 +482,23 @@ const App = () => (
               }
             />
             <Route
-              path="/configuracoes/notas-fiscais/nova-empresa"
+              path="/configuracoes/empresa"
               element={
                 <ProtectedRoute>
-                  <RestrictedRoute module="notas_fiscais" actions={["create","edit","view"]}>
+                  <RestrictedRoute module="configuracoes" actions={["view"]}>
                     <Suspense fallback={<ModuleLoadingFallback />}>
                       <NewCompany />
                     </Suspense>
+                  </RestrictedRoute>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/configuracoes/notas-fiscais/nova-empresa"
+              element={
+                <ProtectedRoute>
+                  <RestrictedRoute module="configuracoes" actions={["view"]}>
+                    <LegacyCompanyRouteRedirect />
                   </RestrictedRoute>
                 </ProtectedRoute>
               }
@@ -414,17 +516,53 @@ const App = () => (
               }
             />
             <Route
-              path="/novura-admin/*"
+              path="/novura-admin"
               element={
                 <ProtectedRoute>
                   <RestrictedRoute module="novura_admin" actions={["view"]}>
-                    <Suspense fallback={<ModuleLoadingFallback />}>
-                      <NovuraAdmin />
-                    </Suspense>
+                    <AdminLayout />
                   </RestrictedRoute>
                 </ProtectedRoute>
               }
-            />
+            >
+              <Route
+                index
+                element={
+                  <Suspense fallback={<AdminPageFallback />}>
+                    <AdminOverview />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="organizacoes"
+                element={
+                  <Suspense fallback={<AdminPageFallback />}>
+                    <AdminOrganizations />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="flags-planos"
+                element={
+                  <Suspense fallback={<AdminPageFallback />}>
+                    <AdminFeatureFlagsPlans />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="status-engine"
+                element={
+                  <Suspense fallback={<AdminPageFallback />}>
+                    <AdminOrders />
+                  </Suspense>
+                }
+              />
+              <Route path="pedidos" element={<Navigate to="/novura-admin/status-engine" replace />} />
+              <Route path="features" element={<Navigate to="/novura-admin/flags-planos" replace />} />
+              <Route path="modulos" element={<Navigate to="/novura-admin/flags-planos" replace />} />
+              <Route path="planos" element={<Navigate to="/novura-admin/flags-planos" replace />} />
+              <Route path="*" element={<Navigate to="/novura-admin" replace />} />
+            </Route>
             <Route
               path="/comunidade/*"
               element={

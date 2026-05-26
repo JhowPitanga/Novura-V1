@@ -2,6 +2,7 @@
 import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
 import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString } from "../_shared/adapters/infra/token-utils.ts";
+import { syncCanonicalFromPayload } from "../_shared/listing-adapters/syncCanonicalFromPayload.ts";
 declare const Deno: any;
 
 // Decode base64url (JWT payload) to bytes
@@ -719,6 +720,20 @@ Deno.serve(async (req) => {
     if (upErr) {
       return jsonResponse({ error: upErr.message }, 500);
     }
+
+    // Dual-write to canonical listing tables (non-blocking for main sync)
+    await Promise.allSettled(
+      upserts.map((u) =>
+        syncCanonicalFromPayload(admin, {
+          organizationId: organizationId as string,
+          integrationId: null,
+          marketplaceName: "Mercado Livre",
+          marketplaceItemId: String(u.marketplace_item_id),
+          payload: u,
+          payloadSource: "sync-items",
+        }),
+      ),
+    );
     
     console.log(`[meli-sync-items] Successfully synced ${upserts.length} items`);
     return jsonResponse({ ok: true, synced: upserts.length });

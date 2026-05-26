@@ -23,10 +23,10 @@ export default function Login() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    const { error } = await signIn(email, password);
+    const { error, globalRole } = await signIn(email, password);
     setIsLoading(false);
     if (!error) {
-      navigate("/");
+      navigate(globalRole === "super_admin" ? "/novura-admin" : "/");
     }
   };
 

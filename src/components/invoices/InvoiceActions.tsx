@@ -1,8 +1,22 @@
-import { Download, Eye, RefreshCw, MoreHorizontal } from "lucide-react";
+import { Download, Eye, RefreshCw, MoreHorizontal, Ban } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { supabase, SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "@/integrations/supabase/client";
-import { extractXmlMeta, normalizeFocusUrl } from "@/utils/nfeUtils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { supabase, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
+import { resolveNotaStatusKey } from "@/utils/nfeUtils";
+import { downloadInvoiceXml } from "@/services/invoiceFiles.service";
+import type { InvoiceRow } from "@/services/invoices.service";
+import { useToast } from "@/hooks/use-toast";
+import { useQueryClient } from "@tanstack/react-query";
 
 async function getAuthContext() {
   const { data: { session } } = await (supabase as any).auth.getSession();
@@ -17,7 +31,7 @@ async function getAuthContext() {
   return { token, organizationId, session };
 }
 
-async function resolveCompanyId(nota: any, organizationId: string): Promise<string> {
+async function resolveCompanyId(nota: InvoiceRow, organizationId: string): Promise<string> {
   let companyId = String(nota?.company_id || "");
   if (!companyId) {
     try {
@@ -34,7 +48,7 @@ async function resolveCompanyId(nota: any, organizationId: string): Promise<stri
   return companyId;
 }
 
-async function resolveOrderId(nota: any, organizationId: string): Promise<string> {
+async function resolveOrderId(nota: InvoiceRow, organizationId: string): Promise<string> {
   let orderId = String(nota?.order_id || "");
   if (!orderId) {
     const mpOrderId = String(nota?.marketplace_order_id || "").trim();
@@ -54,172 +68,205 @@ async function resolveOrderId(nota: any, organizationId: string): Promise<string
   return orderId;
 }
 
-async function handleCancelNfe(nota: any) {
-  try {
-    const justificativa = window.prompt("Justificativa do cancelamento (15 a 255 caracteres):", "");
-    if (!justificativa) return;
-    const j = justificativa.trim();
-    if (j.length < 15 || j.length > 255) return;
-    const ctx = await getAuthContext();
-    if (!ctx) return;
-    const companyId = await resolveCompanyId(nota, ctx.organizationId);
-    if (!companyId) return;
-    const orderId = await resolveOrderId(nota, ctx.organizationId);
-    if (!orderId) return;
-    const envSel = String(nota?.emissao_ambiente || "").toLowerCase() || "homologacao";
-    const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${ctx.token}` };
-    const { data, error } = await (supabase as any).functions.invoke('focus-nfe-cancel', {
-      body: { organizationId: ctx.organizationId, companyId, orderId, environment: envSel, justificativa: j },
-      headers,
-    } as any);
-    if (!error && data && data.ok) {
-      try { nota.status_focus = "cancelado"; } catch {}
-    }
-  } catch {}
+interface InvoiceActionsProps {
+  nota: InvoiceRow;
+  showCancel?: boolean;
+  onView?: (nota: InvoiceRow) => void;
 }
 
-async function handleSyncNfe(nota: any) {
-  try {
-    const ctx = await getAuthContext();
-    if (!ctx) return;
-    const companyId = await resolveCompanyId(nota, ctx.organizationId);
-    if (!companyId) return;
-    const orderId = await resolveOrderId(nota, ctx.organizationId);
-    if (!orderId) return;
-    const envSel = String(nota?.emissao_ambiente || "").toLowerCase() || "homologacao";
-    const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${ctx.token}` };
-    await (supabase as any).functions.invoke('focus-nfe-sync', {
-      body: { organizationId: ctx.organizationId, companyId, orderIds: [orderId], environment: envSel },
-      headers,
-    } as any);
-  } catch {}
-}
+export function InvoiceActions({ nota, showCancel = true, onView }: InvoiceActionsProps) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const isAutorizado = resolveNotaStatusKey(nota) === "authorized";
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [cancelDrawerOpen, setCancelDrawerOpen] = useState(false);
+  const [cancelJustificativa, setCancelJustificativa] = useState("");
+  const [isCancelling, setIsCancelling] = useState(false);
 
-function handleViewPdf(nota: any) {
-  const url = String(nota?.pdf_url || "");
-  if (url) {
-    window.open(url, "_blank", "noopener,noreferrer");
-    return;
-  }
-  try {
-    const pdfB64 = String(nota?.pdf_base64 || "");
-    if (!pdfB64) return;
-    const pdfBytes = Uint8Array.from(atob(pdfB64), c => c.charCodeAt(0));
-    const blob = new Blob([pdfBytes], { type: "application/pdf" });
-    const objUrl = URL.createObjectURL(blob);
-    window.open(objUrl, "_blank", "noopener,noreferrer");
-  } catch {}
-}
+  const invalidateInvoices = () => {
+    queryClient.invalidateQueries({ queryKey: ["invoices"] });
+  };
 
-function resolveXmlFilename(nota: any): string {
-  const nfeNumRaw = String(nota?.nfe_number || "").trim();
-  const nfeKeyRaw = String(nota?.nfe_key || "").trim();
-  return nfeNumRaw ? `nfe_${nfeNumRaw}` : (nfeKeyRaw ? `nfe_${nfeKeyRaw}` : "nfe");
-}
+  const handleViewInvoice = () => {
+    onView?.(nota);
+  };
 
-function downloadBlob(content: string, filename: string) {
-  const blob = new Blob([content], { type: "application/xml" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+  const openCancelDrawer = () => {
+    setCancelJustificativa("");
+    setCancelDrawerOpen(true);
+  };
 
-async function handleDownloadXml(nota: any) {
-  try {
-    const xmlB64 = String(nota?.xml_base64 || "");
-    const linksMeta: any = nota?.marketplace_submission_response || null;
-    const directUrl = normalizeFocusUrl(String(nota?.xml_url || (linksMeta?.links?.caminho_xml ?? linksMeta?.caminho_xml) || ""));
-    let base = resolveXmlFilename(nota);
-
-    if (xmlB64) {
-      const xmlText = atob(xmlB64);
-      if (base === "nfe") {
-        const meta = extractXmlMeta(xmlText);
-        const nfeNum = String(meta.nfeNumber || "").trim();
-        const nfeKey = String(meta.nfeKey || "").trim();
-        base = nfeNum ? `nfe_${nfeNum}` : (nfeKey ? `nfe_${nfeKey}` : "nfe");
-      }
-      downloadBlob(xmlText, `${base}.xml`);
+  const submitCancelNfe = async () => {
+    const j = cancelJustificativa.trim();
+    if (j.length < 15 || j.length > 255) {
+      toast({ title: "Justificativa inválida", description: "Informe entre 15 e 255 caracteres.", variant: "destructive" });
       return;
     }
+    setIsCancelling(true);
+    try {
+      const ctx = await getAuthContext();
+      if (!ctx) throw new Error("Sessão expirada ou organização não encontrada.");
+      const companyId = await resolveCompanyId(nota, ctx.organizationId);
+      if (!companyId) throw new Error("Empresa da nota não encontrada.");
+      const orderId = await resolveOrderId(nota, ctx.organizationId);
+      if (!orderId) throw new Error("Pedido vinculado à nota não encontrado.");
+      const envSel = String(nota?.emission_environment || "").toLowerCase() || "homologacao";
+      const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${ctx.token}` };
+      const { data, error } = await (supabase as any).functions.invoke('focus-nfe-cancel', {
+        body: { organizationId: ctx.organizationId, companyId, orderId, environment: envSel, justificativa: j },
+        headers,
+      } as any);
 
-    if (directUrl) {
-      const payload = { xml_url: directUrl, filename: `${base}.xml`, company_id: nota?.company_id, emissao_ambiente: nota?.emissao_ambiente };
-      const { data: { session } } = await (supabase as any).auth.getSession();
-      const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY };
-      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
-      try {
-        const res = await supabase.functions.invoke("download-nfe-xml", { body: payload, headers });
-        const b64 = String((res.data as any)?.content_base64 || "");
-        if (b64) {
-          downloadBlob(atob(b64), `${base}.xml`);
-          return;
-        }
-        throw new Error("no_b64");
-      } catch {
-        try {
-          const urlFn = `${SUPABASE_URL}/functions/v1/download-nfe-xml`;
-          let resp = await fetch(urlFn, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", apikey: SUPABASE_PUBLISHABLE_KEY, ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-            body: JSON.stringify(payload),
-          });
-          if (!resp.ok) {
-            resp = await fetch(urlFn, {
-              method: "POST",
-              headers: { "Content-Type": "text/plain" },
-              body: JSON.stringify(payload),
-            });
-          }
-          const data = await resp.json().catch(() => ({}));
-          const b64 = String((data as any)?.content_base64 || "");
-          if (!b64) return;
-          downloadBlob(atob(b64), `${base}.xml`);
-        } catch {}
-      }
+      if (error || !data?.ok) throw new Error(error?.message || data?.error || "Falha ao cancelar a NF-e.");
+
+      invalidateInvoices();
+      setCancelDrawerOpen(false);
+      setCancelJustificativa("");
+      toast({ title: "NF-e cancelada", description: "A nota foi cancelada e a listagem será atualizada." });
+    } catch {
+      toast({ title: "Erro ao cancelar NF-e", description: "Não foi possível concluir o cancelamento agora.", variant: "destructive" });
+    } finally {
+      setIsCancelling(false);
     }
-  } catch {}
-}
+  };
 
-interface InvoiceActionsProps {
-  nota: any;
-  showCancel?: boolean;
-}
+  const handleSyncNfe = async () => {
+    setIsSyncing(true);
+    try {
+      const ctx = await getAuthContext();
+      if (!ctx) throw new Error("Sessão expirada ou organização não encontrada.");
+      const companyId = await resolveCompanyId(nota, ctx.organizationId);
+      if (!companyId) throw new Error("Empresa da nota não encontrada.");
+      const orderId = await resolveOrderId(nota, ctx.organizationId);
+      if (!orderId) throw new Error("Pedido vinculado à nota não encontrado.");
+      const envSel = String(nota?.emission_environment || "").toLowerCase() || "homologacao";
+      const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${ctx.token}` };
+      const { data, error } = await (supabase as any).functions.invoke('focus-nfe-sync', {
+        body: { organizationId: ctx.organizationId, companyId, orderIds: [orderId], environment: envSel },
+        headers,
+      } as any);
 
-export function InvoiceActions({ nota, showCancel = true }: InvoiceActionsProps) {
-  const isAutorizado = String(nota?.status_focus || "").toLowerCase() === "autorizado";
+      if (error || data?.error) throw new Error(error?.message || data?.error || "Falha ao sincronizar a NF-e.");
+
+      invalidateInvoices();
+      toast({ title: "Sincronização solicitada", description: "Dados sincronizados" });
+    } catch {
+      toast({ title: "Erro ao sincronizar NF-e", description: "Não foi possível sincronizar a nota neste momento.", variant: "destructive" });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleDownloadXml = async () => {
+    const ok = await downloadInvoiceXml(nota);
+    if (!ok) {
+      toast({ title: "XML indisponível", description: "Não encontramos XML salvo ou URL válida para download.", variant: "destructive" });
+    }
+  };
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm">
-          <MoreHorizontal className="w-4 h-4" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-40">
-        {showCancel && isAutorizado && (
-          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleCancelNfe(nota); }}>
-            Cancelar NF-e
+    <>
+      <Sheet
+        open={cancelDrawerOpen}
+        onOpenChange={(open) => {
+          setCancelDrawerOpen(open);
+          if (!open) setCancelJustificativa("");
+        }}
+      >
+        <SheetContent
+          side="right"
+          className="flex h-full max-h-[100dvh] w-full flex-col gap-0 p-0 sm:max-w-md"
+        >
+          <div className="flex min-h-0 flex-1 flex-col">
+            <SheetHeader className="shrink-0 space-y-2 px-6 pt-14 text-left">
+              <SheetTitle>Cancelar NF-e</SheetTitle>
+              <SheetDescription>
+                Informe a justificativa do cancelamento (entre 15 e 255 caracteres), conforme exigido pela legislação.
+              </SheetDescription>
+            </SheetHeader>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4">
+              <div className="space-y-2">
+                <Label htmlFor={`cancel-just-${nota.id}`}>Justificativa</Label>
+                <Textarea
+                  id={`cancel-just-${nota.id}`}
+                  value={cancelJustificativa}
+                  onChange={(e) => setCancelJustificativa(e.target.value)}
+                  placeholder="Descreva o motivo do cancelamento..."
+                  className="min-h-[160px] resize-y"
+                  disabled={isCancelling}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {cancelJustificativa.trim().length} / 255 caracteres (mínimo 15)
+                </p>
+              </div>
+            </div>
+          </div>
+          <SheetFooter className="shrink-0 gap-2 border-t bg-background px-6 py-4 sm:flex-row sm:justify-end sm:gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCancelDrawerOpen(false)}
+              disabled={isCancelling}
+            >
+              Voltar
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => submitCancelNfe()}
+              disabled={isCancelling}
+            >
+              {isCancelling ? "Cancelando..." : "Confirmar cancelamento"}
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="sm" aria-label={isSyncing ? "Sincronizando nota" : "Ações da nota"}>
+            {isSyncing ? (
+              <span className="inline-flex h-4 w-4 animate-spin rounded-full border-2 border-purple-600 border-t-transparent" />
+            ) : (
+              <MoreHorizontal className="w-4 h-4" />
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-48">
+          {showCancel && (
+            <DropdownMenuItem
+              disabled={isSyncing}
+              onClick={(e) => { e.stopPropagation(); handleSyncNfe(); }}
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              {isSyncing ? "Sincronizando..." : "Sincronizar"}
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleViewInvoice(); }}>
+            <Eye className="w-4 h-4 mr-2" />
+            Visualizar
           </DropdownMenuItem>
-        )}
-        {showCancel && (
-          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleSyncNfe(nota); }}>
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Sincronizar
+          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDownloadXml(); }}>
+            <Download className="w-4 h-4 mr-2" />
+            Download XML
           </DropdownMenuItem>
-        )}
-        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleViewPdf(nota); }}>
-          <Eye className="w-4 h-4 mr-2" />
-          Visualizar
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDownloadXml(nota); }}>
-          <Download className="w-4 h-4 mr-2" />
-          Download XML
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+          {showCancel && isAutorizado && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-red-600 focus:bg-red-50 focus:text-red-600"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openCancelDrawer();
+                }}
+              >
+                <Ban className="w-4 h-4 mr-2" />
+                Cancelar NF-e
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
   );
 }

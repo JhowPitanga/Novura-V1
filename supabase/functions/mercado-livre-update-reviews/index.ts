@@ -3,6 +3,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { reconcileCanonicalFromStoredRaw } from "../_shared/listing-adapters/reconcileCanonical.ts";
 import { importAesGcmKey, aesGcmDecryptFromString } from "../_shared/adapters/infra/token-utils.ts";
 
 type UpdateBody = {
@@ -203,6 +204,14 @@ serve(async (req) => {
         if (!upErr) {
           updated += 1;
           console.log('[ml-reviews]', rid, 'updated reviews for', id, 'rating', ratingAverage, 'count', reviewsCount, 'ratelimit', rl);
+          reconcileCanonicalFromStoredRaw(admin, {
+            organizationId: orgIdForUpdate,
+            marketplaceName: 'Mercado Livre',
+            marketplaceItemId: id,
+            payloadSource: 'reviews-sync',
+          }).then((r) => {
+            if (!r.ok) console.warn('[ml-reviews]', rid, 'canonical reconcile', id, r.error);
+          });
         } else {
           console.warn('[ml-reviews]', rid, 'reviews update error', id, upErr.message);
         }

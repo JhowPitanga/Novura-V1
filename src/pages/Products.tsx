@@ -25,8 +25,8 @@ const navigationItems = [
 export default function Produtos() {
   const location = useLocation();
   const { permissions, userRole } = useAuth();
-  const canCreate = Boolean((permissions as any)?.produtos?.create) || userRole === 'owner' || userRole === 'admin';
-  
+  const canCreate = Boolean((permissions as any)?.produtos?.create) || userRole === "owner" || userRole === "admin";
+
   // Check if we're on create or edit pages
   const isCreateOrEditPage = location.pathname.includes('/criar') || location.pathname.includes('/editar');
 
@@ -39,11 +39,6 @@ export default function Produtos() {
           <GlobalHeader />
           <ProdutosHeader />
 
-          {/* Navigation - Only show on main listing pages */}
-          {!isCreateOrEditPage && (
-            <CleanNavigation items={navigationItems} basePath="/produtos" />
-          )}
-          
           {/* Main Content */}
           <main className="flex-1 overflow-auto">
             <div className="p-6">
@@ -54,14 +49,25 @@ export default function Produtos() {
                     <h1 className="text-2xl font-bold text-gray-900">Gestão de Produtos</h1>
                     <p className="text-gray-600">Gerencie seus produtos de forma inteligente</p>
                   </div>
-                  {canCreate && (
-                    <Button className="bg-novura-primary hover:bg-novura-primary/90" asChild>
-                      <a href="/produtos/criar">
-                        <Plus className="w-4 h-4 mr-2" />
-                        Novo Produto
-                      </a>
-                    </Button>
-                  )}
+                </div>
+              )}
+
+              {!isCreateOrEditPage && (
+                <div className="mb-6">
+                  <CleanNavigation
+                    items={navigationItems}
+                    basePath="/produtos"
+                    rightContent={
+                      canCreate ? (
+                        <Button asChild className="h-10 rounded-xl bg-violet-700 text-white hover:bg-violet-800">
+                          <a href="/produtos/criar">
+                            <Plus className="mr-2 h-4 w-4" />
+                            Novo produto
+                          </a>
+                        </Button>
+                      ) : null
+                    }
+                  />
                 </div>
               )}
 

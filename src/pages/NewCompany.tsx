@@ -13,6 +13,17 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { useAuth } from "@/hooks/useAuth";
+import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const steps = [
   { id: 1, title: "Configuração", description: "Dados da empresa" },
@@ -91,7 +102,33 @@ export function NovaEmpresa() {
   });
   const [connectedStores, setConnectedStores] = useState<ConnectedStore[]>([]);
   const [loadingStores, setLoadingStores] = useState(false);
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const navigate = useNavigate();
+
+  // returnToApp: after creating a company, return to the Apps QuickSetupModal
+  // with the new company pre-selected.
+  const returnToApp = searchParams.get("returnToApp");
+  const returnProviderKey = searchParams.get("providerKey");
+
+  const navigateAfterSave = (newCompanyId?: string) => {
+    if (returnToApp) {
+      const params = new URLSearchParams();
+      if (newCompanyId) params.set("company", newCompanyId);
+      // Navigate back to /aplicativos/conectados, App.tsx will open QuickSetupModal
+      // via the pending integration stored in sessionStorage
+      try {
+        sessionStorage.setItem(
+          `novura:pending_setup`,
+          JSON.stringify({ integrationId: returnToApp, providerKey: returnProviderKey }),
+        );
+      } catch {
+        // sessionStorage unavailable — user will need to configure manually
+      }
+      navigate(`/aplicativos/conectados?company=${newCompanyId ?? ""}`);
+      return;
+    }
+    navigate("/configuracoes");
+  };
 
   const updateEmpresaData = (data: Partial<EmpresaData>) => {
     setEmpresaData(prev => ({ ...prev, ...data }));
@@ -215,19 +252,28 @@ export function NovaEmpresa() {
     };
   }, [empresaData.cnpj]);
 
+  // Extract edit params from URL on mount only (no data fetch yet)
   useEffect(() => {
-    // Detecta modo edição via query params: ?companyId=...&step=2
     const companyId = searchParams.get('companyId');
     const stepParam = parseInt(searchParams.get('step') || '', 10);
     if (companyId) {
       setEditCompanyId(companyId);
-      void loadCompany(companyId);
     }
     if (!isNaN(stepParam) && stepParam >= 1 && stepParam <= 4) {
       setCurrentStep(stepParam);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Load company data only after organizationId (auth context) is ready
+  useEffect(() => {
+    const companyId = searchParams.get('companyId');
+    if (companyId && organizationId) {
+      setEditCompanyId(companyId);
+      void loadCompany(companyId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organizationId]);
 
   // Carrega lojas conectadas (via Aplicativos) para uso no Step 3
   useEffect(() => {
@@ -282,16 +328,33 @@ export function NovaEmpresa() {
 
   const loadCompany = async (companyId: string) => {
     try {
-      const { data: company, error } = await supabase
+      let query = supabase
         .from('companies')
         .select('*')
-        .eq('id', companyId)
-        .maybeSingle();
+        .eq('id', companyId);
+      if (organizationId) {
+        query = query.eq('organization_id', organizationId);
+      }
+      const { data: company, error } = await query.maybeSingle();
       if (error) throw error;
-      if (!company) return;
+      if (!company) {
+        toast.error('Empresa não encontrada. Verifique se você tem permissão para editá-la.');
+        return;
+      }
 
-      // Mapeia para EmpresaData (com segurança para campos ausentes)
-      const mapped: Partial<EmpresaData> = {
+      // Pre-mark CNPJ as already fetched so the auto-lookup debounce does NOT fire
+      const loadedCnpjDigits = String(company.cnpj || '').replace(/\D/g, '');
+      lastFetchedRef.current = loadedCnpjDigits;
+
+      const parseToBR = (iso: string) => {
+        const ymd = String(iso || '').slice(0, 10);
+        const [y, m, d] = ymd.split('-');
+        return (y && m && d) ? `${d}/${m}/${y}` : '';
+      };
+
+      // Map all fields in a single setState call to avoid double renders
+      setEmpresaData(prev => ({
+        ...prev,
         razao_social: company.razao_social || "",
         cnpj: company.cnpj || "",
         tipo_empresa: company.tipo_empresa || "",
@@ -304,27 +367,21 @@ export function NovaEmpresa() {
         endereco: company.endereco || "",
         numero: company.numero || "",
         bairro: company.bairro || "",
-        lojas_associadas: Array.isArray(company.lojas_associadas) ? (company.lojas_associadas as any[]).map(String) : [],
+        complemento: company.complemento || "",
+        logo_url: company.logo_url || prev.logo_url,
+        lojas_associadas: Array.isArray(company.lojas_associadas)
+          ? (company.lojas_associadas as any[]).map(String)
+          : [],
         numero_serie: company.numero_serie || "",
         proxima_nfe: company.proxima_nfe || 1,
-      };
-      setEmpresaData(prev => ({ ...prev, ...mapped }));
-
-      // NF-e: já carregado diretamente da tabela companies (unificado)
-
-      // Certificado A1: preenche a partir dos metadados da própria companies
-      const parseToBR = (iso: string) => {
-        const ymd = String(iso || '').slice(0,10);
-        const [y,m,d] = ymd.split('-');
-        return (y && m && d) ? `${d}/${m}/${y}` : '';
-      };
-      setEmpresaData(prev => ({
-        ...prev,
-        certificado_validade: company.certificado_validade ? parseToBR(String(company.certificado_validade)) : prev.certificado_validade,
+        certificado_validade: company.certificado_validade
+          ? parseToBR(String(company.certificado_validade))
+          : prev.certificado_validade,
         certificado_a1_url: company.certificado_a1_url || prev.certificado_a1_url,
       }));
     } catch (e) {
       console.error('Falha ao carregar empresa para edição:', e);
+      toast.error('Erro ao carregar dados da empresa.');
     }
   };
 
@@ -626,7 +683,8 @@ export function NovaEmpresa() {
           }
         }
 
-        // Integra Focus NFe (dry_run por padrão)
+        // Integra Focus NFe via update (PUT /v2/empresas/{id}) para refletir
+        // mudanças fiscais como série e próximo número de NF-e.
         try {
           let certBase64ForFocus: string | undefined;
           if (pfxFileRef.current && empresaData.certificado_senha) {
@@ -636,7 +694,8 @@ export function NovaEmpresa() {
             body: {
               company_id: updated.id,
               organization_id: updated.organization_id || organizationId || null,
-              dry_run: true,
+              mode: 'update',
+              dry_run: false,
               arquivo_certificado_base64: certBase64ForFocus,
               senha_certificado: certBase64ForFocus ? empresaData.certificado_senha : undefined,
             },
@@ -644,9 +703,9 @@ export function NovaEmpresa() {
           });
           if (focusErr) {
             console.warn('Focus NFe integração (update) falhou:', (focusErr as any)?.message || focusErr);
-            toast.warning('Empresa atualizada. Integração com Focus NFe não foi concluída (dry-run).');
+            toast.warning('Empresa atualizada. Integração com Focus NFe não foi concluída.');
           } else if (focusRes?.ok) {
-            toast.success('Empresa atualizada e validada na Focus (dry-run).');
+            toast.success('Empresa atualizada e sincronizada com a Focus.');
           } else {
             toast.warning('Empresa atualizada. Focus respondeu com aviso.');
           }
@@ -656,7 +715,7 @@ export function NovaEmpresa() {
         }
 
         toast.success('Empresa atualizada com sucesso!');
-        navigate('/configuracoes');
+        navigateAfterSave();
       } else {
         // Inserção
         const insertPayload: any = {
@@ -768,7 +827,7 @@ export function NovaEmpresa() {
         }
 
         toast.success('Empresa cadastrada com sucesso!');
-        navigate('/configuracoes');
+        navigateAfterSave(inserted?.id);
       }
     } catch (error) {
       console.error('Erro ao salvar empresa:', error);
@@ -827,11 +886,24 @@ export function NovaEmpresa() {
           <main className="flex-1 p-6 overflow-auto">
             <div className="p-8 max-w-4xl mx-auto">
               <div className="mb-8">
-                <h1 className="text-3xl font-bold text-gray-900 mb-2">{editCompanyId ? 'Editar Empresa' : 'Adicionar Nova Empresa'}</h1>
-                <p className="text-gray-600">{editCompanyId ? 'Atualize os dados da empresa e renove o certificado A1' : 'Configure uma nova empresa para emissão de notas fiscais'}</p>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h1 className="text-3xl font-bold text-gray-900 mb-2">{editCompanyId ? 'Editar Empresa' : 'Adicionar Nova Empresa'}</h1>
+                    <p className="text-gray-600">{editCompanyId ? 'Atualize os dados da empresa e renove o certificado A1' : 'Configure uma nova empresa para emissão de notas fiscais'}</p>
+                  </div>
+                  <Button variant="outline" onClick={() => setCloseDialogOpen(true)}>
+                    Fechar formulário
+                  </Button>
+                </div>
               </div>
   
-              <StepIndicator steps={steps} currentStep={currentStep} clickable={!!editCompanyId} onStepClick={(id) => setCurrentStep(id)} />
+              <StepIndicator
+                steps={steps}
+                currentStep={currentStep}
+                clickable={true}
+                maxVisitedStep={4}
+                onStepClick={(id) => setCurrentStep(id)}
+              />
   
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 relative">
                 {isCnpjLoading && (
@@ -874,6 +946,29 @@ export function NovaEmpresa() {
                   />
                 </div>
               </div>
+
+              <AlertDialog open={closeDialogOpen} onOpenChange={setCloseDialogOpen}>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Fechar formulário?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Deseja salvar os dados antes de sair do formulário?
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Continuar editando</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      onClick={() => navigate('/configuracoes')}
+                    >
+                      Sair sem salvar
+                    </AlertDialogAction>
+                    <AlertDialogAction onClick={handleSave}>
+                      Salvar e sair
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </main>
         </div>

@@ -43,6 +43,8 @@ export interface ListingItem {
     likes: number;
     stock: number;
     marketplaceId: string;
+    /** marketplace_integrations.id for this listing's connected store */
+    integrationId?: string | null;
     image: string;
     shippingTags: string[];
     quality: number;
@@ -54,6 +56,16 @@ export interface ListingItem {
     publicationCosts: PublicationCosts;
     publicationFeeDetails: PublicationFeeDetails;
     permalink: string | null;
+    /** Total fulfillment stock for this listing when it is a Full (fulfillment) listing. */
+    fulfillmentQty?: number | null;
+    /** Name of the fulfillment warehouse, when applicable. */
+    fulfillmentWarehouseName?: string | null;
+    /** Internal product_id linked via marketplace_item_product_links (null = not linked) */
+    linkedProductId?: string | null;
+    /** Variation-level links map: variation_id -> product_id */
+    linkedVariationMap?: Record<string, string>;
+    /** Per-warehouse stock distribution from marketplace_stock_distribution (ML) or stock_info_v2 (Shopee) */
+    stockDistribution?: Array<{ warehouse_id: string; warehouse_name: string; quantity: number; shipping_type?: string }>;
 }
 
 /** Variation data formatted for display */
@@ -80,5 +92,42 @@ export interface ListingDraft {
     status: string;
 }
 
-export type SortKey = 'sales' | 'visits' | 'price' | 'quality' | 'margin';
+export type SortKey = 'sales' | 'visits' | 'price' | 'quality' | 'stock' | 'title';
 export type SortDir = 'asc' | 'desc';
+
+export type ListingLogisticFilter = 'all' | 'full' | 'flex' | 'envios' | 'correios' | 'xpress' | 'retire';
+export type ListingLinkFilter = 'all' | 'linked' | 'unlinked';
+export type ListingStatusFilter = 'all' | 'active' | 'inactive';
+export type ListingStockFilter = 'all' | 'out_of_stock';
+
+export interface ListingAppliedFilters {
+    logistic: ListingLogisticFilter;
+    link: ListingLinkFilter;
+    status: ListingStatusFilter;
+    stock: ListingStockFilter;
+}
+
+export const DEFAULT_LISTING_FILTERS: ListingAppliedFilters = {
+    logistic: 'all',
+    link: 'all',
+    status: 'all',
+    stock: 'all',
+};
+
+export function hasActiveListingFilters(filters: ListingAppliedFilters): boolean {
+    return (
+        filters.logistic !== 'all' ||
+        filters.link !== 'all' ||
+        filters.status !== 'all' ||
+        filters.stock !== 'all'
+    );
+}
+
+export function countActiveListingFilters(filters: ListingAppliedFilters): number {
+    let n = 0;
+    if (filters.logistic !== 'all') n += 1;
+    if (filters.link !== 'all') n += 1;
+    if (filters.status !== 'all') n += 1;
+    if (filters.stock !== 'all') n += 1;
+    return n;
+}

@@ -1,4 +1,4 @@
-import { ExternalLink, Edit, TrendingUp, BarChart, ShoppingCart, Heart, Copy, MoreHorizontal, Package, Zap, Trash2, Pencil, ChevronDown } from "lucide-react";
+import { ExternalLink, Edit, TrendingUp, BarChart, ShoppingCart, Heart, Copy, MoreHorizontal, Package, Zap, Trash2, Pencil, ChevronDown, Link2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -15,6 +15,7 @@ import {
     getQualityLabel,
     getImprovementSuggestions,
     extractPerformanceHints,
+    formatListingFeeLine,
     formatVariationData,
     type VariationItem,
 } from "@/utils/listingUtils";
@@ -35,6 +36,14 @@ interface ListingCardProps {
     onDuplicate: (ad: ListingItem) => void;
     onDeleteRequest: (id: string) => void;
     onSetConfirmPause: (id: string | null) => void;
+    onOpenLinkPicker?: (params: {
+        ad: ListingItem;
+        variationId?: string;
+        variationSku?: string;
+        variationTypes?: string[];
+        pendingVariationIds?: string[];
+    }) => void;
+    onSyncSingle?: (ad: ListingItem) => void;
 }
 
 function QualityGauge({ quality, qualityLevel }: { quality: number; qualityLevel: any }) {
@@ -71,7 +80,26 @@ function QualityGauge({ quality, qualityLevel }: { quality: number; qualityLevel
     );
 }
 
-function VariationRows({ variations }: { variations: VariationItem[] }) {
+function VariationRows({
+    variations,
+    ad,
+    linkedVariationMap,
+    onOpenLinkPicker,
+}: {
+    variations: VariationItem[];
+    ad: ListingItem;
+    linkedVariationMap?: Record<string, string>;
+    onOpenLinkPicker?: (params: {
+        ad: ListingItem;
+        variationId?: string;
+        variationSku?: string;
+        variationTypes?: string[];
+        pendingVariationIds?: string[];
+    }) => void;
+}) {
+    const pendingVariationIds = variations
+        .map((v) => String(v.id))
+        .filter((id) => !linkedVariationMap?.[id]);
     return (
         <div className="space-y-1">
             {variations.map((variation) => (
@@ -81,6 +109,22 @@ function VariationRows({ variations }: { variations: VariationItem[] }) {
                             <img src={variation.image} alt={`Variação ${variation.sku}`} className="w-12 h-12 rounded-md object-cover bg-gray-100" />
                         </div>
                         <div className="col-start-3 col-span-2">
+                            {!linkedVariationMap?.[String(variation.id)] && onOpenLinkPicker && (
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenLinkPicker({
+                                        ad,
+                                        variationId: String(variation.id),
+                                        variationSku: variation.sku,
+                                        variationTypes: variation.types?.map((t) => t.value) || [],
+                                        pendingVariationIds,
+                                    })}
+                                    className="inline-flex items-center gap-1 mb-1 rounded-full border border-[#FF6400] bg-[#FF6400]/12 px-2 py-0.5 text-[10px] font-semibold text-[#FF6400]"
+                                >
+                                    <Link2 className="w-3 h-3" />
+                                    Vincular variação
+                                </button>
+                            )}
                             <div className="text-gray-500 mb-1">SKU</div>
                             <div className="font-medium text-gray-900">{variation.sku}</div>
                             <div className="text-gray-500 mt-2 mb-1">Tipos</div>
@@ -135,10 +179,16 @@ export function ListingCard({
     onDuplicate,
     onDeleteRequest,
     onSetConfirmPause,
+    onOpenLinkPicker,
+    onSyncSingle,
 }: ListingCardProps) {
     const navigate = useNavigate();
     const variations = formatVariationData(itemRow?.variations || [], itemRow);
     const hasVariations = variations.length > 0;
+    const pendingVariationIds = variations
+        .map((v) => String(v.id))
+        .filter((id) => !ad.linkedVariationMap?.[id]);
+    const pendingVariationCount = pendingVariationIds.length;
 
     const variationRange = (() => {
         if (!hasVariations) return null;
@@ -200,6 +250,31 @@ export function ListingCard({
                     <img src={ad.image} alt={ad.title} className="w-16 h-16 rounded-lg object-cover bg-gray-100" />
                     <div className="flex flex-col h-full justify-between min-w-0">
                         <div className="max-w-full">
+                            {/* "Vincular produto" badge — shown when listing is not linked to an internal product */}
+                            {!hasVariations && !ad.linkedProductId && onOpenLinkPicker && (
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenLinkPicker({ ad })}
+                                    className="inline-flex items-center gap-1 mb-1 rounded-full border border-[#FF6400] bg-[#FF6400]/12 px-2 py-0.5 text-[10px] font-semibold text-[#FF6400]"
+                                >
+                                    <Link2 className="w-3 h-3" />
+                                    Vincular produto
+                                </button>
+                            )}
+                            {hasVariations && pendingVariationCount > 0 && onOpenLinkPicker && (
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenLinkPicker({
+                                        ad,
+                                        variationId: pendingVariationIds[0],
+                                        pendingVariationIds,
+                                    })}
+                                    className="inline-flex items-center gap-1 mb-1 rounded-full border border-[#FF6400] bg-[#FF6400]/12 px-2 py-0.5 text-[10px] font-semibold text-[#FF6400]"
+                                >
+                                    <Link2 className="w-3 h-3" />
+                                    Pendente de vínculo ({pendingVariationCount})
+                                </button>
+                            )}
                             {ad.permalink ? (
                                 <a href={ad.permalink} target="_blank" rel="noopener noreferrer" className="font-semibold text-sm text-gray-900 break-words whitespace-normal hover:text-novura-primary">
                                     {ad.title}
@@ -237,49 +312,40 @@ export function ListingCard({
                     )}
                 </div>
 
-                {/* Col 7-8: Shipping/data */}
+                {/* Col 7-8: Fees + shipping */}
                 <div className="flex flex-col items-start space-y-2 justify-center col-span-2">
-                    {ad.publicationType ? (
-                        <TooltipProvider delayDuration={0}>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Badge variant="outline" className="text-xs px-2 border-[#7C3AED] text-[#7C3AED] cursor-help">
-                                        {ad.publicationType}
-                                    </Badge>
-                                </TooltipTrigger>
-                                <TooltipContent className="rounded-lg bg-[#7C3AED] text-white border border-[#6D28D9] shadow-md w-64 min-h-24 p-3">
-                                    {ad.publicationFeeDetails ? (
-                                        <div className="text-xs leading-5 space-y-1">
+                    <TooltipProvider delayDuration={0}>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <div className="flex flex-col items-start gap-0.5 cursor-help">
+                                    <span className="text-xs font-medium text-gray-500">Tarifas de venda</span>
+                                    <span className="text-sm font-medium text-gray-900">
+                                        {formatListingFeeLine(ad.publicationFeeDetails)}
+                                    </span>
+                                </div>
+                            </TooltipTrigger>
+                            <TooltipContent className="rounded-lg bg-[#7C3AED] text-white border border-[#6D28D9] shadow-md w-64 min-h-24 p-3">
+                                {ad.publicationFeeDetails ? (
+                                    <div className="text-xs leading-5 space-y-1">
+                                        {ad.publicationType ? (
                                             <div className="font-semibold">{ad.publicationType}</div>
-                                            <div>
-                                                Tarifa de venda {ad.publicationFeeDetails.percentage != null ? `${String(ad.publicationFeeDetails.percentage).replace('.', ',')}%` : '—'}
-                                                {typeof ad.publicationFeeDetails.fixedFee === 'number' && ad.publicationFeeDetails.fixedFee > 0
-                                                    ? ` + ${fmt(ad.publicationFeeDetails.fixedFee)}`
-                                                    : ''}
-                                            </div>
-                                            <div className="font-medium">
-                                                A pagar {ad.publicationFeeDetails.grossAmount != null ? fmt(ad.publicationFeeDetails.grossAmount) : fmt(0)}
-                                            </div>
+                                        ) : null}
+                                        <div>
+                                            Tarifa de venda {formatListingFeeLine(ad.publicationFeeDetails)}
                                         </div>
-                                    ) : ad.publicationCosts ? (
-                                        <div className="text-xs leading-5 space-y-1">
-                                            <div className="font-semibold">Custos</div>
-                                            <div>Comissão: {fmt(ad.publicationCosts.commission || 0)}</div>
-                                            <div>Frete: {fmt(ad.publicationCosts.shippingCost || 0)}</div>
-                                            {ad.publicationCosts.tax ? <div>Taxas: {fmt(ad.publicationCosts.tax)}</div> : null}
-                                            <div className="font-medium">Total: {fmt(ad.publicationCosts.total || 0)}</div>
+                                        <div className="font-medium">
+                                            A pagar{" "}
+                                            {ad.publicationFeeDetails.grossAmount != null
+                                                ? fmt(ad.publicationFeeDetails.grossAmount)
+                                                : fmt(0)}
                                         </div>
-                                    ) : (
-                                        <div className="text-xs">Sem dados de custos</div>
-                                    )}
-                                </TooltipContent>
-                            </Tooltip>
-                        </TooltipProvider>
-                    ) : (
-                        <Badge className={`${ad.marketplace === 'Mercado Livre' ? 'bg-yellow-500' : 'bg-gray-500'} text-white text-xs px-2`}>
-                            {ad.marketplace}
-                        </Badge>
-                    )}
+                                    </div>
+                                ) : (
+                                    <div className="text-xs">Sem dados de taxas</div>
+                                )}
+                            </TooltipContent>
+                        </Tooltip>
+                    </TooltipProvider>
                     {ad.shippingTags && ad.shippingTags.length > 0 ? (
                         <div className="flex flex-wrap gap-1 mt-0.5">
                             {ad.shippingTags.map((tag, index) => {
@@ -334,7 +400,11 @@ export function ListingCard({
                                         </button>
                                     )}
                                 </div>
-                                <div className="text-xs text-gray-500">Estoque</div>
+                                <div className="text-xs text-gray-500">
+                                    {ad.fulfillmentQty != null
+                                        ? `Full: ${ad.fulfillmentQty}`
+                                        : "Estoque"}
+                                </div>
                             </div>
                         </div>
                         <div className="flex items-center space-x-2">
@@ -435,6 +505,11 @@ export function ListingCard({
                                 <DropdownMenuItem onSelect={(e) => { e.preventDefault(); onDuplicate(ad); }}>
                                     <Copy className="w-4 h-4 mr-2" /> Duplicar
                                 </DropdownMenuItem>
+                                {onSyncSingle && (
+                                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); onSyncSingle(ad); }}>
+                                        <RefreshCw className="w-4 h-4 mr-2" /> Sincronizar este anúncio
+                                    </DropdownMenuItem>
+                                )}
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem onSelect={(e) => { e.preventDefault(); navigate(`/anuncios/edicao/${ad.marketplaceId}`); }}>
                                     <Edit className="w-4 h-4 mr-2" /> Editar
@@ -452,9 +527,48 @@ export function ListingCard({
                 <div className="border-t border-gray-100 bg-gray-50">
                     <Collapsible open={isExpanded}>
                         <CollapsibleContent className="px-0.5 pb-3">
-                            <VariationRows variations={variations} />
+                            <VariationRows
+                                variations={variations}
+                                ad={ad}
+                                linkedVariationMap={ad.linkedVariationMap}
+                                onOpenLinkPicker={onOpenLinkPicker}
+                            />
                         </CollapsibleContent>
                     </Collapsible>
+                </div>
+            )}
+
+            {/* Stock distribution panel — shown when expanded and data is available */}
+            {isExpanded && ad.stockDistribution && ad.stockDistribution.length > 0 && (
+                <div className="border-t border-gray-100 bg-gray-50 px-4 py-3">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                        Distribuição de estoque
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                        {ad.stockDistribution.map((entry) => {
+                            const type = String(entry.shipping_type || entry.warehouse_name || "").toLowerCase();
+                            const isFullWh = type.includes("full") || type.includes("fulfillment");
+                            const isFlex = type.includes("flex");
+                            const isEnvios = type.includes("envios");
+                            const badgeClass = isFullWh
+                                ? "bg-violet-100 text-violet-700 border-violet-200"
+                                : isFlex
+                                ? "bg-blue-100 text-blue-700 border-blue-200"
+                                : isEnvios
+                                ? "bg-cyan-100 text-cyan-700 border-cyan-200"
+                                : "bg-gray-100 text-gray-700 border-gray-200";
+                            const label = isFullWh ? "Full" : isFlex ? "Flex" : isEnvios ? "Envios" : entry.warehouse_name;
+                            return (
+                                <span
+                                    key={entry.warehouse_id}
+                                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${badgeClass}`}
+                                >
+                                    <span>{label}</span>
+                                    <span className="font-bold">{entry.quantity}</span>
+                                </span>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
         </div>

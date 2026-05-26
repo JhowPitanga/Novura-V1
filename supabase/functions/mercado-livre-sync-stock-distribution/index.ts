@@ -1,6 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { jsonResponse, handleOptions } from "../_shared/adapters/infra/http-utils.ts";
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import { reconcileCanonicalFromStoredRaw } from "../_shared/listing-adapters/reconcileCanonical.ts";
 import { importAesGcmKey, aesGcmEncryptToString, aesGcmDecryptFromString } from "../_shared/adapters/infra/token-utils.ts";
 
 function b64UrlToUint8(b64url: string): Uint8Array { let b64 = b64url.replace(/-/g, "+").replace(/_/g, "/"); const pad = b64.length % 4; if (pad) b64 += "=".repeat(4 - pad); const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
@@ -339,7 +340,56 @@ Deno.serve(async (req: Request) => {
       
       const { error: insErr } = await admin.from("marketplace_stock_distribution").upsert(rows, { onConflict: "organizations_id,marketplace_name,marketplace_item_id,warehouse_id" });
       if (insErr) return { ok: false, error: insErr.message };
-      
+
+      // Sync fulfillment_stock when this is a ML Full (fulfillment) listing
+      const isMlFull = inferredLogistic === "fulfillment" || inferredLogistic === "fbm";
+      if (isMlFull) {
+        try {
+          // Resolve product_id via marketplace_item_product_links
+          const { data: linkData } = await admin
+            .from("marketplace_item_product_links")
+            .select("product_id")
+            .eq("organizations_id", organizationId)
+            .eq("marketplace_name", "Mercado Livre")
+            .eq("marketplace_item_id", itemId)
+            .maybeSingle() as any;
+          const productId = linkData?.product_id;
+
+          // Resolve fulfillment_storage_id via integration_warehouse_config
+          const { data: configData } = await admin
+            .from("integration_warehouse_config")
+            .select("fulfillment_storage_id")
+            .eq("integration_id", integration.id)
+            .maybeSingle() as any;
+          const fulfillmentStorageId = configData?.fulfillment_storage_id;
+
+          if (productId && fulfillmentStorageId) {
+            const totalFulfillmentQty = locations.reduce((sum: number, loc: any) => {
+              const locType = String(loc?.type || "").toLowerCase();
+              if (locType === "meli_facility" || locType === "fulfillment") {
+                const qty = typeof loc?.quantity === "number" ? loc.quantity : 0;
+                return sum + qty;
+              }
+              return sum;
+            }, 0);
+            await admin.from("fulfillment_stock").upsert(
+              {
+                organization_id: organizationId,
+                storage_id: fulfillmentStorageId,
+                product_id: productId,
+                marketplace_item_id: itemId,
+                variation_id: "",
+                quantity: totalFulfillmentQty,
+                last_synced_at: nowIso,
+              },
+              { onConflict: "storage_id,product_id,marketplace_item_id,variation_id" },
+            ) as any;
+          }
+        } catch (fsErr: any) {
+          console.warn("[ml-sync-stock] fulfillment_stock sync failed for", itemId, fsErr?.message);
+        }
+      }
+
       // Retorna os dados de debug se estiver no modo debug
       if (debug) return debugData;
       const normalizedLocations = locations.map((loc)=>{ 
@@ -395,6 +445,14 @@ Deno.serve(async (req: Request) => {
       const normalizedSummary = { ...summary || {}, locations: normalizedLocations, shipping_types };
       const { error: updErr } = await admin.from("marketplace_items").update({ stock_distribution: normalizedSummary || { locations: normalizedLocations }, shipping_types, last_stock_update: nowIso }).eq("organizations_id", organizationId).eq("marketplace_name", "Mercado Livre").eq("marketplace_item_id", itemId);
       if (updErr) return { ok: false, error: updErr.message };
+      reconcileCanonicalFromStoredRaw(admin, {
+        organizationId,
+        marketplaceName: 'Mercado Livre',
+        marketplaceItemId: itemId,
+        payloadSource: 'stock-sync',
+      }).then((r) => {
+        if (!r.ok) console.warn('[ml-sync-stock] canonical reconcile', itemId, r.error);
+      });
       return { ok: true, count: rows.length };
     };
     for (const it of targetItems){ results[it.marketplace_item_id] = await limiter.run(()=>processOne(it.marketplace_item_id, it.available_quantity)); }
