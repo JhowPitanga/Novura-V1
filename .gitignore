@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 
 coverage/*
+
+# Deploy scratchpad (created at runtime by scripts/*.mjs during Edge Function deploys)
+scripts/.deploy-temp/

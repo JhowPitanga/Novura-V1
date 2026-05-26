@@ -1,1 +1,0 @@
-c:/Users/jonat/OneDrive/Documentos/GitHub/Novura-V1/scripts/.deploy-temp/_mcp-deploy-args-lb.json
