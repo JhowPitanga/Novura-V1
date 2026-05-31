@@ -1,11 +1,60 @@
+function normalizeLogisticKey(v?: string | null): string {
+  return String(v || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[\s-]+/g, '_');
+}
+
 export function mapTipoEnvioLabel(v?: string): string {
-  const s = String(v || '').toLowerCase();
+  const s = normalizeLogisticKey(v);
   if (s === 'full' || s === 'fulfillment' || s === 'fbm') return 'Full';
   if (s === 'flex' || s === 'self_service') return 'Flex';
   if (s === 'envios' || s === 'me2' || s === 'xd_drop_off' || s === 'cross_docking' || s === 'custom') return 'Envios';
   if (s === 'correios' || s === 'drop_off') return 'Correios';
   if (s === 'no_shipping') return 'Sem Envio';
-  return s ? s : '—';
+  if (s === 'xpress' || s === 'shopee_xpress') return 'Shopee Xpress';
+  if (s === 'me1') return 'ME1';
+  if (s === 'coleta') return 'Coleta';
+  return s ? s.replace(/_/g, ' ') : '—';
+}
+
+/** Maps internal order status slugs to UI labels (pt-BR). */
+export function mapOrderStatusLabel(value?: string | null): string {
+  const status = String(value || "").trim().toLowerCase();
+  const labels: Record<string, string> = {
+    pending: "Pendente",
+    unlinked: "A vincular",
+    invoice_pending: "Emissao NF",
+    ready_to_print: "Impressao",
+    awaiting_pickup: "Aguardando Coleta",
+    shipped: "Enviado",
+    cancelled: "Cancelado",
+    canceled: "Cancelado",
+    returned: "Devolução",
+    processando_nf: "Processando NF",
+    nfe_xml_pending: "Subir XML",
+  };
+  if (labels[status]) return labels[status];
+  const raw = String(value || "").trim();
+  return raw || "—";
+}
+
+export function mapOrderStatusSourceLabel(source?: string | null): string {
+  const s = String(source || "").trim().toLowerCase();
+  const labels: Record<string, string> = {
+    sync: "Sincronização",
+    webhook: "Webhook",
+    migration: "Migração",
+    manual: "Manual",
+    nfe: "Emissão NF-e",
+    label: "Etiqueta",
+    link: "Vinculação",
+    status_engine: "Motor de status",
+  };
+  if (labels[s]) return labels[s];
+  return s ? s.replace(/_/g, " ") : "Sistema";
 }
 
 export function isAbortLikeError(e: any): boolean {
@@ -14,13 +63,14 @@ export function isAbortLikeError(e: any): boolean {
 }
 
 export function normalizeShippingType(input?: string | null): string {
-  const s = String(input || '').toLowerCase();
+  const s = normalizeLogisticKey(input);
   if (!s) return '';
   if (s === 'full' || s === 'fulfillment' || s === 'fbm') return 'full';
   if (s === 'flex' || s === 'self_service') return 'flex';
   if (s === 'envios' || s === 'me2' || s === 'xd_drop_off' || s === 'cross_docking' || s === 'custom') return 'envios';
   if (s === 'correios' || s === 'drop_off') return 'correios';
   if (s === 'no_shipping') return 'no_shipping';
+  if (s === 'xpress' || s === 'shopee_xpress') return 'xpress';
   return s;
 }
 

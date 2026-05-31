@@ -1,16 +1,104 @@
-import { memo } from "react";
-import { ChevronDown, FileBadge, CheckCircle2, Loader2 } from "lucide-react";
+import { memo, type ReactNode } from "react";
+import {
+  CheckCircle2,
+  Eye,
+  FileBadge,
+  FilePlus,
+  FileText,
+  Link2,
+  Loader2,
+  MoreHorizontal,
+  Package,
+  RefreshCw,
+  RotateCcw,
+  Upload,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox as CustomCheckbox } from "@/components/ui/checkbox";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { normStatus } from "@/hooks/useOrderFiltering";
+
+const ACTION_BTN_CLASS = "h-10 w-10 shrink-0 rounded-lg p-0 [&_svg]:size-5";
+const ACTION_ICON_CLASS = "h-5 w-5";
+
+const iconActionClass =
+  `${ACTION_BTN_CLASS} text-purple-600 hover:bg-purple-50 hover:text-purple-700`;
+const iconActionMutedClass =
+  `${ACTION_BTN_CLASS} text-gray-400 hover:bg-gray-50 hover:text-gray-600`;
+const menuTriggerClass =
+  `${ACTION_BTN_CLASS} text-gray-500 hover:bg-gray-50 hover:text-purple-600`;
+
+function OrderRowIconAction({
+  label,
+  icon: Icon,
+  onClick,
+  disabled,
+  loading,
+  muted,
+}: {
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  onClick: (e: React.MouseEvent) => void;
+  disabled?: boolean;
+  loading?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className={muted ? iconActionMutedClass : iconActionClass}
+          disabled={disabled || loading}
+          onClick={onClick}
+          aria-label={label}
+        >
+          {loading ? (
+            <Loader2 className={`${ACTION_ICON_CLASS} animate-spin`} />
+          ) : (
+            <Icon className={ACTION_ICON_CLASS} />
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        <span>{label}</span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function OrderRowMoreMenu({ children }: { children: ReactNode }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className={menuTriggerClass}
+          onClick={(e) => {
+            e.stopPropagation();
+            (e.currentTarget as HTMLButtonElement).blur();
+          }}
+          data-details-trigger
+          aria-label="Mais ações"
+        >
+          <MoreHorizontal className={ACTION_ICON_CLASS} />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">{children}</DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 interface ColumnDef {
   id: string;
@@ -122,198 +210,151 @@ function OrderTableRowImpl({
           </div>
         </td>
       ))}
-      <td className="relative overflow-hidden py-3 w-[8%] whitespace-nowrap text-center text-sm font-medium align-middle">
-        {activeStatus === "a-vincular" ? (
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="link"
-                  className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
-                  disabled={!canVincular}
-                  onClick={(e) => { e.stopPropagation(); if (canVincular) onVincular(pedido); }}
-                >
-                  Vincular
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <span>{vincularTooltip}</span>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        ) : activeStatus === "aguardando-coleta" ? (
-          <div className="flex flex-col items-center justify-center gap-1">
-            <div className="relative">
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="link"
-                      className={`h-8 w-8 p-0 ${hasLabel ? 'text-purple-600' : 'text-gray-500'}`}
-                      onClick={(e) => { e.stopPropagation(); onReprintLabel(pedido); }}
-                      aria-label="Imprimir"
-                    >
-                      <FileBadge className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <span>Reimprimir</span>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-              {pedido.labelPrinted && (
-                <CheckCircle2 className="absolute -top-1 -right-1 h-3 w-3 text-green-600 pointer-events-none" />
-              )}
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="link" className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); }} data-details-trigger>
-                  Mais
-                  <ChevronDown className="h-2 w-4 ml-0" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onOpenDetails(pedido); }}>
-                  Mostrar detalhes
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        ) : activeStatus === "impressao" ? (
-          <div className="flex flex-col items-center justify-center gap-1">
-            <TooltipProvider>
+      <td className="relative overflow-hidden py-3 w-[10%] min-w-[88px] whitespace-nowrap text-center text-sm font-medium align-middle">
+        <TooltipProvider delayDuration={200}>
+          <div className="flex items-center justify-center gap-1">
+            {activeStatus === "a-vincular" ? (
+              <OrderRowIconAction
+                label={vincularTooltip}
+                icon={Link2}
+                disabled={!canVincular}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (canVincular) onVincular(pedido);
+                }}
+              />
+            ) : activeStatus === "aguardando-coleta" ? (
+              <>
+                <div className="relative">
+                  <OrderRowIconAction
+                    label="Reimprimir etiqueta"
+                    icon={FileBadge}
+                    muted={!hasLabel}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onReprintLabel(pedido);
+                    }}
+                  />
+                  {pedido.labelPrinted && (
+                    <CheckCircle2 className="absolute -top-0.5 -right-0.5 h-3.5 w-3.5 text-green-600 pointer-events-none" />
+                  )}
+                </div>
+                <OrderRowMoreMenu>
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onOpenDetails(pedido); }}>
+                    <Eye className="mr-2 h-4 w-4" />
+                    Mostrar detalhes
+                  </DropdownMenuItem>
+                </OrderRowMoreMenu>
+              </>
+            ) : activeStatus === "impressao" ? (
+              <>
+                <OrderRowIconAction
+                  label="Reimprimir etiqueta"
+                  icon={FileBadge}
+                  disabled={!hasLabel}
+                  muted={!hasLabel}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReprintLabel(pedido);
+                  }}
+                />
+                <OrderRowMoreMenu>
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onOpenDetails(pedido); }}>
+                    <Eye className="mr-2 h-4 w-4" />
+                    Mostrar detalhes
+                  </DropdownMenuItem>
+                </OrderRowMoreMenu>
+              </>
+            ) : (normStatus(pedido.internalStatus) === "processando_nf" || isProcessing) ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="link"
-                    className="h-8 w-8 p-0"
-                    onClick={(e) => { e.stopPropagation(); onReprintLabel(pedido); }}
-                    disabled={!hasLabel}
-                    aria-label="Reimprimir etiqueta"
-                  >
-                    <FileBadge className={`h-4 w-4 ${hasLabel ? 'text-purple-600' : 'text-gray-500'}`} />
-                  </Button>
+                  <Badge className="bg-white text-purple-700 border border-purple-300 h-10 w-10 p-0 inline-flex items-center justify-center rounded-lg">
+                    <Loader2 className={`${ACTION_ICON_CLASS} animate-spin text-purple-600`} />
+                  </Badge>
                 </TooltipTrigger>
-                <TooltipContent>
-                  <span>Reimprimir</span>
+                <TooltipContent side="top">
+                  <span>Processando NF-e</span>
                 </TooltipContent>
               </Tooltip>
-            </TooltipProvider>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="link" className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); }} data-details-trigger>
-                  Mais
-                  <ChevronDown className="h-2 w-4 ml-0" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onOpenDetails(pedido); }}>
-                  Mostrar detalhes
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        ) : (
-            (normStatus(pedido.internalStatus) === 'processando_nf' || isProcessing)
-            ? (
-              <div className="flex items-center justify-center">
-                <Badge className="bg-white text-purple-700 border border-purple-300 h-7 px-2 inline-flex items-center gap-2 rounded-md">
-                  <Loader2 className="h-4 w-4 animate-spin text-purple-600" />
-                  Processando NF-e
-                </Badge>
-              </div>
-            )
-            : (
-              <div className={`${activeStatus === "emissao-nf" && (nfBadgeFilter === "emitir" || nfBadgeFilter === "subir_xml") ? "flex flex-col items-center justify-center gap-1" : "flex items-center justify-center gap-2"}`}>
+            ) : (
+              <>
                 {activeStatus === "emissao-nf" && nfBadgeFilter === "emitir" && !isNfeAuthorized && (
-                  <Button
-                    variant="link"
-                    className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
+                  <OrderRowIconAction
+                    label="Emitir NF-e"
+                    icon={FileText}
                     onClick={(e) => {
                       e.stopPropagation();
                       addProcessingId(String(pedido.id));
                       onEmitir([pedido]);
                     }}
-                  >
-                    Emitir
-                  </Button>
+                  />
                 )}
                 {activeStatus === "emissao-nf" && nfBadgeFilter === "subir_xml" && (
-                  isXmlLoading ? (
-                    <span className="inline-flex items-center h-8">
-                      <Loader2 className="h-4 w-4 animate-spin text-purple-600" />
-                    </span>
-                  ) : (
-                    <Button
-                      variant="link"
-                      className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
-                      onClick={(e) => { e.stopPropagation(); onSubirXml(pedido); }}
-                    >
-                      Subir xml
-                    </Button>
-                  )
+                  <OrderRowIconAction
+                    label="Subir XML"
+                    icon={Upload}
+                    loading={isXmlLoading}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSubirXml(pedido);
+                    }}
+                  />
                 )}
-                {activeStatus === "emissao-nf" && nfBadgeFilter === "subir_xml" && String(pedido.marketplace || '').toLowerCase().includes('shopee') && (
-                  isArrangeLoading ? (
-                    <span className="inline-flex items-center h-8">
-                      <Loader2 className="h-4 w-4 animate-spin text-purple-600" />
-                    </span>
-                  ) : (
-                    <Button
-                      variant="link"
-                      className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline"
-                      onClick={(e) => { e.stopPropagation(); onArrangeShipment(pedido); }}
-                    >
-                      Organizar Envio
-                    </Button>
-                  )
+                {activeStatus === "emissao-nf" && nfBadgeFilter === "subir_xml" && String(pedido.marketplace || "").toLowerCase().includes("shopee") && (
+                  <OrderRowIconAction
+                    label="Organizar envio"
+                    icon={Package}
+                    loading={isArrangeLoading}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onArrangeShipment(pedido);
+                    }}
+                  />
                 )}
 
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="link" className="h-8 px-0 text-purple-600 hover:text-purple-700 no-underline" onClick={(e) => { e.stopPropagation(); (e.currentTarget as HTMLButtonElement).blur(); }} data-details-trigger>
-                      Mais
-                      <ChevronDown className="h-2 w-4 ml-0" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onOpenDetails(pedido); }}>
-                      Mostrar detalhes
+                <OrderRowMoreMenu>
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onOpenDetails(pedido); }}>
+                    <Eye className="mr-2 h-4 w-4" />
+                    Mostrar detalhes
+                  </DropdownMenuItem>
+
+                  {activeStatus === "emissao-nf" && nfBadgeFilter !== "subir_xml" && nfBadgeFilter !== "emitir" && (
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onSyncNfe(pedido); }}>
+                      <RefreshCw className="mr-2 h-4 w-4" />
+                      Sincronizar NF-e
                     </DropdownMenuItem>
-
-                    {activeStatus === "emissao-nf" && nfBadgeFilter !== "subir_xml" && nfBadgeFilter !== "emitir" && (
-                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onSyncNfe(pedido); }}>
-                        Sincronizar NF-e
-                      </DropdownMenuItem>
-                    )}
-                    {activeStatus === "emissao-nf" && nfBadgeFilter === "falha" && (
-                      <DropdownMenuItem onClick={(e) => {
-                        e.stopPropagation();
-                        addProcessingId(String(pedido.id));
-                        onEmitir([pedido]);
-                      }}>
-                        Reemitir
-                      </DropdownMenuItem>
-                    )}
-                    {activeStatus === "emissao-nf" && ["cancelado", "cancelada", "rejeitado", "rejeitada"].includes(String(nfeFocusStatus).toLowerCase()) && (
-                      <DropdownMenuItem onClick={(e) => {
-                        e.stopPropagation();
-                        addProcessingId(String(pedido.id));
-                        onEmitir([pedido], { forceNewNumber: true, forceNewRef: true });
-                      }}>
-                        Gerar Nova NF-e
-                      </DropdownMenuItem>
-                    )}
-                    {activeStatus === "emissao-nf" && isNfeAuthorized && (
-                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onSubirXml(pedido); }}>
-                        Subir xml
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            )
-        )}
+                  )}
+                  {activeStatus === "emissao-nf" && nfBadgeFilter === "falha" && (
+                    <DropdownMenuItem onClick={(e) => {
+                      e.stopPropagation();
+                      addProcessingId(String(pedido.id));
+                      onEmitir([pedido]);
+                    }}>
+                      <RotateCcw className="mr-2 h-4 w-4" />
+                      Reemitir
+                    </DropdownMenuItem>
+                  )}
+                  {activeStatus === "emissao-nf" && ["cancelado", "cancelada", "rejeitado", "rejeitada"].includes(String(nfeFocusStatus).toLowerCase()) && (
+                    <DropdownMenuItem onClick={(e) => {
+                      e.stopPropagation();
+                      addProcessingId(String(pedido.id));
+                      onEmitir([pedido], { forceNewNumber: true, forceNewRef: true });
+                    }}>
+                      <FilePlus className="mr-2 h-4 w-4" />
+                      Gerar nova NF-e
+                    </DropdownMenuItem>
+                  )}
+                  {activeStatus === "emissao-nf" && isNfeAuthorized && (
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onSubirXml(pedido); }}>
+                      <Upload className="mr-2 h-4 w-4" />
+                      Subir XML
+                    </DropdownMenuItem>
+                  )}
+                </OrderRowMoreMenu>
+              </>
+            )}
+          </div>
+        </TooltipProvider>
       </td>
     </tr>
   );

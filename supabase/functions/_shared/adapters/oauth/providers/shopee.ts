@@ -1,8 +1,4 @@
 // Shopee OAuth2 provider adapter (HMAC-SHA256 signed requests).
-// Encapsulates the logic previously spread across:
-//   shopee-start-auth/index.ts
-//   shopee-callback/index.ts
-//   shopee-refresh/index.ts
 
 import type {
   AuthorizationResult,
@@ -14,16 +10,16 @@ import type {
 import type { IntegrationRow } from "../../../domain/integration-types.ts";
 import { aesGcmDecryptFromString, hmacSha256Hex, importAesGcmKey } from "../../infra/token-utils.ts";
 import { createSignedState } from "../state-utils.ts";
-
-const SHOPEE_AUTH_HOST = "https://partner.shopeemobile.com";
-const SHOPEE_AUTH_PATH = "/api/v2/shop/auth_partner";
-const SHOPEE_TOKEN_HOST = "https://openplatform.shopee.com.br";
-const SHOPEE_TOKEN_PATH = "/api/v2/auth/token/get";
-const SHOPEE_REFRESH_PATH = "/api/v2/auth/access_token";
-
-// -------------------------------------------------------------------------
-// HMAC signing helper
-// -------------------------------------------------------------------------
+import {
+  SHOPEE_AUTH_HOST,
+  SHOPEE_AUTH_PATH,
+  SHOPEE_REFRESH_PATH,
+  SHOPEE_TOKEN_HOST,
+  SHOPEE_TOKEN_PATH,
+  appendStateToRedirect,
+  normalizeShopeePartnerKey,
+  normalizeShopeeRedirectUri,
+} from "../shopee-oauth-config.ts";
 
 async function shopeeSign(
   partnerId: string,
@@ -32,16 +28,12 @@ async function shopeeSign(
   partnerKey: string,
   body?: string,
 ): Promise<string> {
-  // Shopee V2 base string: partner_id + path + timestamp [+ body for POST]
   const baseString = body !== undefined
     ? `${partnerId}${path}${timestamp}${body}`
     : `${partnerId}${path}${timestamp}`;
-  return hmacSha256Hex(partnerKey, baseString);
+  const sign = await hmacSha256Hex(normalizeShopeePartnerKey(partnerKey), baseString);
+  return sign.toLowerCase();
 }
-
-// -------------------------------------------------------------------------
-// Adapter implementation
-// -------------------------------------------------------------------------
 
 export const shopeeAdapter: OAuthProviderAdapter = {
   key: "shopee",
@@ -92,15 +84,8 @@ export const shopeeAdapter: OAuthProviderAdapter = {
     const timestamp = Math.floor(Date.now() / 1000);
     const sign = await shopeeSign(partnerId, SHOPEE_AUTH_PATH, timestamp, partnerKey);
 
-    // Embed state in the redirect_uri so Shopee forwards it back
-    let redirectWithState = ctx.redirectUri;
-    try {
-      const r = new URL(ctx.redirectUri);
-      r.searchParams.set("state", state);
-      redirectWithState = r.toString();
-    } catch {
-      // Keep original if URL parse fails
-    }
+    const redirectBase = normalizeShopeeRedirectUri(ctx.redirectUri) ?? ctx.redirectUri;
+    const redirectWithState = appendStateToRedirect(redirectBase, state);
 
     const authUrl = new URL(`${SHOPEE_AUTH_HOST}${SHOPEE_AUTH_PATH}`);
     authUrl.searchParams.set("partner_id", partnerId);
@@ -108,12 +93,16 @@ export const shopeeAdapter: OAuthProviderAdapter = {
     authUrl.searchParams.set("sign", sign);
     authUrl.searchParams.set("redirect", redirectWithState);
 
-    const result: AuthorizationResult = {
+    console.log("[shopee-oauth] auth_url_built", {
+      authHost: SHOPEE_AUTH_HOST,
+      redirectBase,
+      redirectWithStatePrefix: redirectWithState.slice(0, 120),
+    });
+
+    return {
       authorizationUrl: authUrl.toString(),
       state,
-      // No PKCE for Shopee
-    };
-    return result;
+    } satisfies AuthorizationResult;
   },
 
   async exchangeCode(_ctx, code, _codeVerifier, creds, extras) {
@@ -166,7 +155,6 @@ export const shopeeAdapter: OAuthProviderAdapter = {
       refreshPlain = await aesGcmDecryptFromString(aesKey, refreshPlain);
     }
 
-    // Resolve shop_id from config or meli_user_id (Shopee reuses same column)
     // deno-lint-ignore no-explicit-any
     const cfg = (row as any)?.config as Record<string, unknown> | null;
     const shopId = String(

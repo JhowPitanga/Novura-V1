@@ -136,7 +136,7 @@ export function OrdersFilterBars(props: OrdersFilterBarsProps) {
         <NfeFilterBar
           nfBadgeFilter={nfBadgeFilter}
           onNfBadgeFilterChange={onNfBadgeFilterChange}
-          onNavigate={navigate}
+          onNavigate={onNavigate}
           badgeCounts={badgeCounts}
           searchTerm={searchTerm}
           onSearchTermChange={onSearchTermChange}

@@ -362,12 +362,18 @@ function toOrderFinancialInfo(raw: {
   };
 }
 
+/** PostgREST may return a 1:1 embed as an object or as a single-element array. */
+function extractEmbeddedRow(value: unknown): Record<string, unknown> | null {
+  if (!value) return null;
+  if (Array.isArray(value)) return (value[0] as Record<string, unknown>) ?? null;
+  if (typeof value === "object") return value as Record<string, unknown>;
+  return null;
+}
+
 /** Parse a single raw DB row from orders + nested order_items/order_shipping into Order. */
 export function parseOrderRow(row: Record<string, unknown>): Order {
   const itemsRaw: Record<string, unknown>[] = Array.isArray(row?.order_items) ? row.order_items as Record<string, unknown>[] : [];
-  const shippingRaw: Record<string, unknown> | null = Array.isArray(row?.order_shipping)
-    ? (row.order_shipping as Record<string, unknown>[])[0] ?? null
-    : null;
+  const shippingRaw = extractEmbeddedRow(row?.order_shipping);
 
   const toNum = (v: unknown): number => (typeof v === "number" ? v : Number(v)) || 0;
 
@@ -381,6 +387,7 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
           sku: (it.sku as string) ?? null,
           quantity: typeof it.quantity === "number" ? it.quantity : Number(it.quantity ?? 1) || 1,
           unitPrice: typeof it.unit_price === "number" ? it.unit_price : Number(it.unit_price ?? 0) || 0,
+          unitCost: it.unit_cost != null ? toNum(it.unit_cost) : null,
           linked: Boolean(it.product_id),
           marketplace: row.marketplace as string,
           scanned: false,
@@ -418,6 +425,7 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
 
   const shippingReceived = toNum(row.shipping_subsidy);
   const marketplaceFee = toNum(row.marketplace_fee);
+  const shippingCost = toNum(row.shipping_cost);
   const legacyItems = mappedItems.map((it) => ({ valor: it.unitPrice, quantidade: it.quantity }));
   const rawFinancials = buildFinancials(
     legacyItems,
@@ -426,6 +434,7 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
     marketplaceFee,
     (shippingRaw?.carrier as string) ?? null,
   );
+  rawFinancials.taxaFrete = shippingCost;
   const financial = toOrderFinancialInfo(rawFinancials);
 
   const labelInfo = buildLabelInfo(row);
@@ -438,6 +447,7 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
           marketplace_item_id: it.marketplace_item_id,
           variation_id: it.variation_name,
           sku: it.sku,
+          product_id: it.product_id,
         }));
   const rowForSku = {
     ...row,
@@ -464,7 +474,9 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
     status: statusUI,
     internalStatus: row.status != null ? String(row.status) : null,
     subStatus: undefined,
-    shippingType: normalizeShippingType(shippingRaw?.logistic_type as string),
+    shippingType: normalizeShippingType(
+      (shippingRaw?.logistic_type as string) ?? (row.is_fulfillment ? "fulfillment" : null),
+    ),
     platformId: String(row.pack_id || row.marketplace_order_id || row.id),
     totalQuantity,
     imageUrl: mappedItems[0]?.imageUrl ?? "/placeholder.svg",
@@ -477,7 +489,7 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
     pickingListPrinted: false,
     linkedSku: skuLinked ?? undefined,
     label: labelInfo,
-    linkedProducts: undefined,
+    linkedProducts: linkedProductsArr.length ? linkedProductsArr : undefined,
     hasUnlinkedItems: itemsRaw.some((it) => !it.product_id),
     shipmentStatus: (shippingRaw?.status as string) ?? null,
     shippingSla: {
@@ -487,6 +499,14 @@ export function parseOrderRow(row: Record<string, unknown>): Order {
       lastUpdated: null,
     },
     shippingDelays: undefined,
+    shippedAt: row.shipped_at != null ? String(row.shipped_at) : null,
+    deliveredAt: row.delivered_at != null ? String(row.delivered_at) : null,
+    canceledAt: row.canceled_at != null ? String(row.canceled_at) : null,
+    labelPrintedAt: row.label_printed_at != null ? String(row.label_printed_at) : null,
+    hasInvoice: Boolean(row.has_invoice),
+    lastSyncedAt: row.last_synced_at != null ? String(row.last_synced_at) : null,
+    paymentStatus: row.payment_status != null ? String(row.payment_status) : null,
+    buyerState: row.buyer_state != null ? String(row.buyer_state) : null,
   };
 }
 
@@ -685,4 +705,33 @@ export async function linkProductToOrderItems(
     throw new Error(`linkProductToOrderItems failed: ${error.message}`);
   }
   return data as LinkProductToOrderItemsResult;
+}
+
+export interface OrderStatusHistoryEntry {
+  id: string;
+  orderId: string;
+  fromStatus: string | null;
+  toStatus: string;
+  changedAt: string;
+  source: string;
+}
+
+/** Fetch append-only status history for an order (newest last). */
+export async function fetchOrderStatusHistory(orderId: string): Promise<OrderStatusHistoryEntry[]> {
+  const { data, error } = await (supabase as any)
+    .from("order_status_history")
+    .select("id, order_id, from_status, to_status, changed_at, source")
+    .eq("order_id", orderId)
+    .order("changed_at", { ascending: true });
+
+  if (error) throw new Error(`fetchOrderStatusHistory failed: ${error.message}`);
+
+  return (Array.isArray(data) ? data : []).map((row: Record<string, unknown>) => ({
+    id: String(row.id),
+    orderId: String(row.order_id),
+    fromStatus: row.from_status != null ? String(row.from_status) : null,
+    toStatus: String(row.to_status),
+    changedAt: String(row.changed_at),
+    source: String(row.source),
+  }));
 }

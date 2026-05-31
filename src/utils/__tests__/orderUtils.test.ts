@@ -73,6 +73,11 @@ describe("mapTipoEnvioLabel", () => {
     expect(mapTipoEnvioLabel("")).toBe("—");
   });
 
+  it("maps 'shopee_xpress' to 'Shopee Xpress'", () => {
+    expect(mapTipoEnvioLabel("shopee_xpress")).toBe("Shopee Xpress");
+    expect(mapTipoEnvioLabel("Shopee Xpress")).toBe("Shopee Xpress");
+  });
+
   it("returns lowercased value for unknown types", () => {
     expect(mapTipoEnvioLabel("express")).toBe("express");
   });
@@ -116,6 +121,11 @@ describe("normalizeShippingType", () => {
     expect(normalizeShippingType(null)).toBe("");
     expect(normalizeShippingType(undefined)).toBe("");
     expect(normalizeShippingType("")).toBe("");
+  });
+
+  it("normalizes shopee xpress variants to 'xpress'", () => {
+    expect(normalizeShippingType("Shopee Xpress")).toBe("xpress");
+    expect(normalizeShippingType("shopee_xpress")).toBe("xpress");
   });
 
   it("returns lowercased input for unknown types", () => {

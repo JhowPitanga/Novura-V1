@@ -143,3 +143,60 @@ export async function updateIntegrationStoreName(
     .eq("organizations_id", organizationId);
   if (error) throw error;
 }
+
+function isMissingRpcError(error: { code?: string | null; message?: string | null }): boolean {
+  if (error.code === "PGRST202") return true;
+  const message = String(error.message ?? "").toLowerCase();
+  return message.includes("could not find the function");
+}
+
+async function resolveMarketplaceDisplayName(params: {
+  marketplaceName?: string | null;
+  providerKey?: string | null;
+}): Promise<string> {
+  const direct = params.marketplaceName?.trim();
+  if (direct) return direct;
+
+  const providerKey = params.providerKey?.trim();
+  if (!providerKey) {
+    throw new Error("Não foi possível identificar o marketplace para desconectar.");
+  }
+
+  const { data, error } = await supabase
+    .from("marketplace_providers")
+    .select("display_name")
+    .eq("key", providerKey)
+    .maybeSingle();
+
+  if (error) throw error;
+  const displayName = data?.display_name?.trim();
+  if (displayName) return displayName;
+
+  throw new Error("Não foi possível identificar o marketplace para desconectar.");
+}
+
+export async function disconnectMarketplaceApp(
+  organizationId: string,
+  params: {
+    providerKey?: string | null;
+    marketplaceName?: string | null;
+  },
+): Promise<void> {
+  const providerKey = params.providerKey?.trim();
+  const marketplaceName = await resolveMarketplaceDisplayName(params);
+
+  if (providerKey) {
+    const { error } = await supabase.rpc("disconnect_marketplace_by_provider", {
+      p_organizations_id: organizationId,
+      p_provider_key: providerKey,
+    });
+    if (!error) return;
+    if (!isMissingRpcError(error)) throw error;
+  }
+
+  const { error: cascadeError } = await supabase.rpc("disconnect_marketplace_cascade", {
+    p_organizations_id: organizationId,
+    p_marketplace_name: marketplaceName,
+  });
+  if (cascadeError) throw cascadeError;
+}

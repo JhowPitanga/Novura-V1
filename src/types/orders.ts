@@ -6,6 +6,8 @@ export interface OrderItem {
   sku: string | null;
   quantity: number;
   unitPrice: number;
+  /** Unit cost from order_items.unit_cost or linked product cost_price */
+  unitCost?: number | null;
   linked?: boolean;
   marketplace?: string;
   scanned?: boolean;
@@ -95,6 +97,22 @@ export interface Order {
   };
   /** Detailed shipping delay information, when present */
   shippingDelays?: unknown;
+  /** ISO date when order was shipped */
+  shippedAt?: string | null;
+  /** ISO date when order was delivered */
+  deliveredAt?: string | null;
+  /** ISO date when order was canceled */
+  canceledAt?: string | null;
+  /** ISO date when label was printed */
+  labelPrintedAt?: string | null;
+  /** Whether order has an authorized invoice */
+  hasInvoice?: boolean;
+  /** Last marketplace sync timestamp */
+  lastSyncedAt?: string | null;
+  /** Raw payment status from marketplace */
+  paymentStatus?: string | null;
+  /** Buyer state UF from orders table */
+  buyerState?: string | null;
 }
 
 export interface PrintingSettings {

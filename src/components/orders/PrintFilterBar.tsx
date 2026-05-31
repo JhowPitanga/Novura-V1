@@ -71,7 +71,7 @@ export function PrintFilterBar({
   const shippingTypeOptions = (() => {
     const shSet = new Set<string>();
     impressaoPedidos.forEach(p => {
-      const id = normalizeShippingType(String(p?.tipoEnvio ?? ''));
+      const id = normalizeShippingType(String(p?.shippingType ?? ''));
       if (id) shSet.add(id);
     });
     return Array.from(shSet);

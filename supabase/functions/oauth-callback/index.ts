@@ -35,7 +35,7 @@ Deno.serve(async (req: Request) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[oauth-callback] unhandled error:", msg);
-    return buildErrorHtml(msg, null);
+    return buildErrorResponse(req, msg, null);
   }
 });
 
@@ -50,17 +50,21 @@ async function handleCallback(req: Request): Promise<Response> {
   // Clone the request before the adapter reads the body
   const reqClone = req.clone();
 
-  // The provider key may come from a query param (?provider_key=) when it's
-  // a GET redirect from the marketplace, or we will infer it from the state.
-  // We first peek at the URL for a hint:
   const url = new URL(req.url);
-  const providerKeyHint = url.searchParams.get("provider_key") ?? null;
+  let providerKeyHint = url.searchParams.get("provider_key") ?? null;
+  let rawState = req.method === "GET" ? (url.searchParams.get("state") ?? "") : "";
 
-  // For GET requests (marketplace redirect), we must parse state before dispatching to adapter
-  // because we need to know the provider. Read state from URL or fallback to body.
-  const rawState = req.method === "GET"
-    ? (url.searchParams.get("state") ?? "")
-    : "";
+  if (req.method === "POST") {
+    try {
+      const peek = await req.clone().json() as Record<string, unknown>;
+      if (!providerKeyHint && typeof peek.provider_key === "string") {
+        providerKeyHint = peek.provider_key;
+      }
+      if (typeof peek.state === "string") rawState = peek.state;
+    } catch {
+      // body parse failed — adapter will surface the error
+    }
+  }
 
   // Try to decode providerKey from state (without verifying yet) to select adapter
   let providerKeyFromState: string | null = null;
@@ -75,7 +79,7 @@ async function handleCallback(req: Request): Promise<Response> {
 
   const providerKeyGuess = providerKeyHint ?? providerKeyFromState;
   if (!providerKeyGuess) {
-    return buildErrorHtml("missing_provider_key", null);
+    return buildErrorResponse(req, "missing_provider_key", null);
   }
 
   const adapter = getProvider(providerKeyGuess);
@@ -108,7 +112,9 @@ async function handleCallback(req: Request): Promise<Response> {
       creds = await credsAdapter.getByName(prov.display_name);
     }
   }
-  if (!creds) return buildErrorHtml(`no_credentials_for_provider:${providerKey}`, providerKey);
+  if (!creds) {
+    return buildErrorResponse(req, `no_credentials_for_provider:${providerKey}`, providerKey);
+  }
 
   // Look up provider row to get provider_id and marketplace_name
   const { data: providerRow, error: provErr } = await admin
@@ -117,7 +123,7 @@ async function handleCallback(req: Request): Promise<Response> {
     .eq("key", providerKey)
     .single();
   if (provErr || !providerRow) {
-    return buildErrorHtml(`provider_not_found:${providerKey}`, providerKey);
+    return buildErrorResponse(req, `provider_not_found:${providerKey}`, providerKey);
   }
   const providerId = providerRow.id;
   const marketplaceName = providerRow.display_name;
@@ -146,7 +152,7 @@ async function handleCallback(req: Request): Promise<Response> {
     }, extras);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return buildErrorHtml(`token_exchange_failed:${msg}`, providerKey);
+    return buildErrorResponse(req, `token_exchange_failed:${msg}`, providerKey);
   }
 
   const { accessToken, refreshToken, expiresInSeconds, externalAccountId, extra } = tokens;
@@ -167,7 +173,8 @@ async function handleCallback(req: Request): Promise<Response> {
 
   if (conflictInOtherOrg) {
     // Account is actively linked to a different organization — block
-    return buildErrorHtml(
+    return buildErrorResponse(
+      req,
       "account_already_linked_elsewhere",
       providerKey,
       "account_already_linked_elsewhere",
@@ -273,12 +280,49 @@ async function handleCallback(req: Request): Promise<Response> {
   // Return success HTML (postMessage to opener)
   // -------------------------------------------------------------------------
   const payload = adapter.buildPostMessagePayload(tokens, integrationId);
-  return buildSuccessHtml(payload);
+  return buildSuccessResponse(req, payload);
 }
 
 // ---------------------------------------------------------------------------
-// HTML response builders
+// Response builders (HTML for GET redirect, JSON for POST from SPA popup)
 // ---------------------------------------------------------------------------
+
+function prefersJsonResponse(req: Request): boolean {
+  return req.method === "POST";
+}
+
+function buildSuccessResponse(
+  req: Request,
+  payload: Record<string, unknown>,
+): Response {
+  if (prefersJsonResponse(req)) {
+    return Response.json(
+      { type: "oauth_success", payload },
+      { headers: { ...CORS, "content-type": "application/json" } },
+    );
+  }
+  return buildSuccessHtml(payload);
+}
+
+function buildErrorResponse(
+  req: Request,
+  error: string,
+  providerKey: string | null,
+  reason?: string,
+): Response {
+  if (prefersJsonResponse(req)) {
+    return Response.json(
+      {
+        type: "oauth_error",
+        error,
+        reason: reason ?? error,
+        providerKey,
+      },
+      { status: 400, headers: { ...CORS, "content-type": "application/json" } },
+    );
+  }
+  return buildErrorHtml(error, providerKey, reason);
+}
 
 function buildSuccessHtml(payload: Record<string, unknown>): Response {
   const json = JSON.stringify({ type: "oauth_success", payload });

@@ -9,7 +9,6 @@ import { Search, Store, Settings, AlertTriangle, Loader2 } from "lucide-react";
 import { Routes, Route, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { CleanNavigation } from "@/components/CleanNavigation";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useQueryClient } from "@tanstack/react-query";
 import type { App, AppConnection } from "@/types/apps";
@@ -22,7 +21,11 @@ import { useAppsWithProvider } from "@/hooks/useMarketplaceProviders";
 import { useIntegrations } from "@/hooks/useIntegrations";
 import type { OAuthSuccessPayload } from "@/WebhooksAPI/marketplace/oauth";
 import type { AppWithProvider } from "@/services/marketplace-providers.service";
-import { integrationKeys as intKeys } from "@/services/marketplace-providers.service";
+import {
+  disconnectMarketplaceApp,
+  integrationKeys as intKeys,
+} from "@/services/marketplace-providers.service";
+import { resolveShopeeRedirectUri } from "@/utils/oauthRedirectUris";
 
 const navigationItems = [
   { title: "Loja de Apps", path: "", description: "Explore e conecte aplicativos" },
@@ -36,7 +39,6 @@ const STATIC_CATEGORIES = [
 
 const MELI_REDIRECT_URI = import.meta.env.VITE_MERCADO_LIVRE_REDIRECT_URI as string | undefined;
 const SHOPEE_REDIRECT_URI = import.meta.env.VITE_SHOPEE_REDIRECT_URI as string | undefined;
-const SHOPEE_REDIRECT_FALLBACK = "https://www.novuraerp.com.br/oauth/shopee/callback";
 
 const allowedCategories = ["marketplaces", "logistics", "dropshipping", "others"] as const;
 
@@ -265,36 +267,48 @@ export default function Aplicativos() {
     }
     const app = apps.find((a) => a.id === appId);
     if (!app) return;
-    const providerKey = app.providerKey;
+
+    const conn = appConnections[appId];
+    const integration = conn?.integrationId
+      ? integrations.find((item) => item.id === conn.integrationId)
+      : integrations.find((item) => {
+          const row = appRows.find((r) => r.id === appId && r.provider_id === item.provider_id);
+          return Boolean(row);
+        });
+    const marketplaceName =
+      integration?.marketplace_name ??
+      integration?.marketplace_providers?.display_name ??
+      app.providerDisplayName ??
+      app.name;
+
+    if (!app.providerKey && !marketplaceName?.trim()) {
+      toast({
+        title: "Erro ao desconectar",
+        description: "Não foi possível identificar o marketplace deste aplicativo.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
-      if (providerKey) {
-        const { error } = await supabase.rpc("disconnect_marketplace_by_provider", {
-          p_organizations_id: organizationId,
-          p_provider_key: providerKey,
-        });
-        if (error) {
-          const msg = String(error?.message ?? "").toLowerCase();
-          if (msg.includes("reserved_stock_present")) {
-            setCannotDisconnectMessage(
-              "Não é possível desconectar. Existem reservas de estoque ativas vinculadas a anúncios deste aplicativo.",
-            );
-            setIsCannotDisconnectOpen(true);
-            return;
-          }
-          throw error;
-        }
-      } else {
-        await supabase.rpc("disconnect_marketplace_cascade", {
-          p_organizations_id: organizationId,
-          p_marketplace_name: app.name,
-        });
-      }
+      await disconnectMarketplaceApp(organizationId, {
+        providerKey: app.providerKey,
+        marketplaceName,
+      });
       queryClient.invalidateQueries({ queryKey: intKeys.list(organizationId) });
       toast({
         title: "Aplicativo desconectado",
         description: `${app.name} foi removido da sua organização.`,
       });
     } catch (e) {
+      const msg = String(e instanceof Error ? e.message : e).toLowerCase();
+      if (msg.includes("reserved_stock_present")) {
+        setCannotDisconnectMessage(
+          "Não é possível desconectar. Existem reservas de estoque ativas vinculadas a anúncios deste aplicativo.",
+        );
+        setIsCannotDisconnectOpen(true);
+        return;
+      }
       toast({
         title: "Erro ao desconectar",
         description: e instanceof Error ? e.message : "Tente novamente.",
@@ -479,7 +493,7 @@ export default function Aplicativos() {
           providerDisplayName={connectingApp.providerDisplayName ?? connectingApp.name}
           redirectUri={
             connectingApp.providerKey === "shopee"
-              ? (SHOPEE_REDIRECT_URI || SHOPEE_REDIRECT_FALLBACK)
+              ? resolveShopeeRedirectUri(SHOPEE_REDIRECT_URI)
               : connectingApp.providerKey === "mercado_livre"
               ? MELI_REDIRECT_URI
               : undefined
