@@ -72,7 +72,7 @@ export const OrderTableHeader = forwardRef<HTMLTableSectionElement, OrderTableHe
               {col.name}
             </th>
           ))}
-          <th className="py-1 text-[clamp(11px,0.9vw,13px)] text-center font-medium text-gray-500 uppercase tracking-wider w-[8%]">Detalhes</th>
+          <th className="py-1 text-[clamp(11px,0.9vw,13px)] text-center font-medium text-gray-500 uppercase tracking-wider w-[10%] min-w-[88px]">Detalhes</th>
         </tr>
       </thead>
     );

@@ -4,18 +4,21 @@
 // Returns: { authorization_url, state, code_verifier? }
 
 import { createAdminClient } from "../_shared/adapters/infra/supabase-client.ts";
+import type { SupabaseClient } from "../_shared/adapters/infra/supabase-client.ts";
 import { SupabaseAppCredentialsAdapter } from "../_shared/adapters/integrations/app-credentials-adapter.ts";
 import { getProvider } from "../_shared/adapters/oauth/registry.ts";
 import { buildOAuthContext } from "../_shared/adapters/oauth/state-utils.ts";
+import { resolveShopeeRedirectUri } from "../_shared/adapters/oauth/shopee-oauth-config.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: CORS });
+    return new Response(null, { status: 204, headers: CORS });
   }
 
   try {
@@ -36,38 +39,12 @@ Deno.serve(async (req: Request) => {
     // Load adapter for this provider
     const adapter = getProvider(providerKey);
 
-    // Fetch credentials from apps table
     const admin = createAdminClient();
-    const creds = await new SupabaseAppCredentialsAdapter(admin).getByName(
-      // Provider display_name is used as the app name in the apps table.
-      // We look up by provider_key matching apps.provider_key via the view.
-      providerKey,
-    );
-    if (!creds) {
-      // Fallback: try looking up by display name from marketplace_providers
-      const { data: providerRow } = await admin
-        .from("marketplace_providers")
-        .select("display_name")
-        .eq("key", providerKey)
-        .single();
-      const displayName = providerRow?.display_name;
-      if (displayName) {
-        const credsFallback = await new SupabaseAppCredentialsAdapter(admin).getByName(displayName);
-        if (!credsFallback) throw new Error(`no_credentials_for_provider:${providerKey}`);
-        // Continue with credsFallback — replace creds reference
-        const { authorization_url, state, code_verifier } = await resolveAndBuild(
-          adapter, body, credsFallback,
-        );
-        return Response.json(
-          { authorization_url, state, code_verifier },
-          { headers: CORS },
-        );
-      }
-      throw new Error(`no_credentials_for_provider:${providerKey}`);
-    }
+    const creds = await resolveProviderCredentials(admin, providerKey);
+    if (!creds) throw new Error(`no_credentials_for_provider:${providerKey}`);
 
     const { authorization_url, state, code_verifier } = await resolveAndBuild(
-      adapter, body, creds,
+      adapter, body, creds, admin,
     );
 
     return Response.json(
@@ -88,6 +65,29 @@ Deno.serve(async (req: Request) => {
 // Helpers
 // ---------------------------------------------------------------------------
 
+async function resolveProviderCredentials(
+  admin: SupabaseClient,
+  providerKey: string,
+): Promise<{ client_id: string; client_secret: string } | null> {
+  const credsAdapter = new SupabaseAppCredentialsAdapter(admin);
+  const { data: providerRow } = await admin
+    .from("marketplace_providers")
+    .select("display_name")
+    .eq("key", providerKey)
+    .maybeSingle();
+
+  const candidates = [
+    providerRow?.display_name,
+    providerKey,
+  ].filter((name): name is string => Boolean(name && String(name).trim()));
+
+  for (const name of candidates) {
+    const creds = await credsAdapter.getByName(name);
+    if (creds) return creds;
+  }
+  return null;
+}
+
 type BodyFields = {
   providerKey: string;
   organizationId: string;
@@ -102,9 +102,14 @@ async function resolveAndBuild(
   adapter: ReturnType<typeof getProvider>,
   body: BodyFields,
   creds: { client_id: string; client_secret: string },
+  admin: SupabaseClient,
 ) {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-  const defaultRedirect = getDefaultRedirectUri(supabaseUrl, body.providerKey);
+  let redirectUri = body.redirectUri ?? getDefaultRedirectUri(supabaseUrl, body.providerKey);
+
+  if (body.providerKey === "shopee") {
+    redirectUri = await resolveShopeeRedirectUri(admin, body.redirectUri ?? redirectUri);
+  }
 
   const ctx = buildOAuthContext({
     providerKey: body.providerKey,
@@ -112,8 +117,13 @@ async function resolveAndBuild(
     companyId: body.companyId ?? null,
     storeName: body.storeName ?? null,
     connectedByUserId: body.connectedByUserId ?? null,
-    redirectUri: body.redirectUri ?? defaultRedirect,
+    redirectUri,
     correlationId: body.correlationId ?? crypto.randomUUID(),
+  });
+
+  console.log("[oauth-start-auth] redirect_resolved", {
+    providerKey: body.providerKey,
+    redirectUri,
   });
 
   const result = await adapter.buildAuthorizationUrl(ctx, {
@@ -135,7 +145,10 @@ function getDefaultRedirectUri(supabaseUrl: string, providerKey: string): string
     return `${supabaseUrl}/functions/v1/mercado-livre-callback`;
   }
   if (providerKey === "shopee") {
-    return `${supabaseUrl}/functions/v1/shopee-callback`;
+    const envRedirect = Deno.env.get("SHOPEE_REDIRECT_URI")?.trim();
+    if (envRedirect) return envRedirect;
+    // Must match Redirect URL Domain in Shopee Partner Console (apex, no www).
+    return "https://novuraerp.com.br/oauth/shopee/callback";
   }
   return `${supabaseUrl}/functions/v1/oauth-callback`;
 }

@@ -17,6 +17,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   startOAuth,
   openOAuthPopup,
+  closeOAuthPopup,
   listenForOAuthResult,
   type OAuthSuccessPayload,
 } from "@/WebhooksAPI/marketplace/oauth";
@@ -24,21 +25,12 @@ import {
 interface StoreNameDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Provider key e.g. 'mercado_livre', 'shopee' */
   providerKey: string;
-  /** Display name e.g. 'Mercado Livre' */
   providerDisplayName: string;
-  /** Optional redirect URI explicitly required by provider console */
   redirectUri?: string;
-  /** Called when OAuth completes successfully with the new integrationId */
   onSuccess: (payload: OAuthSuccessPayload) => void;
 }
 
-/**
- * Step 1 of the connection flow.
- * Asks the user for a store name then initiates the OAuth popup.
- * On success, calls onSuccess — which triggers QuickSetupModal (step 2).
- */
 export function StoreNameDialog({
   open,
   onOpenChange,
@@ -51,6 +43,7 @@ export function StoreNameDialog({
   const { user, organizationId } = useAuth();
   const [storeName, setStoreName] = useState("");
   const [loading, setLoading] = useState(false);
+  const [manualAuthUrl, setManualAuthUrl] = useState<string | null>(null);
 
   const handleConnect = async () => {
     const trimmed = storeName.trim();
@@ -72,6 +65,8 @@ export function StoreNameDialog({
     }
 
     setLoading(true);
+    setManualAuthUrl(null);
+
     try {
       const result = await startOAuth(supabase, {
         providerKey,
@@ -81,41 +76,38 @@ export function StoreNameDialog({
         redirectUri: redirectUri ?? undefined,
       });
 
-      // Open OAuth popup
       const popup = openOAuthPopup(result.authorizationUrl, providerDisplayName);
       if (!popup) {
+        setManualAuthUrl(result.authorizationUrl);
+        setLoading(false);
         toast({
           title: "Popup bloqueado",
-          description: "Permita pop-ups para este site e tente novamente.",
+          description: "Use o botão abaixo para abrir o login do marketplace.",
           variant: "destructive",
         });
-        setLoading(false);
         return;
       }
 
-      // Listen for postMessage from the callback popup
       let pollClosed: number | null = null;
       const cleanup = (forceStopLoading = false) => {
         if (pollClosed !== null) {
           clearInterval(pollClosed);
           pollClosed = null;
         }
-        if (forceStopLoading) {
-          setLoading(false);
-        }
+        if (forceStopLoading) setLoading(false);
       };
 
       const unlisten = listenForOAuthResult({
         onSuccess: (payload) => {
           cleanup(true);
-          setLoading(false);
+          setManualAuthUrl(null);
           onOpenChange(false);
           setStoreName("");
           onSuccess(payload);
         },
         onError: (err) => {
           cleanup(true);
-          setLoading(false);
+          closeOAuthPopup(popup);
           toast({
             title: "Erro na autenticação",
             description: err.reason ?? err.error ?? "Tente novamente.",
@@ -124,7 +116,7 @@ export function StoreNameDialog({
         },
         onAccountLinkedElsewhere: () => {
           cleanup(true);
-          setLoading(false);
+          closeOAuthPopup(popup);
           toast({
             title: "Conta já conectada",
             description:
@@ -134,14 +126,10 @@ export function StoreNameDialog({
         },
       });
 
-      // Detect if popup was closed manually without completing OAuth
-      pollClosed = setInterval(() => {
+      pollClosed = window.setInterval(() => {
         if (popup.closed) {
           cleanup(true);
           unlisten();
-          // User closed popup before success/error callback
-          // Keep dialog open but unlock actions (Cancel / close)
-          setLoading(false);
         }
       }, 500);
     } catch (err) {
@@ -158,7 +146,10 @@ export function StoreNameDialog({
     <Dialog
       open={open}
       onOpenChange={(v) => {
-        if (!loading) onOpenChange(v);
+        if (!loading) {
+          setManualAuthUrl(null);
+          onOpenChange(v);
+        }
       }}
     >
       <DialogContent className="sm:max-w-md">
@@ -184,23 +175,28 @@ export function StoreNameDialog({
               value={storeName}
               onChange={(e) => setStoreName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") handleConnect();
+                if (e.key === "Enter" && !loading) handleConnect();
               }}
               disabled={loading}
               autoFocus
             />
-            <p className="text-xs text-muted-foreground">
-              Este nome é exibido apenas internamente no Novura.
-            </p>
           </div>
+
+          {manualAuthUrl && (
+            <Button
+              type="button"
+              variant="secondary"
+              className="w-full"
+              onClick={() => window.open(manualAuthUrl, "_blank", "noopener,noreferrer")}
+            >
+              <ExternalLink className="w-4 h-4 mr-2" />
+              Abrir login {providerDisplayName}
+            </Button>
+          )}
         </div>
 
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={loading}
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
             Cancelar
           </Button>
           <Button
@@ -211,7 +207,7 @@ export function StoreNameDialog({
             {loading ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Conectando...
+                Preparando login...
               </>
             ) : (
               <>

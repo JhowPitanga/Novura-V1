@@ -1,112 +1,104 @@
 import { useEffect, useState } from "react";
-import { useSearchParams, useNavigate } from "react-router-dom";
-import { supabase, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
-import { useAuth } from "@/hooks/useAuth";
+import { useSearchParams } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import type { OAuthSuccessPayload } from "@/WebhooksAPI/marketplace/oauth";
 
+/**
+ * Shopee redirects here (SPA route). Exchanges the code via oauth-callback (POST + JWT)
+ * and notifies the opener with oauth_success.
+ */
 export default function ShopeeCallback() {
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
-  const [status, setStatus] = useState<"processing" | "success" | "error">("processing");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const { organizationId } = useAuth();
 
   useEffect(() => {
     const code = searchParams.get("code");
     const state = searchParams.get("state");
     const shopId = searchParams.get("shop_id");
+    const errorParam = searchParams.get("error");
 
-    if (!shopId) {
-      setStatus("error");
-      setErrorMsg("Parâmetros inválidos: code/shop_id ausentes.");
+    if (errorParam) {
+      setErrorMsg(`Shopee retornou erro: ${errorParam}`);
+      return;
+    }
+
+    if (!shopId || !state) {
+      setErrorMsg("Parâmetros inválidos: shop_id ou state ausentes no retorno da Shopee.");
+      return;
+    }
+
+    if (!code) {
+      setErrorMsg("Código de autorização ausente. Tente conectar novamente.");
       return;
     }
 
     const run = async () => {
       try {
-        let envFlag: string | null = null;
-        try { envFlag = localStorage.getItem('shopee_auth_env'); } catch (_) {}
-        let cbFunc = envFlag === 'sandbox' ? 'shopee-callback-sandbox' : 'shopee-callback';
-        if (state) {
+        const { data: sessionRes } = await supabase.auth.getSession();
+        if (!sessionRes?.session?.access_token) {
+          throw new Error("Sessão ausente. Faça login no Novura e tente conectar novamente.");
+        }
+
+        const { data, error } = await supabase.functions.invoke<{
+          type?: string;
+          payload?: OAuthSuccessPayload;
+          error?: string;
+          reason?: string;
+        }>("oauth-callback", {
+          body: {
+            code,
+            state,
+            shop_id: shopId,
+            provider_key: "shopee",
+          },
+        });
+
+        if (error) throw new Error(error.message);
+
+        if (data?.type === "oauth_error") {
+          throw new Error(data.reason ?? data.error ?? "Falha ao concluir autorização");
+        }
+
+        if (data?.type !== "oauth_success" || !data.payload?.integrationId) {
+          throw new Error("Resposta inválida ao concluir a conexão com a Shopee.");
+        }
+
+        if (window.opener) {
+          window.opener.postMessage(
+            { type: "oauth_success", payload: data.payload },
+            window.location.origin,
+          );
+        }
+        setTimeout(() => {
           try {
-            const parsed = JSON.parse(atob(state)) as { env?: string | null };
-            if (parsed?.env === 'sandbox') cbFunc = 'shopee-callback-sandbox';
-            if (parsed?.env === 'prod') cbFunc = 'shopee-callback';
-          } catch (_) {}
-        }
-        if (code) {
-          const { data: sessionRes } = await supabase.auth.getSession();
-          const token: string | undefined = sessionRes?.session?.access_token;
-          const headers: Record<string, string> = { apikey: SUPABASE_PUBLISHABLE_KEY };
-          if (token) headers.Authorization = `Bearer ${token}`;
-          const { data, error } = await supabase.functions.invoke<{ ok?: boolean; error?: string }>(cbFunc, {
-            body: { code, state: state || undefined, shop_id: shopId },
-            headers,
-          });
-          if (error || (data && typeof data === "object" && (data as Record<string, unknown>)["error"])) {
-            const msg = error?.message || String((data as Record<string, unknown>)["error"]);
-            throw new Error(msg || "Falha ao concluir autorização");
+            window.close();
+          } catch {
+            // ignore
           }
-        } else {
-          if (!organizationId) {
-            throw new Error("Sessão ausente para validar a conexão.");
-          }
-          const { data: integrations, error: qErr } = await supabase
-            .from("marketplace_integrations")
-            .select("id, config")
-            .eq("organizations_id", organizationId)
-            .eq("marketplace_name", "Shopee")
-            .contains("config", { shopee_shop_id: String(shopId) })
-            .limit(1);
-          if (qErr) throw qErr;
-          if (!integrations || integrations.length === 0) {
-            throw new Error("Falha na autorização: código ausente no redirecionamento.");
-          }
-        }
-        setStatus("success");
-        try {
-          if (window.opener) {
-            window.opener.postMessage({ type: "shopee_oauth_success", payload: { ok: true } }, window.location.origin);
-          }
-          setTimeout(() => {
-            window.close?.();
-            navigate("/aplicativos/conectados", { replace: true });
-          }, 500);
-        } catch (_) {
-          navigate("/aplicativos/conectados", { replace: true });
-        }
+        }, 300);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Erro desconhecido";
-        setStatus("error");
-        setErrorMsg(msg);
-      }
-      finally {
-        try { localStorage.removeItem('shopee_auth_env'); } catch (_) {}
+        setErrorMsg(err instanceof Error ? err.message : "Erro desconhecido");
       }
     };
 
-    run();
-  }, [searchParams, navigate, organizationId]);
+    void run();
+  }, [searchParams]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/20 p-6">
-      <div className="max-w-md w-full bg-white shadow-sm rounded-xl p-6">
-        {status === "processing" && (
-          <div className="text-center space-y-2">
-            <div className="text-xl font-semibold">Concluindo autorização...</div>
-            <div className="text-sm text-muted-foreground">Aguarde enquanto finalizamos a conexão com a Shopee.</div>
-          </div>
-        )}
-        {status === "success" && (
-          <div className="text-center space-y-2">
-            <div className="text-xl font-semibold text-green-600">Conexão autorizada!</div>
-            <div className="text-sm text-muted-foreground">Você será redirecionado para a página de aplicativos conectados.</div>
-          </div>
-        )}
-        {status === "error" && (
-          <div className="text-center space-y-2">
+      <div className="max-w-md w-full bg-white shadow-sm rounded-xl p-6 text-center space-y-2">
+        {errorMsg ? (
+          <>
             <div className="text-xl font-semibold text-red-600">Falha na autorização</div>
             <div className="text-sm text-muted-foreground">{errorMsg}</div>
-          </div>
+          </>
+        ) : (
+          <>
+            <div className="text-xl font-semibold">Concluindo autorização...</div>
+            <div className="text-sm text-muted-foreground">
+              Aguarde enquanto finalizamos a conexão com a Shopee.
+            </div>
+          </>
         )}
       </div>
     </div>

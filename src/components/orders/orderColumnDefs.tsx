@@ -168,6 +168,16 @@ export function createOrderColumns(ctx: ColumnRenderContext) {
         const badgeClass = getStatusColor(boardLabel);
         const shipmentStatusLower = String(pedido?.shipmentStatus ?? '').toLowerCase();
         const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
+        const isDeliveredShipment = shipmentStatusLower === 'delivered';
+        const isDeliveredLabel = displayLabel === 'Entregue' || normalize(boardLabel) === 'entregue';
+        const statusLabel =
+          activeStatus === 'enviado' && (isDeliveredShipment || isDeliveredLabel)
+            ? 'Entregue'
+            : displayLabel;
+        const statusBadgeClass =
+          activeStatus === 'enviado' && (isDeliveredShipment || isDeliveredLabel)
+            ? getStatusColor('Entregue')
+            : badgeClass;
         const internal = normalize(pedido?.internalStatus);
         const isOrderCancelledOrReturned = ['cancelado', 'devolucao', 'cancelled', 'returned'].includes(internal);
         const slaStatusLower = String(pedido?.shippingSla?.status ?? '').toLowerCase();
@@ -187,13 +197,8 @@ export function createOrderColumns(ctx: ColumnRenderContext) {
                 Atrasado
               </Badge>
             ) : (
-              <Badge className={`uppercase ${badgeClass} h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
-                {displayLabel}
-              </Badge>
-            )}
-            {activeStatus === 'enviado' && String(pedido?.shipmentStatus ?? '').toLowerCase() === 'delivered' && (
-              <Badge className={`uppercase bg-green-600 hover:bg-green-700 text-white h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
-                Entregue
+              <Badge className={`uppercase ${statusBadgeClass} h-5 px-2 w-[92px] text-[10px] leading-[1rem] inline-flex items-center justify-center rounded-md truncate`}>
+                {statusLabel}
               </Badge>
             )}
             {activeStatus === "impressao" && (

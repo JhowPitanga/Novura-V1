@@ -1,14 +1,8 @@
 // Universal OAuth flow helper for the frontend.
-// Replaces the provider-specific startMercadoLivreAuth / startShopeeAuth functions.
-// All OAuth flows go through the generic oauth-start-auth Edge Function.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
 export interface StartOAuthOptions {
   providerKey: string;
   organizationId: string;
@@ -20,7 +14,6 @@ export interface StartOAuthOptions {
 }
 
 export interface StartOAuthResult {
-  /** URL to open in the popup */
   authorizationUrl: string;
   state: string;
   codeVerifier?: string | null;
@@ -40,92 +33,136 @@ export type OAuthErrorPayload = {
   providerKey: string | null;
 };
 
-// ---------------------------------------------------------------------------
-// Start OAuth flow (opens popup)
-// ---------------------------------------------------------------------------
-
-/**
- * Calls oauth-start-auth and opens the authorization URL in a popup window.
- * Returns a cleanup function that removes the postMessage listener.
- */
 export async function startOAuth(
-  supabase: SupabaseClient<Database>,
+  client: SupabaseClient<Database>,
   opts: StartOAuthOptions,
 ): Promise<StartOAuthResult> {
-  const { data, error } = await supabase.functions.invoke("oauth-start-auth", {
-    body: {
-      providerKey: opts.providerKey,
-      organizationId: opts.organizationId,
-      companyId: opts.companyId ?? null,
-      storeName: opts.storeName,
-      connectedByUserId: opts.connectedByUserId ?? null,
-      redirectUri: opts.redirectUri ?? undefined,
-      correlationId: opts.correlationId ?? crypto.randomUUID(),
-    },
-  });
+  const body = {
+    providerKey: opts.providerKey,
+    organizationId: opts.organizationId,
+    companyId: opts.companyId ?? null,
+    storeName: opts.storeName,
+    connectedByUserId: opts.connectedByUserId ?? null,
+    redirectUri: opts.redirectUri ?? undefined,
+    correlationId: opts.correlationId ?? crypto.randomUUID(),
+  };
 
-  if (error) throw error;
+  const { data: sessionRes } = await client.auth.getSession();
+  const token = sessionRes?.session?.access_token;
 
-  const d = data as Record<string, unknown>;
-  const authorizationUrl = d?.authorization_url as string | undefined;
-  const state = d?.state as string | undefined;
-  const codeVerifier = d?.code_verifier as string | null | undefined;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45_000);
 
-  if (!authorizationUrl) {
-    throw new Error((d?.error as string) ?? "authorization_url_missing");
+  const functionName =
+    opts.providerKey === "shopee" ? "shopee-start-auth" : "oauth-start-auth";
+  const requestBody =
+    opts.providerKey === "shopee"
+      ? {
+          organizationId: body.organizationId,
+          companyId: body.companyId,
+          storeName: body.storeName,
+          connectedByUserId: body.connectedByUserId,
+          redirectUri: body.redirectUri,
+          correlationId: body.correlationId,
+        }
+      : body;
+
+  let response: Response;
+  try {
+    response = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_PUBLISHABLE_KEY,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(
+        "Tempo esgotado ao conectar com o servidor. Tente novamente em instantes.",
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
 
-  // Store PKCE verifier client-side so the callback can retrieve it
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = (await response.json()) as Record<string, unknown>;
+  } catch {
+    parsed = {};
+  }
+
+  const authorizationUrl = parsed.authorization_url as string | undefined;
+  const state = parsed.state as string | undefined;
+  const codeVerifier = parsed.code_verifier as string | null | undefined;
+
+  if (!response.ok || !authorizationUrl) {
+    const msg =
+      (parsed.error as string | undefined) ||
+      (response.status === 504
+        ? "Servidor de autenticação indisponível (timeout). Rode o deploy de oauth-start-auth."
+        : `Falha ao iniciar OAuth (${response.status})`);
+    throw new Error(msg);
+  }
+
   if (codeVerifier) {
     try {
       sessionStorage.setItem(`oauth_pkce_${opts.providerKey}`, codeVerifier);
     } catch {
-      // sessionStorage unavailable — PKCE will be skipped
+      // sessionStorage unavailable
     }
   }
 
   return { authorizationUrl, state: state ?? "", codeVerifier: codeVerifier ?? null };
 }
 
-// ---------------------------------------------------------------------------
-// Popup window management
-// ---------------------------------------------------------------------------
-
-/** Open the authorization URL in a centered popup. */
-export function openOAuthPopup(url: string, title = "OAuth"): Window | null {
+const OAUTH_POPUP_FEATURES = (() => {
   const w = 600;
   const h = 700;
   const left = Math.round(screen.width / 2 - w / 2);
   const top = Math.round(screen.height / 2 - h / 2);
-  return window.open(
-    url,
-    title,
-    `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no,resizable=yes`,
-  );
+  return `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no,resizable=yes`;
+})();
+
+export function openOAuthPopup(url: string, title = "OAuth"): Window | null {
+  return window.open(url, title, OAUTH_POPUP_FEATURES);
 }
 
-// ---------------------------------------------------------------------------
-// PostMessage listeners
-// ---------------------------------------------------------------------------
+export function closeOAuthPopup(popup: Window | null): void {
+  try {
+    popup?.close();
+  } catch {
+    // ignore
+  }
+}
 
-/**
- * Listens for the oauth_success postMessage from the callback popup.
- * Returns an unsubscribe function.
- * Calls onSuccess / onError / onAccountLinkedElsewhere accordingly.
- */
 export function listenForOAuthResult(opts: {
   onSuccess: (payload: OAuthSuccessPayload) => void;
   onError?: (payload: OAuthErrorPayload) => void;
-  /** Called when the account is actively linked to another org */
   onAccountLinkedElsewhere?: () => void;
 }): () => void {
   const handler = (event: MessageEvent) => {
     if (!event.data || typeof event.data !== "object") return;
     const msg = event.data as { type?: string; payload?: unknown };
 
-    if (msg.type === "oauth_success") {
+    if (msg.type === "oauth_success" || msg.type === "shopee_oauth_success") {
       window.removeEventListener("message", handler);
-      opts.onSuccess(msg.payload as OAuthSuccessPayload);
+      const payload = msg.payload as OAuthSuccessPayload | { ok?: boolean };
+      if (payload && typeof payload === "object" && "integrationId" in payload) {
+        opts.onSuccess(payload as OAuthSuccessPayload);
+      } else if (msg.type === "shopee_oauth_success") {
+        opts.onSuccess({
+          providerKey: "shopee",
+          integrationId: "",
+          externalAccountId: "",
+          ok: true,
+        });
+      }
     } else if (msg.type === "oauth_error") {
       window.removeEventListener("message", handler);
       const errPayload = event.data as OAuthErrorPayload;

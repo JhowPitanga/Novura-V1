@@ -105,7 +105,7 @@ export function ScannerCheckoutModal({
                       <p><strong>Nº do Pedido:</strong> {scannedPedido.id}</p>
                       <p><strong>Marketplace:</strong> {scannedPedido.marketplace}</p>
                       <p><strong>Cliente:</strong> {scannedPedido.cliente}</p>
-                      <p><strong>Tipo de Envio:</strong> {mapTipoEnvioLabel(scannedPedido.tipoEnvio)}</p>
+                      <p><strong>Tipo de Envio:</strong> {mapTipoEnvioLabel(scannedPedido.shippingType)}</p>
                     </div>
                     <div className="space-y-3">
                       <h4 className="font-semibold pt-2 border-t">Itens do Pedido ({scannedPedido.itens.length})</h4>
@@ -169,7 +169,7 @@ export function ScannerCheckoutModal({
                   <Card key={index} className="bg-white hover:bg-gray-50 cursor-pointer">
                     <CardContent className="p-3 flex items-center justify-between">
                       <div className="text-sm font-medium">Pedido #{pedido.id}</div>
-                      <div className="text-xs text-gray-500">{pedido.marketplace} - {mapTipoEnvioLabel(pedido.tipoEnvio)}</div>
+                      <div className="text-xs text-gray-500">{pedido.marketplace} - {mapTipoEnvioLabel(pedido.shippingType)}</div>
                     </CardContent>
                   </Card>
                 ))}
@@ -181,7 +181,7 @@ export function ScannerCheckoutModal({
                   <Card key={index} className="bg-white hover:bg-gray-50 cursor-pointer">
                     <CardContent className="p-3 flex items-center justify-between">
                       <div className="text-sm font-medium">Pedido #{pedido.id}</div>
-                      <div className="text-xs text-gray-500">{pedido.marketplace} - {mapTipoEnvioLabel(pedido.tipoEnvio)}</div>
+                      <div className="text-xs text-gray-500">{pedido.marketplace} - {mapTipoEnvioLabel(pedido.shippingType)}</div>
                     </CardContent>
                   </Card>
                 ))}
