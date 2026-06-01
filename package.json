@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:oauth-smoke": "node scripts/oauth-smoke-test.mjs",
     "test:coverage": "vitest run --coverage",
     "mcp:test": "node scripts/mcp-test.js"
   },

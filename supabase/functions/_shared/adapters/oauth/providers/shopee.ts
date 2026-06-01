@@ -11,14 +11,12 @@ import type { IntegrationRow } from "../../../domain/integration-types.ts";
 import { aesGcmDecryptFromString, hmacSha256Hex, importAesGcmKey } from "../../infra/token-utils.ts";
 import { createSignedState } from "../state-utils.ts";
 import {
-  SHOPEE_AUTH_HOST,
-  SHOPEE_AUTH_PATH,
-  SHOPEE_REFRESH_PATH,
-  SHOPEE_TOKEN_HOST,
-  SHOPEE_TOKEN_PATH,
   appendStateToRedirect,
-  normalizeShopeePartnerKey,
+  buildShopeeSandboxAuthUrl,
   normalizeShopeeRedirectUri,
+  resolveShopeeOAuthHosts,
+  SHOPEE_REFRESH_PATH,
+  SHOPEE_TOKEN_PATH,
 } from "../shopee-oauth-config.ts";
 
 async function shopeeSign(
@@ -26,12 +24,11 @@ async function shopeeSign(
   path: string,
   timestamp: number,
   partnerKey: string,
-  body?: string,
 ): Promise<string> {
-  const baseString = body !== undefined
-    ? `${partnerId}${path}${timestamp}${body}`
-    : `${partnerId}${path}${timestamp}`;
-  const sign = await hmacSha256Hex(normalizeShopeePartnerKey(partnerKey), baseString);
+  // Shopee OAuth endpoints sign partner_id + path + timestamp only.
+  // Use the full partner key from the console (including shpk prefix when present).
+  const baseString = `${partnerId}${path}${timestamp}`;
+  const sign = await hmacSha256Hex(String(partnerKey).trim(), baseString);
   return sign.toLowerCase();
 }
 
@@ -78,23 +75,36 @@ export const shopeeAdapter: OAuthProviderAdapter = {
   async buildAuthorizationUrl(ctx: OAuthContext, creds: ProviderCreds) {
     const encKey = Deno.env.get("TOKENS_ENCRYPTION_KEY") ?? "";
     const state = await createSignedState(ctx, encKey);
+    const hosts = resolveShopeeOAuthHosts(ctx.appConfig);
+    const redirectBase = normalizeShopeeRedirectUri(ctx.redirectUri) ?? ctx.redirectUri;
+
+    if (hosts.useSandboxWebAuth) {
+      const authorizationUrl = buildShopeeSandboxAuthUrl({
+        partnerId: String(creds.clientId).trim(),
+        redirectUri: redirectBase,
+        state,
+      });
+      console.log("[shopee-oauth] sandbox_auth_url_built", {
+        authHost: hosts.authHost,
+        redirectBase,
+      });
+      return { authorizationUrl, state } satisfies AuthorizationResult;
+    }
 
     const partnerId = String(creds.clientId).trim();
     const partnerKey = String(creds.clientSecret).trim();
     const timestamp = Math.floor(Date.now() / 1000);
-    const sign = await shopeeSign(partnerId, SHOPEE_AUTH_PATH, timestamp, partnerKey);
-
-    const redirectBase = normalizeShopeeRedirectUri(ctx.redirectUri) ?? ctx.redirectUri;
+    const sign = await shopeeSign(partnerId, hosts.authPath, timestamp, partnerKey);
     const redirectWithState = appendStateToRedirect(redirectBase, state);
 
-    const authUrl = new URL(`${SHOPEE_AUTH_HOST}${SHOPEE_AUTH_PATH}`);
+    const authUrl = new URL(`${hosts.authHost}${hosts.authPath}`);
     authUrl.searchParams.set("partner_id", partnerId);
     authUrl.searchParams.set("timestamp", String(timestamp));
     authUrl.searchParams.set("sign", sign);
     authUrl.searchParams.set("redirect", redirectWithState);
 
     console.log("[shopee-oauth] auth_url_built", {
-      authHost: SHOPEE_AUTH_HOST,
+      authHost: hosts.authHost,
       redirectBase,
       redirectWithStatePrefix: redirectWithState.slice(0, 120),
     });
@@ -105,10 +115,11 @@ export const shopeeAdapter: OAuthProviderAdapter = {
     } satisfies AuthorizationResult;
   },
 
-  async exchangeCode(_ctx, code, _codeVerifier, creds, extras) {
+  async exchangeCode(ctx, code, _codeVerifier, creds, extras) {
     const shopId = extras["shop_id"];
     if (!shopId) throw new Error("missing_shop_id_in_extras");
 
+    const hosts = resolveShopeeOAuthHosts(ctx.appConfig);
     const partnerId = String(creds.clientId).trim();
     const partnerKey = String(creds.clientSecret).trim();
     const shopIdNum = Number(shopId);
@@ -117,9 +128,9 @@ export const shopeeAdapter: OAuthProviderAdapter = {
 
     const bodyData = { code, shop_id: shopIdNum, partner_id: partnerIdNum };
     const bodyJson = JSON.stringify(bodyData);
-    const sign = await shopeeSign(partnerId, SHOPEE_TOKEN_PATH, timestamp, partnerKey, bodyJson);
+    const sign = await shopeeSign(partnerId, SHOPEE_TOKEN_PATH, timestamp, partnerKey);
 
-    const tokenUrl = `${SHOPEE_TOKEN_HOST}${SHOPEE_TOKEN_PATH}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&sign=${sign}`;
+    const tokenUrl = `${hosts.tokenHost}${SHOPEE_TOKEN_PATH}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&sign=${sign}`;
 
     const resp = await fetch(tokenUrl, {
       method: "POST",
@@ -141,7 +152,10 @@ export const shopeeAdapter: OAuthProviderAdapter = {
       refreshToken: refreshToken || null,
       expiresInSeconds: Number.isFinite(ttl) ? ttl : 14400,
       externalAccountId: String(shopId),
-      extra: { shopee_shop_id: String(shopId) },
+      extra: {
+        shopee_shop_id: String(shopId),
+        environment: ctx.appConfig?.environment ?? "production",
+      },
     } satisfies NormalizedTokenSet;
   },
 
@@ -157,6 +171,7 @@ export const shopeeAdapter: OAuthProviderAdapter = {
 
     // deno-lint-ignore no-explicit-any
     const cfg = (row as any)?.config as Record<string, unknown> | null;
+    const hosts = resolveShopeeOAuthHosts(cfg);
     const shopId = String(
       cfg?.shopee_shop_id ?? cfg?.shop_id ?? (row as any)?.meli_user_id ?? "",
     );
@@ -170,9 +185,9 @@ export const shopeeAdapter: OAuthProviderAdapter = {
 
     const bodyData = { shop_id: shopIdNum, partner_id: partnerIdNum, refresh_token: refreshPlain };
     const bodyJson = JSON.stringify(bodyData);
-    const sign = await shopeeSign(partnerId, SHOPEE_REFRESH_PATH, timestamp, partnerKey, bodyJson);
+    const sign = await shopeeSign(partnerId, SHOPEE_REFRESH_PATH, timestamp, partnerKey);
 
-    const refreshUrl = `${SHOPEE_TOKEN_HOST}${SHOPEE_REFRESH_PATH}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&sign=${sign}`;
+    const refreshUrl = `${hosts.tokenHost}${SHOPEE_REFRESH_PATH}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&sign=${sign}`;
 
     const resp = await fetch(refreshUrl, {
       method: "POST",

@@ -42,8 +42,10 @@ export async function createSignedState(
     connectedByUserId: ctx.connectedByUserId,
     redirectUri: ctx.redirectUri,
     correlationId: ctx.correlationId,
+    appId: ctx.appId,
     nonce: ctx.nonce,
     issuedAt: ctx.issuedAt,
+    ...(ctx.openerOrigin ? { openerOrigin: ctx.openerOrigin } : {}),
   };
   const signable = buildSignableBody(body);
   const sig = await hmacSha256Hex(encKeyB64, signable);
@@ -95,6 +97,9 @@ export function buildOAuthContext(fields: {
   connectedByUserId?: string | null;
   redirectUri: string;
   correlationId: string;
+  appId?: string | null;
+  appConfig?: Record<string, unknown>;
+  openerOrigin?: string | null;
 }): OAuthContext {
   return {
     providerKey: fields.providerKey,
@@ -104,6 +109,9 @@ export function buildOAuthContext(fields: {
     connectedByUserId: fields.connectedByUserId ?? null,
     redirectUri: fields.redirectUri,
     correlationId: fields.correlationId,
+    appId: fields.appId ?? null,
+    appConfig: fields.appConfig ?? {},
+    openerOrigin: fields.openerOrigin ?? null,
     nonce: generateNonce(),
     issuedAt: Math.floor(Date.now() / 1000),
   };

@@ -337,15 +337,30 @@ verify_jwt = false
 [functions.orders-queue-worker]
 verify_jwt = false
 
-# Marketplace OAuth: browser redirect from Shopee/ML has no user JWT
+# Marketplace OAuth
+[functions.oauth-start-auth]
+verify_jwt = true
+
 [functions.oauth-callback]
 verify_jwt = false
+
+[functions.oauth-refresh]
+verify_jwt = false
+
+[functions.oauth-refresh-worker]
+verify_jwt = false
+
+[functions.shopee-start-auth]
+verify_jwt = true
 
 [functions.shopee-callback]
 verify_jwt = false
 
 [functions.mercado-livre-callback]
 verify_jwt = false
+
+[functions.mercado-livre-start-auth]
+verify_jwt = true
 
 [edge_runtime]
 enabled = true

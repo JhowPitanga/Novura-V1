@@ -21,19 +21,29 @@ import {
   listenForOAuthResult,
   type OAuthSuccessPayload,
 } from "@/WebhooksAPI/marketplace/oauth";
+import { recoverPendingOAuthIntegration } from "@/services/marketplace-providers.service";
+import {
+  clearOAuthPendingFlow,
+  saveOAuthPendingFlow,
+  type OAuthPendingFlow,
+} from "@/utils/oauthState";
 
 interface StoreNameDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  appId: string;
   providerKey: string;
   providerDisplayName: string;
   redirectUri?: string;
   onSuccess: (payload: OAuthSuccessPayload) => void;
 }
 
+type ConnectPhase = "idle" | "preparing" | "authorizing";
+
 export function StoreNameDialog({
   open,
   onOpenChange,
+  appId,
   providerKey,
   providerDisplayName,
   redirectUri,
@@ -42,8 +52,27 @@ export function StoreNameDialog({
   const { toast } = useToast();
   const { user, organizationId } = useAuth();
   const [storeName, setStoreName] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [connectPhase, setConnectPhase] = useState<ConnectPhase>("idle");
   const [manualAuthUrl, setManualAuthUrl] = useState<string | null>(null);
+  const isBusy = connectPhase !== "idle";
+
+  const finishOAuthSuccess = (payload: OAuthSuccessPayload) => {
+    clearOAuthPendingFlow();
+    setConnectPhase("idle");
+    setManualAuthUrl(null);
+    setStoreName("");
+    onOpenChange(false);
+    onSuccess(payload);
+  };
+
+  const tryRecoverFromPendingIntegration = async (flow: OAuthPendingFlow) => {
+    const recovered = await recoverPendingOAuthIntegration(flow);
+    if (recovered) {
+      finishOAuthSuccess(recovered);
+      return true;
+    }
+    return false;
+  };
 
   const handleConnect = async () => {
     const trimmed = storeName.trim();
@@ -64,11 +93,21 @@ export function StoreNameDialog({
       return;
     }
 
-    setLoading(true);
+    setConnectPhase("preparing");
     setManualAuthUrl(null);
+
+    const pendingFlow: OAuthPendingFlow = {
+      organizationId,
+      appId,
+      providerKey,
+      storeName: trimmed,
+      startedAt: Date.now(),
+    };
+    saveOAuthPendingFlow(pendingFlow);
 
     try {
       const result = await startOAuth(supabase, {
+        appId,
         providerKey,
         organizationId,
         storeName: trimmed,
@@ -79,7 +118,7 @@ export function StoreNameDialog({
       const popup = openOAuthPopup(result.authorizationUrl, providerDisplayName);
       if (!popup) {
         setManualAuthUrl(result.authorizationUrl);
-        setLoading(false);
+        setConnectPhase("idle");
         toast({
           title: "Popup bloqueado",
           description: "Use o botão abaixo para abrir o login do marketplace.",
@@ -88,26 +127,30 @@ export function StoreNameDialog({
         return;
       }
 
+      setConnectPhase("authorizing");
+
+      let oauthCompleted = false;
       let pollClosed: number | null = null;
-      const cleanup = (forceStopLoading = false) => {
+      const cleanup = () => {
         if (pollClosed !== null) {
           clearInterval(pollClosed);
           pollClosed = null;
         }
-        if (forceStopLoading) setLoading(false);
       };
 
       const unlisten = listenForOAuthResult({
         onSuccess: (payload) => {
-          cleanup(true);
-          setManualAuthUrl(null);
-          onOpenChange(false);
-          setStoreName("");
-          onSuccess(payload);
+          oauthCompleted = true;
+          cleanup();
+          closeOAuthPopup(popup);
+          finishOAuthSuccess(payload);
         },
         onError: (err) => {
-          cleanup(true);
+          oauthCompleted = true;
+          cleanup();
           closeOAuthPopup(popup);
+          clearOAuthPendingFlow();
+          setConnectPhase("idle");
           toast({
             title: "Erro na autenticação",
             description: err.reason ?? err.error ?? "Tente novamente.",
@@ -115,8 +158,11 @@ export function StoreNameDialog({
           });
         },
         onAccountLinkedElsewhere: () => {
-          cleanup(true);
+          oauthCompleted = true;
+          cleanup();
           closeOAuthPopup(popup);
+          clearOAuthPendingFlow();
+          setConnectPhase("idle");
           toast({
             title: "Conta já conectada",
             description:
@@ -127,13 +173,26 @@ export function StoreNameDialog({
       });
 
       pollClosed = window.setInterval(() => {
-        if (popup.closed) {
-          cleanup(true);
+        if (!popup.closed) return;
+        cleanup();
+        window.setTimeout(async () => {
+          if (oauthCompleted) return;
           unlisten();
-        }
-      }, 500);
+          const recovered = await tryRecoverFromPendingIntegration(pendingFlow);
+          if (!recovered) {
+            clearOAuthPendingFlow();
+            setConnectPhase("idle");
+            toast({
+              title: "Autorização não concluída",
+              description: "A conexão não foi finalizada. Tente conectar novamente.",
+              variant: "destructive",
+            });
+          }
+        }, 1200);
+      }, 400);
     } catch (err) {
-      setLoading(false);
+      clearOAuthPendingFlow();
+      setConnectPhase("idle");
       toast({
         title: "Erro ao iniciar conexão",
         description: err instanceof Error ? err.message : "Tente novamente.",
@@ -146,7 +205,7 @@ export function StoreNameDialog({
     <Dialog
       open={open}
       onOpenChange={(v) => {
-        if (!loading) {
+        if (!isBusy) {
           setManualAuthUrl(null);
           onOpenChange(v);
         }
@@ -159,30 +218,41 @@ export function StoreNameDialog({
             Conectar {providerDisplayName}
           </DialogTitle>
           <DialogDescription>
-            Dê um nome para identificar esta conta. Em seguida, você será redirecionado para
-            autorizar o acesso no {providerDisplayName}.
+            {connectPhase === "authorizing"
+              ? `Conclua a autorização na janela do ${providerDisplayName}. Este modal permanecerá aberto até a conexão ser confirmada.`
+              : `Dê um nome para identificar esta conta. Em seguida, você será redirecionado para autorizar o acesso no ${providerDisplayName}.`}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="store-name">
-              Nome da loja <span className="text-destructive">*</span>
-            </Label>
-            <Input
-              id="store-name"
-              placeholder={`Ex.: Minha loja no ${providerDisplayName}`}
-              value={storeName}
-              onChange={(e) => setStoreName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !loading) handleConnect();
-              }}
-              disabled={loading}
-              autoFocus
-            />
-          </div>
+          {connectPhase === "authorizing" ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-6 text-center">
+              <Loader2 className="h-8 w-8 animate-spin text-novura-primary" />
+              <p className="text-sm font-medium">Aguardando autorização...</p>
+              <p className="text-xs text-muted-foreground">
+                Loja: <span className="font-medium text-foreground">{storeName}</span>
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <Label htmlFor="store-name">
+                Nome da loja <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="store-name"
+                placeholder={`Ex.: Minha loja no ${providerDisplayName}`}
+                value={storeName}
+                onChange={(e) => setStoreName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !isBusy) handleConnect();
+                }}
+                disabled={isBusy}
+                autoFocus
+              />
+            </div>
+          )}
 
-          {manualAuthUrl && (
+          {manualAuthUrl && connectPhase !== "authorizing" && (
             <Button
               type="button"
               variant="secondary"
@@ -196,15 +266,20 @@ export function StoreNameDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isBusy}>
             Cancelar
           </Button>
           <Button
             onClick={handleConnect}
-            disabled={loading || !storeName.trim()}
+            disabled={isBusy || !storeName.trim()}
             className="bg-novura-primary hover:bg-novura-primary/90"
           >
-            {loading ? (
+            {connectPhase === "authorizing" ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Aguardando autorização...
+              </>
+            ) : connectPhase === "preparing" ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                 Preparando login...

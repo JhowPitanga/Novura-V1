@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Settings } from "lucide-react";
+import { Settings, RefreshCw } from "lucide-react";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -22,6 +22,7 @@ interface ConnectedAppCardProps {
     status: 'active' | 'reconnect' | 'inactive';
     color: string;
     onDisconnect: (appId: string) => void;
+    onReconnect?: (app: App) => void;
     /** Real marketplace_integrations.id — needed to open the warehouse config modal. */
     integrationId?: string | null;
     organizationId?: string | null;
@@ -33,6 +34,7 @@ export function ConnectedAppCard({
     status,
     color,
     onDisconnect,
+    onReconnect,
     integrationId,
     organizationId,
 }: ConnectedAppCardProps) {
@@ -73,10 +75,31 @@ export function ConnectedAppCard({
                     </CardDescription>
                     <div className="grid grid-cols-1 gap-2 text-xs text-gray-600 mb-4 min-h-[64px]">
                         <div>Autenticado em: {conn?.authenticatedAt ? new Date(conn.authenticatedAt).toLocaleDateString('pt-BR') : '—'}</div>
-                        <div>Expira em: {conn?.expiresAt ? new Date(conn.expiresAt).toLocaleDateString('pt-BR') : '—'}</div>
+                        <div>
+                            Expira em: {conn?.expiresAt ? new Date(conn.expiresAt).toLocaleDateString('pt-BR') : '—'}
+                            {conn?.daysUntilExpiry != null && conn.daysUntilExpiry >= 0 && (
+                                <span className="text-muted-foreground"> ({conn.daysUntilExpiry}d)</span>
+                            )}
+                        </div>
                         <div>Nome da loja: {conn?.storeName || '—'}</div>
+                        {conn?.lastRefreshError && (
+                            <div className="text-red-600 truncate" title={conn.lastRefreshError}>
+                                Erro refresh: {conn.lastRefreshError}
+                            </div>
+                        )}
                     </div>
                     <div className="mt-auto flex flex-col sm:flex-row gap-2">
+                        {(status === 'reconnect' || status === 'inactive') && onReconnect && (
+                            <Button
+                                variant="default"
+                                size="sm"
+                                className="h-9 sm:flex-1 bg-novura-primary hover:bg-novura-primary/90"
+                                onClick={() => onReconnect(app)}
+                            >
+                                <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                                Reconectar
+                            </Button>
+                        )}
                         {/* Unified settings modal button */}
                         {integrationId && (
                             <Button
