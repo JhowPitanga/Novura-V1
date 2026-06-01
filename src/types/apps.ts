@@ -22,4 +22,7 @@ export interface AppConnection {
   integrationId?: string | null;
   /** Whether the integration has been fully configured (company + warehouse). */
   setupStatus?: "pending" | "completed";
+  tokenHealth?: "ok" | "expiring_soon" | "expired" | "error" | "unknown";
+  daysUntilExpiry?: number | null;
+  lastRefreshError?: string | null;
 }

@@ -150,6 +150,31 @@ function isMissingRpcError(error: { code?: string | null; message?: string | nul
   return message.includes("could not find the function");
 }
 
+export function getMarketplaceRpcErrorMessage(error: unknown): string {
+  if (!error || typeof error !== "object") return String(error ?? "Erro desconhecido");
+  const e = error as { message?: string; details?: string; hint?: string };
+  return [e.message, e.details, e.hint].filter(Boolean).join(" — ");
+}
+
+export function isReservedStockDisconnectError(error: unknown): boolean {
+  return getMarketplaceRpcErrorMessage(error).toLowerCase().includes("reserved_stock_present");
+}
+
+export async function canDisconnectMarketplaceIntegration(
+  organizationId: string,
+  integrationId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase.rpc("can_disconnect_marketplace_integration", {
+    p_organizations_id: organizationId,
+    p_integration_id: integrationId,
+  });
+  if (error) {
+    if (isMissingRpcError(error)) return true;
+    throw error;
+  }
+  return Boolean(data);
+}
+
 async function resolveMarketplaceDisplayName(params: {
   marketplaceName?: string | null;
   providerKey?: string | null;
@@ -178,12 +203,22 @@ async function resolveMarketplaceDisplayName(params: {
 export async function disconnectMarketplaceApp(
   organizationId: string,
   params: {
+    integrationId?: string | null;
     providerKey?: string | null;
     marketplaceName?: string | null;
   },
 ): Promise<void> {
+  const integrationId = params.integrationId?.trim();
   const providerKey = params.providerKey?.trim();
-  const marketplaceName = await resolveMarketplaceDisplayName(params);
+
+  if (integrationId) {
+    const { error } = await supabase.rpc("disconnect_marketplace_integration", {
+      p_organizations_id: organizationId,
+      p_integration_id: integrationId,
+    });
+    if (!error) return;
+    if (!isMissingRpcError(error)) throw error;
+  }
 
   if (providerKey) {
     const { error } = await supabase.rpc("disconnect_marketplace_by_provider", {
@@ -194,9 +229,61 @@ export async function disconnectMarketplaceApp(
     if (!isMissingRpcError(error)) throw error;
   }
 
+  const marketplaceName = await resolveMarketplaceDisplayName(params);
   const { error: cascadeError } = await supabase.rpc("disconnect_marketplace_cascade", {
     p_organizations_id: organizationId,
     p_marketplace_name: marketplaceName,
   });
   if (cascadeError) throw cascadeError;
+}
+
+export interface RecoverOAuthFlowInput {
+  organizationId: string;
+  appId: string;
+  providerKey: string;
+  storeName: string;
+  startedAt: number;
+}
+
+/** Fallback when postMessage from OAuth popup fails — finds a fresh pending integration. */
+export async function recoverPendingOAuthIntegration(
+  flow: RecoverOAuthFlowInput,
+): Promise<{
+  providerKey: string;
+  integrationId: string;
+  externalAccountId: string;
+  appId: string;
+  ok: boolean;
+} | null> {
+  const { data, error } = await supabase
+    .from("marketplace_integrations")
+    .select("id, external_account_id, store_name, connected_at, setup_status, config, provider_id")
+    .eq("organizations_id", flow.organizationId)
+    .eq("setup_status", "pending")
+    .eq("status", "active")
+    .is("deactivated_at", null)
+    .order("connected_at", { ascending: false })
+    .limit(10);
+
+  if (error) throw error;
+
+  const startedMs = flow.startedAt - 60_000;
+  const match = (data ?? []).find((row) => {
+    if (String(row.store_name ?? "").trim() !== flow.storeName.trim()) return false;
+    const cfg = (row.config ?? {}) as Record<string, unknown>;
+    const configAppId = typeof cfg.app_id === "string" ? cfg.app_id.trim() : "";
+    if (configAppId && configAppId !== flow.appId) return false;
+    const connectedAt = new Date(String(row.connected_at ?? 0)).getTime();
+    return Number.isFinite(connectedAt) && connectedAt >= startedMs;
+  });
+
+  if (!match?.id) return null;
+
+  return {
+    providerKey: flow.providerKey,
+    integrationId: match.id,
+    externalAccountId: String(match.external_account_id ?? ""),
+    appId: flow.appId,
+    ok: true,
+  };
 }

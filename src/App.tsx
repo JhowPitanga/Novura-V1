@@ -57,6 +57,7 @@ const Community = lazy(() => import("./pages/Community"));
 const Auth = lazy(() => import("./pages/Auth"));
 const MercadoLivreCallback = lazy(() => import("./pages/MercadoLivreCallback"));
 const ShopeeCallback = lazy(() => import("./pages/ShopeeCallback"));
+const OAuthCallbackPage = lazy(() => import("./pages/OAuthCallbackPage"));
 const InviteAccepted = lazy(() => import("./pages/InviteAccepted"));
 
 const queryClient = new QueryClient({
@@ -151,6 +152,14 @@ const App = () => (
               element={
                 <Suspense fallback={<div className="p-6">Carregando...</div>}>
                   <InviteAccepted />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/oauth/:providerKey/callback"
+              element={
+                <Suspense fallback={<div className="p-6">Carregando...</div>}>
+                  <OAuthCallbackPage />
                 </Suspense>
               }
             />

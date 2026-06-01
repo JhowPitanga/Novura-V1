@@ -45,3 +45,25 @@ export function resolveShopeeRedirectUri(envOverride?: string | null): string {
 
   return SHOPEE_REDIRECT_CANONICAL;
 }
+
+export function resolveOAuthRedirectUri(
+  providerKey: string,
+  envOverride?: string | null,
+): string | undefined {
+  if (envOverride?.trim()) {
+    if (providerKey === "shopee") {
+      return normalizeShopeeRedirectUri(envOverride) ?? envOverride.trim();
+    }
+    return envOverride.trim();
+  }
+
+  if (providerKey === "shopee") {
+    return resolveShopeeRedirectUri();
+  }
+
+  if (providerKey === "mercado_livre") {
+    return "https://novuraerp.com.br/oauth/mercado-livre/callback";
+  }
+
+  return undefined;
+}
