@@ -98,6 +98,7 @@ async function handleCallback(req: Request): Promise<Response> {
     redirectUri,
     correlationId,
     appId,
+    reconnectIntegrationId,
   } = statePayload;
 
   const credsAdapter = new SupabaseAppCredentialsAdapter(admin);
@@ -213,15 +214,62 @@ async function handleCallback(req: Request): Promise<Response> {
   // -------------------------------------------------------------------------
   // Upsert integration row
   // -------------------------------------------------------------------------
-  // Check if there is already an integration in this org for this account
-  const { data: ownOrgRow } = await admin
-    .from("marketplace_integrations")
-    .select("id")
-    .eq("provider_id", providerId)
-    .eq("external_account_id", externalAccountId)
-    .eq("organizations_id", organizationId)
-    .is("deactivated_at", null)
-    .maybeSingle();
+  type ExistingIntegrationRow = {
+    id: string;
+    setup_status: string;
+    company_id: string | null;
+    store_name: string | null;
+    external_account_id: string | null;
+  };
+
+  let existingRow: ExistingIntegrationRow | null = null;
+
+  if (reconnectIntegrationId) {
+    const { data: reconnectRow } = await admin
+      .from("marketplace_integrations")
+      .select("id, setup_status, company_id, store_name, external_account_id")
+      .eq("id", reconnectIntegrationId)
+      .eq("organizations_id", organizationId)
+      .eq("provider_id", providerId)
+      .is("deactivated_at", null)
+      .maybeSingle();
+    existingRow = reconnectRow ?? null;
+  }
+
+  if (!existingRow) {
+    const { data: ownOrgRow } = await admin
+      .from("marketplace_integrations")
+      .select("id, setup_status, company_id, store_name, external_account_id")
+      .eq("provider_id", providerId)
+      .eq("external_account_id", externalAccountId)
+      .eq("organizations_id", organizationId)
+      .is("deactivated_at", null)
+      .maybeSingle();
+    existingRow = ownOrgRow ?? null;
+  }
+
+  if (!existingRow) {
+    const { data: orgProviderRows } = await admin
+      .from("marketplace_integrations")
+      .select("id, setup_status, company_id, store_name, external_account_id")
+      .eq("provider_id", providerId)
+      .eq("organizations_id", organizationId)
+      .is("deactivated_at", null)
+      .order("setup_completed_at", { ascending: false, nullsFirst: false });
+
+    if (orgProviderRows?.length === 1) {
+      existingRow = orgProviderRows[0];
+    } else if (orgProviderRows && orgProviderRows.length > 1) {
+      const normalizedStore = (storeName ?? "").trim().toLowerCase();
+      const byStore = normalizedStore
+        ? orgProviderRows.find(
+          (r) => String(r.store_name ?? "").trim().toLowerCase() === normalizedStore,
+        )
+        : null;
+      const completed = orgProviderRows.find((r) => r.setup_status === "completed");
+      existingRow = byStore ?? completed ?? orgProviderRows[0];
+    }
+  }
 
   const upsertData = {
     organizations_id: organizationId,
@@ -251,9 +299,13 @@ async function handleCallback(req: Request): Promise<Response> {
   };
 
   let integrationId: string;
+  let setupStatus: string = "pending";
 
-  if (ownOrgRow?.id) {
-    // Reconnection — update existing row but preserve setup_status if already completed
+  if (existingRow?.id) {
+    const preserveStoreName = existingRow.store_name?.trim()
+      ? existingRow.store_name
+      : upsertData.store_name;
+
     const { data: updated, error: upErr } = await admin
       .from("marketplace_integrations")
       .update({
@@ -262,16 +314,19 @@ async function handleCallback(req: Request): Promise<Response> {
         expires_at: upsertData.expires_at,
         expires_in: upsertData.expires_in,
         status: "active",
+        external_account_id: externalAccountId,
+        store_name: preserveStoreName,
         last_refresh_at: null,
         last_refresh_error: null,
         token_key_version: 1,
         config: upsertData.config,
       })
-      .eq("id", ownOrgRow.id)
+      .eq("id", existingRow.id)
       .select("id, setup_status")
       .single();
     if (upErr || !updated) throw new Error(upErr?.message ?? "update_failed");
     integrationId = updated.id;
+    setupStatus = updated.setup_status ?? existingRow.setup_status ?? "pending";
   } else {
     // New integration
     const { data: inserted, error: insErr } = await admin
@@ -281,6 +336,7 @@ async function handleCallback(req: Request): Promise<Response> {
       .single();
     if (insErr || !inserted) throw new Error(insErr?.message ?? "insert_failed");
     integrationId = inserted.id;
+    setupStatus = "pending";
   }
 
   // Also update meli_user_id column for ML (backward compat)
@@ -297,6 +353,8 @@ async function handleCallback(req: Request): Promise<Response> {
   const payload = {
     ...adapter.buildPostMessagePayload(tokens, integrationId),
     appId: appCreds.app_id || appId || null,
+    setupStatus,
+    isReconnect: Boolean(existingRow?.id),
   };
   return buildSuccessResponse(req, payload, statePayload.openerOrigin ?? null);
 }

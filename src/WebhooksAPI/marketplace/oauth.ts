@@ -15,6 +15,8 @@ export interface StartOAuthOptions {
   redirectUri?: string | null;
   correlationId?: string;
   openerOrigin?: string;
+  /** Existing integration row when refreshing tokens (reconnect). */
+  reconnectIntegrationId?: string | null;
 }
 
 export interface StartOAuthResult {
@@ -29,6 +31,8 @@ export type OAuthSuccessPayload = {
   externalAccountId: string;
   appId?: string | null;
   ok: boolean;
+  setupStatus?: "pending" | "completed" | string;
+  isReconnect?: boolean;
 };
 
 export type OAuthErrorPayload = {
@@ -54,6 +58,7 @@ export async function startOAuth(
     openerOrigin:
       opts.openerOrigin ??
       (typeof window !== "undefined" ? window.location.origin : undefined),
+    reconnectIntegrationId: opts.reconnectIntegrationId ?? null,
   };
 
   const { data: sessionRes } = await client.auth.getSession();

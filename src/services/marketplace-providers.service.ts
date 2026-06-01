@@ -1,5 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
+import { isIntegrationFullyConfigured } from "@/utils/integrationSetup";
 
 export type MarketplaceProvider =
   Database["public"]["Tables"]["marketplace_providers"]["Row"];
@@ -10,6 +11,10 @@ export type AppWithProvider =
 export type MarketplaceIntegration =
   Database["public"]["Tables"]["marketplace_integrations"]["Row"] & {
     marketplace_providers?: Pick<MarketplaceProvider, "key" | "display_name" | "category" | "logo_url"> | null;
+    warehouse_config?: {
+      physical_storage_id: string | null;
+      fulfillment_storage_id: string | null;
+    } | null;
   };
 
 // ---------------------------------------------------------------------------
@@ -68,32 +73,94 @@ export async function fetchAppsWithProvider(): Promise<AppWithProvider[]> {
 export async function fetchIntegrations(
   organizationId: string,
 ): Promise<MarketplaceIntegration[]> {
-  const { data, error } = await supabase
-    .from("marketplace_integrations")
-    .select(
-      "*, marketplace_providers(key, display_name, category, logo_url)",
-    )
-    .eq("organizations_id", organizationId)
-    .is("deactivated_at", null)
-    .order("connected_at", { ascending: false });
+  const [integrationsRes, warehouseRes] = await Promise.all([
+    supabase
+      .from("marketplace_integrations")
+      .select("*, marketplace_providers(key, display_name, category, logo_url)")
+      .eq("organizations_id", organizationId)
+      .is("deactivated_at", null)
+      .order("connected_at", { ascending: false }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (supabase as any)
+      .from("integration_warehouse_config")
+      .select("integration_id, physical_storage_id, fulfillment_storage_id")
+      .eq("organization_id", organizationId),
+  ]);
 
-  if (error) throw error;
-  return (data ?? []) as MarketplaceIntegration[];
+  if (integrationsRes.error) throw integrationsRes.error;
+  if (warehouseRes.error) throw warehouseRes.error;
+
+  const warehouseByIntegration = new Map(
+    (warehouseRes.data ?? []).map((row) => [
+      row.integration_id,
+      {
+        physical_storage_id: row.physical_storage_id,
+        fulfillment_storage_id: row.fulfillment_storage_id,
+      },
+    ]),
+  );
+
+  return (integrationsRes.data ?? []).map((row) => ({
+    ...(row as MarketplaceIntegration),
+    warehouse_config: warehouseByIntegration.get(row.id) ?? null,
+  }));
+}
+
+/** Marks setup as completed when company + warehouse exist but setup_status stayed pending. */
+export async function reconcileStaleIntegrationSetups(
+  organizationId: string,
+  integrations: MarketplaceIntegration[],
+): Promise<number> {
+  const stale = integrations.filter(
+    (row) =>
+      row.setup_status === "pending" &&
+      row.company_id &&
+      isIntegrationFullyConfigured(row),
+  );
+
+  if (!stale.length) return 0;
+
+  await Promise.all(
+    stale.map((row) =>
+      completeIntegrationSetup(row.id, row.company_id!, organizationId),
+    ),
+  );
+  return stale.length;
 }
 
 export async function fetchIntegrationById(
   organizationId: string,
   integrationId: string,
 ): Promise<MarketplaceIntegration | null> {
-  const { data, error } = await supabase
-    .from("marketplace_integrations")
-    .select("*, marketplace_providers(key, display_name, category, logo_url)")
-    .eq("organizations_id", organizationId)
-    .eq("id", integrationId)
-    .maybeSingle();
+  const [integrationRes, warehouseRes] = await Promise.all([
+    supabase
+      .from("marketplace_integrations")
+      .select("*, marketplace_providers(key, display_name, category, logo_url)")
+      .eq("organizations_id", organizationId)
+      .eq("id", integrationId)
+      .maybeSingle(),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (supabase as any)
+      .from("integration_warehouse_config")
+      .select("integration_id, physical_storage_id, fulfillment_storage_id")
+      .eq("organization_id", organizationId)
+      .eq("integration_id", integrationId)
+      .maybeSingle(),
+  ]);
 
-  if (error) throw error;
-  return (data as MarketplaceIntegration | null) ?? null;
+  if (integrationRes.error) throw integrationRes.error;
+  if (warehouseRes.error) throw warehouseRes.error;
+  if (!integrationRes.data) return null;
+
+  return {
+    ...(integrationRes.data as MarketplaceIntegration),
+    warehouse_config: warehouseRes.data
+      ? {
+          physical_storage_id: warehouseRes.data.physical_storage_id ?? null,
+          fulfillment_storage_id: warehouseRes.data.fulfillment_storage_id ?? null,
+        }
+      : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -243,9 +310,37 @@ export interface RecoverOAuthFlowInput {
   providerKey: string;
   storeName: string;
   startedAt: number;
+  reconnectIntegrationId?: string | null;
 }
 
-/** Fallback when postMessage from OAuth popup fails — finds a fresh pending integration. */
+function toOAuthSuccessPayload(
+  row: {
+    id: string;
+    external_account_id: string | null;
+    setup_status: string | null;
+  },
+  flow: RecoverOAuthFlowInput,
+): {
+  providerKey: string;
+  integrationId: string;
+  externalAccountId: string;
+  appId: string;
+  ok: boolean;
+  setupStatus?: string;
+  isReconnect?: boolean;
+} {
+  return {
+    providerKey: flow.providerKey,
+    integrationId: row.id,
+    externalAccountId: String(row.external_account_id ?? ""),
+    appId: flow.appId,
+    ok: true,
+    setupStatus: row.setup_status ?? undefined,
+    isReconnect: Boolean(flow.reconnectIntegrationId),
+  };
+}
+
+/** Fallback when postMessage from OAuth popup fails — finds the integration touched by OAuth. */
 export async function recoverPendingOAuthIntegration(
   flow: RecoverOAuthFlowInput,
 ): Promise<{
@@ -254,12 +349,29 @@ export async function recoverPendingOAuthIntegration(
   externalAccountId: string;
   appId: string;
   ok: boolean;
+  setupStatus?: string;
+  isReconnect?: boolean;
 } | null> {
+  if (flow.reconnectIntegrationId) {
+    const { data: reconnectRow, error: reconnectErr } = await supabase
+      .from("marketplace_integrations")
+      .select("id, external_account_id, store_name, connected_at, setup_status, config, provider_id")
+      .eq("id", flow.reconnectIntegrationId)
+      .eq("organizations_id", flow.organizationId)
+      .eq("status", "active")
+      .is("deactivated_at", null)
+      .maybeSingle();
+
+    if (reconnectErr) throw reconnectErr;
+    if (reconnectRow?.id) {
+      return toOAuthSuccessPayload(reconnectRow, flow);
+    }
+  }
+
   const { data, error } = await supabase
     .from("marketplace_integrations")
     .select("id, external_account_id, store_name, connected_at, setup_status, config, provider_id")
     .eq("organizations_id", flow.organizationId)
-    .eq("setup_status", "pending")
     .eq("status", "active")
     .is("deactivated_at", null)
     .order("connected_at", { ascending: false })
@@ -279,11 +391,5 @@ export async function recoverPendingOAuthIntegration(
 
   if (!match?.id) return null;
 
-  return {
-    providerKey: flow.providerKey,
-    integrationId: match.id,
-    externalAccountId: String(match.external_account_id ?? ""),
-    appId: flow.appId,
-    ok: true,
-  };
+  return toOAuthSuccessPayload(match, flow);
 }

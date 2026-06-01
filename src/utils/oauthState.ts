@@ -53,6 +53,7 @@ export interface OAuthPendingFlow {
   providerKey: string;
   storeName: string;
   startedAt: number;
+  reconnectIntegrationId?: string | null;
 }
 
 export function saveOAuthPendingFlow(flow: OAuthPendingFlow): void {

@@ -32,6 +32,7 @@ Deno.serve(async (req: Request) => {
       redirectUri?: string;
       correlationId?: string;
       openerOrigin?: string | null;
+      reconnectIntegrationId?: string | null;
     };
 
     const { providerKey, organizationId } = body;
@@ -108,6 +109,7 @@ type BodyFields = {
   redirectUri?: string;
   correlationId?: string;
   openerOrigin?: string | null;
+  reconnectIntegrationId?: string | null;
 };
 
 async function resolveAndBuild(
@@ -135,6 +137,7 @@ async function resolveAndBuild(
     appId: body.appId ?? appCreds.app_id ?? null,
     appConfig: appCreds.config,
     openerOrigin: body.openerOrigin ?? null,
+    reconnectIntegrationId: body.reconnectIntegrationId ?? null,
   });
 
   console.log("[oauth-start-auth] redirect_resolved", {

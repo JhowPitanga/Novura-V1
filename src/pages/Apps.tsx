@@ -23,6 +23,7 @@ import type { OAuthSuccessPayload } from "@/WebhooksAPI/marketplace/oauth";
 import type { AppWithProvider } from "@/services/marketplace-providers.service";
 import {
   disconnectMarketplaceApp,
+  fetchIntegrationById,
   integrationKeys as intKeys,
   isReservedStockDisconnectError,
   getMarketplaceRpcErrorMessage,
@@ -35,6 +36,12 @@ import {
   mapHealthToColor,
   mapHealthToConnectionStatus,
 } from "@/utils/integrationHealth";
+import {
+  integrationRequiresQuickSetup,
+  isIntegrationFullyConfigured,
+  shouldShowPendingSetupBanner,
+} from "@/utils/integrationSetup";
+import { useReconcileIntegrationSetup } from "@/hooks/useReconcileIntegrationSetup";
 
 const navigationItems = [
   { title: "Loja de Apps", path: "", description: "Explore e conecte aplicativos" },
@@ -78,6 +85,10 @@ export default function Aplicativos() {
   const [storeNameDialogOpen, setStoreNameDialogOpen] = useState(false);
   const [quickSetupOpen, setQuickSetupOpen] = useState(false);
   const [connectingApp, setConnectingApp] = useState<App | null>(null);
+  const [reconnectContext, setReconnectContext] = useState<{
+    integrationId: string;
+    storeName: string;
+  } | null>(null);
   const [pendingIntegration, setPendingIntegration] = useState<OAuthSuccessPayload | null>(null);
 
   // Disconnect state
@@ -106,6 +117,7 @@ export default function Aplicativos() {
   // Data from React Query
   const { data: appRows = [], isLoading: loadingApps } = useAppsWithProvider();
   const { data: integrations = [], isLoading: loadingIntegrations } = useIntegrations();
+  useReconcileIntegrationSetup(integrations);
 
   // Build app list + connection status
   const apps: App[] = appRows.map((row) => {
@@ -120,7 +132,7 @@ export default function Aplicativos() {
       isConnected: Boolean(
         integration &&
           integration.status === "active" &&
-          integration.setup_status === "completed",
+          isIntegrationFullyConfigured(integration),
       ),
     };
   });
@@ -224,9 +236,8 @@ export default function Aplicativos() {
 
   const connectedApps = apps.filter((app) => appConnections[app.id]);
 
-  // Integrations pending setup (orphans)
-  const pendingSetupIntegrations = integrations.filter(
-    (i) => i.setup_status === "pending" && i.status === "active" && !i.deactivated_at,
+  const pendingSetupIntegrations = integrations.filter((i) =>
+    shouldShowPendingSetupBanner(i, integrations),
   );
 
   // ---------------------------------------------------------------------------
@@ -234,6 +245,7 @@ export default function Aplicativos() {
   // ---------------------------------------------------------------------------
 
   const handleConnect = (app: App) => {
+    setReconnectContext(null);
     if (!app.providerKey) {
       toast({
         title: "Integração não suportada",
@@ -246,15 +258,35 @@ export default function Aplicativos() {
     setStoreNameDialogOpen(true);
   };
 
-  const handleOAuthSuccess = (payload: OAuthSuccessPayload) => {
+  const handleOAuthSuccess = async (payload: OAuthSuccessPayload) => {
     if (payload.appId) {
       const row = appRows.find((r) => r.id === payload.appId);
       if (row) setConnectingApp(mapAppRow(row));
     }
     setStoreNameDialogOpen(false);
-    setPendingIntegration(payload);
+    setReconnectContext(null);
     queryClient.invalidateQueries({ queryKey: intKeys.list(organizationId ?? "") });
-    // Defer setup modal so connect dialog unmounts first (avoids z-index/stacking).
+
+    let setupStatus = payload.setupStatus;
+    let integrationRow =
+      payload.integrationId && organizationId
+        ? await fetchIntegrationById(organizationId, payload.integrationId)
+        : null;
+    if (!setupStatus) {
+      setupStatus = integrationRow?.setup_status ?? undefined;
+    }
+
+    if (!integrationRequiresQuickSetup(setupStatus, integrationRow)) {
+      setPendingIntegration(null);
+      toast({
+        title: payload.isReconnect ? "Aplicativo reconectado" : "Aplicativo conectado",
+        description: "Tokens renovados. Suas configurações de empresa e armazém foram mantidas.",
+      });
+      navigate("/aplicativos/conectados");
+      return;
+    }
+
+    setPendingIntegration(payload);
     window.requestAnimationFrame(() => {
       setQuickSetupOpen(true);
     });
@@ -361,7 +393,16 @@ export default function Aplicativos() {
 
   const handleReconnect = (app: App) => {
     if (!app.providerKey) return;
+    const conn = appConnections[app.id];
+    if (!conn?.integrationId) {
+      handleConnect(app);
+      return;
+    }
     setConnectingApp(app);
+    setReconnectContext({
+      integrationId: conn.integrationId,
+      storeName: conn.storeName ?? "",
+    });
     setStoreNameDialogOpen(true);
   };
 
@@ -526,10 +567,16 @@ export default function Aplicativos() {
       {connectingApp && (
         <StoreNameDialog
           open={storeNameDialogOpen}
-          onOpenChange={setStoreNameDialogOpen}
+          onOpenChange={(open) => {
+            setStoreNameDialogOpen(open);
+            if (!open) setReconnectContext(null);
+          }}
           appId={connectingApp.id}
           providerKey={connectingApp.providerKey ?? ""}
           providerDisplayName={connectingApp.providerDisplayName ?? connectingApp.name}
+          reconnectIntegrationId={reconnectContext?.integrationId ?? null}
+          defaultStoreName={reconnectContext?.storeName ?? ""}
+          reconnectMode={Boolean(reconnectContext?.integrationId)}
           redirectUri={resolveOAuthRedirectUri(
             connectingApp.providerKey ?? "",
             connectingApp.providerKey === "shopee"

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -36,6 +36,10 @@ interface StoreNameDialogProps {
   providerDisplayName: string;
   redirectUri?: string;
   onSuccess: (payload: OAuthSuccessPayload) => void;
+  /** When set, OAuth refreshes tokens on this row instead of creating a new integration. */
+  reconnectIntegrationId?: string | null;
+  defaultStoreName?: string;
+  reconnectMode?: boolean;
 }
 
 type ConnectPhase = "idle" | "preparing" | "authorizing";
@@ -48,6 +52,9 @@ export function StoreNameDialog({
   providerDisplayName,
   redirectUri,
   onSuccess,
+  reconnectIntegrationId = null,
+  defaultStoreName = "",
+  reconnectMode = false,
 }: StoreNameDialogProps) {
   const { toast } = useToast();
   const { user, organizationId } = useAuth();
@@ -55,6 +62,13 @@ export function StoreNameDialog({
   const [connectPhase, setConnectPhase] = useState<ConnectPhase>("idle");
   const [manualAuthUrl, setManualAuthUrl] = useState<string | null>(null);
   const isBusy = connectPhase !== "idle";
+
+  useEffect(() => {
+    if (!open) return;
+    if (defaultStoreName.trim()) {
+      setStoreName(defaultStoreName.trim());
+    }
+  }, [open, defaultStoreName]);
 
   const finishOAuthSuccess = (payload: OAuthSuccessPayload) => {
     clearOAuthPendingFlow();
@@ -102,6 +116,7 @@ export function StoreNameDialog({
       providerKey,
       storeName: trimmed,
       startedAt: Date.now(),
+      reconnectIntegrationId: reconnectIntegrationId ?? null,
     };
     saveOAuthPendingFlow(pendingFlow);
 
@@ -113,6 +128,7 @@ export function StoreNameDialog({
         storeName: trimmed,
         connectedByUserId: user?.id ?? null,
         redirectUri: redirectUri ?? undefined,
+        reconnectIntegrationId: reconnectIntegrationId ?? undefined,
       });
 
       const popup = openOAuthPopup(result.authorizationUrl, providerDisplayName);
@@ -215,12 +231,14 @@ export function StoreNameDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ExternalLink className="w-5 h-5 text-novura-primary" />
-            Conectar {providerDisplayName}
+            {reconnectMode ? `Reconectar ${providerDisplayName}` : `Conectar ${providerDisplayName}`}
           </DialogTitle>
           <DialogDescription>
             {connectPhase === "authorizing"
               ? `Conclua a autorização na janela do ${providerDisplayName}. Este modal permanecerá aberto até a conexão ser confirmada.`
-              : `Dê um nome para identificar esta conta. Em seguida, você será redirecionado para autorizar o acesso no ${providerDisplayName}.`}
+              : reconnectMode
+                ? `Renove o acesso da loja abaixo no ${providerDisplayName}. Empresa e armazém já configurados serão mantidos.`
+                : `Dê um nome para identificar esta conta. Em seguida, você será redirecionado para autorizar o acesso no ${providerDisplayName}.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -287,7 +305,7 @@ export function StoreNameDialog({
             ) : (
               <>
                 <ExternalLink className="w-4 h-4 mr-2" />
-                Conectar
+                {reconnectMode ? "Reconectar" : "Conectar"}
               </>
             )}
           </Button>

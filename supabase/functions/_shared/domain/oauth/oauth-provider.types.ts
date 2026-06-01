@@ -27,6 +27,8 @@ export interface OAuthContext {
   issuedAt: number;
   /** SPA origin that opened the OAuth popup (for postMessage routing) */
   openerOrigin?: string | null;
+  /** When reconnecting, the existing marketplace_integrations.id to refresh tokens on */
+  reconnectIntegrationId?: string | null;
 }
 
 export interface AuthorizationResult {
@@ -113,6 +115,7 @@ export interface StatePayload {
   nonce: string;
   issuedAt: number;
   openerOrigin?: string | null;
+  reconnectIntegrationId?: string | null;
   /** HMAC-SHA256 signature over the rest of the fields (hex) */
   sig: string;
 }
