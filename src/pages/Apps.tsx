@@ -23,9 +23,25 @@ import type { OAuthSuccessPayload } from "@/WebhooksAPI/marketplace/oauth";
 import type { AppWithProvider } from "@/services/marketplace-providers.service";
 import {
   disconnectMarketplaceApp,
+  fetchIntegrationById,
   integrationKeys as intKeys,
+  isReservedStockDisconnectError,
+  getMarketplaceRpcErrorMessage,
 } from "@/services/marketplace-providers.service";
-import { resolveShopeeRedirectUri } from "@/utils/oauthRedirectUris";
+import { resolveOAuthRedirectUri } from "@/utils/oauthRedirectUris";
+import { integrationMatchesApp } from "@/utils/integrationAppMatch";
+import {
+  computeDaysUntilExpiry,
+  computeTokenHealth,
+  mapHealthToColor,
+  mapHealthToConnectionStatus,
+} from "@/utils/integrationHealth";
+import {
+  integrationRequiresQuickSetup,
+  isIntegrationFullyConfigured,
+  shouldShowPendingSetupBanner,
+} from "@/utils/integrationSetup";
+import { useReconcileIntegrationSetup } from "@/hooks/useReconcileIntegrationSetup";
 
 const navigationItems = [
   { title: "Loja de Apps", path: "", description: "Explore e conecte aplicativos" },
@@ -69,6 +85,10 @@ export default function Aplicativos() {
   const [storeNameDialogOpen, setStoreNameDialogOpen] = useState(false);
   const [quickSetupOpen, setQuickSetupOpen] = useState(false);
   const [connectingApp, setConnectingApp] = useState<App | null>(null);
+  const [reconnectContext, setReconnectContext] = useState<{
+    integrationId: string;
+    storeName: string;
+  } | null>(null);
   const [pendingIntegration, setPendingIntegration] = useState<OAuthSuccessPayload | null>(null);
 
   // Disconnect state
@@ -97,40 +117,47 @@ export default function Aplicativos() {
   // Data from React Query
   const { data: appRows = [], isLoading: loadingApps } = useAppsWithProvider();
   const { data: integrations = [], isLoading: loadingIntegrations } = useIntegrations();
+  useReconcileIntegrationSetup(integrations);
 
   // Build app list + connection status
   const apps: App[] = appRows.map((row) => {
     const mappedApp = mapAppRow(row);
     const integration = integrations.find(
-      (i) => i.provider_id === row.provider_id && i.organizations_id === organizationId,
+      (i) =>
+        i.organizations_id === organizationId &&
+        integrationMatchesApp(i, row),
     );
     return {
       ...mappedApp,
-      isConnected: Boolean(integration && integration.status === "active"),
+      isConnected: Boolean(
+        integration &&
+          integration.status === "active" &&
+          isIntegrationFullyConfigured(integration),
+      ),
     };
   });
 
   // Build appConnections map (appId → connection info)
   const appConnections: Record<string, AppConnection> = {};
   integrations.forEach((integration) => {
-    const matchedApp = apps.find(
-      (a) => a.providerKey && integration.provider_id &&
-        appRows.find(r => r.provider_id === integration.provider_id && r.id === a.id),
-    );
+    const matchedApp = apps.find((a) => {
+      const row = appRows.find((r) => r.id === a.id);
+      return row ? integrationMatchesApp(integration, row) : false;
+    });
     if (!matchedApp) return;
+
+    const appRow = appRows.find((r) => r.id === matchedApp.id);
+    const thresholdMinutes = appRow?.refresh_threshold_minutes ?? 30;
+    const tokenHealth = computeTokenHealth({
+      status: integration.status,
+      expiresAt: integration.expires_at,
+      lastRefreshError: integration.last_refresh_error,
+      refreshThresholdMinutes: thresholdMinutes,
+    });
+    const connectionStatus = mapHealthToConnectionStatus(tokenHealth);
     const expiresAt = integration.expires_at
       ? new Date(integration.expires_at)
       : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    const now = new Date();
-    const daysLeft = Math.ceil((expiresAt.getTime() - now.getTime()) / 86400000);
-    const status: AppConnection["status"] =
-      expiresAt <= now
-        ? "inactive"
-        : daysLeft <= 7
-        ? "reconnect"
-        : integration.status === "active"
-        ? "active"
-        : "inactive";
 
     const existing = appConnections[matchedApp.id];
     const candidate: AppConnection = {
@@ -139,12 +166,15 @@ export default function Aplicativos() {
         integration.store_name ??
         (integration.config as Record<string, unknown>)?.storeName as string ??
         "Minha Loja",
-      status,
+      status: connectionStatus,
       authenticatedAt:
         integration.connected_at ?? new Date().toISOString(),
       expiresAt: expiresAt.toISOString(),
       integrationId: integration.id,
       setupStatus: integration.setup_status as "pending" | "completed",
+      tokenHealth,
+      daysUntilExpiry: computeDaysUntilExpiry(integration.expires_at),
+      lastRefreshError: integration.last_refresh_error,
     };
     if (!existing || new Date(existing.expiresAt) < expiresAt) {
       appConnections[matchedApp.id] = candidate;
@@ -206,9 +236,8 @@ export default function Aplicativos() {
 
   const connectedApps = apps.filter((app) => appConnections[app.id]);
 
-  // Integrations pending setup (orphans)
-  const pendingSetupIntegrations = integrations.filter(
-    (i) => i.setup_status === "pending" && i.status === "active" && !i.deactivated_at,
+  const pendingSetupIntegrations = integrations.filter((i) =>
+    shouldShowPendingSetupBanner(i, integrations),
   );
 
   // ---------------------------------------------------------------------------
@@ -216,6 +245,7 @@ export default function Aplicativos() {
   // ---------------------------------------------------------------------------
 
   const handleConnect = (app: App) => {
+    setReconnectContext(null);
     if (!app.providerKey) {
       toast({
         title: "Integração não suportada",
@@ -228,9 +258,38 @@ export default function Aplicativos() {
     setStoreNameDialogOpen(true);
   };
 
-  const handleOAuthSuccess = (payload: OAuthSuccessPayload) => {
+  const handleOAuthSuccess = async (payload: OAuthSuccessPayload) => {
+    if (payload.appId) {
+      const row = appRows.find((r) => r.id === payload.appId);
+      if (row) setConnectingApp(mapAppRow(row));
+    }
+    setStoreNameDialogOpen(false);
+    setReconnectContext(null);
+    queryClient.invalidateQueries({ queryKey: intKeys.list(organizationId ?? "") });
+
+    let setupStatus = payload.setupStatus;
+    let integrationRow =
+      payload.integrationId && organizationId
+        ? await fetchIntegrationById(organizationId, payload.integrationId)
+        : null;
+    if (!setupStatus) {
+      setupStatus = integrationRow?.setup_status ?? undefined;
+    }
+
+    if (!integrationRequiresQuickSetup(setupStatus, integrationRow)) {
+      setPendingIntegration(null);
+      toast({
+        title: payload.isReconnect ? "Aplicativo reconectado" : "Aplicativo conectado",
+        description: "Tokens renovados. Suas configurações de empresa e armazém foram mantidas.",
+      });
+      navigate("/aplicativos/conectados");
+      return;
+    }
+
     setPendingIntegration(payload);
-    setQuickSetupOpen(true);
+    window.requestAnimationFrame(() => {
+      setQuickSetupOpen(true);
+    });
   };
 
   const handleQuickSetupClose = useCallback(
@@ -281,7 +340,7 @@ export default function Aplicativos() {
       app.providerDisplayName ??
       app.name;
 
-    if (!app.providerKey && !marketplaceName?.trim()) {
+    if (!conn?.integrationId && !app.providerKey && !marketplaceName?.trim()) {
       toast({
         title: "Erro ao desconectar",
         description: "Não foi possível identificar o marketplace deste aplicativo.",
@@ -292,6 +351,7 @@ export default function Aplicativos() {
 
     try {
       await disconnectMarketplaceApp(organizationId, {
+        integrationId: conn?.integrationId ?? integration?.id,
         providerKey: app.providerKey,
         marketplaceName,
       });
@@ -301,8 +361,7 @@ export default function Aplicativos() {
         description: `${app.name} foi removido da sua organização.`,
       });
     } catch (e) {
-      const msg = String(e instanceof Error ? e.message : e).toLowerCase();
-      if (msg.includes("reserved_stock_present")) {
+      if (isReservedStockDisconnectError(e)) {
         setCannotDisconnectMessage(
           "Não é possível desconectar. Existem reservas de estoque ativas vinculadas a anúncios deste aplicativo.",
         );
@@ -311,7 +370,7 @@ export default function Aplicativos() {
       }
       toast({
         title: "Erro ao desconectar",
-        description: e instanceof Error ? e.message : "Tente novamente.",
+        description: getMarketplaceRpcErrorMessage(e) || "Tente novamente.",
         variant: "destructive",
       });
     }
@@ -320,12 +379,31 @@ export default function Aplicativos() {
   const getConnectionInfo = (app: App) => {
     const conn = appConnections[app.id];
     if (!conn) return { conn: undefined, status: "inactive" as const, color: "bg-red-500" };
-    const exp = new Date(conn.expiresAt);
-    const now = new Date();
-    if (exp < now) return { conn, status: "inactive" as const, color: "bg-red-500" };
-    const daysLeft = Math.ceil((exp.getTime() - now.getTime()) / 86400000);
-    if (daysLeft <= 7) return { conn, status: "reconnect" as const, color: "bg-yellow-500" };
-    return { conn, status: "active" as const, color: "bg-green-500" };
+    const health = conn.tokenHealth ?? computeTokenHealth({
+      status: conn.status,
+      expiresAt: conn.expiresAt,
+      lastRefreshError: conn.lastRefreshError,
+    });
+    return {
+      conn,
+      status: mapHealthToConnectionStatus(health),
+      color: mapHealthToColor(health),
+    };
+  };
+
+  const handleReconnect = (app: App) => {
+    if (!app.providerKey) return;
+    const conn = appConnections[app.id];
+    if (!conn?.integrationId) {
+      handleConnect(app);
+      return;
+    }
+    setConnectingApp(app);
+    setReconnectContext({
+      integrationId: conn.integrationId,
+      storeName: conn.storeName ?? "",
+    });
+    setStoreNameDialogOpen(true);
   };
 
   // ---------------------------------------------------------------------------
@@ -469,6 +547,7 @@ export default function Aplicativos() {
                               status={status}
                               color={color}
                               onDisconnect={disconnectApp}
+                              onReconnect={handleReconnect}
                               integrationId={conn?.integrationId ?? null}
                               organizationId={organizationId}
                             />
@@ -488,16 +567,24 @@ export default function Aplicativos() {
       {connectingApp && (
         <StoreNameDialog
           open={storeNameDialogOpen}
-          onOpenChange={setStoreNameDialogOpen}
+          onOpenChange={(open) => {
+            setStoreNameDialogOpen(open);
+            if (!open) setReconnectContext(null);
+          }}
+          appId={connectingApp.id}
           providerKey={connectingApp.providerKey ?? ""}
           providerDisplayName={connectingApp.providerDisplayName ?? connectingApp.name}
-          redirectUri={
+          reconnectIntegrationId={reconnectContext?.integrationId ?? null}
+          defaultStoreName={reconnectContext?.storeName ?? ""}
+          reconnectMode={Boolean(reconnectContext?.integrationId)}
+          redirectUri={resolveOAuthRedirectUri(
+            connectingApp.providerKey ?? "",
             connectingApp.providerKey === "shopee"
-              ? resolveShopeeRedirectUri(SHOPEE_REDIRECT_URI)
+              ? SHOPEE_REDIRECT_URI
               : connectingApp.providerKey === "mercado_livre"
               ? MELI_REDIRECT_URI
-              : undefined
-          }
+              : undefined,
+          )}
           onSuccess={handleOAuthSuccess}
         />
       )}
