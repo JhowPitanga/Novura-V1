@@ -23,6 +23,7 @@ import { TaskBoard } from "@/components/team/TaskBoard"; // ATUALIZADO (Kanban)
 import { TaskDetailModal } from "@/components/team/TaskDetailModal"; // NOVO
 import LoadingOverlay from "@/components/LoadingOverlay";
 import { useChatChannels, useOrgMemberSearch } from "@/hooks/useChat";
+import { useChatUnread } from "@/hooks/useChatUnread";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogFooter } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -89,7 +90,6 @@ function ChatModule() {
 
     const { channels = [], directChannels = [], teamChannels = [], toggleStar, deleteChannel, startDirectMessage, createTeam } = useChatChannels();
     const { user, organizationId } = useAuth();
-    const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
     const [activeDisplayName, setActiveDisplayName] = useState<string | undefined>(undefined);
     const allChannels = useMemo(() => [
         ...(channels || []),
@@ -99,25 +99,7 @@ function ChatModule() {
     const activeChannel = useMemo(() => allChannels.find(c => c.id === activeChannelId) || null, [allChannels, activeChannelId]);
     const { results: memberResults } = useOrgMemberSearch(memberSearch, { alwaysList: true });
 
-    // Total agregado de não lidas
-    const unreadTotal = useMemo(() => Object.values(unreadCounts).reduce((sum, n) => sum + (n || 0), 0), [unreadCounts]);
-
-    // Marcar canal como lido (estado + persistência via RPC)
-    const markChannelRead = (channelId: string) => {
-        setUnreadCounts(prev => {
-            if (!(channelId in prev)) return prev;
-            const next = { ...prev };
-            next[channelId] = 0;
-            try {
-                if (typeof window !== 'undefined' && user?.id) {
-                    const cacheKey = `chat_unread_counts:${user.id}`;
-                    localStorage.setItem(cacheKey, JSON.stringify(next));
-                }
-            } catch {}
-            return next;
-        });
-        (async () => { try { await svcMarkChannelRead(channelId); } catch {} })();
-    };
+    const { unreadCounts, unreadTotal, markRead } = useChatUnread(activeChannelId);
 
     // Atualiza o nome exibido do canal ativo (DM mostra outro membro)
     useEffect(() => {
@@ -152,130 +134,6 @@ function ChatModule() {
         })();
         return () => { mounted = false; };
     }, [activeChannel, user, organizationId]);
-
-    // Carregar contadores persistidos no Supabase para o usuário
-    useEffect(() => {
-        let mounted = true;
-        (async () => {
-            if (!user?.id) return;
-            try {
-                let hasCache = false;
-                try {
-                    if (typeof window !== 'undefined') {
-                        const cacheKey = `chat_unread_counts:${user.id}`;
-                        const cached = localStorage.getItem(cacheKey);
-                        if (cached) {
-                            const parsed = JSON.parse(cached || '{}');
-                            if (parsed && typeof parsed === 'object') {
-                                setUnreadCounts(parsed as Record<string, number>);
-                                hasCache = Object.keys(parsed).length > 0;
-                            }
-                        }
-                    }
-                } catch {}
-                if (!hasCache) {
-                    const { data, error } = await svcFetchUnreadCounts(user.id);
-                    if (!error && data) {
-                        const map: Record<string, number> = {};
-                        (data as any[]).forEach((row) => { map[row.channel_id] = row.unread_count || 0; });
-                        if (mounted) setUnreadCounts(map);
-                        try {
-                            if (typeof window !== 'undefined') {
-                                const cacheKey = `chat_unread_counts:${user.id}`;
-                                localStorage.setItem(cacheKey, JSON.stringify(map));
-                            }
-                        } catch {}
-                    }
-                }
-            } catch {}
-        })();
-        return () => { mounted = false; };
-    }, [user?.id]);
-
-    // Ouvir novas mensagens e acumular não lidas em canais não ativos + persistência
-    useEffect(() => {
-        const handler = (ev: any) => {
-            const detail = ev?.detail || {};
-            const chId: string | undefined = detail?.channelId;
-            const msg = detail?.message || {};
-            if (!chId) return;
-            if (chId === activeChannelId) return; // canal ativo não acumula aqui
-            if (!!user && msg?.sender_id === user.id) return; // ignora próprias
-            let nextCount = 0;
-            setUnreadCounts(prev => {
-                nextCount = (prev[chId] || 0) + 1;
-                const next = { ...prev, [chId]: nextCount };
-                try {
-                    if (typeof window !== 'undefined' && user?.id) {
-                        const cacheKey = `chat_unread_counts:${user.id}`;
-                        localStorage.setItem(cacheKey, JSON.stringify(next));
-                    }
-                } catch {}
-                return next;
-            });
-            if (user?.id) {
-                try { svcUpsertUnreadCount(chId, user.id, nextCount); } catch {}
-            }
-        };
-        window.addEventListener('chat:message-received', handler as any);
-        return () => { window.removeEventListener('chat:message-received', handler as any); };
-    }, [activeChannelId, user]);
-
-    // Ouvir mudanças de não lidas do canal ativo (emitidas pelo ChatTab) e persistir
-    useEffect(() => {
-        const handler = (ev: any) => {
-            const { channelId, count } = ev?.detail || {};
-            if (!channelId || typeof count !== 'number') return;
-            setUnreadCounts(prev => {
-                const next = { ...prev, [channelId]: count };
-                try {
-                    if (typeof window !== 'undefined' && user?.id) {
-                        const cacheKey = `chat_unread_counts:${user.id}`;
-                        localStorage.setItem(cacheKey, JSON.stringify(next));
-                    }
-                } catch {}
-                return next;
-            });
-            // Persistência: quando zerar, chamar RPC para marcar lido (atualiza last_read_at)
-            if (count === 0) {
-                (async () => { try { await svcMarkChannelRead(channelId); } catch {} })();
-            }
-        };
-        window.addEventListener('chat:active-unread-changed', handler as any);
-        return () => { window.removeEventListener('chat:active-unread-changed', handler as any); };
-    }, [user?.id]);
-
-    // Assinar atualizações em tempo real de chat_unread_counts para este usuário
-    useEffect(() => {
-        if (!user?.id) return;
-        const channel = supabase
-            .channel(`realtime-unread-${user.id}`)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_unread_counts', filter: `user_id=eq.${user.id}` }, (payload: any) => {
-                const row = (payload?.new || payload?.old || {}) as any;
-                const chId = row?.channel_id;
-                // Preferir valor de new.unread_count quando disponível
-                const count = (payload?.new?.unread_count ?? row?.unread_count ?? 0) as number;
-                if (!chId) return;
-                setUnreadCounts(prev => {
-                    const next = { ...prev, [chId]: count };
-                    try {
-                        if (typeof window !== 'undefined' && user?.id) {
-                            const cacheKey = `chat_unread_counts:${user.id}`;
-                            localStorage.setItem(cacheKey, JSON.stringify(next));
-                        }
-                    } catch {}
-                    return next;
-                });
-            })
-            .subscribe();
-        return () => { supabase.removeChannel(channel); };
-    }, [user?.id]);
-
-    // Emitir total agregado para a barra lateral
-    useEffect(() => {
-        const total = Object.values(unreadCounts).reduce((sum, n) => sum + (n || 0), 0);
-        window.dispatchEvent(new CustomEvent('chat:unread-total', { detail: { total, source: 'equipe' } }));
-    }, [unreadCounts]);
 
     const filtered = (list: any[]) => list.filter(c => (c.name || 'Direta').toLowerCase().includes(searchTerm.toLowerCase()));
     const starred = filtered((channels || []).filter((c: any) => c.isStarred));
@@ -324,7 +182,7 @@ function ChatModule() {
                     // Definir nome imediatamente sem fallback "Mensagem Direta" para evitar flicker
                     const immediateName = isGroup ? (ch.name || 'Canal da Equipe') : (otherName || ch.name || '');
                     setActiveDisplayName(immediateName);
-                    markChannelRead(ch.id);
+                    markRead(ch.id);
                 }}
             >
                 <ChatAvatar isGroup={isGroup} color={color} />
