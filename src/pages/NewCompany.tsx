@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { parsePfxCertificate, readFileAsBase64 } from "@/utils/certificate";
+import { isValidCNPJ, normalizeSituacao, getCnpjBlockInfo } from "@/utils/cnpj";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { StepIndicator } from "@/components/products/create/StepIndicator";
 import { NavigationButtons } from "@/components/products/create/NavigationButtons";
@@ -132,55 +133,6 @@ export function NovaEmpresa() {
 
   const updateEmpresaData = (data: Partial<EmpresaData>) => {
     setEmpresaData(prev => ({ ...prev, ...data }));
-  };
-
-  // Validação de dígito verificador de CNPJ
-  const isValidCNPJ = (cnpj: string) => {
-    const digits = (cnpj || "").replace(/\D/g, "");
-    if (digits.length !== 14) return false;
-    if (/^(\d)\1{13}$/.test(digits)) return false; // rejeita todos os dígitos iguais
-  
-    const calcDV = (length: number) => {
-      const weights = length === 12
-        ? [5,4,3,2,9,8,7,6,5,4,3,2]
-        : [6,5,4,3,2,9,8,7,6,5,4,3,2];
-      let sum = 0;
-      for (let i = 0; i < weights.length; i++) {
-        sum += parseInt(digits[i], 10) * weights[i];
-      }
-      const remainder = sum % 11;
-      return remainder < 2 ? 0 : 11 - remainder;
-    };
-  
-    const dv1 = calcDV(12);
-    if (dv1 !== parseInt(digits[12], 10)) return false;
-    const dv2 = calcDV(13);
-    if (dv2 !== parseInt(digits[13], 10)) return false;
-    return true;
-  };
-
-  // Normaliza texto da situação
-  const normalizeSituacao = (s: string) => {
-    const noAccents = String(s || "").normalize('NFD').replace(/\p{Diacritic}/gu, '');
-    return noAccents.trim().toUpperCase();
-  };
-
-  const getCnpjBlockInfo = (situacao: string) => {
-    const norm = normalizeSituacao(situacao);
-    const rules: { re: RegExp; msg: string }[] = [
-      { re: /BAIXAD[OA]/, msg: "Empresa foi encerrada. Um CNPJ baixado não pode ser reativado." },
-      { re: /\bNULA\b/, msg: "CNPJ inválido ou anulado pela Receita Federal, geralmente por fraude ou duplicidade." },
-      { re: /SUSPENS[OA]/, msg: "Empresa com pendências cadastrais/fiscais. É necessário regularizar para voltar a operar." },
-      { re: /INAPT[OA]/, msg: "CNPJ declarado inapto por omissão prolongada de declarações ou irregularidades." },
-      // Bloqueio total conforme solicitado
-      { re: /ATIVA.*NAO.*REGULAR/, msg: "CNPJ ATIVA NÃO REGULAR. Bloqueio total até regularização cadastral." },
-      { re: /PROCESSO.*BAIXA/, msg: "CNPJ EM PROCESSO DE BAIXA. Bloqueio total para emissão de NF-e." },
-      { re: /SITUACAO.*ESPECIAL/, msg: "CNPJ em SITUAÇÃO ESPECIAL. Bloqueio total até normalização." },
-    ];
-    for (const r of rules) {
-      if (r.re.test(norm)) return r.msg;
-    }
-    return null;
   };
 
   // Busca automática de dados pelo CNPJ via Edge Function
