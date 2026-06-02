@@ -29,7 +29,7 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 
 // --- INTERFACE DE TAREFA ---
 // Usar o tipo compartilhado do CreateTaskModal para garantir compatibilidade
-import type { Task, TaskPriority, TaskType, TaskStatus } from "@/components/team/CreateTaskModal";
+import type { Task, TaskPriority, TaskType, TaskStatus } from "@/types/team";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 

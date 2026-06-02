@@ -12,25 +12,7 @@ import { Calendar } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
-export type TaskPriority = "high" | "medium" | "low";
-export type TaskType = "story" | "bug" | "task" | "epic";
-export type TaskStatus = "todo" | "doing" | "done";
-
-export interface Task {
-  id: number;
-  title: string;
-  assignee: string;
-  assignees?: string[];
-  priority: TaskPriority;
-  dueDate: string; // YYYY-MM-DD
-  startDate?: string; // YYYY-MM-DD
-  type: TaskType;
-  storyPoints: number;
-  status: TaskStatus;
-  timeTracked: number; // minutes
-  labels: string[];
-  dependencies: number[];
-}
+export type { Task, TaskPriority, TaskType, TaskStatus } from "@/types/team";
 
 interface CreateTaskModalProps {
   onCreateTask: (task: Task & { visibility?: "private" | "team" | "members"; visibleMemberIds?: string[]; assignedToId?: string | null }) => void;
