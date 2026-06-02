@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import type { ListingItem } from "@/types/listings";
 
 export function useListingSelection() {
@@ -63,10 +63,10 @@ export function useListingSelection() {
     });
   }
 
-  function resetSelection() {
+  const resetSelection = useCallback(() => {
     setSelectedItems(new Set());
     setExpandedVariations(new Set());
-  }
+  }, []);
 
   return {
     selectedItems,

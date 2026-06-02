@@ -152,7 +152,7 @@ export default function Anuncios() {
     setSearchTerm("");
     setSelectedIntegrationIds(new Set());
     resetSelection();
-  }, [marketplaceSlug]);
+  }, [marketplaceSlug, resetSelection]);
 
   useEffect(() => {
     if (filterDrawerOpen) {

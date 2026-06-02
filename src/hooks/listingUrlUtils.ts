@@ -1,6 +1,24 @@
 import type { MarketplaceNavItem } from "@/types/listings";
 import { slugFromMarketplacePath, marketplacePathFromSlug } from "@/utils/listingUtils";
 
+// ─── Query Keys ────────────────────────────────────────────────────────────
+// Defined here (not in the useListings barrel) so that useListingItems.ts
+// can import them directly without creating a barrel self-cycle.
+
+export const listingKeys = {
+  marketplaces: (orgId: string) => ["listings", "marketplaces", orgId] as const,
+  stores: (orgId: string, marketplace: string) =>
+    ["listings", "stores", orgId, marketplace] as const,
+  items: (orgId: string, marketplaceSlug: string) =>
+    ["listings", "items", orgId, marketplaceSlug] as const,
+  drafts: (orgId: string) => ["listings", "drafts", orgId] as const,
+};
+
+export interface ListingsItemsQueryData {
+  rows: any[];
+  isCanonical: boolean;
+}
+
 const LISTINGS_PATH_RESERVED = new Set([
   "todos",
   "ativos",

@@ -5,8 +5,8 @@ import { createListingsChannel, removeListingsChannel } from "@/services/listing
 import { fetchListingLinks } from "@/services/listingLinks.service";
 import { parseListingRow } from "@/utils/listingUtils";
 import type { ListingItem, ShippingCaps } from "@/types/listings";
-import { listingKeys, type ListingsItemsQueryData } from "./useListings";
-import { marketplaceSlugForPath } from "./listingUrlUtils";
+import { marketplaceSlugForPath, listingKeys, type ListingsItemsQueryData } from "./listingUrlUtils";
+export { listingKeys, type ListingsItemsQueryData } from "./listingUrlUtils";
 
 const EMPTY_PARSE_CTX = {
   metricsByItemId: {} as Record<string, { quality_level?: string | null; performance_data?: any }>,

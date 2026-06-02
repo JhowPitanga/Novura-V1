@@ -13,24 +13,13 @@ import {
   updateItemStatus,
   updateShopeeStock,
 } from "@/services/listings.service";
-
-// ─── Query Keys ────────────────────────────────────────────────────────────
-
-export const listingKeys = {
-  marketplaces: (orgId: string) => ["listings", "marketplaces", orgId] as const,
-  stores: (orgId: string, marketplace: string) =>
-    ["listings", "stores", orgId, marketplace] as const,
-  items: (orgId: string, marketplaceSlug: string) =>
-    ["listings", "items", orgId, marketplaceSlug] as const,
-  drafts: (orgId: string) => ["listings", "drafts", orgId] as const,
-};
-
-export interface ListingsItemsQueryData {
-  rows: any[];
-  isCanonical: boolean;
-}
+import { listingKeys } from "./listingUrlUtils";
 
 // ─── Re-exports from extracted sub-modules ─────────────────────────────────
+
+// listingKeys and ListingsItemsQueryData are defined in listingUrlUtils to
+// avoid a barrel self-cycle (useListings → useListingItems → useListings).
+export { listingKeys, type ListingsItemsQueryData } from "./listingUrlUtils";
 
 export {
   filterListingsByScope,

@@ -1,3 +1,6 @@
+// SIZE EXCEPTION (§1 ENGINEERING_STANDARDS.md): 8 private predicates + 7
+// public filter/sort/count functions cannot be split without losing cohesion.
+// LOC slightly exceeds ~150 target; documented here as approved exception.
 import type {
   ListingAppliedFilters,
   ListingItem,
