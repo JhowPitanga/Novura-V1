@@ -8,7 +8,14 @@ import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { CleanNavigation } from "@/components/CleanNavigation";
-import { AddTaxModal, TaxRecord, CompanyOption } from "@/components/settings/taxes/AddTaxModal";
+import { AddTaxModal } from "@/components/settings/taxes/AddTaxModal";
+import type { TaxRecord, CompanyOption } from "@/components/settings/taxes/tax-payload";
+import {
+  clearDefaultForCompany,
+  deleteTaxConfig,
+  fetchCompanyTaxConfigs,
+  setDefaultTax,
+} from "@/services/tax.service";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import {
@@ -100,42 +107,12 @@ export function FiscalSettings() {
   const loadTaxes = async () => {
     try {
       if (!organizationId) return;
-      const { data, error } = await (supabase as any)
-        .from('company_tax_configs')
-        .select('id, company_id, observacao, is_default, payload, created_at')
-        .eq('organizations_id', organizationId)
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      const rows: any[] = Array.isArray(data) ? data as any[] : [];
-
-      const companyIds = Array.from(new Set(rows.map((r) => String(r.company_id)).filter(Boolean)));
-      let companyMap = new Map<string, { razao_social: string; cnpj: string }>();
-      if (companyIds.length > 0) {
-        const { data: compRows } = await (supabase as any)
-          .from('companies')
-          .select('id, razao_social, cnpj')
-          .in('id', companyIds);
-        const arr: Array<{ id: string; razao_social: string; cnpj: string }> = Array.isArray(compRows) ? compRows : [];
-        companyMap = new Map(arr.map((c) => [String(c.id), { razao_social: c.razao_social, cnpj: c.cnpj }]));
-      }
-
-      const mapped: TaxRecord[] = rows.map(r => {
-        const cm = companyMap.get(String(r.company_id));
-        return {
-          id: String(r.id),
-          companyId: String(r.company_id),
-          companyName: cm?.razao_social || "—",
-          cnpj: cm?.cnpj || "",
-          isDefault: !!r.is_default,
-          observacao: r.observacao || "",
-          payload: r.payload,
-          createdAt: r.created_at,
-        };
-      });
+      const mapped = await fetchCompanyTaxConfigs(organizationId);
       setTaxes(mapped);
-    } catch (e: any) {
-      console.error('Erro ao carregar impostos:', e);
-      toast.error(e?.message || 'Erro ao carregar impostos');
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Erro ao carregar impostos";
+      console.error("Erro ao carregar impostos:", e);
+      toast.error(message);
     }
   };
 
@@ -155,18 +132,14 @@ export function FiscalSettings() {
   const handleDefinirPadraoTax = (tax: TaxRecord) => {
     const run = async () => {
       try {
-        await (supabase as any)
-          .from('company_tax_configs')
-          .update({ is_default: false })
-          .eq('company_id', tax.companyId);
-        await (supabase as any)
-          .from('company_tax_configs')
-          .update({ is_default: true })
-          .eq('id', tax.id);
+        if (!tax.companyId) return;
+        await clearDefaultForCompany(tax.companyId);
+        await setDefaultTax(tax.id);
         toast.success("Imposto definido como padrão");
         await loadTaxes();
-      } catch (e: any) {
-        toast.error(e?.message || "Falha ao definir padrão");
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : "Falha ao definir padrão";
+        toast.error(message);
       }
     };
     void run();
@@ -175,14 +148,12 @@ export function FiscalSettings() {
   const handleExcluirTax = (tax: TaxRecord) => {
     const run = async () => {
       try {
-        await (supabase as any)
-          .from('company_tax_configs')
-          .delete()
-          .eq('id', tax.id);
+        await deleteTaxConfig(tax.id);
         toast.success("Imposto excluído");
         await loadTaxes();
-      } catch (e: any) {
-        toast.error(e?.message || "Falha ao excluir imposto");
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : "Falha ao excluir imposto";
+        toast.error(message);
       }
     };
     void run();
