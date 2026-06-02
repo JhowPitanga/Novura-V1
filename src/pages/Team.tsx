@@ -31,6 +31,19 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 // Usar o tipo compartilhado do CreateTaskModal para garantir compatibilidade
 import type { Task, TaskPriority, TaskType, TaskStatus } from "@/types/team";
 import { mapRowToTask, mergeLabels, buildMemberMap, extractTaskExtras } from "@/utils/teamTasks";
+import {
+    fetchTasks as svcFetchTasks,
+    createTask as svcCreateTask,
+    updateTask as svcUpdateTask,
+    assignTask as svcAssignTask,
+    toggleCoAssigneeTask as svcToggleCoAssignee,
+    deleteTask as svcDeleteTask,
+    fetchOrgMembers as svcFetchOrgMembers,
+    fetchUnreadCounts as svcFetchUnreadCounts,
+    upsertUnreadCount as svcUpsertUnreadCount,
+    markChannelRead as svcMarkChannelRead,
+    fetchDmUserProfile as svcFetchDmUserProfile,
+} from "@/services/team.service";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -102,11 +115,7 @@ function ChatModule() {
             } catch {}
             return next;
         });
-        (async () => {
-            try {
-                await (supabase as any).rpc('mark_channel_read', { p_channel_id: channelId });
-            } catch {}
-        })();
+        (async () => { try { await svcMarkChannelRead(channelId); } catch {} })();
     };
 
     // Atualiza o nome exibido do canal ativo (DM mostra outro membro)
@@ -127,17 +136,12 @@ function ChatModule() {
                 let nome: string | null = null;
                 let email: string | null = null;
                 try {
-                    const { data: profile } = await supabase
-                        .from('user_profiles')
-                        .select('id,nome,email')
-                        .eq('id', otherId)
-                        .single();
+                    const { data: profile } = await svcFetchDmUserProfile(otherId);
                     if (profile) { nome = (profile as any).nome; email = (profile as any).email; }
                 } catch {}
                 if (!nome && !email && organizationId) {
                     try {
-                    const { data: mems } = await (supabase as any)
-                            .rpc('search_org_members', { p_org_id: organizationId, p_term: null, p_limit: 200 });
+                        const { data: mems } = await svcFetchOrgMembers(organizationId);
                         const found = (mems as any[])?.find((u) => u.id === otherId);
                         nome = (found as any)?.nome ?? null; email = (found as any)?.email ?? null;
                     } catch {}
@@ -169,10 +173,7 @@ function ChatModule() {
                     }
                 } catch {}
                 if (!hasCache) {
-                    const { data, error } = await (supabase as any)
-                        .from('chat_unread_counts')
-                        .select('channel_id, unread_count')
-                        .eq('user_id', user.id);
+                    const { data, error } = await svcFetchUnreadCounts(user.id);
                     if (!error && data) {
                         const map: Record<string, number> = {};
                         (data as any[]).forEach((row) => { map[row.channel_id] = row.unread_count || 0; });
@@ -212,11 +213,7 @@ function ChatModule() {
                 return next;
             });
             if (user?.id) {
-                try {
-                    (supabase as any)
-                        .from('chat_unread_counts')
-                        .upsert({ channel_id: chId, user_id: user.id, unread_count: nextCount }, { onConflict: 'channel_id,user_id' });
-                } catch {}
+                try { svcUpsertUnreadCount(chId, user.id, nextCount); } catch {}
             }
         };
         window.addEventListener('chat:message-received', handler as any);
@@ -240,7 +237,7 @@ function ChatModule() {
             });
             // Persistência: quando zerar, chamar RPC para marcar lido (atualiza last_read_at)
             if (count === 0) {
-                (async () => { try { await (supabase as any).rpc('mark_channel_read', { p_channel_id: channelId }); } catch {} })();
+                (async () => { try { await svcMarkChannelRead(channelId); } catch {} })();
             }
         };
         window.addEventListener('chat:active-unread-changed', handler as any);
@@ -302,16 +299,11 @@ function ChatModule() {
                 try {
                     let nome: string | null = null;
                     let email: string | null = null;
-                    const { data: profile, error: pErr } = await supabase
-                        .from('user_profiles')
-                        .select('id,nome,email')
-                        .eq('id', otherId)
-                        .single();
+                    const { data: profile, error: pErr } = await svcFetchDmUserProfile(otherId);
                     if (!pErr && profile) { nome = (profile as any).nome; email = (profile as any).email; }
                     if (!nome && !email && organizationId) {
                         try {
-                            const { data: mems } = await supabase
-                                .rpc('search_org_members', { p_org_id: organizationId, p_term: null, p_limit: 200 });
+                            const { data: mems } = await svcFetchOrgMembers(organizationId);
                             const found = (mems as any[])?.find((u) => u.id === otherId);
                             nome = (found as any)?.nome ?? null; email = (found as any)?.email ?? null;
                         } catch {}
@@ -560,11 +552,7 @@ function TaskManagement() {
     async function loadTasks() {
         if (!organizationId) return;
         setIsLoading(true);
-        const { data, error } = await supabase
-            .from('tasks')
-            .select('id,title,priority,type,status,due_date,time_tracked,labels,dependencies,assigned_to,created_by,visible_to_members')
-            .eq('organizations_id', organizationId)
-            .order('created_at', { ascending: false });
+        const { data, error } = await svcFetchTasks(organizationId);
         try {
             if (error) {
                 console.error('Erro ao carregar tasks:', error.message);
@@ -587,8 +575,7 @@ function TaskManagement() {
         const loadMembers = async () => {
             if (!organizationId) return;
             setIsLoading(true);
-            const { data, error } = await supabase
-                .rpc('search_org_members', { p_org_id: organizationId, p_term: null, p_limit: 200 });
+            const { data, error } = await svcFetchOrgMembers(organizationId);
             try {
                 if (error) {
                     console.error('Erro ao carregar membros:', error.message);
@@ -608,25 +595,19 @@ function TaskManagement() {
 
     const handleCreateTask = async (newTask: Task & { visibility?: 'private'|'team'|'members', visibleMemberIds?: string[], assignedToId?: string | null }) => {
         if (!organizationId || !user?.id) return;
-        const { data, error } = await supabase
-            .from('tasks')
-            .insert({
-                organizations_id: organizationId,
-                created_by: user.id,
-                assigned_to: (newTask as any).assignedToId || null,
-                title: newTask.title,
-                description: null,
-                priority: newTask.priority,
-                type: newTask.type,
-                status: newTask.status ?? 'todo',
-                due_date: newTask.dueDate ? newTask.dueDate : null,
-                time_tracked: newTask.timeTracked ?? 0,
-                labels: newTask.labels ?? [],
-                dependencies: newTask.dependencies ?? [],
-                visibility: newTask.visibility ?? 'team',
-                visible_to_members: newTask.visibleMemberIds ?? [],
-            })
-            .select();
+        const { data, error } = await svcCreateTask(organizationId, user.id, {
+            assignedToId: (newTask as any).assignedToId || null,
+            title: newTask.title,
+            priority: newTask.priority,
+            type: newTask.type,
+            status: newTask.status ?? 'todo',
+            dueDate: newTask.dueDate,
+            timeTracked: newTask.timeTracked,
+            labels: newTask.labels,
+            dependencies: newTask.dependencies,
+            visibility: newTask.visibility,
+            visibleMemberIds: newTask.visibleMemberIds,
+        });
         if (error) {
             console.error('Erro ao criar task:', error.message);
             return;
@@ -641,10 +622,7 @@ function TaskManagement() {
         const current = Array.isArray(extras.visible_to_members) ? extras.visible_to_members : [];
         const exists = current.includes(member.id);
         const next = exists ? current.filter(m => m !== member.id) : [...current, member.id];
-        const { error } = await supabase
-            .from('tasks')
-            .update({ visible_to_members: next })
-            .eq('id', taskId);
+        const { error } = await svcToggleCoAssignee(taskId, next);
         if (error) {
             console.error('Erro ao alternar co-responsável:', error.message);
             return;
@@ -673,11 +651,7 @@ function TaskManagement() {
             }
             if (Object.keys(payload).length === 0) return; // nada para persistir
 
-            const { error } = await supabase
-                .from('tasks')
-                .update(payload)
-                .eq('id', taskId)
-                .eq('organizations_id', organizationId);
+            const { error } = await svcUpdateTask(taskId, organizationId, payload);
             if (error) throw error;
         } catch (e: any) {
             console.error('Erro ao atualizar task:', e.message || e);
@@ -691,11 +665,7 @@ function TaskManagement() {
         setTaskExtras(prev => ({ ...prev, [taskId]: { ...(prev[taskId] || {}), assigned_to: assignee.id } }));
         try {
             if (!organizationId) return;
-            const { error } = await supabase
-                .from('tasks')
-                .update({ assigned_to: assignee.id })
-                .eq('id', taskId)
-                .eq('organizations_id', organizationId);
+            const { error } = await svcAssignTask(taskId, organizationId, assignee.id);
             if (error) throw error;
         } catch (e: any) {
             console.error('Erro ao atribuir responsável:', e.message || e);
@@ -706,11 +676,7 @@ function TaskManagement() {
     const handleDeleteTask = async (taskId: number) => {
         try {
             if (!organizationId) return;
-            const { error } = await supabase
-                .from('tasks')
-                .delete()
-                .eq('id', taskId)
-                .eq('organizations_id', organizationId);
+            const { error } = await svcDeleteTask(taskId, organizationId);
             if (error) throw error;
             setTasks(prev => prev.filter(t => t.id !== taskId));
             setTaskExtras(prev => { const copy = { ...prev }; delete copy[taskId]; return copy; });
