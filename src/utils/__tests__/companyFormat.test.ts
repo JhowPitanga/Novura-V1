@@ -11,52 +11,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-
-// ─────────────────────────────────────────────────
-// Inline copies from NewCompany.tsx — replaced with
-// imports after commit 4 (refactor(company): extract format utils)
-// ─────────────────────────────────────────────────
-
-const formatDateBR = (d: Date): string => {
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yyyy = d.getFullYear();
-  return `${dd}/${mm}/${yyyy}`;
-};
-
-const ddmmyyyyToISO = (s?: string | null): string | null => {
-  const v = String(s || '').trim();
-  const m = v.match(/^([0-3]\d)\/(0\d|1[0-2])\/(\d{4})$/);
-  if (!m) return null;
-  const dd = m[1],
-    mm = m[2],
-    yyyy = m[3];
-  return `${yyyy}-${mm}-${dd}`;
-};
-
-const parseToBR = (iso: string): string => {
-  const ymd = String(iso || '').slice(0, 10);
-  const [y, m, d] = ymd.split('-');
-  return y && m && d ? `${d}/${m}/${y}` : '';
-};
-
-const normalizeTipoEmpresa = (v: string): 'Matriz' | 'Filial' => {
-  const s = String(v || '').trim().toLowerCase();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (s === 'matriz' || s === 'matríZ') return 'Matriz';
-  if (s === 'filial') return 'Filial';
-  return 'Matriz';
-};
-
-const normalizeTributacao = (v: string): string => {
-  const s = String(v || '').trim().toLowerCase();
-  if (s === 'mei') return 'MEI';
-  if (s === 'simples nacional') return 'Simples Nacional';
-  if (s.includes('excesso') || s.includes('sublimite'))
-    return 'Simples Nacional - Excesso de sublimite de receita bruta';
-  if (s === 'regime normal' || s === 'normal') return 'Regime Normal';
-  return 'Simples Nacional';
-};
+import {
+  formatDateBR,
+  ddmmyyyyToISO,
+  parseToBR,
+  normalizeTipoEmpresa,
+  normalizeTributacao,
+} from '@/utils/companyFormat';
 
 // ─────────────────────────────────────────────────
 
