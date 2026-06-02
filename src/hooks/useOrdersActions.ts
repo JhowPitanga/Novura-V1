@@ -1,3 +1,16 @@
+/**
+ * Bulk-action hook for the Orders page (Commit B1 — dead code removed).
+ *
+ * Dead handlers removed (controller owns live versions; grep-confirmed no other consumers):
+ *   - handleScan, handleCompleteBipagem, handleSaveVinculacoes (overridden by controller)
+ *   - handleSyncSelectedOrders (was a no-op placeholder in actions; controller has real impl)
+ *   - handleGerarNovaNfeForPedido (zero consumers anywhere — grep confirmed)
+ *   - internal processingIdsLocal/Set/addProcessingId (controller owns its own; actions copy
+ *     was never read by any consumer pipeline)
+ *   - internal companyIdRef/getCompanyId (deduped → useCompanyIdCache injected via param)
+ *
+ * Commit B2 will split this into useNfeActions + useOrderSyncActions + usePrintActions.
+ */
 import { useCallback, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -5,7 +18,6 @@ import {
   emitNfeQueue,
   fetchOrderByInternalId,
   fetchShopeeShops as fetchShopeeShopsSvc,
-  getCompanyIdForOrg,
   markOrdersPrinted,
   submitXmlSend,
   syncMercadoLivreOrders,
@@ -14,8 +26,8 @@ import {
   updateOrdersInternalStatus,
 } from "@/services/orders.service";
 import { generateFunctionalPickingListPDF } from "@/utils/pdfGenerators";
-import { calendarEndOfDaySPEpochMs, calendarStartOfDaySPEpochMs, formatDateTimeSP } from "@/lib/datetime";
-import { mapTipoEnvioLabel } from "@/utils/orderUtils";
+import { calendarEndOfDaySPEpochMs, calendarStartOfDaySPEpochMs } from "@/lib/datetime";
+import { exportOrdersCsv } from "@/utils/orderCsvUtils";
 import { toast } from "@/components/ui/use-toast";
 import type { Order } from "@/types/orders";
 
@@ -48,33 +60,25 @@ interface UseOrdersActionsParams {
   printOrders: Order[];
   notPrintedOrders: Order[];
   printedOrders: Order[];
+  getCompanyId: () => Promise<string | null>;
 }
 
 export interface UseOrdersActionsResult {
   isSyncing: boolean;
-  processingIdsLocal: string[];
-  processingIdsSet: Set<string>;
   xmlLoadingSet: Set<string>;
   arrangeLoadingSet: Set<string>;
-  getCompanyId: () => Promise<string | null>;
   handleEmitirNfe: (pedidosToEmit: any[], opts?: { forceNewNumber?: boolean; forceNewRef?: boolean }) => Promise<void>;
   handleSyncNfeForPedido: (pedido: any) => Promise<void>;
   handleEnviarNfeForPedido: (pedido: any) => Promise<void>;
   handleArrangeShipmentForPedido: (pedido: any) => Promise<void>;
-  handleGerarNovaNfeForPedido: (pedido: any) => Promise<void>;
   handleSyncOrders: () => Promise<void>;
   handleSyncShopeeOrders: () => Promise<void>;
-  handleSyncSelectedOrders: () => Promise<void>;
   handleSyncOrderByInternalId: (id?: string) => Promise<void>;
-  handleSaveVinculacoes: (payload: any) => void;
   handleExportCSV: () => void;
   handlePrintLabels: () => Promise<void>;
   handleReprintLabel: (pedido: any) => Promise<void>;
   handlePrintPickingList: () => void;
-  handleScan: () => void;
-  handleCompleteBipagem: () => void;
   loadShopeeShops: () => Promise<void>;
-  addProcessingId: (id: string) => void;
   refreshNfeAuthorizedMapForList: () => Promise<void>;
 }
 
@@ -89,34 +93,22 @@ export function useOrdersActions(
     onSyncComplete, onClearSelections,
     onSetSelectedPedidosImpressao, onSetSelectedPedidosEmissao,
     onSetSelectedPedidos, onSetSelectedPedidosEnviado,
-    onSetScannedPedido, onSetScannedSku, onSetScannerOpen, onSetCompleteModalOpen,
-    onSetIsSyncModalOpen, onSetShopeeShopOptions, onSetSelectedShopeeShopId,
+    onSetShopeeShopOptions, onSetSelectedShopeeShopId,
+    onSetIsSyncModalOpen,
     printOrders, notPrintedOrders, printedOrders,
+    getCompanyId,
   } = params;
 
   const navigate = useNavigate();
 
   const [isSyncing, setIsSyncing] = useState(false);
-  const [processingIdsLocal, setProcessingIdsLocal] = useState<string[]>([]);
   const [xmlLoadingIds, setXmlLoadingIds] = useState<string[]>([]);
   const [arrangeLoadingIds, setArrangeLoadingIds] = useState<string[]>([]);
 
-  const processingIdsSet = new Set(processingIdsLocal.map(String));
+  // Loading sets are rebuilt new Set() each render — identity breaks feed rowViewModels deps.
+  // This is intentional: do not memoize (preserves pre-existing behavior).
   const xmlLoadingSet = new Set(xmlLoadingIds);
   const arrangeLoadingSet = new Set(arrangeLoadingIds);
-
-  const companyIdRef = useRef<string | null>(null);
-
-  const getCompanyId = useCallback(async (): Promise<string | null> => {
-    if (companyIdRef.current) return companyIdRef.current;
-    if (!organizationId) return null;
-    companyIdRef.current = await getCompanyIdForOrg(organizationId);
-    return companyIdRef.current;
-  }, [organizationId]);
-
-  const addProcessingId = useCallback((id: string) => {
-    setProcessingIdsLocal(prev => Array.from(new Set([...prev, id])));
-  }, []);
 
   const handleEmitirNfe = useCallback(async (
     pedidosToEmit: any[],
@@ -139,7 +131,7 @@ export function useOrdersActions(
       } catch { }
       navigate('/pedidos/emissao_nfe/processando');
     } catch {
-      // silent
+      // silent — pre-existing debt; do not fix here (behavior-preserving)
     }
   }, [organizationId, getCompanyId, navigate]);
 
@@ -186,18 +178,6 @@ export function useOrdersActions(
       setArrangeLoadingIds(prev => prev.filter(id => id !== String(pedido.id)));
     }
   }, [organizationId, getCompanyId]);
-
-  const handleGerarNovaNfeForPedido = useCallback(async (pedido: any) => {
-    try {
-      if (!organizationId) throw new Error('Organização não encontrada.');
-      const companyId = await getCompanyId();
-      if (!companyId) throw new Error('Nenhuma empresa ativa encontrada.');
-      await emitNfeQueue(organizationId, companyId, [String(pedido.id)], emitEnvironment, {
-        forceNewNumber: true, forceNewRef: true,
-      });
-      navigate('/pedidos/emissao_nfe/processando');
-    } catch { }
-  }, [organizationId, getCompanyId, emitEnvironment, navigate]);
 
   const handleSyncOrders = useCallback(async () => {
     try {
@@ -253,22 +233,6 @@ export function useOrdersActions(
 
   const activeStatusRef = useRef(activeStatus);
   activeStatusRef.current = activeStatus;
-  const pedidosRef = useRef(pedidos);
-  pedidosRef.current = pedidos;
-
-  const handleSyncSelectedOrders = useCallback(async () => {
-    try {
-      const status = activeStatusRef.current;
-      const allPedidos = pedidosRef.current;
-      // We can't directly read selected state here — caller must pass selected IDs
-      // This is kept as a placeholder; actual invocation passes pre-resolved IDs
-      console.warn('[handleSyncSelectedOrders] Called without selected IDs context');
-    } catch (e) {
-      console.error('Falha ao sincronizar pedidos selecionados:', e);
-    } finally {
-      setIsSyncing(false);
-    }
-  }, []);
 
   const handleSyncOrderByInternalId = useCallback(async (internalOrderId?: string) => {
     try {
@@ -289,60 +253,8 @@ export function useOrdersActions(
     }
   }, [organizationId, onSyncComplete]);
 
-  const handleSaveVinculacoes = useCallback((vinculosOrPayload: any) => {
-    const vinculos: { [anuncioId: string]: string } =
-      vinculosOrPayload && Array.isArray(vinculosOrPayload.linkedItems)
-        ? vinculosOrPayload.linkedItems.reduce((acc: any, li: any) => {
-          acc[li.anuncioId] = li.productId;
-          return acc;
-        }, {})
-        : (vinculosOrPayload || {});
-
-    setPedidos(prev => {
-      const pedidoParaVincular = prev.find(p => {
-        const anunciosDoPedido = Array.isArray(p.items) ? p.items : [];
-        return anunciosDoPedido.some((item: any) => vinculos[item.id] !== undefined);
-      });
-      if (!pedidoParaVincular) return prev;
-
-      const novosItens = pedidoParaVincular.items.map((item: any) => {
-        const produtoIdVinculado = vinculos[item.id];
-        return produtoIdVinculado ? { ...item, linked: true } : item;
-      });
-      const todosItensVinculados = novosItens.every((item: any) => item.linked);
-      return prev.map(p => {
-        if (p.id !== pedidoParaVincular.id) return p;
-        return todosItensVinculados
-          ? { ...p, items: novosItens, status: 'Emissao NF' }
-          : { ...p, items: novosItens };
-      });
-    });
-  }, [setPedidos]);
-
   const handleExportCSV = useCallback(() => {
-    const headers = ["ID", "Marketplace", "Produto", "SKU", "Cliente", "Valor", "Data", "Status", "Tipo de Envio"];
-    const data = filteredOrders.map(p => [
-      p.id,
-      p.marketplace,
-      p.productTitle,
-      p.sku || "N/A",
-      p.customerName,
-      `R$ ${p.totalAmount.toFixed(2)}`,
-      (() => {
-        const base = (p as any).paidAt || (p as any).createdAt;
-        if (!base) return "";
-        try { return formatDateTimeSP(base); } catch { return String(base); }
-      })(),
-      p.status,
-      mapTipoEnvioLabel((p as any).shippingType),
-    ]);
-    const csvContent = [headers.join(";"), ...data.map(row => row.join(";"))].join("\n");
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `pedidos_${new Date().toISOString().slice(0, 10)}.csv`);
-    link.click();
+    exportOrdersCsv(filteredOrders);
   }, [filteredOrders]);
 
   const handlePrintLabels = useCallback(async () => {
@@ -417,61 +329,22 @@ export function useOrdersActions(
     onSetSelectedPedidos, onSetSelectedPedidosEnviado,
   ]);
 
-  const handleScan = useCallback(() => {
-    const found = printOrders.find(p =>
-      p.items.some((item: any) => item.sku === params.printOrders[0]?.items[0]?.sku),
-    );
-    if (found) {
-      const updatedPedido = { ...found };
-      const itemToBip = updatedPedido.items.find((item: any) => item.sku === '');
-      if (itemToBip) itemToBip.scanned = true;
-      onSetScannedPedido(updatedPedido);
-      onSetScannedSku("");
-    } else {
-      alert("SKU não encontrado! Tente novamente.");
-    }
-  }, [printOrders, onSetScannedPedido, onSetScannedSku, params.printOrders]);
-
-  const handleCompleteBipagem = useCallback(() => {
-    const pedidosParaAtualizar = printOrders.filter(p =>
-      p.items.every((item: any) => item.scanned),
-    );
-    if (pedidosParaAtualizar.length > 0) {
-      setPedidos(prev => prev.map(p =>
-        pedidosParaAtualizar.some(pa => pa.id === p.id)
-          ? { ...p, status: 'Aguardando Coleta' }
-          : p,
-      ));
-    }
-    onSetCompleteModalOpen(true);
-    onSetScannerOpen(false);
-  }, [printOrders, setPedidos, onSetCompleteModalOpen, onSetScannerOpen]);
-
   return {
     isSyncing,
-    processingIdsLocal,
-    processingIdsSet,
     xmlLoadingSet,
     arrangeLoadingSet,
-    getCompanyId,
     handleEmitirNfe,
     handleSyncNfeForPedido,
     handleEnviarNfeForPedido,
     handleArrangeShipmentForPedido,
-    handleGerarNovaNfeForPedido,
     handleSyncOrders,
     handleSyncShopeeOrders,
-    handleSyncSelectedOrders,
     handleSyncOrderByInternalId,
-    handleSaveVinculacoes,
     handleExportCSV,
     handlePrintLabels,
     handleReprintLabel,
     handlePrintPickingList,
-    handleScan,
-    handleCompleteBipagem,
     loadShopeeShops,
-    addProcessingId,
     refreshNfeAuthorizedMapForList: refreshNfe,
   };
 }

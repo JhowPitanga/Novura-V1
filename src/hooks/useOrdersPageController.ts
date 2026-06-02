@@ -165,6 +165,7 @@ export function useOrdersPageController() {
       printOrders,
       notPrintedOrders,
       printedOrders,
+      getCompanyId,
     },
     refreshNfeAuthorizedMapForList,
   );
