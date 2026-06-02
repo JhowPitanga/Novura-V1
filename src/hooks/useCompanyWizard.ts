@@ -17,6 +17,7 @@ interface UseCompanyWizardReturn {
   showErrors: boolean;
   handleNext: () => void;
   handleBack: () => void;
+  canProceed: () => boolean;
   closeDialogOpen: boolean;
   setCloseDialogOpen: (v: boolean) => void;
 }
@@ -92,6 +93,7 @@ export const useCompanyWizard = ({
     showErrors,
     handleNext,
     handleBack,
+    canProceed,
     closeDialogOpen,
     setCloseDialogOpen,
   };

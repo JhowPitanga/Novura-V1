@@ -1,7 +1,11 @@
+// §1 SIZE-EXCEPTION: 224 lines (limit 150). Justified: this file is the sole
+// service for the companies domain covering CRUD, logo storage, CNPJ lookup,
+// form hydration mapping, and payload normalization. Splitting would scatter
+// tightly coupled company DB logic across multiple files with no clean seam.
 // SECURITY-SENSITIVE: buildBaseCompanyPayload is the single place where
 // certificado_senha is stripped. Never pass certificado_senha to companies table.
 import { supabase } from '@/integrations/supabase/client';
-import { ddmmyyyyToISO, normalizeTipoEmpresa, normalizeTributacao, resizeImageToPNG } from '@/utils/companyFormat';
+import { ddmmyyyyToISO, normalizeTipoEmpresa, normalizeTributacao, resizeImageToPNG, parseToBR } from '@/utils/companyFormat';
 
 export interface EmpresaData {
   razao_social: string;
@@ -183,6 +187,31 @@ export const uploadCompanyLogo = async (blob: Blob, organizationId?: string | nu
 export const uploadLogoFromFile = async (file: File, organizationId?: string | null): Promise<string | null> => {
   const pngBlob = await resizeImageToPNG(file, 200, 200);
   return uploadCompanyLogo(pngBlob, organizationId);
+};
+
+/** Maps a companies table row to EmpresaData form shape (edit mode hydration). */
+export const mapCompanyRowToForm = (row: Record<string, unknown>, prev: EmpresaData): Partial<EmpresaData> => {
+  return {
+    razao_social: String(row.razao_social || ""),
+    cnpj: String(row.cnpj || ""),
+    tipo_empresa: String(row.tipo_empresa || ""),
+    tributacao: String(row.tributacao || ""),
+    inscricao_estadual: String(row.inscricao_estadual || ""),
+    email: String(row.email || ""),
+    cep: String(row.cep || ""),
+    cidade: String(row.cidade || ""),
+    estado: String(row.estado || ""),
+    endereco: String(row.endereco || ""),
+    numero: String(row.numero || ""),
+    bairro: String(row.bairro || ""),
+    complemento: String(row.complemento || ""),
+    logo_url: String(row.logo_url || prev.logo_url || ""),
+    lojas_associadas: Array.isArray(row.lojas_associadas) ? (row.lojas_associadas as string[]).map(String) : [],
+    numero_serie: String(row.numero_serie || ""),
+    proxima_nfe: Number(row.proxima_nfe) || 1,
+    certificado_validade: row.certificado_validade ? parseToBR(String(row.certificado_validade)) : prev.certificado_validade,
+    certificado_a1_url: String(row.certificado_a1_url || prev.certificado_a1_url || ""),
+  };
 };
 
 export const fetchCompanyDataFromCNPJ = async (cnpjDigits: string): Promise<Partial<EmpresaData> | null> => {
