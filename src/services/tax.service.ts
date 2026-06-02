@@ -1,3 +1,5 @@
+// §1 SIZE EXCEPTION (ENGINEERING_STANDARDS.md): ~180 LOC — fiscal catalog + company_tax_configs
+// CRUD including the 3-call save sequence preserved verbatim from AddTaxModal.
 import { supabase } from "@/integrations/supabase/client";
 import type { TaxRecord } from "@/components/settings/taxes/tax-payload";
 
