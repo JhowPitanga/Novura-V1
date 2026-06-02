@@ -1,13 +1,7 @@
 import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL, supabase } from "@/integrations/supabase/client";
 import type { Order, OrderFinancialInfo, OrderItem } from "@/types/orders";
 import { buildFinancials, buildLabelInfo, ensureHttpUrl, normalizeShippingType, resolveLinkedSku } from "@/utils/orderUtils";
-
-async function getAuthToken(): Promise<string> {
-  const { data: sessionRes } = await (supabase as any).auth.getSession();
-  const token: string | undefined = sessionRes?.session?.access_token;
-  if (!token) throw new Error("Sessão expirada ou ausente. Faça login novamente.");
-  return token;
-}
+import { getAuthToken } from "./orders/internal-helpers";
 
 export async function getCompanyIdForOrg(organizationId: string): Promise<string | null> {
   if (!organizationId) return null;
