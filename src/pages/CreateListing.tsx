@@ -9,7 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useCreateListingFlow } from "@/hooks/useCreateListingFlow";
 import { resolveAdapter } from "@/adapters/listings/resolveAdapter";
-import { marketplaceDisplayNameFromSlug } from "@/services/create-listing.service";
+import { marketplaceDisplayNameFromSlug } from "@/utils/listingUtils";
 import { supabase } from "@/integrations/supabase/client";
 import type { MarketplaceAdapter } from "@/adapters/listings/types";
 import { useEffect, useMemo, useRef, useState } from "react";
