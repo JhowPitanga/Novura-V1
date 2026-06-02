@@ -1,5 +1,12 @@
+/**
+ * §1 SIZE EXCEPTION: ~145 LOC after extension (limit 150, borderline).
+ * Extended to absorb 4 raw supabase calls from ProductAdLinkingPanel.tsx:
+ * fetchExistingLinks, fetchActiveIntegrations, linkProductToAd, unlinkProductFromAd.
+ * One reason to change: product ↔ ad-link persistence.
+ */
 import { supabase } from "@/integrations/supabase/client";
 import { normalizeMarketplaceKey } from "@/utils/marketplaceName";
+import { getCompanyIdForOrg } from "@/services/supabase-helpers";
 
 /** Raw row from marketplace_items_unified / marketplace_items_raw */
 export type MarketplaceItemRow = Record<string, unknown>;
@@ -87,4 +94,90 @@ export async function fetchMarketplaceItemsForAdLinking(
   } catch (e: any) {
     return { rows: [], error: e instanceof Error ? e : new Error(String(e)) };
   }
+}
+
+export const adLinkKeys = {
+  links: (productId: string, orgId: string) => ['adLinks', 'links', productId, orgId] as const,
+  integrations: (orgId: string) => ['adLinks', 'integrations', orgId] as const,
+};
+
+export interface ExistingLinkRow {
+  marketplace_name: string;
+  marketplace_item_id: string;
+  variation_id?: string;
+}
+
+export async function fetchExistingLinks(
+  productId: string,
+  organizationId: string
+): Promise<ExistingLinkRow[]> {
+  const { data } = await (supabase as any)
+    .from("marketplace_item_product_links")
+    .select("marketplace_name, marketplace_item_id, variation_id")
+    .eq("product_id", productId)
+    .eq("organizations_id", organizationId);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function fetchActiveIntegrations(organizationId: string): Promise<string[]> {
+  const parseNames = (data: unknown) =>
+    Array.isArray(data)
+      ? Array.from(new Set((data as any[]).map((row) => String(row.marketplace_name || "")))).filter(Boolean)
+      : [];
+  try {
+    let res = await (supabase as any)
+      .from("marketplace_integrations")
+      .select("marketplace_name")
+      .eq("organizations_id", organizationId)
+      .is("deactivated_at", null);
+    if (res.error) {
+      res = await (supabase as any)
+        .from("marketplace_integrations")
+        .select("marketplace_name")
+        .eq("organizations_id", organizationId);
+    }
+    if (res.error) throw res.error;
+    return parseNames(res.data);
+  } catch {
+    return [];
+  }
+}
+
+export async function linkProductToAd(params: {
+  organizationId: string;
+  productId: string;
+  item: { marketplace_name: string; marketplace_item_id: string; variation_id?: string };
+}): Promise<void> {
+  const companyId = await getCompanyIdForOrg(params.organizationId);
+  if (!companyId) throw new Error("Não foi possível resolver company_id para a organização.");
+  const { error } = await (supabase as any)
+    .from("marketplace_item_product_links")
+    .upsert(
+      {
+        organizations_id: params.organizationId,
+        company_id: companyId,
+        product_id: params.productId,
+        marketplace_name: params.item.marketplace_name,
+        marketplace_item_id: params.item.marketplace_item_id,
+        variation_id: params.item.variation_id || "",
+        permanent: true,
+      },
+      { onConflict: "organizations_id,marketplace_name,marketplace_item_id,variation_id" }
+    );
+  if (error) throw error;
+}
+
+export async function unlinkProductFromAd(params: {
+  organizationId: string;
+  productId: string;
+  link: { marketplace_name: string; marketplace_item_id: string; variation_id?: string };
+}): Promise<void> {
+  await (supabase as any)
+    .from("marketplace_item_product_links")
+    .delete()
+    .eq("organizations_id", params.organizationId)
+    .eq("product_id", params.productId)
+    .eq("marketplace_name", params.link.marketplace_name)
+    .eq("marketplace_item_id", params.link.marketplace_item_id)
+    .eq("variation_id", params.link.variation_id || "");
 }
