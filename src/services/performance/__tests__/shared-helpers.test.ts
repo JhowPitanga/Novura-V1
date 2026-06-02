@@ -1,31 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { calendarEndOfDaySPEpochMs, calendarStartOfDaySPEpochMs } from "@/lib/datetime";
-import type { DateRange } from "react-day-picker";
+import {
+    marketplaceKey,
+    normalizeImageUrl,
+    normalizeMarketplace,
+    toISOs,
+} from "../shared-helpers";
 
-/** Mirrors performance.service.ts lines 125–145 until C2 extracts shared-helpers. */
-function toISOs(dateRange: DateRange | undefined): { fromISO: string | undefined; toISO: string | undefined } {
-    const from = dateRange?.from;
-    const to = dateRange?.to || dateRange?.from;
-    const fromISO = from ? new Date(calendarStartOfDaySPEpochMs(from)).toISOString() : undefined;
-    const toISO = to ? new Date(calendarEndOfDaySPEpochMs(to)).toISOString() : undefined;
-    return { fromISO, toISO };
-}
-
-function normalizeMarketplace(m: string | undefined): string | undefined {
-    if (!m || m === "todos") return undefined;
-    return m;
-}
-
-function marketplaceKey(value: string | undefined): string {
-    return String(value || "").toLowerCase().replace(/[_\s-]/g, "");
-}
-
-function normalizeImageUrl(url: string | null | undefined): string {
-    const value = String(url || "").trim();
-    return /^https?:\/\//i.test(value) ? value : "";
-}
-
-describe("performance shared helpers (monolith baseline)", () => {
+describe("performance shared helpers", () => {
     it("toISOs(undefined) returns undefined ISO pair", () => {
         expect(toISOs(undefined)).toEqual({ fromISO: undefined, toISO: undefined });
     });
