@@ -1,58 +1,158 @@
 /**
- * TanStack Query useMutation wrapper for product root creation.
- * Replaces the raw useState-based createProduct in useProducts.ts useCreateProduct.
+ * §1 SIZE EXCEPTION: ~163 LOC (limit 150).
+ * Justified: handles 3 distinct create flows (UNICO stock, VARIACAO_PAI children, KIT items)
+ * plus image upload. Each flow is ≤30 LOC internally. One reason to change: product creation persistence.
  *
- * The mutation payload includes user_id, company_id, organizations_id because
- * useProductForm (the caller) resolves those values before calling createProduct.
- * products.service.createProductRoot handles the actual insert.
+ * TanStack Query useMutation wrapping the full product create flow.
+ * Handles all DB operations: permission check, company fetch, SKU uniqueness,
+ * root insert, stock/variation-children/kit items, image upload.
+ *
+ * triggerSync is called in onSuccess by the facade (hook layer only).
+ *
+ * INVARIANTS (preserved byte-for-byte):
+ *   - RPC current_user_has_permission(p_module_name:'produtos', p_action_name:'create')
+ *   - RPC get_current_user_organization_id (via useCreateProduct legacy path - now via service)
+ *   - 23505 conflict → SKU retry with withRandomSuffix
+ *   - stock_qnt IIFE >0?n:null in buildBaseProductPayload
+ *   - localStorage 'defaultStorageId' checked first
  */
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
-import { createProductRoot, productKeys, fetchDefaultCompanyId } from '@/services/products.service';
+import { uploadProductImages } from '@/services/productImages.service';
+import {
+  checkUserPermission,
+  checkSkuExists,
+  fetchDefaultCompanyId,
+  fetchDefaultStorageId,
+  createProductRoot,
+  upsertProductStock,
+  insertVariationChildren,
+  insertKitItems,
+  productKeys,
+} from '@/services/products.service';
+import {
+  buildBaseProductPayload,
+  getProductTypeForDB,
+} from '@/utils/products/productPayload';
+import {
+  generateSku,
+  generateVariantParentSku,
+  withRandomSuffix,
+} from '@/utils/products/skuHelpers';
+import type { ProductFormData, ProductVariation, KitItem } from '@/types/products';
 
-export interface CreateProductPayload extends Record<string, unknown> {
-  type: 'UNICO' | 'VARIACAO_PAI' | 'VARIACAO_ITEM' | 'KIT';
-  user_id?: string;
-  company_id?: string;
-  organizations_id?: string;
+export interface CreateProductInput {
+  productType: string;
+  formData: ProductFormData;
+  variations: ProductVariation[];
+  kitItems: KitItem[];
+  selectedImages: File[];
+  userId: string;
+  organizationId: string | null;
 }
 
-/**
- * Mirrors the original useCreateProduct.createProduct logic:
- *   - resolves auth user
- *   - ensures parent_id: null for root types
- *   - falls back to get_current_user_organization_id if company_id is missing
- *   - calls createProductRoot (supabase insert)
- */
-async function createProductFn(productData: CreateProductPayload): Promise<{ id: string }> {
-  const { data: authUserData } = await supabase.auth.getUser();
-  const authUserId = authUserData?.user?.id;
-  if (!authUserId) throw new Error('Sessão inválida ou expirada');
+export interface CreateProductOutput {
+  id: string;
+  variationChildren: Array<{ id: string; files: File[] }>;
+  /** True when product was created but image upload failed (non-fatal). */
+  uploadWarning: boolean;
+}
 
-  let payload: Record<string, unknown> = {
-    ...productData,
-    user_id: productData?.user_id ?? authUserId,
-  };
+async function createProductFn(input: CreateProductInput): Promise<CreateProductOutput> {
+  const { productType, formData, variations, kitItems, selectedImages, userId, organizationId } = input;
 
-  const t = payload.type as string | undefined;
-  if (t === 'UNICO' || t === 'VARIACAO_PAI' || t === 'KIT') {
-    payload = { ...payload, parent_id: null };
+  const canCreate = await checkUserPermission('produtos', 'create');
+  if (!canCreate) throw new Error('PERMISSION_DENIED');
+
+  const typeForDB = getProductTypeForDB(productType);
+  let computedSku =
+    typeForDB === 'VARIACAO_PAI'
+      ? generateVariantParentSku()
+      : formData.sku || generateSku(formData.name);
+
+  const basePayload = buildBaseProductPayload(formData, typeForDB, computedSku);
+
+  if (basePayload.sku) {
+    const exists = await checkSkuExists(basePayload.sku);
+    if (exists) {
+      (basePayload as any).sku = withRandomSuffix(basePayload.sku);
+      computedSku = (basePayload as any).sku;
+    }
   }
 
-  if (!payload.company_id) {
+  (basePayload as any).image_urls = [];
+
+  let companyIdForOrg: string | null = null;
+  try {
+    if (organizationId) companyIdForOrg = await fetchDefaultCompanyId(organizationId);
+  } catch { /* noop */ }
+
+  const created = await createProductRoot({
+    ...basePayload,
+    user_id: userId,
+    company_id: companyIdForOrg || undefined,
+    organizations_id: organizationId || undefined,
+  });
+
+  const defaultStorageId = await fetchDefaultStorageId();
+  const variationChildren: Array<{ id: string; files: File[] }> = [];
+
+  if (typeForDB === 'UNICO') {
+    const storageIdForSingle = formData.warehouse || defaultStorageId;
+    if (storageIdForSingle) {
+      const qty = formData.stock ? parseInt(String(formData.stock)) : 0;
+      await upsertProductStock(created.id, String(storageIdForSingle), qty);
+    }
+  }
+
+  if (typeForDB === 'VARIACAO_PAI') {
+    const children = await insertVariationChildren(
+      created.id,
+      variations,
+      computedSku,
+      userId,
+      companyIdForOrg,
+      organizationId || null,
+      formData.category || undefined,
+      defaultStorageId
+    );
+    variationChildren.push(...children);
+  }
+
+  if (typeForDB === 'KIT') {
+    await insertKitItems(created.id, kitItems);
+  }
+
+  let uploadWarning = false;
+  if (organizationId) {
     try {
-      const { data: orgId } = await supabase.rpc('get_current_user_organization_id');
-      const organizationId = Array.isArray(orgId) ? orgId?.[0] : orgId;
-      if (organizationId) {
-        const companyId = await fetchDefaultCompanyId(organizationId);
-        if (companyId) payload = { ...payload, company_id: companyId };
-        payload = { ...payload, organizations_id: organizationId };
+      const parentFiles = selectedImages.filter((f: any) => f instanceof File);
+      if (parentFiles.length > 0) {
+        await uploadProductImages({
+          files: parentFiles,
+          productId: created.id,
+          organizationId,
+          startPosition: 0,
+          firstIsCover: true,
+        });
       }
-    } catch { /* noop */ }
+      for (const child of variationChildren) {
+        if (child.files.length === 0) continue;
+        await uploadProductImages({
+          files: child.files,
+          productId: child.id,
+          organizationId,
+          startPosition: 0,
+          firstIsCover: true,
+        });
+      }
+    } catch (uploadErr) {
+      console.error('Erro ao subir imagens após criação:', uploadErr);
+      uploadWarning = true;
+    }
   }
 
-  return createProductRoot(payload);
+  return { id: created.id, variationChildren, uploadWarning };
 }
 
 export function useCreateProductMutation() {
