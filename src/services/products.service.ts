@@ -1,5 +1,5 @@
 /**
- * §1 SIZE EXCEPTION: ~140 LOC.
+ * §1 SIZE EXCEPTION: ~207 LOC (limit 150).
  * Justified: absorbs 3 create sub-flows (single stock, variation children+stock, kit items)
  * each with ≤50-line function bodies internally. One reason to change: product create persistence.
  *

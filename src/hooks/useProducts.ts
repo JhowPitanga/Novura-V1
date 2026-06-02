@@ -1,5 +1,13 @@
 // src/hooks/useProducts.ts
 
+/**
+ * §1 SIZE EXCEPTION: ~210 LOC (limit 150).
+ * Justified: file contains two legacy hooks (useProducts for fetching and useCreateProduct
+ * for creating) sharing the same module boundary. useCreateProduct was gutted to a TanStack
+ * adapter in this refactor pass (P-0). Migrating useProducts() data-fetch to a service
+ * layer is deferred to a follow-up pass. Pre-existing violation (was 252 LOC at BASE).
+ */
+
 import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
