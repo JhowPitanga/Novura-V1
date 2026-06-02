@@ -2,10 +2,8 @@
  * Characterization tests for movements CSV export.
  */
 import { describe, it, expect } from "vitest";
-import {
-  exportMovementsToCSV,
-  type InventoryMovement,
-} from "@/services/movements.service";
+import { exportMovementsToCSV } from "@/services/movements.service";
+import type { InventoryMovement } from "@/services/inventory/movements-types";
 
 const CSV_HEADER =
   '"Data/Hora","Produto","SKU","Tipo","Quantidade","Armazém","Usuário","Observação","Pedido","Integração","Referência"';

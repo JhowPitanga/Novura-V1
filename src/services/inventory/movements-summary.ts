@@ -1,15 +1,4 @@
-export interface MovementsSummary {
-  totalEntradas: number;
-  totalSaidas: number;
-  totalReservas: number;
-  totalTransferencias: number;
-  totalDevolucoes: number;
-  countEntradas: number;
-  countSaidas: number;
-  countReservas: number;
-  countTransferencias: number;
-  countDevolucoes: number;
-}
+import type { MovementsSummary } from "@/services/inventory/movements-types";
 
 export interface SummaryRow {
   movement_type: string;
