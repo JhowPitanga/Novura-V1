@@ -1,7 +1,5 @@
-// Equipe.tsx (Código Completo Atualizado)
-
 import { useState, useEffect, useMemo } from "react";
-import { MessageSquare, Kanban, Plus, Users, Trophy, User, Target, Zap, Clock, Calendar, CheckSquare, Filter, ChevronDown, ListPlus, Search, MoreVertical, Check } from "lucide-react";
+import { MessageSquare, Kanban, Trophy, Check } from "lucide-react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
@@ -11,72 +9,25 @@ import { TasksTab } from "@/components/team/TasksTab";
 import { ChatSidebar } from "@/components/team/ChatSidebar";
 import { GamificationTab } from "@/components/team/GamificationTab";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-
-// Importações para Task Management
-import { CreateTaskModal } from "@/components/team/CreateTaskModal";
-import { TaskBoard } from "@/components/team/TaskBoard"; // ATUALIZADO (Kanban)
-// Removido: Backlog, Roadmap e Views (não será utilizado)
-import { TaskDetailModal } from "@/components/team/TaskDetailModal"; // NOVO
-import LoadingOverlay from "@/components/LoadingOverlay";
-import { useChatChannels, useOrgMemberSearch } from "@/hooks/useChat";
-import { useChatUnread } from "@/hooks/useChatUnread";
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogFooter } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-
-// --- INTERFACE DE TAREFA ---
-// Usar o tipo compartilhado do CreateTaskModal para garantir compatibilidade
-import type { Task, TaskPriority, TaskType, TaskStatus } from "@/types/team";
-import { mapRowToTask, mergeLabels, buildMemberMap, extractTaskExtras } from "@/utils/teamTasks";
-import {
-    fetchTasks as svcFetchTasks,
-    createTask as svcCreateTask,
-    updateTask as svcUpdateTask,
-    assignTask as svcAssignTask,
-    toggleCoAssigneeTask as svcToggleCoAssignee,
-    deleteTask as svcDeleteTask,
-    fetchOrgMembers as svcFetchOrgMembers,
-    fetchUnreadCounts as svcFetchUnreadCounts,
-    upsertUnreadCount as svcUpsertUnreadCount,
-    markChannelRead as svcMarkChannelRead,
-    fetchDmUserProfile as svcFetchDmUserProfile,
-} from "@/services/team.service";
-import { supabase } from "@/integrations/supabase/client";
+import { useChatChannels, useOrgMemberSearch } from "@/hooks/useChat";
+import { useChatUnread } from "@/hooks/useChatUnread";
+import { fetchOrgMembers as svcFetchOrgMembers, fetchDmUserProfile as svcFetchDmUserProfile } from "@/services/team.service";
 import { useAuth } from "@/hooks/useAuth";
 
-// --- DADOS MOCKADOS (Mantidos) ---
 const navigationItems = [
     { title: "Chat", path: "", icon: MessageSquare, description: "Comunicação da equipe" },
     { title: "Tasks", path: "/tasks", icon: Kanban, description: "Gerenciamento de tarefas" },
     { title: "Gamificação", path: "/gamificacao", icon: Trophy, description: "Desempenho da equipe" },
 ];
 
-
-const ChatAvatar = ({ isGroup, color }: { isGroup: boolean, color: string }) => (
-    <div className={`w-10 h-10 bg-${color}-200 rounded-full flex items-center justify-center mr-3`}>
-        {isGroup ? <Users className={`w-5 h-5 text-${color}-800`} /> : <User className={`w-5 h-5 text-${color}-800`} />}
-    </div>
-);
-
-
-// --- 1. MÓDULO CHAT (Design dos Anexos) ---
+// --- 1. MÓDULO CHAT ---
 function ChatModule() {
-    const [searchTerm, setSearchTerm] = useState("");
-    const [showMemberDropdown, setShowMemberDropdown] = useState(false);
-    const [showStarred, setShowStarred] = useState(true);
-    const [showDMs, setShowDMs] = useState(true);
-    const [showTeams, setShowTeams] = useState(true);
     const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
     const [createOpen, setCreateOpen] = useState(false);
     const [teamName, setTeamName] = useState("");
-  // Removed teamCategory; groups now only have a name and member selection
     const [memberSearch, setMemberSearch] = useState("");
     const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
 
@@ -90,7 +41,6 @@ function ChatModule() {
     ], [channels, directChannels, teamChannels]);
     const activeChannel = useMemo(() => allChannels.find(c => c.id === activeChannelId) || null, [allChannels, activeChannelId]);
     const { results: memberResults } = useOrgMemberSearch(memberSearch, { alwaysList: true });
-
     const { unreadCounts, unreadTotal, markRead } = useChatUnread(activeChannelId);
 
     // Atualiza o nome exibido do canal ativo (DM mostra outro membro)
@@ -137,7 +87,7 @@ function ChatModule() {
                 unreadCounts={unreadCounts}
                 unreadTotal={unreadTotal}
                 activeChannelId={activeChannelId}
-                onChannelSelect={(chId, name) => { if (chId) setActiveChannelId(chId); else setActiveChannelId(null); setActiveDisplayName(name); }}
+                onChannelSelect={(chId, name) => { setActiveChannelId(chId); setActiveDisplayName(name); }}
                 onMarkRead={markRead}
                 onToggleStar={(chId, starred) => toggleStar(chId, starred)}
                 onDeleteChannel={async (chId) => { const res = await deleteChannel(chId); return (res as any) || {}; }}
@@ -147,9 +97,9 @@ function ChatModule() {
 
             <div className="flex-1 flex items-center justify-center w-full">
                 {activeChannelId ? (
-                    <ChatTab 
-                        channelId={activeChannelId as string} 
-                        channelName={activeDisplayName ?? (activeChannel as any)?.name} 
+                    <ChatTab
+                        channelId={activeChannelId as string}
+                        channelName={activeDisplayName ?? (activeChannel as any)?.name}
                         channelType={(activeChannel as any)?.type}
                     />
                 ) : (
@@ -180,7 +130,7 @@ function ChatModule() {
                                     <div key={u.id} className={`flex items-center gap-3 px-3 py-2 text-sm cursor-pointer ${checked ? 'bg-purple-50' : 'hover:bg-gray-50'}`} onClick={() => setSelectedMembers(prev => checked ? prev.filter(id => id !== u.id) : [...prev, u.id])}>
                                         <Avatar className="h-6 w-6">
                                             <AvatarImage src={undefined as any} alt={displayName} />
-                                            <AvatarFallback>{(displayName || '').slice(0,2).toUpperCase()}</AvatarFallback>
+                                            <AvatarFallback>{(displayName || '').slice(0, 2).toUpperCase()}</AvatarFallback>
                                         </Avatar>
                                         <span className="flex-1 truncate">{displayName}</span>
                                         {checked && <Check className="w-4 h-4 text-purple-600" />}
@@ -194,9 +144,7 @@ function ChatModule() {
                         <Button onClick={async () => {
                             if (!teamName.trim()) return;
                             const res = await createTeam(teamName.trim(), selectedMembers);
-                            if ((res as any)?.data?.id) {
-                                setActiveChannelId((res as any).data.id);
-                            }
+                            if ((res as any)?.data?.id) { setActiveChannelId((res as any).data.id); }
                             setCreateOpen(false);
                             setTeamName("");
                             setSelectedMembers([]);
@@ -209,8 +157,6 @@ function ChatModule() {
         </>
     );
 }
-
-
 
 // --- MÓDULO PRINCIPAL ---
 export default function Equipe() {
@@ -231,19 +177,14 @@ export default function Equipe() {
         <SidebarProvider>
             <div className="min-h-screen flex w-full bg-gradient-to-br from-gray-50 to-white">
                 <AppSidebar />
-                
                 <div className="flex-1 flex flex-col">
                     <GlobalHeader />
-
-                    {/* Navigation */}
-                    <CleanNavigation 
-                        items={navigationItems} 
-                        basePath="/equipe" 
+                    <CleanNavigation
+                        items={navigationItems}
+                        basePath="/equipe"
                         onNavigate={(path) => setCurrentPath(path)}
                         activePath={currentPath}
                     />
-                    
-                    {/* Main Content */}
                     <main className="flex-1 overflow-auto">
                         <div className="p-6">
                             {renderContent()}

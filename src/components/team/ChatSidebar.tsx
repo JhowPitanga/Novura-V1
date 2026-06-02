@@ -59,6 +59,7 @@ export function ChatSidebar({
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [otherName, setOtherName] = useState<string | null>(null);
 
+    const memberIdsStr = JSON.stringify(ch?.member_ids);
     useEffect(() => {
       let mounted = true;
       const loadOtherName = async () => {
@@ -82,7 +83,8 @@ export function ChatSidebar({
       };
       loadOtherName();
       return () => { mounted = false; };
-    }, [ch?.id, JSON.stringify(ch?.member_ids), user?.id, organizationId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ch?.id, memberIdsStr, user?.id, organizationId, isGroup]);
 
     return (
       <div

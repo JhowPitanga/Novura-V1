@@ -10,6 +10,8 @@ import {
 
 const unreadKey = (userId: string) => ['chat-unread', userId] as const;
 
+const EMPTY_COUNTS: Record<string, number> = {};
+
 const LS_KEY = (userId: string) => `chat_unread_counts:${userId}`;
 
 function persistToLS(userId: string, counts: Record<string, number>) {
@@ -66,7 +68,7 @@ export function useChatUnread(activeChannelId: string | null) {
     gcTime: 30 * 60 * 1000,
   });
 
-  const unreadCounts: Record<string, number> = query.data ?? {};
+  const unreadCounts: Record<string, number> = query.data ?? EMPTY_COUNTS;
 
   const unreadTotal = useMemo(
     () => Object.values(unreadCounts).reduce((sum, n) => sum + (n || 0), 0),
