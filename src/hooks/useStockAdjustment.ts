@@ -1,3 +1,5 @@
+// §1 SIZE EXCEPTION (ENGINEERING_STANDARDS.md): ~153 LOC — client validation + toast
+// messages preserved verbatim from InventoryManagementDrawer adjust path.
 import { useState } from "react";
 import {
   applyStockAdjustment,

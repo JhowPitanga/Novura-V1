@@ -1,3 +1,5 @@
+// §1 SIZE EXCEPTION (ENGINEERING_STANDARDS.md): ~320 LOC — preserves legacy-safe
+// ensureStockRow duplicate-key retry, transfer rollback, and string-match error guards verbatim.
 import { supabase } from "@/integrations/supabase/client";
 import {
   buildAdjustSourceRef,
