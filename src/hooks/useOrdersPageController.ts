@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useNfeStatus } from "@/hooks/useNfeStatus";
 import { useOrdersPageData } from "@/hooks/useOrdersPageData";
-import { matchStatus, normStatus, useOrderFiltering } from "@/hooks/useOrderFiltering";
+import { useOrderFiltering } from "@/hooks/useOrderFiltering";
 import { usePrintingSettings } from "@/hooks/usePrintingSettings";
 import { useOrdersFiltersState } from "@/hooks/useOrdersFiltersState";
 import { useOrdersSelection } from "@/hooks/useOrdersSelection";
@@ -11,6 +11,7 @@ import { useOrdersDialogs } from "@/hooks/useOrdersDialogs";
 import { useOrdersActions } from "@/hooks/useOrdersActions";
 import { useCompanyIdCache } from "@/hooks/useCompanyIdCache";
 import { useColumnPreferences } from "@/hooks/useColumnPreferences";
+import { useOrdersDerived } from "@/hooks/useOrdersDerived";
 import { createOrderColumns } from "@/components/orders/orderColumnDefs";
 import { syncMercadoLivreOrders } from "@/services/orders.service";
 import { isAbortLikeError } from "@/utils/orderUtils";
@@ -284,44 +285,8 @@ export function useOrdersPageController() {
   }, []);
 
   // --- Derived data ---
-  const statusCounts = useMemo<Record<string, number>>(() => ({
-    todos: baseFiltered.length,
-    'a-vincular': baseFiltered.filter(p => matchStatus(p, 'a-vincular')).length,
-    'emissao-nf': baseFiltered.filter(p => matchStatus(p, 'emissao-nf')).length,
-    impressao: baseFiltered.filter(p => matchStatus(p, 'impressao')).length,
-    'aguardando-coleta': baseFiltered.filter(p => matchStatus(p, 'aguardando-coleta')).length,
-    enviado: baseFiltered.filter(p => matchStatus(p, 'enviado')).length,
-    cancelado: baseFiltered.filter(p => matchStatus(p, 'cancelado')).length,
-    'sem-estoque': baseFiltered.filter(p => normStatus(p.internalStatus) === 'sem_estoque').length,
-  }), [baseFiltered]);
-
-  const isPedidoAtrasado = useCallback((p: any) => {
-    const shipLower = String(p?.shipmentStatus ?? '').toLowerCase();
-    const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
-    const ns = normStatus(p?.internalStatus);
-    const isCancelledOrReturn = ns === 'cancelado' || ns === 'devolucao' || ns === 'cancelled' || ns === 'returned';
-    if (deliveredStatuses.includes(shipLower) || isCancelledOrReturn || ns === 'enviado' || ns === 'shipped') return false;
-    const slaLower = String(p?.shippingSla?.status ?? '').toLowerCase();
-    const ed = p?.shippingSla?.expectedDate;
-    const expired = ed ? (new Date(ed).getTime() - new Date().getTime() <= 0) : false;
-    return slaLower === 'delayed' || expired;
-  }, []);
-
-  const allowedTooltipBlocks = useMemo(() => new Set(['a-vincular', 'emissao-nf', 'impressao', 'aguardando-coleta']), []);
-  const hasDelayedByBlock = useCallback((blockId: string) => {
-    if (!allowedTooltipBlocks.has(blockId)) return false;
-    return listReady ? baseFiltered.some(p => matchStatus(p, blockId) && isPedidoAtrasado(p)) : false;
-  }, [allowedTooltipBlocks, listReady, baseFiltered, isPedidoAtrasado]);
-
-  const statusBlocks = useMemo(() => [
-    { id: 'todos', title: 'Todos os Pedidos', count: listReady ? statusCounts['todos'] : 0, description: 'Sincronizados com marketplaces' },
-    { id: 'a-vincular', title: 'A Vincular', count: listReady ? statusCounts['a-vincular'] : 0, description: 'Pedidos sem vínculo de SKU' },
-    { id: 'emissao-nf', title: 'Emissão de NFe', count: listReady ? statusCounts['emissao-nf'] : 0, description: 'Aguardando emissão' },
-    { id: 'impressao', title: 'Impressão', count: listReady ? statusCounts['impressao'] : 0, description: 'NF e etiqueta' },
-    { id: 'aguardando-coleta', title: 'Coleta', count: listReady ? statusCounts['aguardando-coleta'] : 0, description: 'Prontos para envio' },
-    { id: 'enviado', title: 'Enviado', count: listReady ? statusCounts['enviado'] : 0, description: 'Pedidos em trânsito' },
-    { id: 'cancelado', title: 'Cancelados', count: listReady ? statusCounts['cancelado'] : 0, description: 'Pedidos cancelados/devolvidos' },
-  ], [listReady, statusCounts]);
+  const { statusCounts, statusBlocks, isPedidoAtrasado, hasDelayedByBlock } =
+    useOrdersDerived({ baseFiltered, listReady });
 
   const columns = useMemo(() => {
     const freshCols = createOrderColumns({
