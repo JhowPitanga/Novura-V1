@@ -29,7 +29,7 @@ export function buildTransferSourceRef(
 
 export function parseSourceRefActor(sourceRef: string | null): string {
   const src = String(sourceRef || "");
-  const match = src.match(/^([^\[]+)\[/);
+  const match = src.match(/^([^[]+)\[/);
   if (!match?.[1]?.trim()) return "";
   const extracted = match[1].trim();
   return extracted.split(" - ")[0].trim();
@@ -37,7 +37,7 @@ export function parseSourceRefActor(sourceRef: string | null): string {
 
 export function parseSourceRefObservation(sourceRef: string | null): string {
   const src = String(sourceRef || "");
-  const match = src.match(/^([^\[]+)\[/);
+  const match = src.match(/^([^[]+)\[/);
   if (!match?.[1]?.trim()) return "";
   const extracted = match[1].trim();
   const parts = extracted.split(" - ");
