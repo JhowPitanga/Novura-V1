@@ -30,6 +30,7 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 // --- INTERFACE DE TAREFA ---
 // Usar o tipo compartilhado do CreateTaskModal para garantir compatibilidade
 import type { Task, TaskPriority, TaskType, TaskStatus } from "@/types/team";
+import { mapRowToTask, mergeLabels, buildMemberMap, extractTaskExtras } from "@/utils/teamTasks";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -569,36 +570,8 @@ function TaskManagement() {
                 console.error('Erro ao carregar tasks:', error.message);
                 return;
             }
-            const mapped: Task[] = (data || []).map((row: any) => {
-                const primaryName = (row.assigned_to && (memberMap[row.assigned_to]?.nome || memberMap[row.assigned_to]?.email)) || '';
-                const addNames = (row.visible_to_members || []).map((id: string) => (memberMap[id]?.nome || memberMap[id]?.email)).filter(Boolean);
-                const startLabel = (row.labels || []).find((l: string) => typeof l === 'string' && l.startsWith('start:'));
-                const startDate = startLabel ? (startLabel as string).split(':')[1] : undefined;
-                return {
-                    id: row.id,
-                    title: row.title,
-                    assignee: primaryName,
-                    assignees: [primaryName, ...addNames].filter(Boolean),
-                    priority: (row.priority ?? 'medium') as TaskPriority,
-                    dueDate: row.due_date ?? '',
-                    startDate,
-                    type: (row.type ?? 'task') as TaskType,
-                    storyPoints: 0,
-                    status: (row.status ?? 'todo') as TaskStatus,
-                    timeTracked: row.time_tracked ?? 0,
-                    labels: row.labels ?? [],
-                    dependencies: row.dependencies ?? [],
-                } as Task;
-            });
-            const extras: Record<number, { assigned_to?: string | null; created_by?: string | null; visible_to_members?: string[] }> = {};
-            for (const row of (data || [])) {
-                extras[row.id] = {
-                    assigned_to: row.assigned_to || null,
-                    created_by: row.created_by || null,
-                    visible_to_members: row.visible_to_members || [],
-                };
-            }
-            setTaskExtras(extras);
+            const mapped = (data || []).map((row: any) => mapRowToTask(row, memberMap));
+            setTaskExtras(extractTaskExtras(data || []));
             setTasks(mapped);
         } finally {
             setIsLoading(false);
@@ -621,11 +594,7 @@ function TaskManagement() {
                     console.error('Erro ao carregar membros:', error.message);
                     return;
                 }
-                const map: Record<string, { nome?: string | null; email?: string | null }> = {};
-                for (const u of (data as any[]) || []) {
-                    map[u.id] = { nome: (u as any).nome, email: u.email };
-                }
-                setMemberMap(map);
+                setMemberMap(buildMemberMap((data as any[]) || []));
             } finally {
                 setIsLoading(false);
             }
@@ -698,19 +667,9 @@ function TaskManagement() {
             // Manter/atualizar label de start date e mesclar com alterações de labels
             const currentTask = tasks.find(t => t.id === taskId);
             const currentLabels: string[] = currentTask?.labels || [];
-            let newLabels: string[] = [...currentLabels];
             const hasStartUpdate = Object.prototype.hasOwnProperty.call(updates, 'startDate');
-            if (hasStartUpdate) {
-                newLabels = newLabels.filter(l => !String(l).startsWith('start:'));
-                if (updates.startDate) newLabels.push(`start:${updates.startDate}`);
-            }
-            if (typeof updates.labels !== 'undefined') {
-                // Mescla rótulos vindos da UI (ex.: urgent) com o start:
-                const startOnly = newLabels.filter(l => String(l).startsWith('start:'));
-                newLabels = Array.from(new Set([...(updates.labels || []), ...startOnly]));
-            }
             if (hasStartUpdate || typeof updates.labels !== 'undefined') {
-                payload.labels = newLabels;
+                payload.labels = mergeLabels(currentLabels, updates);
             }
             if (Object.keys(payload).length === 0) return; // nada para persistir
 
