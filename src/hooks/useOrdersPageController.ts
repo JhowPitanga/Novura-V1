@@ -12,9 +12,11 @@ import { useOrdersActions } from "@/hooks/useOrdersActions";
 import { useCompanyIdCache } from "@/hooks/useCompanyIdCache";
 import { useColumnPreferences } from "@/hooks/useColumnPreferences";
 import { useOrdersDerived } from "@/hooks/useOrdersDerived";
+import { useOrdersRowViewModels } from "@/hooks/useOrdersRowViewModels";
 import { createOrderColumns } from "@/components/orders/orderColumnDefs";
 import { syncMercadoLivreOrders } from "@/services/orders.service";
 import { isAbortLikeError } from "@/utils/orderUtils";
+import { columnPrefsMerge } from "@/utils/orderColumnUtils";
 
 export function useOrdersPageController() {
   const navigate = useNavigate();
@@ -293,73 +295,40 @@ export function useOrdersPageController() {
       activeStatus, nfBadgeFilter, processingIdsSet,
       nfeErrorMessageByPedidoId, nfeFocusStatusByPedidoId,
     });
-    if (!columnPrefs) return freshCols;
-    const freshMap = new Map(freshCols.map(c => [c.id, c]));
-    const seen = new Set<string>();
-    const merged: typeof freshCols = [];
-    for (const pref of columnPrefs) {
-      const col = freshMap.get(pref.id);
-      if (!col) continue;
-      merged.push({ ...col, enabled: col.alwaysVisible ? true : pref.enabled });
-      seen.add(pref.id);
-    }
-    for (const col of freshCols) {
-      if (!seen.has(col.id)) merged.push(col);
-    }
-    return merged;
+    return columnPrefsMerge(freshCols, columnPrefs);
   }, [columnPrefs, activeStatus, nfBadgeFilter, processingIdsSet, nfeErrorMessageByPedidoId, nfeFocusStatusByPedidoId]);
 
-  // Stable row callbacks using ref pattern so React.memo skips re-renders
-  const handlersRef = useRef({
-    openDetails: dialogActions.openDetails,
-    openVincular: dialogActions.openVincular,
-    handleReprintLabel: orderActions.handleReprintLabel,
-    handleEmitirNfe: orderActions.handleEmitirNfe,
-    handleEnviarNfeForPedido: orderActions.handleEnviarNfeForPedido,
-    handleSyncNfeForPedido: orderActions.handleSyncNfeForPedido,
-    handleArrangeShipmentForPedido: orderActions.handleArrangeShipmentForPedido,
+  // --- Row view models (stable ref pattern preserved in useOrdersRowViewModels) ---
+  const {
+    rowViewModels,
+    onToggleRow,
+    onOpenDetails,
+    onVincular,
+    onReprintLabel,
+    onEmitirNfe,
+    onSubirXml,
+    onSyncNfe,
+    onArrangeShipment,
+  } = useOrdersRowViewModels({
+    paginatedOrders,
+    activeStatus,
+    selection,
+    processingIdsSet,
+    nfeAuthorizedByPedidoId,
+    nfeFocusStatusByPedidoId,
+    xmlLoadingSet: orderActions.xmlLoadingSet,
+    arrangeLoadingSet: orderActions.arrangeLoadingSet,
+    toggleRow: selectionActions.toggleRow,
+    handlers: {
+      openDetails: dialogActions.openDetails,
+      openVincular: dialogActions.openVincular,
+      handleReprintLabel: orderActions.handleReprintLabel,
+      handleEmitirNfe: orderActions.handleEmitirNfe,
+      handleEnviarNfeForPedido: orderActions.handleEnviarNfeForPedido,
+      handleSyncNfeForPedido: orderActions.handleSyncNfeForPedido,
+      handleArrangeShipmentForPedido: orderActions.handleArrangeShipmentForPedido,
+    },
   });
-  handlersRef.current = {
-    openDetails: dialogActions.openDetails,
-    openVincular: dialogActions.openVincular,
-    handleReprintLabel: orderActions.handleReprintLabel,
-    handleEmitirNfe: orderActions.handleEmitirNfe,
-    handleEnviarNfeForPedido: orderActions.handleEnviarNfeForPedido,
-    handleSyncNfeForPedido: orderActions.handleSyncNfeForPedido,
-    handleArrangeShipmentForPedido: orderActions.handleArrangeShipmentForPedido,
-  };
-
-  const onToggleRow = selectionActions.toggleRow;
-  const onOpenDetails = useCallback((p: any) => handlersRef.current.openDetails(p), []);
-  const onVincular = useCallback((p: any) => handlersRef.current.openVincular(p), []);
-  const onReprintLabel = useCallback((p: any) => handlersRef.current.handleReprintLabel(p), []);
-  const onEmitirNfe = useCallback((ps: any[], opts?: any) => handlersRef.current.handleEmitirNfe(ps, opts), []);
-  const onSubirXml = useCallback((p: any) => handlersRef.current.handleEnviarNfeForPedido(p), []);
-  const onSyncNfe = useCallback((p: any) => handlersRef.current.handleSyncNfeForPedido(p), []);
-  const onArrangeShipment = useCallback((p: any) => handlersRef.current.handleArrangeShipmentForPedido(p), []);
-
-  const rowViewModels = useMemo(() =>
-    paginatedOrders.map(pedido => ({
-      pedido,
-      isChecked:
-        (activeStatus === 'todos' && selection.selectedPedidos.includes(pedido.id)) ||
-        (activeStatus === 'emissao-nf' && selection.selectedPedidosEmissao.includes(pedido.id)) ||
-        (activeStatus === 'impressao' && selection.selectedPedidosImpressao.includes(pedido.id)) ||
-        (activeStatus === 'enviado' && selection.selectedPedidosEnviado.includes(pedido.id)),
-      isProcessing: processingIdsSet.has(pedido.id),
-      isNfeAuthorized: !!nfeAuthorizedByPedidoId[pedido.id],
-      nfeFocusStatus: nfeFocusStatusByPedidoId[pedido.id] ?? '',
-      isXmlLoading: orderActions.xmlLoadingSet.has(pedido.id),
-      isArrangeLoading: orderActions.arrangeLoadingSet.has(pedido.id),
-    })),
-    [
-      paginatedOrders, activeStatus,
-      selection.selectedPedidos, selection.selectedPedidosEmissao,
-      selection.selectedPedidosImpressao, selection.selectedPedidosEnviado,
-      processingIdsSet, nfeAuthorizedByPedidoId, nfeFocusStatusByPedidoId,
-      orderActions.xmlLoadingSet, orderActions.arrangeLoadingSet,
-    ],
-  );
 
   const selectedCount = selection.selectedCount;
 
