@@ -144,7 +144,7 @@ export function useProductForm({ onSuccess }: UseProductFormProps = {}) {
       triggerSync();
       setProductSaved(true);
       setCurrentStep(currentStep + 1);
-      options?.onSuccess?.() ?? onSuccess?.();
+      (options?.onSuccess ?? onSuccess)?.();
     } catch (err: unknown) {
       console.error('Erro ao criar produto:', err);
       if (err instanceof Error && err.message === 'PERMISSION_DENIED') {

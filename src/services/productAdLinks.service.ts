@@ -1,5 +1,5 @@
 /**
- * §1 SIZE EXCEPTION: ~145 LOC after extension (limit 150, borderline).
+ * §1 SIZE EXCEPTION: 183 LOC (limit 150).
  * Extended to absorb 4 raw supabase calls from ProductAdLinkingPanel.tsx:
  * fetchExistingLinks, fetchActiveIntegrations, linkProductToAd, unlinkProductFromAd.
  * One reason to change: product ↔ ad-link persistence.

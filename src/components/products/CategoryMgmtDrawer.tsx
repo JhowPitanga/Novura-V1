@@ -1,4 +1,12 @@
 /**
+ * §1 SIZE EXCEPTION: 237 LOC (limit 200).
+ * Extracted verbatim from CategoryDropdown.tsx (689 LOC → 237 LOC here + 170 in
+ * CategorySelectionPopover + 67 in CategoryDropdown facade). The drawer has three
+ * distinct views (home / create / edit-list / edit-detail) each with independent
+ * local state; further extraction into sub-components would require threading all
+ * state via refs or callbacks, adding accidental complexity in this first pass.
+ * Reduce by splitting create-panel and edit-panel into sub-components in a P-D2 pass.
+ *
  * Presentational management drawer for categories (P-D split from CategoryDropdown).
  * Handles create / edit / delete category UI within a side drawer.
  * No data fetching — receives categories as props and delegates mutations via callbacks.

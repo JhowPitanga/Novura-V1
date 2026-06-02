@@ -56,6 +56,7 @@ export function useMarketplaceMappingDrawer(
     }
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void refreshExistingLinks(); }, [organizationId, productId]);
 
   const fetchActiveIntegrations = async () => {

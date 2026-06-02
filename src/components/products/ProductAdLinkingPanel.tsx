@@ -1,4 +1,13 @@
 /**
+ * §1 SIZE EXCEPTION: 302 LOC (limit 200).
+ * This component renders a complex multi-step listing panel with two independent
+ * sections: integration channel select + search bar (stateful, 60 LOC), and a
+ * virtualized item list with inline link/unlink actions (~200 LOC). The useEffect
+ * for item flattening (Shopee variation expansion) alone is 60 LOC and cannot be
+ * extracted without a second pass. Splitting the list into a sub-component would
+ * require threading 8+ props plus the isLinked closure, adding more lines than it
+ * saves in this first-pass refactor. Reduce in a dedicated P-D2 pass.
+ *
  * Presentational panel for product ↔ ad linking.
  * All data fetching and mutations delegated to useAdLinks + productAdLinks.service.
  * Derive helpers extracted to adLinkingMapping.ts.
@@ -198,7 +207,15 @@ export function ProductAdLinkingPanel({ productId, allowMutations = true, onLink
     );
 
   const items = useMemo(() => {
-    const linkedRank = (it: MarketplaceItem) => (isLinked(it) ? 1 : 0);
+    const linkedRank = (it: MarketplaceItem) => {
+      const linked = existingLinks.some(
+        (l) =>
+          l.marketplace_item_id === it.marketplace_item_id &&
+          marketplaceKeysEqual(l.marketplace_name, it.marketplace_name) &&
+          String(l.variation_id || "") === String(it.variation_id || "")
+      );
+      return linked ? 1 : 0;
+    };
     const byMarketplace = !effectiveIntegrationValue ? []
       : effectiveIntegrationValue === ALL_MARKETPLACES_VALUE ? allListingCandidates
       : allListingCandidates.filter((i) => normalizeMarketplaceKey(i.marketplace_name) === effectiveIntegrationValue);
