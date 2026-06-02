@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import * as forge from "node-forge";
+import { parsePfxCertificate, readFileAsBase64 } from "@/utils/certificate";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { StepIndicator } from "@/components/products/create/StepIndicator";
 import { NavigationButtons } from "@/components/products/create/NavigationButtons";
@@ -439,18 +439,6 @@ export function NovaEmpresa() {
     }
   };
 
-  const readFileAsBase64 = (file: File) => new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // Remove prefix data:...;base64,
-      const base64 = result.split(',')[1] || result;
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-
   const formatDateBR = (d: Date) => {
     const dd = String(d.getDate()).padStart(2, '0');
     const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -544,45 +532,19 @@ export function NovaEmpresa() {
       toast.error('Informe a senha do certificado');
       return;
     }
-    try {
-      setCertVerifyStatus('checking');
-      const startedAt = Date.now();
-      const buf = await pfxFileRef.current.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let binary = '';
-      const chunk = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-      }
-      const asn1Obj = forge.asn1.fromDer(binary);
-      const p12 = forge.pkcs12.pkcs12FromAsn1(asn1Obj, empresaData.certificado_senha);
-      let notAfter: Date | undefined;
-      for (const sc of p12.safeContents) {
-        for (const bag of sc.safeBags) {
-          if (bag.type === forge.pki.oids.certBag && (bag as any).cert) {
-            const cert = (bag as any).cert as forge.pki.Certificate;
-            notAfter = cert.validity.notAfter;
-          }
-        }
-      }
-      const ensureMinDelay = async (start: number, minMs: number) => {
-        const elapsed = Date.now() - start;
-        if (elapsed < minMs) await new Promise((r) => setTimeout(r, minMs - elapsed));
-      };
-      if (notAfter) {
-        await ensureMinDelay(startedAt, 500);
-        setEmpresaData(prev => ({ ...prev, certificado_validade: formatDateBR(notAfter!) }));
-        setCertVerifyStatus('valid');
-        toast.success('Senha verificada e validade preenchida');
-      } else {
-        await ensureMinDelay(startedAt, 500);
-        setCertVerifyStatus('invalid');
-        toast.error('Não foi possível identificar a validade do certificado');
-      }
-    } catch (err) {
-      console.error('Falha ao verificar senha do PFX:', err);
-      // Garante feedback por pelo menos 500ms
-      await new Promise((r) => setTimeout(r, 500));
+    setCertVerifyStatus('checking');
+    const buf = await pfxFileRef.current.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    const result = await parsePfxCertificate(bytes, empresaData.certificado_senha);
+    if (result.ok) {
+      setEmpresaData(prev => ({ ...prev, certificado_validade: formatDateBR(result.notAfter) }));
+      setCertVerifyStatus('valid');
+      toast.success('Senha verificada e validade preenchida');
+    } else if (result.reason === 'no-validity') {
+      setCertVerifyStatus('invalid');
+      toast.error('Não foi possível identificar a validade do certificado');
+    } else {
+      console.error('Falha ao verificar senha do PFX');
       setCertVerifyStatus('invalid');
       toast.error('Senha inválida ou arquivo .pfx não pôde ser lido');
     }
