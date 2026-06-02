@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { parsePfxCertificate, readFileAsBase64 } from "@/utils/certificate";
 import { isValidCNPJ, normalizeSituacao, getCnpjBlockInfo } from "@/utils/cnpj";
+import { formatDateBR, ddmmyyyyToISO, parseToBR, normalizeTipoEmpresa, normalizeTributacao, resizeImageToPNG } from "@/utils/companyFormat";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { StepIndicator } from "@/components/products/create/StepIndicator";
 import { NavigationButtons } from "@/components/products/create/NavigationButtons";
@@ -298,12 +299,6 @@ export function NovaEmpresa() {
       const loadedCnpjDigits = String(company.cnpj || '').replace(/\D/g, '');
       lastFetchedRef.current = loadedCnpjDigits;
 
-      const parseToBR = (iso: string) => {
-        const ymd = String(iso || '').slice(0, 10);
-        const [y, m, d] = ymd.split('-');
-        return (y && m && d) ? `${d}/${m}/${y}` : '';
-      };
-
       // Map all fields in a single setState call to avoid double renders
       setEmpresaData(prev => ({
         ...prev,
@@ -389,51 +384,6 @@ export function NovaEmpresa() {
     if (currentStep > 1) {
       setCurrentStep(prev => prev - 1);
     }
-  };
-
-  const formatDateBR = (d: Date) => {
-    const dd = String(d.getDate()).padStart(2, '0');
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const yyyy = d.getFullYear();
-    return `${dd}/${mm}/${yyyy}`;
-  };
-
-  const ddmmyyyyToISO = (s?: string | null) => {
-    const v = String(s || '').trim();
-    const m = v.match(/^([0-3]\d)\/(0\d|1[0-2])\/(\d{4})$/);
-    if (!m) return null;
-    const dd = m[1], mm = m[2], yyyy = m[3];
-    return `${yyyy}-${mm}-${dd}`;
-  };
-
-  const resizeImageToPNG = (file: File, maxW = 200, maxH = 200): Promise<Blob> => {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let w = img.naturalWidth || img.width;
-        let h = img.naturalHeight || img.height;
-        const ratio = Math.min(maxW / w, maxH / h, 1);
-        w = Math.max(1, Math.floor(w * ratio));
-        h = Math.max(1, Math.floor(h * ratio));
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return reject(new Error('Canvas context not available'));
-        ctx.drawImage(img, 0, 0, w, h);
-        canvas.toBlob((blob) => {
-          if (!blob) return reject(new Error('Failed to generate PNG blob'));
-          resolve(blob);
-        }, 'image/png', 1.0);
-      };
-      img.onerror = (e) => reject(e);
-      const reader = new FileReader();
-      reader.onload = () => {
-        img.src = String(reader.result || '');
-      };
-      reader.onerror = (e) => reject(e);
-      reader.readAsDataURL(file);
-    });
   };
 
   const uploadLogoToStorage = async (blob: Blob): Promise<string | null> => {
@@ -892,22 +842,3 @@ export function NovaEmpresa() {
 }
 
 export default NovaEmpresa;
-
-// Normalização para atender constraints do banco
-const normalizeTipoEmpresa = (v: string) => {
-  const s = String(v || '').trim().toLowerCase();
-  if (s === 'matriz' || s === 'matríZ') return 'Matriz';
-  if (s === 'filial') return 'Filial';
-  // fallback seguro
-  return 'Matriz';
-};
-
-const normalizeTributacao = (v: string) => {
-  const s = String(v || '').trim().toLowerCase();
-  if (s === 'mei') return 'MEI';
-  if (s === 'simples nacional') return 'Simples Nacional';
-  if (s.includes('excesso') || s.includes('sublimite')) return 'Simples Nacional - Excesso de sublimite de receita bruta';
-  if (s === 'regime normal' || s === 'normal') return 'Regime Normal';
-  // fallback comum
-  return 'Simples Nacional';
-};
