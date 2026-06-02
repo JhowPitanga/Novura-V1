@@ -9,11 +9,9 @@ import { useOrdersFiltersState } from "@/hooks/useOrdersFiltersState";
 import { useOrdersSelection } from "@/hooks/useOrdersSelection";
 import { useOrdersDialogs } from "@/hooks/useOrdersDialogs";
 import { useOrdersActions } from "@/hooks/useOrdersActions";
+import { useCompanyIdCache } from "@/hooks/useCompanyIdCache";
 import { createOrderColumns } from "@/components/orders/orderColumnDefs";
-import {
-  getCompanyIdForOrg,
-  syncMercadoLivreOrders,
-} from "@/services/orders.service";
+import { syncMercadoLivreOrders } from "@/services/orders.service";
 import { isAbortLikeError } from "@/utils/orderUtils";
 
 type ColumnPref = { id: string; enabled: boolean };
@@ -91,14 +89,7 @@ export function useOrdersPageController() {
   }, []);
 
   // --- Company ID (cached) ---
-  const companyIdRef = useRef<string | null>(null);
-  useEffect(() => { companyIdRef.current = null; }, [organizationId]);
-  const getCompanyId = useCallback(async (): Promise<string | null> => {
-    if (companyIdRef.current) return companyIdRef.current;
-    if (!organizationId) return null;
-    companyIdRef.current = await getCompanyIdForOrg(organizationId);
-    return companyIdRef.current;
-  }, [organizationId]);
+  const { getCompanyId } = useCompanyIdCache(organizationId);
 
   // --- NF-e status ---
   const {
