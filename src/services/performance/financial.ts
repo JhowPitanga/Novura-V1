@@ -55,7 +55,7 @@ export async function fetchFinancialOverview(
             taxPctByMarketplace[key] = Number(taxPctByCompanyId[companyId] || 0);
         });
 
-        let q: any = supabase
+        const q: any = supabase
             .from("orders")
             .select("id, gross_amount, net_amount, marketplace_fee, shipping_cost, marketplace")
             .eq("organization_id", orgId)
@@ -176,7 +176,7 @@ export async function fetchFinancialOverview(
             if (!key || !companyId || taxPctByMarketplace[key] != null) return;
             taxPctByMarketplace[key] = Number(taxPctByCompanyId[companyId] || 0);
         });
-        let q: any = supabase
+        const q: any = supabase
             .from("orders")
             .select("id, gross_amount, net_amount, marketplace_fee, shipping_cost, marketplace")
             .eq("organization_id", orgId)

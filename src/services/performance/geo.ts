@@ -17,7 +17,7 @@ async function fetchSalesByStateFallback(
     const { fromISO, toISO } = toISOs(dateRange);
     if (!fromISO || !toISO) return [];
 
-    let ordersQ: any = supabase
+    const ordersQ: any = supabase
         .from("orders")
         .select("id, gross_amount, buyer_state, marketplace")
         .eq("organization_id", orgId)
