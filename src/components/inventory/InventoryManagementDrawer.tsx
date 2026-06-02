@@ -1,5 +1,6 @@
-// §1 SIZE EXCEPTION (ENGINEERING_STANDARDS.md): ~340 LOC thin compositor retaining
-// full drawer markup for adjust/transfer forms; hooks own validation and stock writes.
+// §1 SIZE EXCEPTION (ENGINEERING_STANDARDS.md): ~440 LOC thin compositor retaining
+// full drawer markup for adjust/transfer form modes; hooks own validation and stock writes.
+// Follow-up: extract <AdjustForm> and <TransferForm> as sub-components to reach ≤200.
 import { useState, useEffect, useId, useRef } from "react";
 import { Minus, Package, Plus, Settings, ArrowRightLeft, Info } from "lucide-react";
 import {
