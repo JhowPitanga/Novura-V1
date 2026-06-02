@@ -45,7 +45,6 @@ export const parseToBR = (iso: string): string => {
  */
 export const normalizeTipoEmpresa = (v: string): 'Matriz' | 'Filial' => {
   const s = String(v || '').trim().toLowerCase();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (s === 'matriz' || s === 'matríZ') return 'Matriz';
   if (s === 'filial') return 'Filial';
   return 'Matriz';
