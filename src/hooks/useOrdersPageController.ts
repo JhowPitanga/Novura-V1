@@ -1,3 +1,23 @@
+/**
+ * §1 SIZE EXCEPTION — useOrdersPageController: ~425 lines (limit 150).
+ *
+ * Irreducible coordinator wiring breakdown:
+ *   - 4 cross-hook callbacks that genuinely need data from 3+ sub-hooks
+ *     (handleSaveVinculacoes, handleScan, handleCompleteBipagem,
+ *      handleSyncSelectedOrders) — ~74 lines. Cannot be extracted without
+ *     prop-drilling or changing the public contract.
+ *   - useOrdersActions invocation: 30 params × ~1.2 lines = ~36 lines.
+ *     Params are wiring, not logic; factoring them out adds indirection.
+ *   - Flat ~50-field return invariant (preserves Orders.tsx zero-churn) = ~52 lines.
+ *   - 12 sub-hook invocations + destructuring = ~100 lines.
+ *   - emitEnvironment + processingIds inline state = ~20 lines.
+ *     (Single-caller, extracting would be premature abstraction per §1.2)
+ *   - layout refs + layoutEffect + global error listeners = ~32 lines.
+ *
+ * Follow-up: a dedicated "Orders.tsx API redesign" phase could namespace the
+ * flat return into groups (data/actions/columns/…) and reduce the return block,
+ * but that phase must update Orders.tsx and is out of scope for this refactor.
+ */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
