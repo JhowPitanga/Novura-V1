@@ -10,11 +10,10 @@ import { useOrdersSelection } from "@/hooks/useOrdersSelection";
 import { useOrdersDialogs } from "@/hooks/useOrdersDialogs";
 import { useOrdersActions } from "@/hooks/useOrdersActions";
 import { useCompanyIdCache } from "@/hooks/useCompanyIdCache";
+import { useColumnPreferences } from "@/hooks/useColumnPreferences";
 import { createOrderColumns } from "@/components/orders/orderColumnDefs";
 import { syncMercadoLivreOrders } from "@/services/orders.service";
 import { isAbortLikeError } from "@/utils/orderUtils";
-
-type ColumnPref = { id: string; enabled: boolean };
 
 export function useOrdersPageController() {
   const navigate = useNavigate();
@@ -39,32 +38,7 @@ export function useOrdersPageController() {
   const { printSettings, setPrintSettings, handleSavePrintSettings } = usePrintingSettings();
 
   // --- Column preferences ---
-  const [columnPrefs, setColumnPrefs] = useState<ColumnPref[] | null>(() => {
-    if (!organizationId) return null;
-    try {
-      const raw = localStorage.getItem(`pedidos_columns_${organizationId}`);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as ColumnPref[]) : null;
-    } catch { return null; }
-  });
-
-  useEffect(() => {
-    if (!organizationId) return;
-    try {
-      const raw = localStorage.getItem(`pedidos_columns_${organizationId}`);
-      if (!raw) { setColumnPrefs(null); return; }
-      const parsed = JSON.parse(raw);
-      setColumnPrefs(Array.isArray(parsed) ? (parsed as ColumnPref[]) : null);
-    } catch { /* silently ignore */ }
-  }, [organizationId]);
-
-  useEffect(() => {
-    if (!organizationId || !columnPrefs) return;
-    try {
-      localStorage.setItem(`pedidos_columns_${organizationId}`, JSON.stringify(columnPrefs));
-    } catch { /* silently ignore */ }
-  }, [columnPrefs, organizationId]);
+  const { columnPrefs, setColumnPrefs } = useColumnPreferences(organizationId);
 
   // --- Emit environment (needed by useNfeStatus before useOrdersActions) ---
   const [emitEnvironment, setEmitEnvironmentState] = useState<'homologacao' | 'producao'>(() => {
