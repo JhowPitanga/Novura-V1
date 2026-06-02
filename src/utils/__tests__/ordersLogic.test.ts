@@ -1,91 +1,25 @@
 /**
  * Characterization tests for pure order logic.
- * These inline helpers mirror the current hook implementations exactly.
- * Commit 2 will extract them to utils files; imports here will be updated then.
+ * T1-T3: imported from extracted utils (Commit 2).
+ * T4: imported from orderCsvUtils (Commit 2).
+ * T5: shopeeEpochFrom/To — inline, mirrors logic that remains in useOrderSyncActions.
+ * T6: applyVinculacoes — inline, mirrors logic that remains in useOrdersPageController.
  *
- * T1 — columnPrefsMerge   (controller lines 361-380)
- * T2 — isPedidoAtrasado   (controller lines 333-343)
- * T3 — buildStatusCounts  (controller lines 322-331)
- * T4 — buildCsvRow        (actions lines 322-346)
- * T5 — shopeeEpoch        (actions lines 226-241)
- * T6 — applyVinculacoes   (controller handleSaveVinculacoes lines 205-230)
+ * T1 — columnPrefsMerge   (controller lines 361-380 → orderColumnUtils.ts)
+ * T2 — isPedidoAtrasado   (controller lines 333-343 → orderStatusUtils.ts)
+ * T3 — buildStatusCounts  (controller lines 322-331 → orderStatusUtils.ts)
+ * T4 — buildCsvRow        (actions lines 322-346   → orderCsvUtils.ts)
+ * T5 — shopeeEpoch        (actions lines 226-241   — stays in hook, tested inline)
+ * T6 — applyVinculacoes   (controller lines 205-230 — stays in hook, tested inline)
  */
 import { describe, it, expect } from "vitest";
-import { matchStatus, normStatus } from "@/hooks/useOrderFiltering";
 import {
   calendarStartOfDaySPEpochMs,
   calendarEndOfDaySPEpochMs,
-  formatDateTimeSP,
 } from "@/lib/datetime";
-import { mapTipoEnvioLabel } from "@/utils/orderUtils";
-
-// ─── Inline helpers ───────────────────────────────────────────────────────────
-// Each function is a verbatim copy of the current hook logic.
-// On Commit 2 these bodies move to src/utils/order{Column,Status,Csv}Utils.ts
-// and this file imports from there instead.
-
-function columnPrefsMerge(
-  freshCols: Array<{ id: string; alwaysVisible?: boolean; enabled?: boolean; [k: string]: unknown }>,
-  columnPrefs: Array<{ id: string; enabled: boolean }> | null,
-): typeof freshCols {
-  if (!columnPrefs) return freshCols;
-  const freshMap = new Map(freshCols.map(c => [c.id, c]));
-  const seen = new Set<string>();
-  const merged: typeof freshCols = [];
-  for (const pref of columnPrefs) {
-    const col = freshMap.get(pref.id);
-    if (!col) continue;
-    merged.push({ ...col, enabled: col.alwaysVisible ? true : pref.enabled });
-    seen.add(pref.id);
-  }
-  for (const col of freshCols) {
-    if (!seen.has(col.id)) merged.push(col);
-  }
-  return merged;
-}
-
-function isPedidoAtrasado(p: any): boolean {
-  const shipLower = String(p?.shipmentStatus ?? '').toLowerCase();
-  const deliveredStatuses = ['delivered', 'receiver_received', 'picked_up', 'ready_to_pickup', 'shipped', 'dropped_off'];
-  const ns = normStatus(p?.internalStatus);
-  const isCancelledOrReturn = ns === 'cancelado' || ns === 'devolucao' || ns === 'cancelled' || ns === 'returned';
-  if (deliveredStatuses.includes(shipLower) || isCancelledOrReturn || ns === 'enviado' || ns === 'shipped') return false;
-  const slaLower = String(p?.shippingSla?.status ?? '').toLowerCase();
-  const ed = p?.shippingSla?.expectedDate;
-  const expired = ed ? (new Date(ed).getTime() - new Date().getTime() <= 0) : false;
-  return slaLower === 'delayed' || expired;
-}
-
-function buildStatusCounts(baseFiltered: any[]): Record<string, number> {
-  return {
-    todos: baseFiltered.length,
-    'a-vincular': baseFiltered.filter(p => matchStatus(p, 'a-vincular')).length,
-    'emissao-nf': baseFiltered.filter(p => matchStatus(p, 'emissao-nf')).length,
-    impressao: baseFiltered.filter(p => matchStatus(p, 'impressao')).length,
-    'aguardando-coleta': baseFiltered.filter(p => matchStatus(p, 'aguardando-coleta')).length,
-    enviado: baseFiltered.filter(p => matchStatus(p, 'enviado')).length,
-    cancelado: baseFiltered.filter(p => matchStatus(p, 'cancelado')).length,
-    'sem-estoque': baseFiltered.filter(p => normStatus(p.internalStatus) === 'sem_estoque').length,
-  };
-}
-
-function buildCsvRow(p: any): (string | number | null | undefined)[] {
-  return [
-    p.id,
-    p.marketplace,
-    p.productTitle,
-    p.sku || "N/A",
-    p.customerName,
-    `R$ ${p.totalAmount.toFixed(2)}`,
-    (() => {
-      const base = (p as any).paidAt || (p as any).createdAt;
-      if (!base) return "";
-      try { return formatDateTimeSP(base); } catch { return String(base); }
-    })(),
-    p.status,
-    mapTipoEnvioLabel((p as any).shippingType),
-  ];
-}
+import { columnPrefsMerge } from "@/utils/orderColumnUtils";
+import { isPedidoAtrasado, buildStatusCounts } from "@/utils/orderStatusUtils";
+import { buildCsvRow } from "@/utils/orderCsvUtils";
 
 function shopeeEpochFrom(dateStr: string): number | undefined {
   if (!dateStr) return undefined;
