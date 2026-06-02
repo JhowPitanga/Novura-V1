@@ -51,6 +51,42 @@ async function syncOrders(orgId: string) {
 }
 ```
 
+### 1.1 Responsibility first — size is the *signal*, not the goal
+
+The limits above are a **smoke alarm, not the fire**. The real rule is the one at the
+top of this document: *one function does one thing; one file has one responsibility.*
+A file is "too large" when it has accumulated **more than one reason to change** — the
+line count is just the cheapest way to detect that.
+
+This means two things in practice:
+
+1. **Never split by visual structure.** Extracting "the header part" and "the footer
+   part" of a 400-line component into sub-components is the most common refactoring
+   mistake: the sub-components end up needing 15 props because the *logic* is still
+   centralized. Split by **what the code does** — extract custom hooks by
+   responsibility, then let the parent compose. (See `CONVENTIONS.md §14`.)
+
+2. **Hitting a limit is a prompt to think, not a license to shard.** When a function
+   crosses 50 lines, ask "what are the distinct jobs here?" and name each one. Do not
+   mechanically cut it at line 50 into `partA()`/`partB()` — that produces a smaller
+   file with the *same* tangled responsibility.
+
+### 1.2 When NOT to split
+
+Decomposition has a cost (indirection, more files, more imports). Do not pay it when it
+buys nothing. **Leave code as-is** when all of these are true:
+
+- The unit already has a single, clearly-stateable responsibility.
+- It is over the line limit only because of irreducible data (e.g. a constant lookup
+  table, a long discriminated union, a generated types block).
+- Splitting would create a "component"/"helper" with exactly one caller and no
+  independent meaning (premature abstraction — see DRY Rule of Three in `CONVENTIONS.md`).
+
+When you keep an over-limit file for one of these reasons, **say so in the PR
+description** so a reviewer (or a sub-agent) does not "fix" it later. The limit is
+non-negotiable as a *trigger for review*; the outcome of that review can be a
+documented, deliberate exception.
+
 ---
 
 ## 2. SOLID Principles
