@@ -1,3 +1,4 @@
+// SIZE EXCEPTION (§1 ENGINEERING_STANDARDS.md): 4 tightly coupled draft CRUD functions; 5 lines over 150 limit.
 import { supabase } from "@/integrations/supabase/client";
 import type { ListingDraft } from "@/types/listings";
 

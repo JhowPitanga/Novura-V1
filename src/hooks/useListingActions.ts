@@ -1,3 +1,4 @@
+// SIZE EXCEPTION (§1 ENGINEERING_STANDARDS.md): 9 action handlers for one feature domain; cannot be split without artificial indirection. 8 lines over 150 limit.
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";

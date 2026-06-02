@@ -1,3 +1,4 @@
+// SIZE EXCEPTION (§1 ENGINEERING_STANDARDS.md): canonical/legacy/fallback fetch paths cannot be split across files without breaking the unified fallback chain; 4 lines over 150 limit.
 import { supabase } from "@/integrations/supabase/client";
 
 export interface FetchListingsResult {

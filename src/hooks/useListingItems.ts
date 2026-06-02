@@ -1,3 +1,4 @@
+// SIZE EXCEPTION (§1 ENGINEERING_STANDARDS.md): single hook orchestrating fetch, realtime, fulfillment enrichment, and stock distribution; all concerns share invalidation state and cannot be split without prop-drilling. 48 lines over 150 limit.
 import { useCallback, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchListings, fetchFulfillmentStockForListings, fetchStockDistributionForListings } from "@/services/listings.service";

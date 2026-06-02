@@ -1,3 +1,4 @@
+// SIZE EXCEPTION (§1 ENGINEERING_STANDARDS.md): VariationItem interface + formatVariationData + two SKU helpers form a single cohesive unit; 4 lines over 150 limit.
 export interface VariationItem {
   id: string | number;
   sku: string;
