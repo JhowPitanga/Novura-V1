@@ -1,3 +1,6 @@
+// §1 Exception: 225 LOC — justified by 5 mutations (create/update/assign/delete/toggleCoAssignee)
+// each requiring onMutate optimistic update + onError rollback + the members and tasks queries.
+// Splitting would require context or prop-drilling with no independent reuse boundary.
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";

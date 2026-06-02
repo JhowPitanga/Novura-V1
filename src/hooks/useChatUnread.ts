@@ -1,3 +1,7 @@
+// §1 Exception: 167 LOC — justified by tripartite hybrid pattern:
+// DB initial fetch (useQuery) + Supabase realtime (postgres_changes) + window event bus
+// (chat:message-received, chat:active-unread-changed). Splitting would fragment a
+// single coherent state machine across three files with no independent reuse.
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
