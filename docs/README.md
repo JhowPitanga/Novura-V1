@@ -20,7 +20,16 @@ This folder contains the three anchor documents used as stable context for migra
 
 **Read when:** writing new code, reviewing a PR, or creating a migration PRD.
 
-**Relationship to ENGINEERING_STANDARDS.md:** `CONVENTIONS.md` is forward-looking and covers modern patterns. `ENGINEERING_STANDARDS.md` covers size limits and cycle-specific rules — those take precedence on size.
+**Relationship to ENGINEERING_STANDARDS.md:** `CONVENTIONS.md` is forward-looking and covers modern patterns. `ENGINEERING_STANDARDS.md` covers size limits and cycle-specific rules — those take precedence on size. Section 14 covers how to refactor legacy code (decompose by responsibility, not visual structure).
+
+---
+
+### [AGENT_REFACTORING_PLAYBOOK.md](./AGENT_REFACTORING_PLAYBOOK.md)
+**What:** Operating procedure for AI sub-agents (Cursor / Claude Code) that refactor the codebase — the Explore → Plan → Approve → Execute → Self-check → Hand off workflow, non-negotiable invariants, least-privilege tool profiles per agent role, worktree isolation for parallel refactors, a Definition of Done checklist, and a copy-paste delegation prompt template.
+
+**Read when:** delegating a refactor to a sub-agent, or refactoring a god page/hook yourself.
+
+**Relationship:** This is the *process*. `CONVENTIONS.md §14` is the *rules*, `ENGINEERING_STANDARDS.md §1` is the *size limits*, and `REFACTORING_PLAN.md` (repo root) is the *target list and phases*.
 
 ---
 

@@ -1,3 +1,4 @@
+// DEAD CODE — do not consolidate with useProductForm's inline validation. See base.schema.ts.
 // Zod schema for a variation group (VARIACAO_PAI) and its items (VARIACAO_ITEM)
 import { z } from 'zod';
 import {

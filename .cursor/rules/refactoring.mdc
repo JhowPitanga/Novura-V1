@@ -1,0 +1,58 @@
+---
+description: How to refactor / reduce file size in this codebase. Decompose by responsibility (not visual), data-flow-first, behavior-preserving. Apply when splitting a god page/hook/component or reducing file size.
+globs: src/**/*.ts,src/**/*.tsx
+alwaysApply: false
+---
+
+# Refactoring rules (Novura)
+
+When reducing the size of, or splitting, an existing file, follow the project process.
+Full details: `docs/AGENT_REFACTORING_PLAYBOOK.md`, `docs/CONVENTIONS.md §14`,
+`docs/ENGINEERING_STANDARDS.md §1`.
+
+## Behavior-preserving
+
+- A refactor changes **structure, not behavior**. No new feature, bug fix, or visual/CSS
+  change in a `refactor` commit. Found a bug? Note it; fix it separately.
+- Do not change public contracts (URL routes, exported signatures, cross-feature props,
+  DB/RPC) unless explicitly asked.
+- UI strings stay Portuguese; code identifiers are English.
+
+## Decompose by responsibility, NOT visual structure
+
+- Do **not** split into "header / body / footer" sub-components — they end up needing 15
+  props because the logic stays centralized.
+- Extract **behavior** into hooks/services; the parent **composes, not computes**.
+- Heuristic: if an extracted sub-component needs more than ~5 handler props, the split
+  axis is wrong.
+
+## Data-flow-first order
+
+1. Move `supabase.from(...)`/`.rpc(...)` into `services/` (none survive in components or
+   hook bodies).
+2. Replace `useState`+`useEffect` data fetching with TanStack Query (co-located keys).
+3. Pull pure helpers into `utils`.
+4. Split god hooks into domain hooks (a hook returning >10 values is a god hook).
+5. Extract presentational sub-components last.
+
+## Size limits (review triggers — `ENGINEERING_STANDARDS §1`)
+
+- Function body ≤ 50 lines · service/hook/util file ≤ 150 · page/component ≤ 200 · edge
+  handler ≤ 80.
+- Size is a **signal, not a dogma**. Don't shard a file whose largeness is irreducible
+  data or a single clear responsibility — document the exception instead.
+
+## Forbidden in refactored code
+
+- `supabase.from(...)` in a component or hook body.
+- `useState`+`useEffect` for server data.
+- `any`, silent `catch(e) {}`, `// @ts-ignore` to pass build, magic strings.
+
+## Verify before done
+
+`npm run build` and `npm run lint` must pass. `npx dpdm src/` circular-dependency count
+must not increase. Commit per responsibility: `refactor(<scope>): <what>`.
+
+> For large multi-file refactors, delegate to the `refactor-explorer` →
+> `refactor-planner` → `refactor-executor` → `refactor-reviewer` agents
+> (`.claude/agents/`), or follow the Explore→Plan→Execute→Review process in the playbook.

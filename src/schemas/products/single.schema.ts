@@ -1,3 +1,4 @@
+// DEAD CODE — do not consolidate with useProductForm's inline validation. See base.schema.ts.
 // Zod schema for a single (UNICO) product
 import { z } from 'zod';
 import {

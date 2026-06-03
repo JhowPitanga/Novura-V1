@@ -19,6 +19,7 @@
 11. [Design Patterns](#11-design-patterns)
 12. [Accessibility](#12-accessibility)
 13. [Git and PR Conventions](#13-git-and-pr-conventions)
+14. [Refactoring Legacy Code](#14-refactoring-legacy-code)
 
 ---
 
@@ -907,6 +908,108 @@ Every PR for a migration step (from `MIGRATION/*.md`) must:
 
 ---
 
+## 14. Refactoring Legacy Code
+
+This codebase has known god pages and god hooks (`ARCHITECTURE.md §10`,
+`REFACTORING_PLAN.md`). When you reduce the size of an existing file, follow these
+rules. They are the *how*; `ENGINEERING_STANDARDS.md §1` is the *how much*; and the
+step-by-step operating procedure for AI agents is in
+[AGENT_REFACTORING_PLAYBOOK.md](./AGENT_REFACTORING_PLAYBOOK.md).
+
+### 14.1 Refactoring is behavior-preserving
+
+A refactor changes **structure, not behavior**. No new feature, no bug fix, no visual
+change is allowed in the same commit as a refactor — they are different `type`s in
+Conventional Commits (`refactor` vs `feat`/`fix`) for a reason.
+
+- If you find a bug while refactoring, **note it and leave it** (or fix it in a separate
+  commit). A refactor PR that also changes behavior is unreviewable.
+- Characterize the current behavior with a test *before* moving code, so the test proves
+  you preserved it. See `TESTING.md`.
+
+### 14.2 Decompose by responsibility, not by visual structure
+
+This is the single most important refactoring rule and the most common mistake.
+
+```tsx
+// ❌ Visual split — the logic stays centralized, so the children need 15 props
+function OrdersPage() { /* 600 lines */ }
+//   → OrdersHeader (needs 12 props), OrdersBody (needs 18 props), OrdersFooter (...)
+
+// ✅ Responsibility split — extract behavior into hooks; the page composes
+function useOrdersQuery(params) { /* data */ }
+function useOrderSelection() { /* selection UI state */ }
+function useOrderFilters() { /* filter UI state from URL */ }
+function useOrderMutations() { /* emit / sync / print */ }
+
+function OrdersPage() {
+  const orders = useOrdersQuery(filters);
+  const selection = useOrderSelection();
+  // page composes hooks + presentational components; it does not compute
+  return <OrdersTable orders={orders.data} selection={selection} />;
+}
+```
+
+**Heuristic:** if an extracted component needs more than ~5 handler props from its
+parent, you split along the wrong axis. The logic, not the markup, is the unit of
+decomposition. The parent should **compose, not compute**.
+
+### 14.3 Order of operations (data flow first)
+
+When breaking a god component, extract in this order — each step shrinks the file and
+de-risks the next:
+
+1. **Move `supabase.from(...)` calls into a `service`** (`features/<x>/api/service.ts`).
+   No `supabase` calls survive in components or hook bodies (`ENGINEERING_STANDARDS §7`).
+2. **Replace `useState`+`useEffect` data fetching with TanStack Query hooks** (§6).
+3. **Pull pure helpers out** into `utils.ts` (formatting, mapping, validation).
+4. **Split the god hook** into domain hooks (§7 *Avoid God Hooks*).
+5. **Extract presentational sub-components last**, once they only receive data + a few
+   callbacks.
+
+### 14.4 Feature-based colocation + module boundaries
+
+Move refactored code into the target `features/<domain>/` structure (§4). Enforce
+isolation so the refactor does not silently couple features:
+
+- `import/no-restricted-paths` — a feature must not import from another feature (§10).
+- `import/no-cycle` — circular dependencies make files impossible to split cleanly. Run
+  `npx dpdm src/` before and after a large refactor; the cycle count must not increase.
+
+### 14.5 Barrel files (`index.ts`) — public API, used with care
+
+A feature folder may expose a small **public API** via `index.ts` (re-export the page,
+the hooks meant for cross-feature use). But:
+
+- Do **not** create barrel files inside `components/` or `utils/` just to shorten
+  imports — they defeat tree-shaking and can bloat the bundle.
+- Inside a feature, prefer **direct imports** between sibling files.
+- After a refactor that touches imports, sanity-check bundle impact with
+  `npx source-map-explorer dist/assets/*.js` (or `vite-bundle-visualizer`).
+
+### 14.6 Scope state and context to the consumer
+
+```tsx
+// ❌ Provider at the root for state only one section uses
+<App><OrdersSelectionProvider>{/* whole app */}</OrdersSelectionProvider></App>
+
+// ✅ Provider wraps only the subtree that consumes it
+<OrdersPage><OrdersSelectionProvider>{/* orders table only */}</OrdersSelectionProvider></OrdersPage>
+```
+
+Push providers as close to their consumers as possible. Keep `useState` at the lowest
+component that needs it. Server data lives in TanStack Query, never lifted into context
+(§7).
+
+### 14.7 Pragmatism — size is a signal, not a dogma
+
+The hard limits in `ENGINEERING_STANDARDS.md` are review triggers, not absolutes. Before
+splitting, confirm the split actually buys maintainability (see *When NOT to split*,
+`ENGINEERING_STANDARDS §1.2`). A documented, deliberate exception is acceptable; an
+undocumented 900-line file is not.
+
+---
+
 ## References
 
 - [React 19 features](https://react.dev/blog/2024/12/05/react-19) — Actions, useActionState, useOptimistic, ref as prop, document metadata
@@ -918,3 +1021,6 @@ Every PR for a migration step (from `MIGRATION/*.md`) must:
 - [Supabase RLS guide](https://supabase.com/docs/guides/auth/row-level-security)
 - [TypeScript strict flags 2026](https://oneuptime.com/blog/post/2026-01-15-strict-typescript-configuration-react/view)
 - [ENGINEERING_STANDARDS.md](./ENGINEERING_STANDARDS.md) — size limits, cycle rules (supersede this document on size)
+- [AGENT_REFACTORING_PLAYBOOK.md](./AGENT_REFACTORING_PLAYBOOK.md) — operating procedure for AI sub-agents performing refactors
+- [Feature-based React architecture at scale](https://oneuptime.com/blog/post/2026-01-15-structure-large-scale-react-applications/view) — folder structure, module boundaries
+- [React mistakes that show up at scale](https://www.sethi.io/blog/the-react-mistakes-that-only-show-up-at-scale) — visual vs responsibility splitting, barrel files, circular deps
