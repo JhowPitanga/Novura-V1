@@ -1,4 +1,4 @@
-// §1 SIZE-EXCEPTION: 224 lines (limit 150). Justified: this file is the sole
+// §1 SIZE-EXCEPTION: 228 lines (limit 150). Justified: this file is the sole
 // service for the companies domain covering CRUD, logo storage, CNPJ lookup,
 // form hydration mapping, and payload normalization. Splitting would scatter
 // tightly coupled company DB logic across multiple files with no clean seam.
