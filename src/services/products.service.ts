@@ -17,7 +17,7 @@
  */
 
 import { supabase } from '@/integrations/supabase/client';
-import { clampInt, withRandomSuffix, INT_MAX } from '@/utils/products/skuHelpers';
+import { clampInt, withRandomSuffix, INT_MAX, parseBarcode } from '@/utils/products/skuHelpers';
 import type { ProductVariation, KitItem } from '@/types/products';
 import type { BaseProductPayload } from '@/utils/products/productPayload';
 
@@ -132,7 +132,7 @@ export async function insertVariationChildren(
         description: v.description || null,
         cost_price: v.costPrice ? parseFloat(String(v.costPrice)) : 0,
         sell_price: v.sellPrice ? parseFloat(String(v.sellPrice)) : null,
-        barcode: clampInt((v as any).barcode ?? (v as any).ean),
+        barcode: parseBarcode((v as any).barcode ?? (v as any).ean),
         ncm: clampInt((v as any).ncm, INT_MAX),
         cest: v.cest ? parseInt(String(v.cest)) : null,
         package_height: v.height ? parseInt(String(v.height)) : 0,

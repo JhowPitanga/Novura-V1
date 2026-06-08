@@ -65,7 +65,8 @@ export const parsePfxCertificate = async (
       await ensureMinDelay(startedAt, 500);
       return { ok: false, reason: 'no-validity' };
     }
-  } catch {
+  } catch (e) {
+    console.warn('parsePfxCertificate failed (invalid password or corrupt file):', (e as Error)?.message || e);
     // Fixed 500ms delay in error path — intentionally different from ensureMinDelay
     await new Promise((r) => setTimeout(r, 500));
     return { ok: false, reason: 'invalid-password' };

@@ -90,15 +90,29 @@ async function processJob(
 
     // deno-lint-ignore no-explicit-any
     const providerKey = (intRow as any)?.marketplace_providers?.key;
-    // deno-lint-ignore no-explicit-any
-    const displayName = (intRow as any)?.marketplace_providers?.display_name;
     if (!providerKey) throw new Error("integration_has_no_provider");
 
     const adapter = getProvider(providerKey);
     const credsAdapter = new SupabaseAppCredentialsAdapter(admin);
-    let creds = await credsAdapter.getByName(providerKey);
-    if (!creds && displayName) creds = await credsAdapter.getByName(displayName);
-    if (!creds) throw new Error(`no_credentials:${providerKey}`);
+
+    // deno-lint-ignore no-explicit-any
+    const intConfig = (intRow as any)?.config as Record<string, unknown> | null;
+    const appId = typeof intConfig?.app_id === "string" ? intConfig.app_id : null;
+
+    let creds = appId ? await credsAdapter.getByAppId(appId) : null;
+    if (!creds) {
+      let byName = await credsAdapter.getByName(providerKey);
+      // deno-lint-ignore no-explicit-any
+      const displayName = (intRow as any)?.marketplace_providers?.display_name;
+      if (!byName && displayName) byName = await credsAdapter.getByName(displayName);
+      if (!byName) throw new Error(`no_credentials:${providerKey}`);
+      creds = {
+        client_id: byName.client_id,
+        client_secret: byName.client_secret,
+        app_id: appId ?? "",
+        config: intConfig ?? {},
+      };
+    }
 
     const tokens = await adapter.refreshTokens(intRow as never, {
       clientId: creds.client_id,
@@ -120,7 +134,7 @@ async function processJob(
         access_token: encAccess,
         refresh_token: encRefresh,
         expires_at: expiresAt,
-        expires_in: String(tokens.expiresInSeconds),
+        expires_in: tokens.expiresInSeconds,
         status: "active",
         last_refresh_at: now.toISOString(),
         last_refresh_error: null,

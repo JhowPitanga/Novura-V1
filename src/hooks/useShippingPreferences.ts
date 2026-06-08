@@ -67,7 +67,9 @@ export function useShippingPreferences({
         const canFlex = hasSelfService && ((data as any)?.self_service === true);
         setPreferFlex(!!(itemRow as any)?.cap_flex);
         setCanUseFlex(canFlex);
-      } catch {}
+      } catch (e) {
+        console.warn("useShippingPreferences: failed to load shipping preferences, using defaults", e);
+      }
     };
     loadShippingPrefs();
   }, [organizationId, itemRow, currentStep]);

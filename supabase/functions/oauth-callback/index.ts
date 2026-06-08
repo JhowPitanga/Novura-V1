@@ -97,23 +97,36 @@ async function handleCallback(req: Request): Promise<Response> {
     connectedByUserId,
     redirectUri,
     correlationId,
+    appId,
+    reconnectIntegrationId,
   } = statePayload;
 
-  // Load provider credentials
   const credsAdapter = new SupabaseAppCredentialsAdapter(admin);
-  let creds = await credsAdapter.getByName(providerKey);
-  if (!creds) {
-    const { data: prov } = await admin
-      .from("marketplace_providers")
-      .select("display_name")
-      .eq("key", providerKey)
-      .single();
-    if (prov?.display_name) {
-      creds = await credsAdapter.getByName(prov.display_name);
-    }
+  let appCreds = appId ? await credsAdapter.getByAppId(appId) : null;
+  if (appId && !appCreds) {
+    return buildErrorResponse(req, `no_credentials_for_app:${appId}`, providerKey);
   }
-  if (!creds) {
-    return buildErrorResponse(req, `no_credentials_for_provider:${providerKey}`, providerKey);
+  if (!appCreds) {
+    let creds = await credsAdapter.getByName(providerKey);
+    if (!creds) {
+      const { data: prov } = await admin
+        .from("marketplace_providers")
+        .select("display_name")
+        .eq("key", providerKey)
+        .single();
+      if (prov?.display_name) {
+        creds = await credsAdapter.getByName(prov.display_name);
+      }
+    }
+    if (!creds) {
+      return buildErrorResponse(req, `no_credentials_for_provider:${providerKey}`, providerKey);
+    }
+    appCreds = {
+      client_id: creds.client_id,
+      client_secret: creds.client_secret,
+      app_id: appId ?? "",
+      config: {},
+    };
   }
 
   // Look up provider row to get provider_id and marketplace_name
@@ -140,6 +153,8 @@ async function handleCallback(req: Request): Promise<Response> {
     connectedByUserId: connectedByUserId ?? null,
     redirectUri: redirectUri ?? "",
     correlationId: correlationId ?? "",
+    appId: appId ?? appCreds.app_id ?? null,
+    appConfig: appCreds.config,
     nonce: statePayload.nonce,
     issuedAt: statePayload.issuedAt,
   };
@@ -147,8 +162,8 @@ async function handleCallback(req: Request): Promise<Response> {
   let tokens;
   try {
     tokens = await adapter.exchangeCode(ctx, code, codeVerifier, {
-      clientId: creds.client_id,
-      clientSecret: creds.client_secret,
+      clientId: appCreds.client_id,
+      clientSecret: appCreds.client_secret,
     }, extras);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -199,15 +214,62 @@ async function handleCallback(req: Request): Promise<Response> {
   // -------------------------------------------------------------------------
   // Upsert integration row
   // -------------------------------------------------------------------------
-  // Check if there is already an integration in this org for this account
-  const { data: ownOrgRow } = await admin
-    .from("marketplace_integrations")
-    .select("id")
-    .eq("provider_id", providerId)
-    .eq("external_account_id", externalAccountId)
-    .eq("organizations_id", organizationId)
-    .is("deactivated_at", null)
-    .maybeSingle();
+  type ExistingIntegrationRow = {
+    id: string;
+    setup_status: string;
+    company_id: string | null;
+    store_name: string | null;
+    external_account_id: string | null;
+  };
+
+  let existingRow: ExistingIntegrationRow | null = null;
+
+  if (reconnectIntegrationId) {
+    const { data: reconnectRow } = await admin
+      .from("marketplace_integrations")
+      .select("id, setup_status, company_id, store_name, external_account_id")
+      .eq("id", reconnectIntegrationId)
+      .eq("organizations_id", organizationId)
+      .eq("provider_id", providerId)
+      .is("deactivated_at", null)
+      .maybeSingle();
+    existingRow = reconnectRow ?? null;
+  }
+
+  if (!existingRow) {
+    const { data: ownOrgRow } = await admin
+      .from("marketplace_integrations")
+      .select("id, setup_status, company_id, store_name, external_account_id")
+      .eq("provider_id", providerId)
+      .eq("external_account_id", externalAccountId)
+      .eq("organizations_id", organizationId)
+      .is("deactivated_at", null)
+      .maybeSingle();
+    existingRow = ownOrgRow ?? null;
+  }
+
+  if (!existingRow) {
+    const { data: orgProviderRows } = await admin
+      .from("marketplace_integrations")
+      .select("id, setup_status, company_id, store_name, external_account_id")
+      .eq("provider_id", providerId)
+      .eq("organizations_id", organizationId)
+      .is("deactivated_at", null)
+      .order("setup_completed_at", { ascending: false, nullsFirst: false });
+
+    if (orgProviderRows?.length === 1) {
+      existingRow = orgProviderRows[0];
+    } else if (orgProviderRows && orgProviderRows.length > 1) {
+      const normalizedStore = (storeName ?? "").trim().toLowerCase();
+      const byStore = normalizedStore
+        ? orgProviderRows.find(
+          (r) => String(r.store_name ?? "").trim().toLowerCase() === normalizedStore,
+        )
+        : null;
+      const completed = orgProviderRows.find((r) => r.setup_status === "completed");
+      existingRow = byStore ?? completed ?? orgProviderRows[0];
+    }
+  }
 
   const upsertData = {
     organizations_id: organizationId,
@@ -217,7 +279,7 @@ async function handleCallback(req: Request): Promise<Response> {
     access_token: encAccessToken,
     refresh_token: encRefreshToken,
     expires_at: expiresAt,
-    expires_in: String(expiresInSeconds),
+    expires_in: expiresInSeconds,
     status: "active" as const,
     store_name: storeName ?? null,
     connected_at: now.toISOString(),
@@ -229,16 +291,21 @@ async function handleCallback(req: Request): Promise<Response> {
     config: {
       ...(extra ?? {}),
       correlationId,
-      // Backcompat fields
+      app_id: appCreds.app_id || appId || null,
+      environment: appCreds.config?.environment ?? extra?.environment ?? "production",
       ...(extra?.meli_user_id ? { meli_user_id: extra.meli_user_id } : {}),
       ...(extra?.shopee_shop_id ? { shopee_shop_id: extra.shopee_shop_id } : {}),
     },
   };
 
   let integrationId: string;
+  let setupStatus: string = "pending";
 
-  if (ownOrgRow?.id) {
-    // Reconnection — update existing row but preserve setup_status if already completed
+  if (existingRow?.id) {
+    const preserveStoreName = existingRow.store_name?.trim()
+      ? existingRow.store_name
+      : upsertData.store_name;
+
     const { data: updated, error: upErr } = await admin
       .from("marketplace_integrations")
       .update({
@@ -247,16 +314,19 @@ async function handleCallback(req: Request): Promise<Response> {
         expires_at: upsertData.expires_at,
         expires_in: upsertData.expires_in,
         status: "active",
+        external_account_id: externalAccountId,
+        store_name: preserveStoreName,
         last_refresh_at: null,
         last_refresh_error: null,
         token_key_version: 1,
         config: upsertData.config,
       })
-      .eq("id", ownOrgRow.id)
+      .eq("id", existingRow.id)
       .select("id, setup_status")
       .single();
     if (upErr || !updated) throw new Error(upErr?.message ?? "update_failed");
     integrationId = updated.id;
+    setupStatus = updated.setup_status ?? existingRow.setup_status ?? "pending";
   } else {
     // New integration
     const { data: inserted, error: insErr } = await admin
@@ -266,6 +336,7 @@ async function handleCallback(req: Request): Promise<Response> {
       .single();
     if (insErr || !inserted) throw new Error(insErr?.message ?? "insert_failed");
     integrationId = inserted.id;
+    setupStatus = "pending";
   }
 
   // Also update meli_user_id column for ML (backward compat)
@@ -279,8 +350,13 @@ async function handleCallback(req: Request): Promise<Response> {
   // -------------------------------------------------------------------------
   // Return success HTML (postMessage to opener)
   // -------------------------------------------------------------------------
-  const payload = adapter.buildPostMessagePayload(tokens, integrationId);
-  return buildSuccessResponse(req, payload);
+  const payload = {
+    ...adapter.buildPostMessagePayload(tokens, integrationId),
+    appId: appCreds.app_id || appId || null,
+    setupStatus,
+    isReconnect: Boolean(existingRow?.id),
+  };
+  return buildSuccessResponse(req, payload, statePayload.openerOrigin ?? null);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,14 +370,15 @@ function prefersJsonResponse(req: Request): boolean {
 function buildSuccessResponse(
   req: Request,
   payload: Record<string, unknown>,
+  openerOrigin?: string | null,
 ): Response {
   if (prefersJsonResponse(req)) {
     return Response.json(
-      { type: "oauth_success", payload },
+      { type: "oauth_success", payload, openerOrigin: openerOrigin ?? null },
       { headers: { ...CORS, "content-type": "application/json" } },
     );
   }
-  return buildSuccessHtml(payload);
+  return buildSuccessHtml(payload, openerOrigin);
 }
 
 function buildErrorResponse(
@@ -324,13 +401,17 @@ function buildErrorResponse(
   return buildErrorHtml(error, providerKey, reason);
 }
 
-function buildSuccessHtml(payload: Record<string, unknown>): Response {
+function buildSuccessHtml(
+  payload: Record<string, unknown>,
+  openerOrigin?: string | null,
+): Response {
+  const targetOrigin = openerOrigin?.trim() || "*";
   const json = JSON.stringify({ type: "oauth_success", payload });
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/></head><body>
 <script>
   (function(){
     var payload = ${json};
-    if(window.opener){ window.opener.postMessage(payload, '*'); }
+    if(window.opener){ window.opener.postMessage(payload, ${JSON.stringify(targetOrigin)}); }
     setTimeout(function(){ window.close(); }, 300);
   })();
 </script>

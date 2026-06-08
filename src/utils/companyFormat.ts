@@ -1,12 +1,4 @@
-/**
- * Company data formatting and normalization utilities.
- * Logic preserved byte-for-byte from src/pages/NewCompany.tsx.
- *
- * normalizeTipoEmpresa LATENT BUG (preserved — do NOT fix here):
- *   The branch `s === 'matríZ'` is dead because toLowerCase() produces
- *   'matríz', not 'matríZ'. The fallback 'Matriz' fires instead.
- *   Observable output is correct. Fix in a separate fix(company): commit.
- */
+/** Company data formatting and normalization utilities. */
 
 /** Formats a Date as DD/MM/YYYY. */
 export const formatDateBR = (d: Date): string => {
@@ -36,16 +28,11 @@ export const parseToBR = (iso: string): string => {
   return y && m && d ? `${d}/${m}/${y}` : '';
 };
 
-/**
- * Normalizes tipo_empresa to the DB enum value.
- *
- * LATENT BUG (preserved): `s === 'matríZ'` is compared AFTER toLowerCase(),
- * so it can never match — 'Matríz'.toLowerCase() === 'matríz' ≠ 'matríZ'.
- * The fallback 'Matriz' fires, producing the correct output by accident.
- */
+/** Normalizes tipo_empresa to the DB enum value. */
 export const normalizeTipoEmpresa = (v: string): 'Matriz' | 'Filial' => {
   const s = String(v || '').trim().toLowerCase();
-  if (s === 'matriz' || s === 'matríZ') return 'Matriz';
+  // Compare after toLowerCase so both 'matriz' and 'matríz' (accented) match correctly
+  if (s === 'matriz' || s === 'matríz') return 'Matriz';
   if (s === 'filial') return 'Filial';
   return 'Matriz';
 };

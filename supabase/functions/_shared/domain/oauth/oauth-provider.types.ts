@@ -17,10 +17,18 @@ export interface OAuthContext {
   connectedByUserId: string | null;
   redirectUri: string;
   correlationId: string;
+  /** apps.id used for credentials and environment (prod/sandbox) */
+  appId: string | null;
+  /** apps.config — auth hosts, environment, etc. */
+  appConfig: Record<string, unknown>;
   /** CSRF nonce embedded in the signed state */
   nonce: string;
   /** Unix timestamp (seconds) at which the state was issued */
   issuedAt: number;
+  /** SPA origin that opened the OAuth popup (for postMessage routing) */
+  openerOrigin?: string | null;
+  /** When reconnecting, the existing marketplace_integrations.id to refresh tokens on */
+  reconnectIntegrationId?: string | null;
 }
 
 export interface AuthorizationResult {
@@ -103,8 +111,11 @@ export interface StatePayload {
   connectedByUserId: string | null;
   redirectUri: string;
   correlationId: string;
+  appId: string | null;
   nonce: string;
   issuedAt: number;
+  openerOrigin?: string | null;
+  reconnectIntegrationId?: string | null;
   /** HMAC-SHA256 signature over the rest of the fields (hex) */
   sig: string;
 }

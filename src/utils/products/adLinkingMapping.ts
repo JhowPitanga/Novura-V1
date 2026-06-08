@@ -76,7 +76,10 @@ export function getThumbnail(item: unknown, variation: unknown, pictures: unknow
   return getImageUrl(pictures[0] as unknown);
 }
 
-/** Panel-variant SKU derivation — checks model_sku first (not in EditProduct variant). */
+/**
+ * Canonical SKU derivation covering both Shopee (model_sku) and Mercado Livre
+ * (SELLER_SKU in attribute_combinations / attributes).
+ */
 export function deriveSku(item: unknown, variation: unknown): string {
   const v = variation as Record<string, unknown>;
   const it = item as Record<string, unknown>;
@@ -85,6 +88,17 @@ export function deriveSku(item: unknown, variation: unknown): string {
   if (v?.seller_sku) return String(v.seller_sku);
   if (it?.sku) return String(it.sku);
   if ((it?.data as any)?.base_info?.item_sku) return String((it.data as any).base_info.item_sku);
+  // Mercado Livre: SELLER_SKU stored in attribute_combinations or attributes
+  const combos = Array.isArray(v?.attribute_combinations) ? (v.attribute_combinations as any[]) : [];
+  const comboSku = combos.find((a: any) => a?.id === 'SELLER_SKU' || String(a?.name || '').toUpperCase() === 'SKU');
+  if (comboSku?.value_name) return String(comboSku.value_name);
+  if (comboSku?.value_id) return String(comboSku.value_id);
+  if (comboSku?.value) return String(comboSku.value);
+  const attrs = Array.isArray(v?.attributes) ? (v.attributes as any[]) : [];
+  const attrSku = attrs.find((a: any) => a?.id === 'SELLER_SKU' || String(a?.name || '').toUpperCase() === 'SKU');
+  if (attrSku?.value_name) return String(attrSku.value_name);
+  if (attrSku?.value_id) return String(attrSku.value_id);
+  if (attrSku?.value) return String(attrSku.value);
   return '';
 }
 
@@ -93,7 +107,7 @@ export function buildVariationLabel(variation: unknown): string {
   const v = variation as Record<string, unknown>;
   const combos = Array.isArray(v?.attribute_combinations) ? v.attribute_combinations as any[] : [];
   const comboLabel = combos
-    .filter((a) => a?.id !== 'SELLER_SKU')
+    .filter((a) => a?.id !== 'SELLER_SKU' && String(a?.name || '').toUpperCase() !== 'SKU')
     .map((a) => a?.value_name || a?.value_id || '')
     .filter(Boolean)
     .join(' / ');

@@ -172,19 +172,23 @@ export function QuickSetupModal({
     try {
       await updateStoreName.mutateAsync({ integrationId, storeName: effectiveStoreName });
 
-      // Only set company when integration has no linked company yet.
-      if (canEditCompany) {
-        await completeSetup.mutateAsync({
-          integrationId,
-          companyId: selectedCompanyId,
-        });
-      }
-
       await saveWarehouse.mutateAsync({
         integrationId,
         physicalStorageId,
         fulfillmentStorageId: existingConfig?.fulfillmentStorageId ?? null,
       });
+
+      const companyIdForSetup =
+        selectedCompanyId || integrationDetail?.company_id || null;
+      if (
+        companyIdForSetup &&
+        integrationDetail?.setup_status !== "completed"
+      ) {
+        await completeSetup.mutateAsync({
+          integrationId,
+          companyId: companyIdForSetup,
+        });
+      }
 
       toast({
         title: "Integração configurada!",

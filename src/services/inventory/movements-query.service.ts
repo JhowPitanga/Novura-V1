@@ -66,7 +66,8 @@ async function enrichProductSku(rows: InventoryMovement[]): Promise<InventoryMov
           ? r.product_sku
           : skuMap.get(String(r.product_id)) || r.product_sku || "-",
     }));
-  } catch {
+  } catch (e) {
+    console.warn("enrichProductSku: falha ao enriquecer SKU de produto nos movimentos", e);
     return rows;
   }
 }
@@ -101,7 +102,8 @@ async function enrichActorNames(
         ? userMap.get(String(r.created_by_user_id)) || r.actor_name || null
         : r.actor_name || null,
     }));
-  } catch {
+  } catch (e) {
+    console.warn("enrichActorNames: falha ao enriquecer nomes de atores nos movimentos", e);
     return rows;
   }
 }

@@ -40,6 +40,8 @@ export interface InventoryMovement {
   movement_type: MovementType;
   quantity_change: number;
   source_ref: string | null;
+  /** Structured observation note; preferred over parsing source_ref for new rows. */
+  description: string | null;
   entity_type: EntityType | null;
   reason_code: ReasonCode | null;
   counterpart_storage_id: string | null;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { INT_MAX, clampInt, generateSku, generateVariantParentSku, withRandomSuffix } from '../skuHelpers';
+import { INT_MAX, clampInt, generateSku, generateVariantParentSku, withRandomSuffix, parseBarcode } from '../skuHelpers';
 
 describe('clampInt', () => {
   it('returns 0 for NaN input', () => expect(clampInt(NaN)).toBe(0));
@@ -16,11 +16,9 @@ describe('clampInt', () => {
   it('truncates float: "3.9" → 3', () => expect(clampInt('3.9')).toBe(3));
   it('accepts custom max', () => expect(clampInt(1000, 100)).toBe(100));
   it('does not cap below max', () => expect(clampInt(50, 100)).toBe(50));
-  it('barcode stored as INT (not EAN string); 13-digit EAN > INT_MAX gets clamped', () => {
-    // QUIRK: 1234567890123 > INT_MAX (2147483647), so clampInt clamps it.
-    // Most EAN-13 values exceed INT_MAX and will be stored as INT_MAX.
+  it('barcode values > INT_MAX are clamped when using clampInt (use parseBarcode for EAN instead)', () => {
+    // clampInt is intentionally for integer columns (ncm, origin) — NOT for barcode
     expect(clampInt('1234567890123')).toBe(INT_MAX);
-    // Smaller barcode values (< INT_MAX) are stored as-is
     expect(clampInt('123456789')).toBe(123456789);
   });
 });
@@ -108,6 +106,20 @@ describe('generateVariantParentSku', () => {
   });
 });
 
+describe('parseBarcode', () => {
+  it('returns 0 for empty string', () => expect(parseBarcode('')).toBe(0));
+  it('returns 0 for undefined', () => expect(parseBarcode(undefined)).toBe(0));
+  it('returns 0 for null', () => expect(parseBarcode(null)).toBe(0));
+  it('returns 0 for negative', () => expect(parseBarcode('-1')).toBe(0));
+  it('parses 9-digit barcode', () => expect(parseBarcode('123456789')).toBe(123456789));
+  it('preserves full EAN-13 without clamping', () => {
+    expect(parseBarcode('1234567890123')).toBe(1234567890123);
+    expect(parseBarcode('7891000315507')).toBe(7891000315507);
+  });
+  it('truncates decimals', () => expect(parseBarcode('1234.9')).toBe(1234));
+  it('returns 0 for non-numeric string', () => expect(parseBarcode('abc')).toBe(0));
+});
+
 describe('withRandomSuffix', () => {
   let randomSpy: ReturnType<typeof vi.spyOn>;
 
@@ -119,11 +131,9 @@ describe('withRandomSuffix', () => {
     randomSpy.mockRestore();
   });
 
-  it('appends hyphen + 1-2 alphanum chars (suffix length varies with Math.random)', () => {
-    // QUIRK: toString(36).substring(2,4) can produce 1 OR 2 chars depending on the value.
-    // e.g. Math.random()=0.5 → "0.i" → substring(2,4) = "i" (1 char)
+  it('appends hyphen + exactly 2 alphanum chars', () => {
     const result = withRandomSuffix('MY-SKU');
-    expect(result).toMatch(/^MY-SKU-[A-Z0-9]{1,2}$/i);
+    expect(result).toMatch(/^MY-SKU-[A-Z0-9]{2}$/i);
   });
 
   it('preserves original SKU before suffix', () => {
@@ -131,11 +141,11 @@ describe('withRandomSuffix', () => {
     expect(result.startsWith('ABC-123-')).toBe(true);
   });
 
-  it('suffix part is 1-2 characters (not guaranteed to be 2)', () => {
+  it('suffix part is always exactly 2 characters (padded when needed)', () => {
+    // Math.random()=0.5 → "0.i" → substring(2,4)="i" → padEnd(2,"0") → "I0"
     const result = withRandomSuffix('SKU');
     const parts = result.split('-');
     const suffix = parts[parts.length - 1];
-    expect(suffix.length).toBeGreaterThanOrEqual(1);
-    expect(suffix.length).toBeLessThanOrEqual(2);
+    expect(suffix.length).toBe(2);
   });
 });

@@ -11,6 +11,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { ProductFormData, ProductVariation, VariationType, VariationStep } from "@/types/products";
+import { parseBarcode } from "@/utils/products/skuHelpers";
 
 import { ProductForm } from "@/components/products/create/ProductForm";
 import { VariationForm } from "@/components/products/create/VariationForm";
@@ -203,7 +204,7 @@ export function EditVariationWrapper() {
           package_length: formData.length ? parseInt(formData.length) : null,
           weight: formData.weight ? parseFloat(formData.weight) : null,
           weight_type: formData.unitType || null,
-          barcode: formData.barcode ? parseInt(formData.barcode) : null,
+          barcode: parseBarcode(formData.barcode) || null,
           ncm: formData.ncm ? parseInt(formData.ncm) : null,
           cest: formData.cest ? parseInt(formData.cest) : null,
           tax_origin_code: formData.origin ? parseInt(formData.origin) : null,
@@ -221,7 +222,7 @@ export function EditVariationWrapper() {
             name: variacao.name,
             sku: variacao.sku || null,
             cost_price: parseFloat(variacao.costPrice) || 0,
-            barcode: variacao.ean ? parseInt(variacao.ean) : null,
+            barcode: parseBarcode(variacao.ean) || null,
             ncm: variacao.ncm ? parseInt(variacao.ncm) : null,
             cest: variacao.cest ? parseInt(variacao.cest) : null,
             tax_origin_code: variacao.origin ? parseInt(variacao.origin) : null,

@@ -78,7 +78,7 @@ export const useCompanySave = ({
         }
       }
 
-      // Cert upload + Focus sync (always; pfxFile may be null — Focus still runs)
+      // Cert upload + Focus sync — only runs when a certificate is present
       try {
         const { focusOk, focusWarning } = await runCertUploadAndFocusSync({
           companyId: saved.id,
@@ -88,6 +88,8 @@ export const useCompanySave = ({
           certificado_validade: empresaData.certificado_validade,
           accessToken: session?.access_token,
           mode: isUpdate ? 'update' : 'insert',
+          // True when the company already has a previously stored certificate
+          hasPreviousCertificate: Boolean(empresaData.certificado_a1_url),
         });
         if (focusWarning) {
           toast.warning(isUpdate ? `Empresa atualizada. ${focusWarning}` : `Empresa criada. ${focusWarning}`);

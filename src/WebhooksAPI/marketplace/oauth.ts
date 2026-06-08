@@ -3,7 +3,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/client";
+import { isAllowedOAuthMessageOrigin } from "@/utils/oauthState";
+
 export interface StartOAuthOptions {
+  appId: string;
   providerKey: string;
   organizationId: string;
   companyId?: string | null;
@@ -11,6 +14,9 @@ export interface StartOAuthOptions {
   connectedByUserId?: string | null;
   redirectUri?: string | null;
   correlationId?: string;
+  openerOrigin?: string;
+  /** Existing integration row when refreshing tokens (reconnect). */
+  reconnectIntegrationId?: string | null;
 }
 
 export interface StartOAuthResult {
@@ -23,7 +29,10 @@ export type OAuthSuccessPayload = {
   providerKey: string;
   integrationId: string;
   externalAccountId: string;
+  appId?: string | null;
   ok: boolean;
+  setupStatus?: "pending" | "completed" | string;
+  isReconnect?: boolean;
 };
 
 export type OAuthErrorPayload = {
@@ -38,6 +47,7 @@ export async function startOAuth(
   opts: StartOAuthOptions,
 ): Promise<StartOAuthResult> {
   const body = {
+    appId: opts.appId,
     providerKey: opts.providerKey,
     organizationId: opts.organizationId,
     companyId: opts.companyId ?? null,
@@ -45,6 +55,10 @@ export async function startOAuth(
     connectedByUserId: opts.connectedByUserId ?? null,
     redirectUri: opts.redirectUri ?? undefined,
     correlationId: opts.correlationId ?? crypto.randomUUID(),
+    openerOrigin:
+      opts.openerOrigin ??
+      (typeof window !== "undefined" ? window.location.origin : undefined),
+    reconnectIntegrationId: opts.reconnectIntegrationId ?? null,
   };
 
   const { data: sessionRes } = await client.auth.getSession();
@@ -53,30 +67,16 @@ export async function startOAuth(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 45_000);
 
-  const functionName =
-    opts.providerKey === "shopee" ? "shopee-start-auth" : "oauth-start-auth";
-  const requestBody =
-    opts.providerKey === "shopee"
-      ? {
-          organizationId: body.organizationId,
-          companyId: body.companyId,
-          storeName: body.storeName,
-          connectedByUserId: body.connectedByUserId,
-          redirectUri: body.redirectUri,
-          correlationId: body.correlationId,
-        }
-      : body;
-
   let response: Response;
   try {
-    response = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
+    response = await fetch(`${SUPABASE_URL}/functions/v1/oauth-start-auth`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         apikey: SUPABASE_PUBLISHABLE_KEY,
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
   } catch (err) {
@@ -146,24 +146,22 @@ export function listenForOAuthResult(opts: {
   onError?: (payload: OAuthErrorPayload) => void;
   onAccountLinkedElsewhere?: () => void;
 }): () => void {
+  let settled = false;
+
   const handler = (event: MessageEvent) => {
+    if (settled) return;
+    if (!isAllowedOAuthMessageOrigin(event.origin)) return;
     if (!event.data || typeof event.data !== "object") return;
     const msg = event.data as { type?: string; payload?: unknown };
 
-    if (msg.type === "oauth_success" || msg.type === "shopee_oauth_success") {
+    if (msg.type === "oauth_success") {
+      const payload = msg.payload as OAuthSuccessPayload | undefined;
+      if (!payload || typeof payload !== "object" || !("integrationId" in payload)) return;
+      settled = true;
       window.removeEventListener("message", handler);
-      const payload = msg.payload as OAuthSuccessPayload | { ok?: boolean };
-      if (payload && typeof payload === "object" && "integrationId" in payload) {
-        opts.onSuccess(payload as OAuthSuccessPayload);
-      } else if (msg.type === "shopee_oauth_success") {
-        opts.onSuccess({
-          providerKey: "shopee",
-          integrationId: "",
-          externalAccountId: "",
-          ok: true,
-        });
-      }
+      opts.onSuccess(payload);
     } else if (msg.type === "oauth_error") {
+      settled = true;
       window.removeEventListener("message", handler);
       const errPayload = event.data as OAuthErrorPayload;
       if (errPayload.reason === "account_already_linked_elsewhere") {

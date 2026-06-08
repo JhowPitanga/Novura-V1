@@ -68,7 +68,10 @@ export function useOrdersPageController() {
     try {
       const v = localStorage.getItem('nfe_environment');
       return v === 'producao' ? 'producao' : 'homologacao';
-    } catch { return 'homologacao'; }
+    } catch (e) {
+      console.warn("useOrdersPageController: failed to read nfe_environment from localStorage, defaulting to homologacao", e);
+      return 'homologacao';
+    }
   });
   const setEmitEnvironment = useCallback((v: string) => {
     setEmitEnvironmentState(v as 'homologacao' | 'producao');

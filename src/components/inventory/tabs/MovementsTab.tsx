@@ -21,6 +21,7 @@ import {
   resolveMovementColor,
   exportMovementsToCSV,
 } from "@/services/movements.service";
+import { parseSourceRefActor, parseSourceRefObservation } from "@/services/inventory/source-ref";
 import { DateRange } from "react-day-picker";
 import { ptBR } from "date-fns/locale";
 
@@ -421,23 +422,19 @@ function resolveActor(row: InventoryMovement): string {
     movementType === "CANCELAMENTO_RESERVA" ||
     movementType === "DEVOLUCAO";
 
-  // "Novura" should only represent automatic/system-generated movements.
+  // System movements are always attributed to "Novura".
   if (isSystemMovement) return "Novura";
 
-  // Prefer backend actor name when it's not the synthetic fallback.
+  // Prefer structured actor_name from the view (set via created_by_user_id join).
   if (row.actor_name && row.actor_name !== "Novura") {
     return row.actor_name;
   }
 
-  // Fallback for legacy rows: parse "DisplayName[TYPE]" from source_ref.
-  const src = String(row.source_ref || "");
-  const match = src.match(/^([^\[]+)\[/);
-  if (match?.[1]?.trim()) {
-    const parsed = match[1].trim();
-    return parsed.split(" - ")[0].trim();
-  }
+  // Fallback for legacy rows: parse "DisplayName[TYPE]" from source_ref using shared helper.
+  const legacyActor = parseSourceRefActor(row.source_ref);
+  if (legacyActor) return legacyActor;
 
-  // Manual rows without explicit actor.
+  // Manual rows without any explicit actor.
   if (row.entity_type === "manual" || movementType === "ENTRADA" || movementType === "SAIDA" || movementType === "TRANSFERENCIA") {
     return "Usuário";
   }
@@ -446,11 +443,8 @@ function resolveActor(row: InventoryMovement): string {
 }
 
 function resolveObservation(row: InventoryMovement): string {
-  const src = String(row.source_ref || "");
-  const match = src.match(/^([^\[]+)\[/);
-  if (!match?.[1]?.trim()) return "";
-  const parsed = match[1].trim();
-  const parts = parsed.split(" - ");
-  if (parts.length <= 1) return "";
-  return parts.slice(1).join(" - ").trim();
+  // Prefer structured description column (written for new rows).
+  if (row.description) return row.description;
+  // Fallback for legacy rows: parse observation from source_ref using shared helper.
+  return parseSourceRefObservation(row.source_ref);
 }
