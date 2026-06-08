@@ -305,7 +305,9 @@ serve(async (req) => {
           source,
         });
       }
-    } catch (_) {}
+    } catch (enrichErr) {
+      console.warn("mercado-livre-process-presented: failed to enrich linkedProducts/SKU for order", rec.id, enrichErr);
+    }
     const hasUnlinkedItems = unlinkedItemsCount > 0;
 
     const isFull = (String(shippingType || "").toLowerCase() === "fulfillment");

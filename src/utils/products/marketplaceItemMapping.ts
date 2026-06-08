@@ -1,13 +1,11 @@
 /**
- * EditProduct-variant derive helpers + marketplace slug maps.
- * Extracted verbatim from EditProduct.tsx.
+ * Marketplace slug/label maps + thin wrappers around the canonical helpers in adLinkingMapping.ts.
  *
- * IMPORTANT: These are NOT byte-identical to the Panel variant in adLinkingMapping.ts:
- *   - getThumbFromPictures: no Shopee model_* / cf.shopee.com.br handling
- *   - deriveSku: panel adds model_sku check first
- *   - buildVariationLabel: panel also handles variation.model_name / variation.name
- * Do NOT merge with adLinkingMapping.ts — behavior differs.
+ * The derive helpers (getThumbFromPictures, deriveSku, buildVariationLabel) now delegate to
+ * adLinkingMapping.ts so both linking flows (ProductAdLinkingPanel and MarketplaceMappingDrawer)
+ * produce consistent SKU and thumbnail values.
  */
+import { getThumbnail, deriveSku as deriveSkuCanonical, buildVariationLabel as buildVariationLabelCanonical } from './adLinkingMapping';
 
 export const marketplaces = [
   { value: 'mercado-livre', label: 'Mercado Livre' },
@@ -49,27 +47,12 @@ export const valueByDbName: Record<string, string> = {
   'americanas': 'americanas',
 };
 
-/** Extracts thumbnail from a marketplace variation and pictures array. */
+/**
+ * Delegates to the canonical Panel-variant thumbnail resolver in adLinkingMapping.ts,
+ * which includes Shopee cf.shopee.com.br/file/ handling.
+ */
 export function getThumbFromPictures(variation: any, pictures: any): string {
-  try {
-    const picIds = Array.isArray(variation?.picture_ids) ? variation.picture_ids : [];
-    const firstPicId = picIds.length > 0 ? picIds[0] : null;
-    const picsArr = Array.isArray(pictures) ? pictures : [];
-    if (firstPicId) {
-      const match = picsArr.find((p: any) => p?.id === firstPicId);
-      if (match?.url) return match.url;
-      if (match?.secure_url) return match.secure_url;
-    }
-    if (typeof variation?.thumbnail === 'string') return variation.thumbnail;
-    if (typeof variation?.image === 'string') return variation.image;
-    if (Array.isArray(variation?.images) && typeof variation.images[0] === 'string') return variation.images[0];
-    const first = picsArr[0];
-    if (first?.url) return first.url;
-    if (first?.secure_url) return first.secure_url;
-    return '';
-  } catch {
-    return '';
-  }
+  return getThumbnail(null, variation, Array.isArray(pictures) ? pictures : []);
 }
 
 /** Builds a title string combining itemTitle with variation attribute data. */
@@ -88,38 +71,12 @@ export function buildVariationTitle(itemTitle: string, variation: any): string {
   return suffix ? `${itemTitle || ''} — ${suffix}`.trim() : (itemTitle || 'Anúncio');
 }
 
-/** Derives SKU from item/variation data (EditProduct variant — no model_sku). */
+/** Delegates to the canonical Panel-variant SKU resolver in adLinkingMapping.ts. */
 export function deriveSku(item: any, variation: any): string {
-  try {
-    if (variation?.sku) return String(variation.sku);
-    if (variation?.seller_sku) return String(variation.seller_sku);
-    if (item?.sku) return String(item.sku);
-    const combos = Array.isArray(variation?.attribute_combinations) ? variation.attribute_combinations : [];
-    const comboSku = combos.find((a: any) => a?.id === 'SELLER_SKU' || String(a?.name || '').toUpperCase() === 'SKU');
-    if (comboSku?.value_name) return String(comboSku.value_name);
-    if (comboSku?.value_id) return String(comboSku.value_id);
-    if (comboSku?.value) return String(comboSku.value);
-    const attrs = Array.isArray(variation?.attributes) ? variation.attributes : [];
-    const attrSku = attrs.find((a: any) => a?.id === 'SELLER_SKU' || String(a?.name || '').toUpperCase() === 'SKU');
-    if (attrSku?.value_name) return String(attrSku.value_name);
-    if (attrSku?.value_id) return String(attrSku.value_id);
-    if (attrSku?.value) return String(attrSku.value);
-    return '';
-  } catch {
-    return '';
-  }
+  return deriveSkuCanonical(item, variation);
 }
 
-/** Short label from variation attribute_combinations, excluding SKU entries. */
+/** Delegates to the canonical Panel-variant label builder in adLinkingMapping.ts. */
 export function buildVariationLabel(variation: any): string {
-  try {
-    const combos = Array.isArray(variation?.attribute_combinations) ? variation.attribute_combinations : [];
-    return combos
-      .filter((a: any) => a?.id !== 'SELLER_SKU' && String(a?.name || '').toUpperCase() !== 'SKU')
-      .map((a: any) => a?.value_name || a?.value_id || '')
-      .filter(Boolean)
-      .join(' / ');
-  } catch {
-    return '';
-  }
+  return buildVariationLabelCanonical(variation);
 }

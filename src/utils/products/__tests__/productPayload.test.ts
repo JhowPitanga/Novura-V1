@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { buildBaseProductPayload, getProductTypeForDB } from '../productPayload';
-import { INT_MAX } from '../skuHelpers';
 import type { ProductFormData } from '@/types/products';
 
 const baseFormData: ProductFormData = {
@@ -82,21 +81,25 @@ describe('buildBaseProductPayload', () => {
     });
   });
 
-  describe('barcode (stored as INT, not EAN string)', () => {
+  describe('barcode (bigint-safe, full EAN-13 preserved)', () => {
     it('empty barcode → 0', () => {
       const p = buildBaseProductPayload({ ...baseFormData, barcode: '' }, 'UNICO', 'SKU');
       expect(p.barcode).toBe(0);
     });
 
-    it('barcode "123456789" → 123456789 (fits in INT)', () => {
+    it('barcode "123456789" → 123456789', () => {
       const p = buildBaseProductPayload({ ...baseFormData, barcode: '123456789' }, 'UNICO', 'SKU');
       expect(p.barcode).toBe(123456789);
     });
 
-    it('13-digit EAN > INT_MAX → INT_MAX (clamped, NOT stored as full EAN)', () => {
-      // QUIRK: Most EAN-13 values exceed 2147483647, so they get clamped
+    it('13-digit EAN is stored in full without clamping', () => {
       const p = buildBaseProductPayload({ ...baseFormData, barcode: '1234567890123' }, 'UNICO', 'SKU');
-      expect(p.barcode).toBe(INT_MAX);
+      expect(p.barcode).toBe(1234567890123);
+    });
+
+    it('typical EAN-13 "7891000315507" is preserved', () => {
+      const p = buildBaseProductPayload({ ...baseFormData, barcode: '7891000315507' }, 'UNICO', 'SKU');
+      expect(p.barcode).toBe(7891000315507);
     });
   });
 

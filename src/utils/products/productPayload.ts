@@ -1,16 +1,15 @@
 /**
  * Builds the typed products table insert payload from create-form data.
- * Extracted verbatim from useProductForm.ts handleCreateProduct.
+ * Extracted from useProductForm.ts handleCreateProduct.
  *
- * QUIRKS (do not "fix"):
- *   - barcode stored as clampInt(formData.barcode) — INT, not the EAN-13 string;
- *     13-digit EANs > 2147483647 are clamped to INT_MAX.
+ * Notes:
+ *   - barcode stored via parseBarcode — preserves full EAN-13 (bigint column).
  *   - stock_qnt IIFE: ">0?n:null" — 0 maps to null (stock row not created on 0).
  *   - parent_id always null for UNICO / VARIACAO_PAI / KIT root products.
  *   - image_urls always [] on create (images uploaded after product is persisted).
  */
 
-import { clampInt, INT_MAX } from './skuHelpers';
+import { clampInt, INT_MAX, parseBarcode } from './skuHelpers';
 import type { ProductFormData } from '@/types/products';
 
 export type ProductTypeDB = 'UNICO' | 'VARIACAO_PAI' | 'VARIACAO_ITEM' | 'KIT';
@@ -54,7 +53,7 @@ export function buildBaseProductPayload(
     description: formData.description || undefined,
     cost_price: formData.costPrice ? parseFloat(String(formData.costPrice)) : 0,
     sell_price: formData.sellPrice ? parseFloat(String(formData.sellPrice)) : undefined,
-    barcode: clampInt(formData.barcode),
+    barcode: parseBarcode(formData.barcode),
     ncm: clampInt(formData.ncm, INT_MAX),
     cest: formData.cest ? parseInt(String(formData.cest)) : undefined,
     package_height: formData.height ? parseInt(String(formData.height)) : 0,

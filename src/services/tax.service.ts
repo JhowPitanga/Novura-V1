@@ -1,5 +1,4 @@
-// §1 SIZE EXCEPTION (ENGINEERING_STANDARDS.md): ~180 LOC — fiscal catalog + company_tax_configs
-// CRUD including the 3-call save sequence preserved verbatim from AddTaxModal.
+// §1 SIZE EXCEPTION (ENGINEERING_STANDARDS.md): ~180 LOC — fiscal catalog + company_tax_configs CRUD.
 import { supabase } from "@/integrations/supabase/client";
 import type { TaxRecord } from "@/components/settings/taxes/tax-payload";
 
@@ -127,56 +126,51 @@ export async function deleteTaxConfig(taxId: string): Promise<void> {
   if (error) throw error;
 }
 
-/** Preserves the 3-call save sequence from AddTaxModal handleSave. */
+/**
+ * Saves all tax config fields in a single write operation.
+ * The previous implementation used two separate writes where the second one
+ * silently swallowed errors (supabase-js returns {error} without throwing).
+ * Now both sets of columns are merged and persisted atomically.
+ */
 export async function saveCompanyTaxConfig(
   params: SaveCompanyTaxConfigParams
 ): Promise<{ id: string; created_at: string }> {
-  const dbPayload = {
+  const fullPayload = {
     organizations_id: params.organizationId,
     company_id: params.companyId,
     observacao: params.observacao,
     is_default: params.isDefault,
     payload: params.recordPayload,
     created_by: params.userId,
+    // Previously written in a silent second pass — now included in the first write
+    natureza_saida: params.naturezaSaida || null,
+    natureza_entrada: params.naturezaEntrada || null,
+    icms: params.icms,
+    ipi: { pf: params.ipiPF, pj: params.ipiPJ },
+    pis: { pf: params.pisPF, pj: params.pisPJ },
+    cofins: { pf: params.cofinsPF, pj: params.cofinsPJ },
+    adicionais: { infoFisco: params.infoFisco, infoComplementar: params.infoComplementar },
   };
 
-  if (dbPayload.is_default) {
+  if (fullPayload.is_default) {
     await clearDefaultForCompany(params.companyId);
   }
 
   const isEditing = Boolean(params.existingId);
-  const { data: inserted, error } = isEditing
+  const { data: saved, error } = isEditing
     ? await supabase
         .from("company_tax_configs")
-        .update(dbPayload)
+        .update(fullPayload)
         .eq("id", params.existingId!)
         .select("id, company_id, organizations_id, created_at")
         .single()
     : await supabase
         .from("company_tax_configs")
-        .insert(dbPayload)
+        .insert(fullPayload)
         .select("id, company_id, organizations_id, created_at")
         .single();
 
   if (error) throw error;
 
-  try {
-    const separatedCols = {
-      natureza_saida: params.naturezaSaida || null,
-      natureza_entrada: params.naturezaEntrada || null,
-      icms: params.icms,
-      ipi: { pf: params.ipiPF, pj: params.ipiPJ },
-      pis: { pf: params.pisPF, pj: params.pisPJ },
-      cofins: { pf: params.cofinsPF, pj: params.cofinsPJ },
-      adicionais: { infoFisco: params.infoFisco, infoComplementar: params.infoComplementar },
-    };
-    await supabase
-      .from("company_tax_configs")
-      .update(separatedCols)
-      .eq("id", inserted.id);
-  } catch (e) {
-    console.error("Falha ao atualizar colunas separadas em company_tax_configs", e);
-  }
-
-  return { id: inserted.id, created_at: inserted.created_at };
+  return { id: saved.id, created_at: saved.created_at };
 }

@@ -32,6 +32,11 @@ export interface CertSyncParams {
   accessToken?: string;
   /** 'insert' → focus dry_run:true; 'update' → focus mode:'update', dry_run:false */
   mode: 'insert' | 'update';
+  /**
+   * True when the company already has a certificate stored from a previous save.
+   * Used to decide whether to call Focus on `update` even when no new PFX is provided.
+   */
+  hasPreviousCertificate?: boolean;
 }
 
 export const invokeUploadCertificate = async (
@@ -114,7 +119,14 @@ export const runCertUploadAndFocusSync = async (params: CertSyncParams): Promise
     }
   }
 
-  // Step 3: Invoke Focus NFe sync (always, with or without PFX)
+  // Step 3: Invoke Focus NFe sync — only when a certificate is available.
+  // Skip entirely if there is no new PFX file and no previously stored certificate,
+  // to avoid spurious errors during onboarding before the cert is configured.
+  const hasCert = Boolean(params.pfxFile || params.hasPreviousCertificate);
+  if (!hasCert) {
+    return { focusOk: false, focusWarning: null };
+  }
+
   const { data: focusRes, error: focusErr } = await invokeFocusCompanyCreate({
     companyId: params.companyId,
     organizationId: params.organizationId,

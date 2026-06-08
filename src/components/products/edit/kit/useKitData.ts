@@ -5,6 +5,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { ProductFormData, KitItem } from "@/types/products";
+import { parseBarcode } from "@/utils/products/skuHelpers";
 
 export function useKitData() {
   const { organizationId } = useAuth();
@@ -214,7 +215,7 @@ export function useKitData() {
           package_length: parseInt(formData.length) || 0,
           weight: formData.weight ? parseFloat(formData.weight) : null,
           weight_type: formData.unitType || null,
-          barcode: parseInt(formData.barcode) || 0,
+          barcode: parseBarcode(formData.barcode),
           ncm: parseInt(formData.ncm) || 0,
           cest: formData.cest ? parseInt(formData.cest) : null,
           tax_origin_code: parseInt(formData.origin) || 0,

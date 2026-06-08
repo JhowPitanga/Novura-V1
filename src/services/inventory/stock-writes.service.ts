@@ -1,10 +1,5 @@
-// §1 SIZE EXCEPTION (ENGINEERING_STANDARDS.md): ~320 LOC — preserves legacy-safe
-// ensureStockRow duplicate-key retry, transfer rollback, and string-match error guards verbatim.
 import { supabase } from "@/integrations/supabase/client";
-import {
-  buildAdjustSourceRef,
-  buildTransferSourceRef,
-} from "@/services/inventory/source-ref";
+import { buildAdjustSourceRef } from "@/services/inventory/source-ref";
 
 type StockRow = { id: string; current: number; reserved?: number };
 
@@ -40,7 +35,7 @@ export async function resolveCurrentUserName(organizationId: string): Promise<st
   return usr?.name || authRes?.user?.email || "Usuario";
 }
 
-/** Legacy-safe insert-then-retry when duplicate key (InventoryManagementDrawer lines 205-248). */
+/** Insert-then-retry on duplicate key (Postgres error code 23505) for first-time stock rows. */
 export async function ensureStockRow(
   productId: string,
   storageId: string,
@@ -81,8 +76,8 @@ export async function ensureStockRow(
       .maybeSingle();
 
     if (ins.error) {
-      const msg = String(ins.error.message || "");
-      if (msg.includes("duplicate key")) {
+      // Use Postgres error code instead of message string to detect duplicate key
+      if ((ins.error as any).code === "23505") {
         const retry = await supabase
           .from("products_stock")
           .select("id, current, reserved")
@@ -92,11 +87,11 @@ export async function ensureStockRow(
           .limit(1)
           .maybeSingle();
         if (retry.error || !retry.data?.id) {
-          throw new StockWriteError(retry.error?.message || msg);
+          throw new StockWriteError(retry.error?.message || ins.error.message);
         }
         stockRow = retry.data;
       } else {
-        throw new StockWriteError(msg);
+        throw new StockWriteError(ins.error.message);
       }
     } else {
       stockRow = ins.data;
@@ -168,9 +163,12 @@ export async function applyStockAdjustment(params: ApplyStockAdjustmentParams): 
     throw new StockWriteError(updateErr.message);
   }
 
+  const { data: authData } = await supabase.auth.getUser();
+  const actorId = authData?.user?.id || null;
   const displayName = await resolveCurrentUserName(params.organizationId);
   const moveType = params.operationType === "entrada" ? "ENTRADA" : "SAIDA";
   const noteLabel = params.adjustmentNote.trim();
+
   const txPayload = {
     organizations_id: params.organizationId,
     company_id: prod?.company_id || null,
@@ -178,6 +176,12 @@ export async function applyStockAdjustment(params: ApplyStockAdjustmentParams): 
     storage_id: params.targetStorageId,
     movement_type: moveType,
     quantity_change: quantity,
+    // Structured fields (preferred for new rows)
+    created_by_user_id: actorId,
+    description: noteLabel || null,
+    entity_type: "manual",
+    reason_code: params.operationType === "entrada" ? "manual_adjustment" : "manual_adjustment",
+    // Legacy source_ref kept for backward-compat with older rows
     source_ref: buildAdjustSourceRef(displayName, noteLabel, moveType),
   };
 
@@ -193,130 +197,53 @@ export interface ApplyStockTransferParams {
   transferNote: string;
 }
 
+/** RPC error codes returned by transfer_stock_between_warehouses */
+const TRANSFER_ERROR_MESSAGES: Record<string, string> = {
+  SAME_STORAGE: "Origem e destino não podem ser iguais.",
+  INVALID_QUANTITY: "Quantidade inválida para transferência.",
+  ORIGIN_NOT_FOUND: "Armazém de origem não encontrado.",
+  ORIGIN_NOT_PHYSICAL: "O armazém de origem deve ser um depósito físico editável.",
+  DESTINATION_NOT_FOUND: "Armazém de destino não encontrado.",
+  DESTINATION_NOT_PHYSICAL: "O armazém de destino deve ser um depósito físico editável.",
+  PRODUCT_NOT_IN_ORIGIN: "Produto não encontrado no armazém de origem.",
+};
+
+/**
+ * Transfers stock between warehouses using the atomic Postgres RPC.
+ * All mutations (debit, credit, audit rows) happen inside a single PL/pgSQL
+ * transaction — there is no partial-update / "saldo fantasma" risk.
+ */
 export async function applyStockTransfer(params: ApplyStockTransferParams): Promise<void> {
-  const actorName = await resolveCurrentUserName(params.organizationId);
+  const noteLabel = params.transferNote?.trim() || null;
 
-  const { data: prod } = await supabase
-    .from("products")
-    .select("company_id")
-    .eq("id", params.productId)
-    .limit(1)
-    .maybeSingle();
-
-  const noteLabel = params.transferNote?.trim() || "";
-
-  const { data: originRow, error: originErr } = await supabase
-    .from("products_stock")
-    .select("id, current, reserved")
-    .eq("product_id", params.productId)
-    .eq("storage_id", params.transferFromId)
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (originErr || !originRow?.id) {
-    throw new StockWriteError("Origem não encontrada para o produto.");
-  }
-
-  const originAvailable = Number(originRow.current || 0) - Number(originRow.reserved || 0);
-  if (originAvailable < params.adjustmentQuantity) {
-    throw new StockWriteError(
-      `Estoque insuficiente na origem (${originAvailable}).`
-    );
-  }
-
-  const { data: destinationRow, error: destSelErr } = await supabase
-    .from("products_stock")
-    .select("id, current")
-    .eq("product_id", params.productId)
-    .eq("storage_id", params.transferToId)
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (destSelErr) {
-    throw new StockWriteError(destSelErr.message);
-  }
-
-  let destinationId = destinationRow?.id as string | undefined;
-  let destinationCurrent = Number(destinationRow?.current || 0);
-  if (!destinationId) {
-    const insRes = await supabase
-      .from("products_stock")
-      .insert({
-        product_id: params.productId,
-        storage_id: params.transferToId,
-        company_id: prod?.company_id || null,
-        current: 0,
-        reserved: 0,
-        in_transit: 0,
-      })
-      .select("id, current")
-      .limit(1)
-      .single();
-
-    if (insRes.error) {
-      const msg = String(insRes.error.message || "");
-      if (msg.includes("products_stock_product_id_key")) {
-        throw new StockTransferUnavailableError(
-          "Seu banco atual ainda não suporta estoque por múltiplos armazéns para o mesmo produto. Aplique a migration de estoque multi-armazém."
-        );
-      }
-      throw new StockWriteError(msg);
+  const { data: result, error: rpcErr } = await supabase.rpc(
+    "transfer_stock_between_warehouses",
+    {
+      p_product_id: params.productId,
+      p_from_storage_id: params.transferFromId,
+      p_to_storage_id: params.transferToId,
+      p_quantity: params.adjustmentQuantity,
+      p_org_id: params.organizationId,
+      p_note: noteLabel,
     }
-    destinationId = insRes.data?.id;
-    destinationCurrent = Number(insRes.data?.current || 0);
+  );
+
+  if (rpcErr) {
+    throw new StockWriteError(rpcErr.message || "Falha ao executar transferência.");
   }
 
-  const originUpd = await supabase
-    .from("products_stock")
-    .update({
-      current: Number(originRow.current || 0) - Math.abs(params.adjustmentQuantity),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", originRow.id);
+  const res = result as { ok: boolean; error?: string; available?: number };
 
-  if (originUpd.error) {
-    throw new StockWriteError(originUpd.error.message);
+  if (!res?.ok) {
+    const code = res?.error || "UNKNOWN";
+
+    if (code === "INSUFFICIENT_STOCK") {
+      throw new StockWriteError(
+        `Estoque insuficiente na origem (disponível: ${res.available ?? 0}).`
+      );
+    }
+
+    const msg = TRANSFER_ERROR_MESSAGES[code] || `Transferência falhou: ${code}`;
+    throw new StockWriteError(msg);
   }
-
-  const destUpd = await supabase
-    .from("products_stock")
-    .update({
-      current: destinationCurrent + Math.abs(params.adjustmentQuantity),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", destinationId!);
-
-  if (destUpd.error) {
-    await supabase
-      .from("products_stock")
-      .update({
-        current: Number(originRow.current || 0),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", originRow.id);
-    throw new StockWriteError(destUpd.error.message);
-  }
-
-  await supabase.from("inventory_transactions").insert([
-    {
-      organizations_id: params.organizationId,
-      company_id: prod?.company_id || null,
-      product_id: params.productId,
-      storage_id: params.transferFromId,
-      movement_type: "TRANSFERENCIA",
-      quantity_change: -Math.abs(params.adjustmentQuantity),
-      source_ref: buildTransferSourceRef(actorName, noteLabel, "OUT"),
-    },
-    {
-      organizations_id: params.organizationId,
-      company_id: prod?.company_id || null,
-      product_id: params.productId,
-      storage_id: params.transferToId,
-      movement_type: "TRANSFERENCIA",
-      quantity_change: Math.abs(params.adjustmentQuantity),
-      source_ref: buildTransferSourceRef(actorName, noteLabel, "IN"),
-    },
-  ]);
 }

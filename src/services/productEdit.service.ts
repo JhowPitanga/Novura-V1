@@ -19,6 +19,7 @@
  */
 
 import { supabase } from '@/integrations/supabase/client';
+import { parseBarcode } from '@/utils/products/skuHelpers';
 
 export const editKeys = {
   product: (id: string) => ['editProduct', id] as const,
@@ -115,7 +116,7 @@ export async function saveProduct(id: string, produto: TransformedProduct): Prom
       package_width: produto.dimensoes.largura,
       package_length: produto.dimensoes.comprimento,
       weight: produto.peso,
-      barcode: parseInt(produto.codigoBarras) || 0,
+      barcode: parseBarcode(produto.codigoBarras),
       ncm: parseInt(produto.ncm) || 0,
       cest: produto.cest ? parseInt(produto.cest) : null,
       tax_origin_code: parseInt(produto.origem) || 0,

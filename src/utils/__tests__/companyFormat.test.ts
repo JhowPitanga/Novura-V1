@@ -1,14 +1,4 @@
-/**
- * Characterization tests for company data formatting utilities.
- * These tests pin the EXACT current behavior (including the matríZ latent bug)
- * of the functions inlined in src/pages/NewCompany.tsx before extraction.
- *
- * matríZ BUG NOTE (PRESERVED — DO NOT FIX HERE):
- *   normalizeTipoEmpresa lowercases the input first, so 'Matríz'.toLowerCase() === 'matríz',
- *   which does NOT match the dead branch `s === 'matríZ'`.
- *   The fallback 'Matriz' fires instead — same observable output, dead branch.
- *   This is locked by the test below. Fix in a separate fix(company): commit.
- */
+/** Characterization tests for company data formatting utilities. */
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -129,18 +119,13 @@ describe('normalizeTipoEmpresa', () => {
     expect(normalizeTipoEmpresa('unknown')).toBe('Matriz');
   });
 
-  /**
-   * LATENT BUG — PRESERVED (do NOT fix in this refactor):
-   * Input 'Matríz' (with accented 'i') → toLowerCase() → 'matríz'
-   * The branch `s === 'matríZ'` (mixed-case) is NEVER reached because
-   * toLowerCase() produces 'matríz', not 'matríZ'.
-   * The fallback 'Matriz' fires instead — same output, dead branch.
-   * Fix in a separate fix(company): commit after this refactor merges.
-   */
-  it('LATENT BUG (preserved): "Matríz" toLowerCase → "matríz" ≠ "matríZ" → fallback "Matriz"', () => {
+  it('"Matríz" (accented) → "Matriz"', () => {
+    // Both 'matriz' and 'matríz' match after toLowerCase(), branch is no longer dead
     expect(normalizeTipoEmpresa('Matríz')).toBe('Matriz');
-    // Proof the branch is dead: 'matríz' !== 'matríZ'
-    expect('matríz' === 'matríZ').toBe(false);
+  });
+
+  it('"MATRÍZ" uppercase accented → "Matriz"', () => {
+    expect(normalizeTipoEmpresa('MATRÍZ')).toBe('Matriz');
   });
 });
 

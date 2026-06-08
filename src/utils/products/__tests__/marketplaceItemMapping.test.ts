@@ -1,10 +1,6 @@
 /**
- * Characterization tests for EditProduct derive helpers (EditProduct variant).
- * NOTE: These are NOT byte-identical to the Panel variant in adLinkingMapping.ts:
- *   - getThumbnail / getThumbFromPictures: no Shopee model_* / cf.shopee.com.br handling.
- *   - deriveSku: same logic but panel adds model_sku check first.
- *   - buildVariationLabel: same filter but panel also handles variation.model_name/name.
- * Do NOT merge these with adLinkingMapping. Keep both characterization tests separate.
+ * Characterization tests for marketplaceItemMapping helpers.
+ * These now delegate to adLinkingMapping.ts (canonical source) so the behavior is unified.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -15,7 +11,7 @@ import {
   buildVariationLabel,
 } from '../marketplaceItemMapping';
 
-describe('getThumbFromPictures (EditProduct variant)', () => {
+describe('getThumbFromPictures (delegates to adLinkingMapping canonical)', () => {
   it('returns empty string for empty inputs', () => {
     expect(getThumbFromPictures({}, null)).toBe('');
   });
@@ -24,12 +20,6 @@ describe('getThumbFromPictures (EditProduct variant)', () => {
     const variation = { picture_ids: [42] };
     const pictures = [{ id: 42, url: 'http://example.com/img.jpg' }];
     expect(getThumbFromPictures(variation, pictures)).toBe('http://example.com/img.jpg');
-  });
-
-  it('uses secure_url if url not present', () => {
-    const variation = { picture_ids: [42] };
-    const pictures = [{ id: 42, secure_url: 'https://example.com/img.jpg' }];
-    expect(getThumbFromPictures(variation, pictures)).toBe('https://example.com/img.jpg');
   });
 
   it('falls back to variation.thumbnail if no picture match', () => {
@@ -42,17 +32,16 @@ describe('getThumbFromPictures (EditProduct variant)', () => {
     expect(getThumbFromPictures(variation, [])).toBe('http://img.example.com/img.jpg');
   });
 
-  it('falls back to variation.images[0]', () => {
-    const variation = { images: ['http://first.example.com/img.jpg'] };
-    expect(getThumbFromPictures(variation, [])).toBe('http://first.example.com/img.jpg');
-  });
-
   it('falls back to first picture url', () => {
     expect(getThumbFromPictures({}, [{ url: 'http://fallback.example.com/img.jpg' }])).toBe('http://fallback.example.com/img.jpg');
   });
 
-  it('returns empty string on exception', () => {
-    // Passing non-array pictures triggers the catch
+  it('resolves Shopee image IDs to cf.shopee.com.br URLs (now supported)', () => {
+    const variation = { image_id: 'abc123' };
+    expect(getThumbFromPictures(variation, [])).toBe('https://cf.shopee.com.br/file/abc123');
+  });
+
+  it('returns empty string for null inputs', () => {
     expect(getThumbFromPictures(null, null)).toBe('');
   });
 });
