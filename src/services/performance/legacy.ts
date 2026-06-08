@@ -1,0 +1,96 @@
+import { supabase } from "@/integrations/supabase/client";
+import type { ListingPerformanceItem, ProductPerformanceItem, ProductPerformanceResult } from "./types";
+
+export async function fetchProductPerformance(
+    orgId: string | null | undefined,
+    fromISO: string,
+    toISO: string,
+    marketplace?: string,
+): Promise<ProductPerformanceResult> {
+    let oq: any = supabase
+        .from('orders')
+        .select('id, marketplace, created_at');
+    if (orgId) oq = oq.eq('organization_id', orgId);
+    if (marketplace && marketplace !== 'todos') oq = oq.eq('marketplace', marketplace);
+    oq = oq.gte('created_at', fromISO).lte('created_at', toISO);
+    const { data: orders, error: ordersErr } = await oq;
+    if (ordersErr) throw ordersErr;
+
+    const orderList = Array.isArray(orders) ? orders : [];
+    const orderIds = Array.from(new Set(orderList.map((o: any) => o.id).filter(Boolean)));
+    const marketplaceByOrderId: Record<string, string> = {};
+    for (const o of orderList) {
+        const id = String(o.id || '');
+        if (id) marketplaceByOrderId[id] = o.marketplace || 'Outros';
+    }
+
+    if (orderIds.length === 0) {
+        return { produtosData: [], anunciosData: [], productModelsByProduct: {} };
+    }
+
+    const byProduct: Record<string, { pedidosSet: Set<string>; unidades: number; valor: number; modelsSet: Set<string> }> = {};
+    const byListing: Record<string, { pedidosSet: Set<string>; unidades: number; valor: number; marketplace: string; title?: string; image?: string }> = {};
+    const chunkSize = 200;
+
+    for (let i = 0; i < orderIds.length; i += chunkSize) {
+        const chunk = orderIds.slice(i, i + chunkSize);
+        const iq: any = supabase
+            .from('order_items')
+            .select('order_id, product_id, marketplace_item_id, quantity, unit_price, title, image_url')
+            .in('order_id', chunk);
+        const { data: itemsRows, error: itemsErr } = await iq;
+        if (itemsErr) throw itemsErr;
+
+        for (const it of (itemsRows || [])) {
+            const oid = String(it?.order_id || '');
+            const qn = Number(it?.quantity || 0) || 0;
+            const up = Number(it?.unit_price || 0) || 0;
+            const pid = String(it?.product_id || '').trim();
+
+            if (pid) {
+                if (!byProduct[pid]) byProduct[pid] = { pedidosSet: new Set(), unidades: 0, valor: 0, modelsSet: new Set() };
+                const bp = byProduct[pid];
+                bp.pedidosSet.add(oid);
+                bp.unidades += qn;
+                bp.valor += qn * up;
+                const mid = String(it?.marketplace_item_id || '').trim();
+                if (mid) bp.modelsSet.add(mid);
+            }
+
+            const mid = String(it?.marketplace_item_id || '').trim();
+            if (mid) {
+                if (!byListing[mid]) byListing[mid] = { pedidosSet: new Set(), unidades: 0, valor: 0, marketplace: marketplaceByOrderId[oid] || 'Outros' };
+                const bl = byListing[mid];
+                bl.pedidosSet.add(oid);
+                bl.unidades += qn;
+                bl.valor += qn * up;
+                if (!bl.title && it?.title) bl.title = String(it.title);
+                if (!bl.image && it?.image_url) bl.image = String(it.image_url);
+                if (!bl.marketplace) bl.marketplace = marketplaceByOrderId[oid] || 'Outros';
+            }
+        }
+    }
+
+    const productIds = Object.keys(byProduct);
+    const nameByProduct: Record<string, string> = {};
+    if (productIds.length > 0) {
+        const { data: prows } = await supabase.from('products').select('id, name').in('id', productIds);
+        (prows || []).forEach((r: any) => { nameByProduct[String(r.id)] = r?.name || ''; });
+    }
+
+    const produtosData: ProductPerformanceItem[] = productIds.map((pid) => {
+        const agg = byProduct[pid];
+        return { id: pid, nome: nameByProduct[pid] || pid, pedidos: agg.pedidosSet.size, unidades: agg.unidades, valor: agg.valor, vinculos: agg.modelsSet.size };
+    }).sort((a, b) => b.valor - a.valor);
+
+    const productModelsByProduct: Record<string, string[]> = {};
+    productIds.forEach((pid) => { productModelsByProduct[pid] = Array.from(byProduct[pid].modelsSet); });
+
+    const anunciosData: ListingPerformanceItem[] = Object.keys(byListing).map((mid) => {
+        const agg = byListing[mid];
+        const unit = agg.unidades > 0 ? (agg.valor / agg.unidades) : 0;
+        return { id: mid, titulo: agg.title || `Anúncio ${mid}`, marketplace: agg.marketplace, vendas: agg.unidades, valor: unit, image_url: agg.image || '' };
+    }).sort((a, b) => b.vendas - a.vendas);
+
+    return { produtosData, anunciosData, productModelsByProduct };
+}

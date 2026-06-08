@@ -24,7 +24,6 @@ const ShopeeFlashSaleCreate = lazy(() => import("./pages/ShopeeFlashSaleCreate")
 const ShopeeFlashSaleManage = lazy(() => import("./pages/ShopeeFlashSaleManage"));
 const PromotionCreate = lazy(() => import("./pages/PromotionCreate"));
 const PromotionManage = lazy(() => import("./pages/PromotionManage"));
-const CreateListingML = lazy(() => import("./pages/CreateListingML"));
 const EditListingML = lazy(() => import("./pages/EditListingML"));
 const CreateListing = lazy(() => import("./pages/CreateListing"));
 const EditListing = lazy(() => import("./pages/EditListing"));

@@ -1,3 +1,9 @@
+// DEAD CODE — do not consolidate with useProductForm's inline validation.
+// These schemas DIVERGE from production behavior in useProductForm:
+//   - skuSchema: min-3 chars + regex vs form's non-empty check
+//   - barcodeSchema: stores as string vs form's clampInt (stored as INT)
+//   - cestSchema: 7-digit rule vs form which does not validate CEST length
+// Consolidation = behavior change, NOT a refactor. See Change Intent Products Vertical.
 // Base field-level Zod validators shared across all product types
 import { z } from 'zod';
 import { validateEanChecksum } from '@/utils/eanChecksum';

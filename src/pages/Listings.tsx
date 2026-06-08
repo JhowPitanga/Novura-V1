@@ -1,4 +1,8 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+// SIZE EXCEPTION (§1 ENGINEERING_STANDARDS.md): This page compositor intentionally
+// exceeds the 200-line limit. All computation is delegated to hooks; this file
+// only wires together layout, modals, and component props. Cannot be split further
+// without introducing prop-drilling or an additional context layer.
+import { useState, useEffect, useMemo } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,38 +12,35 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { CleanNavigation } from "@/components/CleanNavigation";
 import { GlobalHeader } from "@/components/GlobalHeader";
 import { useAuth } from "@/hooks/useAuth";
-import { useToast } from "@/hooks/use-toast";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Plus } from "lucide-react";
 
 import {
-    useConnectedMarketplaces,
-    useMarketplaceStores,
-    useListingItems,
-    useListingDrafts,
-    useListingMutations,
-    filterListings,
-    filterListingsByScope,
-    sortListings,
-    countListingsByLogistic,
-    countListingsByLink,
-    countListingsByStatus,
-    countListingsByStock,
-    resolveMarketplacePathFromUrl,
-    marketplaceSlugForPath,
+  useConnectedMarketplaces,
+  useMarketplaceStores,
+  useListingItems,
+  useListingDrafts,
+  useListingMutations,
+  filterListings,
+  filterListingsByScope,
+  sortListings,
+  countListingsByLogistic,
+  countListingsByLink,
+  countListingsByStatus,
+  countListingsByStock,
 } from "@/hooks/useListings";
+import type { SortKey, SortDir } from "@/types/listings";
 import {
-    getVariationMatchHintsFromItemRow,
-    getVariationSkuFromItemRow,
-    slugFromMarketplacePath,
-} from "@/utils/listingUtils";
-import type { SortKey, SortDir, ListingItem } from "@/types/listings";
-import {
-    DEFAULT_LISTING_FILTERS,
-    type ListingAppliedFilters,
+  DEFAULT_LISTING_FILTERS,
+  type ListingAppliedFilters,
 } from "@/types/listings";
 
-import { LinkPickerDrawer, type LinkPickerContext } from "@/components/shared/LinkPickerDrawer";
+import { useListingsUrlState } from "@/hooks/useListingsUrlState";
+import { useListingSelection } from "@/hooks/useListingSelection";
+import { useLinkPickerQueue } from "@/hooks/useLinkPickerQueue";
+import { useListingActions } from "@/hooks/useListingActions";
+
+import { LinkPickerDrawer } from "@/components/shared/LinkPickerDrawer";
 import { PromotionsTab } from "@/components/promotions/PromotionsTab";
 import { StockEditModal, type StockVariation } from "@/components/listings/StockEditModal";
 import { DeleteListingDialog } from "@/components/listings/DeleteListingDialog";
@@ -49,584 +50,451 @@ import { ListingSelectionBar } from "@/components/listings/ListingSelectionBar";
 import { ListingCard } from "@/components/listings/ListingCard";
 
 export default function Anuncios() {
-    const { organizationId } = useAuth();
-    const { toast } = useToast();
-    const navigate = useNavigate();
-    const location = useLocation();
+  const { organizationId } = useAuth();
+  const navigate = useNavigate();
 
-    // URL-driven state
-    const [activeStatus, setActiveStatus] = useState<string>("todos");
+  // UI state
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("sales");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [appliedFilters, setAppliedFilters] = useState<ListingAppliedFilters>(DEFAULT_LISTING_FILTERS);
+  const [draftFilters, setDraftFilters] = useState<ListingAppliedFilters>(DEFAULT_LISTING_FILTERS);
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+  const [selectedIntegrationIds, setSelectedIntegrationIds] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<string>("anuncios");
+  const [stockModal, setStockModal] = useState<{ itemId: string; variations: StockVariation[] } | null>(null);
+  const [bulkDeleteDraftsOpen, setBulkDeleteDraftsOpen] = useState(false);
 
-    // UI state
-    const [searchTerm, setSearchTerm] = useState("");
-    const [sortKey, setSortKey] = useState<SortKey>("sales");
-    const [sortDir, setSortDir] = useState<SortDir>("desc");
-    const [appliedFilters, setAppliedFilters] = useState<ListingAppliedFilters>(DEFAULT_LISTING_FILTERS);
-    const [draftFilters, setDraftFilters] = useState<ListingAppliedFilters>(DEFAULT_LISTING_FILTERS);
-    const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
-    const [selectedIntegrationIds, setSelectedIntegrationIds] = useState<Set<string>>(new Set());
-    const [activeTab, setActiveTab] = useState<string>("anuncios");
-    const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
-    const [expandedVariations, setExpandedVariations] = useState<Set<string>>(new Set());
-    const [selectedDraftIds, setSelectedDraftIds] = useState<Set<string>>(new Set());
-    const [stockModal, setStockModal] = useState<{ itemId: string; variations: StockVariation[] } | null>(null);
-    const [confirmDeleteItemId, setConfirmDeleteItemId] = useState<string | null>(null);
-    const [bulkDeleteDraftsOpen, setBulkDeleteDraftsOpen] = useState(false);
-    const [confirmPauseFor, setConfirmPauseFor] = useState<string | null>(null);
-    const [linkPickerContext, setLinkPickerContext] = useState<LinkPickerContext | null>(null);
-    const [pendingLinkQueue, setPendingLinkQueue] = useState<string[]>([]);
+  // Data
+  const { data: marketplacesData } = useConnectedMarketplaces(organizationId);
+  const navItems = marketplacesData?.navItems || [];
+  const shippingCaps = marketplacesData?.shippingCaps || null;
+  const hasIntegration = marketplacesData?.hasIntegration || false;
 
-    // Sync active status from URL
-    useEffect(() => {
-        const m = String(location.pathname).match(/^\/anuncios\/(ativos|inativos|rascunhos)/);
-        if (m?.[1]) setActiveStatus(m[1]);
-    }, [location.pathname]);
+  // URL-driven state
+  const {
+    activeStatus,
+    selectedMarketplacePath,
+    marketplaceSlug,
+    handleMarketplaceNavigate,
+    handleStatusNavigate,
+  } = useListingsUrlState({ navItems });
 
-    // Data
-    const { data: marketplacesData } = useConnectedMarketplaces(organizationId);
-    const navItems = marketplacesData?.navItems || [];
-    const shippingCaps = marketplacesData?.shippingCaps || null;
-    const hasIntegration = marketplacesData?.hasIntegration || false;
+  const selectedDisplayName = navItems.find((n) => n.path === selectedMarketplacePath)?.displayName || "";
+  const isShopee = selectedDisplayName.toLowerCase() === "shopee";
 
-    const selectedMarketplacePath = useMemo(
-        () => resolveMarketplacePathFromUrl(location.pathname, location.search, navItems),
-        [location.pathname, location.search, navItems],
-    );
+  const { data: storesData } = useMarketplaceStores(organizationId, selectedDisplayName);
+  const marketplaceStores = storesData || [];
 
-    const marketplaceSlug = marketplaceSlugForPath(selectedMarketplacePath);
-
-    // Persist marketplace in URL (?marketplace=) so tab switches refetch reliably
-    useEffect(() => {
-        if (!navItems.length) return;
-        const params = new URLSearchParams(location.search);
-        if (params.get("marketplace")) return;
-        params.set("marketplace", slugFromMarketplacePath(selectedMarketplacePath || navItems[0].path));
-        navigate({ pathname: location.pathname, search: params.toString() }, { replace: true });
-    }, [navItems, selectedMarketplacePath, location.pathname, location.search, navigate]);
-
-    const handleMarketplaceNavigate = useCallback(
-        (path: string) => {
-            const params = new URLSearchParams(location.search);
-            params.set("marketplace", slugFromMarketplacePath(path));
-            setSelectedItems(new Set());
-            setExpandedVariations(new Set());
-            navigate({ pathname: location.pathname, search: params.toString() });
-        },
-        [location.pathname, location.search, navigate],
-    );
-
-    useEffect(() => {
-        setAppliedFilters(DEFAULT_LISTING_FILTERS);
-        setDraftFilters(DEFAULT_LISTING_FILTERS);
-        setSearchTerm("");
-        setSelectedIntegrationIds(new Set());
-        setSelectedItems(new Set());
-        setExpandedVariations(new Set());
-    }, [marketplaceSlug]);
-
-    useEffect(() => {
-        if (filterDrawerOpen) {
-            setDraftFilters(appliedFilters);
-        }
-    }, [filterDrawerOpen, appliedFilters]);
-
-    const selectedDisplayName = navItems.find(n => n.path === selectedMarketplacePath)?.displayName || '';
-    const isShopee = selectedDisplayName.toLowerCase() === 'shopee';
-
-    const { data: storesData } = useMarketplaceStores(organizationId, selectedDisplayName);
-    const marketplaceStores = storesData || [];
-
-    const { parsedItems, rawItems, patchRawItems, listingTypeByItemId, isLoading, refetch } = useListingItems({
-        orgId: organizationId,
-        selectedDisplayName,
-        selectedPath: selectedMarketplacePath,
-        shippingCaps,
+  const { parsedItems, rawItems, patchRawItems, listingTypeByItemId, isLoading, refetch } =
+    useListingItems({
+      orgId: organizationId,
+      selectedDisplayName,
+      selectedPath: selectedMarketplacePath,
+      shippingCaps,
     });
 
-    const { data: draftsData } = useListingDrafts(organizationId, activeStatus);
-    const drafts = draftsData || [];
+  const { data: draftsData } = useListingDrafts(organizationId, activeStatus);
+  const drafts = draftsData || [];
 
-    const mutations = useListingMutations(organizationId);
-    const syncing = mutations.syncAll.isPending || mutations.syncSelected.isPending;
+  const mutations = useListingMutations(organizationId);
+  const syncing = mutations.syncAll.isPending || mutations.syncSelected.isPending;
 
-    // Filtering + sorting
-    const scopedAds = filterListingsByScope(parsedItems, activeStatus, selectedDisplayName);
-    const filterCounts = {
-        logistic: countListingsByLogistic(scopedAds),
-        link: countListingsByLink(scopedAds),
-        status: countListingsByStatus(scopedAds),
-        stock: countListingsByStock(scopedAds),
-    };
-    const filteredAds = filterListings(
-        parsedItems,
-        activeStatus,
-        isShopee,
-        selectedDisplayName,
-        searchTerm,
-        appliedFilters,
-        selectedIntegrationIds,
-    );
-    const sortedAds = sortListings(filteredAds, sortKey, sortDir);
-    const isAllSelected = sortedAds.length > 0 && sortedAds.every(a => selectedItems.has(a.id));
-    const isAllDraftsSelected = drafts.length > 0 && drafts.every((d: any) => selectedDraftIds.has(String(d.id)));
+  // Selection state
+  const {
+    selectedItems,
+    expandedVariations,
+    selectedDraftIds,
+    setSelectedDraftIds,
+    toggleSelectItem,
+    toggleSelectAll,
+    toggleExpandVariation,
+    toggleSelectDraft,
+    toggleSelectAllDrafts,
+    resetSelection,
+  } = useListingSelection();
 
-    // ─── Handlers ────────────────────────────────────────────────────────────
+  // Link picker state
+  const {
+    linkPickerContext,
+    openLinkPicker,
+    advanceLinkPickerQueue,
+    closeLinkPicker,
+  } = useLinkPickerQueue();
 
-    const handleSync = async () => {
-        if (!organizationId) { toast({ title: "Sessão necessária", variant: "destructive" }); return; }
-        try {
-            await mutations.syncAll.mutateAsync({ marketplaceDisplay: selectedDisplayName });
-            toast({ title: "Sincronização concluída", description: "Itens, qualidade e reviews atualizados com sucesso!" });
-            refetch();
-        } catch (e: any) {
-            toast({ title: "Falha na sincronização", description: e?.message || "Erro inesperado", variant: "destructive" });
-        }
-    };
+  // Filtering + sorting
+  const scopedAds = filterListingsByScope(parsedItems, activeStatus, selectedDisplayName);
+  const filterCounts = {
+    logistic: countListingsByLogistic(scopedAds),
+    link: countListingsByLink(scopedAds),
+    status: countListingsByStatus(scopedAds),
+    stock: countListingsByStock(scopedAds),
+  };
+  const filteredAds = filterListings(
+    parsedItems,
+    activeStatus,
+    isShopee,
+    selectedDisplayName,
+    searchTerm,
+    appliedFilters,
+    selectedIntegrationIds,
+  );
+  const sortedAds = sortListings(filteredAds, sortKey, sortDir);
+  const isAllSelected =
+    sortedAds.length > 0 && sortedAds.every((a) => selectedItems.has(a.id));
+  const isAllDraftsSelected =
+    drafts.length > 0 && drafts.every((d: any) => selectedDraftIds.has(String(d.id)));
 
-    const handleSyncSelected = async () => {
-        if (!organizationId) { toast({ title: "Sessão necessária", variant: "destructive" }); return; }
-        if (selectedItems.size === 0) { toast({ title: "Nenhum anúncio selecionado" }); return; }
-        try {
-            await mutations.syncSelected.mutateAsync({ marketplaceDisplay: selectedDisplayName, itemIds: Array.from(selectedItems) });
-            toast({ title: "Sincronização concluída", description: `Selecionados sincronizados: ${selectedItems.size}` });
-            refetch();
-        } catch (e: any) {
-            toast({ title: "Falha na sincronização", description: e?.message || "Erro inesperado", variant: "destructive" });
-        }
-    };
+  // Reset UI on marketplace change
+  useEffect(() => {
+    setAppliedFilters(DEFAULT_LISTING_FILTERS);
+    setDraftFilters(DEFAULT_LISTING_FILTERS);
+    setSearchTerm("");
+    setSelectedIntegrationIds(new Set());
+    resetSelection();
+  }, [marketplaceSlug, resetSelection]);
 
-    const handleSyncSingle = async (ad: ListingItem) => {
-        if (!organizationId) return;
-        try {
-            await mutations.syncSingle.mutateAsync({ marketplaceItemId: ad.marketplaceId, scope: 'full' });
-            toast({ title: "Anúncio sincronizado", description: ad.title });
-            refetch();
-        } catch (e: any) {
-            toast({ title: "Falha ao sincronizar", description: e?.message || "Erro inesperado", variant: "destructive" });
-        }
-    };
+  useEffect(() => {
+    if (filterDrawerOpen) {
+      setDraftFilters(appliedFilters);
+    }
+  }, [filterDrawerOpen, appliedFilters]);
 
-    const handleToggleStatus = async (ad: ListingItem, makeActive: boolean) => {
-        const targetStatus = makeActive ? 'active' : 'paused';
-        patchRawItems(prev => prev.map(r => {
-            const mlId = r?.marketplace_item_id || r?.id;
-            return String(mlId) === String(ad.marketplaceId) ? { ...r, status: targetStatus } : r;
-        }));
-        try {
-            await mutations.toggleStatus.mutateAsync({ itemId: ad.marketplaceId, targetStatus });
-            toast({ title: makeActive ? 'Anúncio ativado' : 'Anúncio pausado' });
-        } catch (e: any) {
-            patchRawItems(prev => prev.map(r => {
-                const mlId = r?.marketplace_item_id || r?.id;
-                return String(mlId) === String(ad.marketplaceId) ? { ...r, status: makeActive ? 'paused' : 'active' } : r;
-            }));
-            toast({ title: 'Falha ao atualizar status', description: e?.message || '', variant: 'destructive' });
-        }
-    };
+  // Actions
+  const {
+    confirmDeleteItemId,
+    setConfirmDeleteItemId,
+    confirmPauseFor,
+    setConfirmPauseFor,
+    handleSync,
+    handleSyncSelected,
+    handleSyncSingle,
+    handleToggleStatus,
+    handleDeleteItem,
+    handleDeleteDraft,
+    handleDeleteSelectedDrafts,
+    handleDuplicate,
+    handleStockSuccess,
+  } = useListingActions({
+    organizationId,
+    selectedDisplayName,
+    selectedItems,
+    mutations,
+    refetch,
+    patchRawItems,
+    rawItems,
+    listingTypeByItemId,
+    sortedAds,
+    selectedDraftIds,
+    setSelectedDraftIds,
+  });
 
-    const handleDeleteItem = async () => {
-        if (!confirmDeleteItemId) return;
-        const ad = sortedAds.find(a => a.id === confirmDeleteItemId);
-        if (!ad) return;
-        await mutations.deleteItem.mutateAsync({ marketplaceItemId: ad.marketplaceId });
-        toast({ title: 'Anúncio excluído', description: 'Removido do banco de dados.' });
-    };
+  const statusItems = isShopee
+    ? [
+        { title: "Todos", path: "/anuncios/todos" },
+        { title: "Ativos", path: "/anuncios/ativos" },
+        { title: "Rascunhos", path: "/anuncios/rascunhos" },
+      ]
+    : [
+        { title: "Todos", path: "/anuncios/todos" },
+        { title: "Ativos", path: "/anuncios/ativos" },
+        { title: "Inativos", path: "/anuncios/inativos" },
+        { title: "Rascunhos", path: "/anuncios/rascunhos" },
+      ];
 
-    const handleDeleteDraft = async (draftId: string) => {
-        try {
-            await mutations.deleteDraftMut.mutateAsync({ draftId });
-            toast({ title: 'Rascunho excluído' });
-        } catch (e: any) {
-            toast({ title: 'Falha ao excluir rascunho', description: e?.message || String(e), variant: 'destructive' });
-        }
-    };
+  return (
+    <SidebarProvider>
+      <div className="min-h-screen flex w-full bg-white">
+        <AppSidebar />
+        <div className="flex-1 flex flex-col">
+          <GlobalHeader />
+          <CleanNavigation
+            items={navItems}
+            basePath="/anuncios"
+            activePath={selectedMarketplacePath}
+            onNavigate={handleMarketplaceNavigate}
+            rightContent={
+              hasIntegration && activeTab === "anuncios" ? (
+                <Button
+                  className="h-10 px-4 rounded-2xl bg-novura-primary hover:bg-novura-primary/90 shadow-lg"
+                  onClick={() => navigate("/anuncios/criar/")}
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Criar um anúncio
+                </Button>
+              ) : null
+            }
+          />
 
-    const handleDeleteSelectedDrafts = async () => {
-        try {
-            await mutations.deleteDraftsMut.mutateAsync({ draftIds: Array.from(selectedDraftIds) });
-            setSelectedDraftIds(new Set());
-            toast({ title: 'Rascunhos excluídos' });
-        } catch (e: any) {
-            toast({ title: 'Falha ao excluir rascunhos', description: e?.message || String(e), variant: 'destructive' });
-        }
-    };
+          <main className="flex-1 overflow-auto">
+            <div className="px-6 pt-3 pb-6">
+              {hasIntegration ? (
+                <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="border-b border-gray-200 w-full">
+                      <TabsList className="bg-transparent p-0 h-auto">
+                        <TabsTrigger
+                          value="anuncios"
+                          className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent"
+                        >
+                          Anúncios
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="promocoes"
+                          className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent"
+                        >
+                          Promoções
+                        </TabsTrigger>
+                      </TabsList>
+                    </div>
+                  </div>
 
-    const handleDuplicate = async (ad: ListingItem) => {
-        const itemRow = rawItems.find(r => String(r?.marketplace_item_id || r?.id) === String(ad.id));
-        if (!itemRow || !organizationId) return;
-        const lt = listingTypeByItemId[String(ad.id)] || null;
-        try {
-            const draftId = await mutations.createDraftMut.mutateAsync({ itemRow, listingTypeId: lt });
-            toast({ title: 'Rascunho criado', description: 'Você pode editar o rascunho agora.' });
-            navigate(`/anuncios/criar/?draft_id=${draftId}&step=6`);
-        } catch (e: any) {
-            toast({ title: 'Erro ao duplicar', description: e?.message || String(e), variant: 'destructive' });
-        }
-    };
+                  <TabsContent
+                    key={`anuncios-${marketplaceSlug}`}
+                    value="anuncios"
+                    className="mt-0"
+                  >
+                    {/* Modals */}
+                    <StockEditModal
+                      open={!!stockModal}
+                      onOpenChange={(open) => {
+                        if (!open) setStockModal(null);
+                      }}
+                      itemId={stockModal?.itemId || null}
+                      orgId={organizationId}
+                      variations={stockModal?.variations || []}
+                      onSuccess={handleStockSuccess}
+                    />
+                    <LinkPickerDrawer
+                      open={!!linkPickerContext}
+                      onOpenChange={(open) => {
+                        if (!open) closeLinkPicker();
+                      }}
+                      context={linkPickerContext}
+                      onLinked={() => {
+                        advanceLinkPickerQueue(rawItems);
+                        refetch();
+                      }}
+                    />
+                    <DeleteListingDialog
+                      itemId={confirmDeleteItemId}
+                      onClose={() => setConfirmDeleteItemId(null)}
+                      onConfirm={handleDeleteItem}
+                    />
+                    {bulkDeleteDraftsOpen && (
+                      <Dialog
+                        open={bulkDeleteDraftsOpen}
+                        onOpenChange={setBulkDeleteDraftsOpen}
+                      >
+                        <DialogContent className="max-w-md">
+                          <DialogHeader>
+                            <DialogTitle>Excluir rascunhos selecionados?</DialogTitle>
+                            <DialogDescription>
+                              {selectedDraftIds.size} selecionado(s). Esta ação remove definitivamente do banco de dados.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setBulkDeleteDraftsOpen(false)}
+                            >
+                              Cancelar
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="bg-red-600 hover:bg-red-700"
+                              onClick={async () => {
+                                await handleDeleteSelectedDrafts();
+                                setBulkDeleteDraftsOpen(false);
+                              }}
+                            >
+                              Excluir
+                            </Button>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                    )}
 
-    const handleStockSuccess = (itemId: string, updates: Array<{ model_id: number; seller_stock: number }>) => {
-        patchRawItems(prev => prev.map(r => {
-            const rid = String(r?.marketplace_item_id || r?.id);
-            if (rid !== itemId) return r;
-            const vars = Array.isArray(r?.variations) ? r.variations : [];
-            return {
-                ...r,
-                variations: vars.map((vv: any) => {
-                    const mid = String(vv?.model_id || vv?.id);
-                    const upd = updates.find(u => String(u.model_id) === mid);
-                    if (!upd) return vv;
-                    const ns = Number(upd.seller_stock);
-                    const sinfo = typeof vv?.stock_info_v2 === 'object' && vv.stock_info_v2 ? { ...vv.stock_info_v2 } : null;
-                    if (sinfo) {
-                        const list = Array.isArray(sinfo.seller_stock) ? [...sinfo.seller_stock] : [];
-                        if (list.length > 0) {
-                            list[0] = { ...list[0], stock: ns, location_id: list[0].location_id || "BRZ" };
-                        } else {
-                            list.push({ stock: ns, if_saleable: true, location_id: "BRZ" });
-                        }
-                        sinfo.seller_stock = list;
-                        sinfo.summary_info = { ...(sinfo.summary_info || {}), total_available_stock: ns };
-                    }
-                    return { ...vv, seller_stock: ns, available_quantity: ns, stock_info_v2: sinfo || vv.stock_info_v2 };
-                }),
-            };
-        }));
-    };
-
-    const toggleSelectAll = () => {
-        setSelectedItems(prev => {
-            const newSet = new Set(prev);
-            const visibleIds = sortedAds.map(a => a.id);
-            const allSelected = visibleIds.every(id => newSet.has(id));
-            visibleIds.forEach(id => allSelected ? newSet.delete(id) : newSet.add(id));
-            return newSet;
-        });
-    };
-
-    const toggleSelectAllDrafts = () => {
-        setSelectedDraftIds(prev => {
-            const newSet = new Set(prev);
-            const all = drafts.every((d: any) => newSet.has(String(d.id)));
-            drafts.forEach((d: any) => all ? newSet.delete(String(d.id)) : newSet.add(String(d.id)));
-            return newSet;
-        });
-    };
-
-    const statusItems = isShopee
-        ? [
-            { title: 'Todos', path: '/anuncios/todos' },
-            { title: 'Ativos', path: '/anuncios/ativos' },
-            { title: 'Rascunhos', path: '/anuncios/rascunhos' },
-          ]
-        : [
-            { title: 'Todos', path: '/anuncios/todos' },
-            { title: 'Ativos', path: '/anuncios/ativos' },
-            { title: 'Inativos', path: '/anuncios/inativos' },
-            { title: 'Rascunhos', path: '/anuncios/rascunhos' },
-          ];
-
-    return (
-        <SidebarProvider>
-            <div className="min-h-screen flex w-full bg-white">
-                <AppSidebar />
-                <div className="flex-1 flex flex-col">
-                    <GlobalHeader />
-                    <CleanNavigation
-                        items={navItems}
-                        basePath="/anuncios"
-                        activePath={selectedMarketplacePath}
-                        onNavigate={handleMarketplaceNavigate}
-                        rightContent={
-                            hasIntegration && activeTab === "anuncios" ? (
-                                <Button
-                                    className="h-10 px-4 rounded-2xl bg-novura-primary hover:bg-novura-primary/90 shadow-lg"
-                                    onClick={() => navigate("/anuncios/criar/")}
-                                >
-                                    <Plus className="w-4 h-4 mr-2" />
-                                    Criar um anúncio
-                                </Button>
-                            ) : null
-                        }
+                    <ListingsToolbar
+                      searchTerm={searchTerm}
+                      onSearchChange={setSearchTerm}
+                      sortKey={sortKey}
+                      sortDir={sortDir}
+                      onSort={(key, dir) => {
+                        setSortKey(key);
+                        setSortDir(dir);
+                      }}
+                      appliedFilters={appliedFilters}
+                      draftFilters={draftFilters}
+                      onDraftFiltersChange={setDraftFilters}
+                      filterDrawerOpen={filterDrawerOpen}
+                      onFilterDrawerOpenChange={setFilterDrawerOpen}
+                      onConfirmFilters={() => {
+                        setAppliedFilters(draftFilters);
+                        setFilterDrawerOpen(false);
+                      }}
+                      onClearFilters={() => {
+                        setAppliedFilters(DEFAULT_LISTING_FILTERS);
+                        setDraftFilters(DEFAULT_LISTING_FILTERS);
+                      }}
+                      filterCounts={filterCounts}
+                      stores={marketplaceStores}
+                      selectedIntegrationIds={selectedIntegrationIds}
+                      onSelectedIntegrationIdsChange={setSelectedIntegrationIds}
+                      syncing={syncing}
+                      selectedCount={selectedItems.size}
+                      onSyncAll={handleSync}
+                      onSyncSelected={handleSyncSelected}
                     />
 
-                    <main className="flex-1 overflow-auto">
-                        <div className="px-6 pt-3 pb-6">
-                            {hasIntegration ? (
-                                <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-                                    <div className="flex items-center justify-between mb-6">
-                                        <div className="border-b border-gray-200 w-full">
-                                            <TabsList className="bg-transparent p-0 h-auto">
-                                                <TabsTrigger
-                                                    value="anuncios"
-                                                    className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent"
-                                                >
-                                                    Anúncios
-                                                </TabsTrigger>
-                                                <TabsTrigger
-                                                    value="promocoes"
-                                                    className="px-6 py-4 border-b-2 border-transparent data-[state=active]:border-novura-primary data-[state=active]:text-novura-primary hover:text-novura-primary rounded-none bg-transparent"
-                                                >
-                                                    Promoções
-                                                </TabsTrigger>
-                                            </TabsList>
-                                        </div>
-                                    </div>
+                    <div className="mt-4">
+                      <CleanNavigation
+                        items={statusItems}
+                        basePath=""
+                        activePath={`/anuncios/${activeStatus}`}
+                        onNavigate={handleStatusNavigate}
+                      />
+                    </div>
 
-                                    <TabsContent key={`anuncios-${marketplaceSlug}`} value="anuncios" className="mt-0">
-                                        {/* Modals */}
-                                        <StockEditModal
-                                            open={!!stockModal}
-                                            onOpenChange={(open) => { if (!open) setStockModal(null); }}
-                                            itemId={stockModal?.itemId || null}
-                                            orgId={organizationId}
-                                            variations={stockModal?.variations || []}
-                                            onSuccess={handleStockSuccess}
-                                        />
-                                        <LinkPickerDrawer
-                                            open={!!linkPickerContext}
-                                            onOpenChange={(open) => { if (!open) setLinkPickerContext(null); }}
-                                            context={linkPickerContext}
-                                            onLinked={() => {
-                                                if (!linkPickerContext) return;
-                                                if (pendingLinkQueue.length > 1) {
-                                                    const [, ...rest] = pendingLinkQueue;
-                                                    const nextVariationId = rest[0];
-                                                    setPendingLinkQueue(rest);
-                                                    const row = rawItems.find(
-                                                        (r) =>
-                                                            String(r?.marketplace_item_id || r?.id) ===
-                                                            String(linkPickerContext.marketplaceItemId)
-                                                    );
-                                                    const nextSku = getVariationSkuFromItemRow(row, nextVariationId);
-                                                    const nextHints = getVariationMatchHintsFromItemRow(row, nextVariationId);
-                                                    const nextStep = (linkPickerContext.currentStep || 1) + 1;
-                                                    setLinkPickerContext({
-                                                        ...linkPickerContext,
-                                                        variationId: nextVariationId,
-                                                        adSku: nextSku || linkPickerContext.adSku,
-                                                        matchHints: nextHints.length > 0 ? nextHints : [],
-                                                        progressLabel: `${nextStep}/${linkPickerContext.totalSteps || 1}`,
-                                                        currentStep: nextStep,
-                                                        pendingVariationIds: rest,
-                                                    });
-                                                } else {
-                                                    setPendingLinkQueue([]);
-                                                    setLinkPickerContext(null);
-                                                }
-                                                refetch();
-                                            }}
-                                        />
-                                        <DeleteListingDialog
-                                            itemId={confirmDeleteItemId}
-                                            onClose={() => setConfirmDeleteItemId(null)}
-                                            onConfirm={handleDeleteItem}
-                                        />
-                                        {bulkDeleteDraftsOpen && (
-                                            <Dialog open={bulkDeleteDraftsOpen} onOpenChange={setBulkDeleteDraftsOpen}>
-                                                <DialogContent className="max-w-md">
-                                                    <DialogHeader>
-                                                        <DialogTitle>Excluir rascunhos selecionados?</DialogTitle>
-                                                        <DialogDescription>
-                                                            {selectedDraftIds.size} selecionado(s). Esta ação remove definitivamente do banco de dados.
-                                                        </DialogDescription>
-                                                    </DialogHeader>
-                                                    <div className="flex justify-end gap-2">
-                                                        <Button variant="outline" size="sm" onClick={() => setBulkDeleteDraftsOpen(false)}>Cancelar</Button>
-                                                        <Button size="sm" className="bg-red-600 hover:bg-red-700" onClick={async () => { await handleDeleteSelectedDrafts(); setBulkDeleteDraftsOpen(false); }}>Excluir</Button>
-                                                    </div>
-                                                </DialogContent>
-                                            </Dialog>
-                                        )}
+                    <div className="mt-2 px-2 flex items-center justify-between">
+                      <ListingSelectionBar
+                        activeStatus={activeStatus}
+                        isAllSelected={isAllSelected}
+                        onToggleSelectAll={() => toggleSelectAll(sortedAds)}
+                        selectedCount={selectedItems.size}
+                        isAllDraftsSelected={isAllDraftsSelected}
+                        onToggleSelectAllDrafts={() => toggleSelectAllDrafts(drafts)}
+                        selectedDraftsCount={selectedDraftIds.size}
+                        onBulkDeleteDrafts={() => setBulkDeleteDraftsOpen(true)}
+                      />
+                    </div>
 
-                                        <ListingsToolbar
-                                            searchTerm={searchTerm}
-                                            onSearchChange={setSearchTerm}
-                                            sortKey={sortKey}
-                                            sortDir={sortDir}
-                                            onSort={(key, dir) => {
-                                                setSortKey(key);
-                                                setSortDir(dir);
-                                            }}
-                                            appliedFilters={appliedFilters}
-                                            draftFilters={draftFilters}
-                                            onDraftFiltersChange={setDraftFilters}
-                                            filterDrawerOpen={filterDrawerOpen}
-                                            onFilterDrawerOpenChange={setFilterDrawerOpen}
-                                            onConfirmFilters={() => {
-                                                setAppliedFilters(draftFilters);
-                                                setFilterDrawerOpen(false);
-                                            }}
-                                            onClearFilters={() => {
-                                                setAppliedFilters(DEFAULT_LISTING_FILTERS);
-                                                setDraftFilters(DEFAULT_LISTING_FILTERS);
-                                            }}
-                                            filterCounts={filterCounts}
-                                            stores={marketplaceStores}
-                                            selectedIntegrationIds={selectedIntegrationIds}
-                                            onSelectedIntegrationIdsChange={setSelectedIntegrationIds}
-                                            syncing={syncing}
-                                            selectedCount={selectedItems.size}
-                                            onSyncAll={handleSync}
-                                            onSyncSelected={handleSyncSelected}
-                                        />
+                    <Card
+                      key={`listings-panel-${organizationId}-${marketplaceSlug}`}
+                      className="mt-2 border border-gray-200 shadow-sm"
+                    >
+                      <CardContent className="p-0">
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-12 gap-x-2 items-center px-3 py-2 border-b border-gray-200">
+                            <div className="col-span-1"></div>
+                            <div className="col-span-3 text-xs font-medium text-gray-600">
+                              Produto(S)
+                            </div>
+                            <div className="col-span-2 text-xs font-medium text-gray-600">
+                              Preço
+                            </div>
+                            <div className="col-span-2 text-xs font-medium text-gray-600">
+                              Dados
+                            </div>
+                            <div className="col-span-2 text-xs font-medium text-gray-600">
+                              Desempenho
+                            </div>
+                            <div className="col-span-2 text-xs font-medium text-gray-600 text-right">
+                              Ações
+                            </div>
+                          </div>
 
-                                        <div className="mt-4">
-                                            <CleanNavigation
-                                                items={statusItems}
-                                                basePath=""
-                                                activePath={`/anuncios/${activeStatus}`}
-                                                onNavigate={(path) => {
-                                                    const seg = path.split('/').pop() || 'todos';
-                                                    setActiveStatus(seg);
-                                                    const params = new URLSearchParams(location.search);
-                                                    navigate({
-                                                        pathname: path,
-                                                        search: params.toString(),
-                                                    });
-                                                }}
-                                            />
-                                        </div>
-
-                                        <div className="mt-2 px-2 flex items-center justify-between">
-                                            <ListingSelectionBar
-                                                activeStatus={activeStatus}
-                                                isAllSelected={isAllSelected}
-                                                onToggleSelectAll={toggleSelectAll}
-                                                selectedCount={selectedItems.size}
-                                                isAllDraftsSelected={isAllDraftsSelected}
-                                                onToggleSelectAllDrafts={toggleSelectAllDrafts}
-                                                selectedDraftsCount={selectedDraftIds.size}
-                                                onBulkDeleteDrafts={() => setBulkDeleteDraftsOpen(true)}
-                                            />
-                                        </div>
-
-                                        <Card
-                                            key={`listings-panel-${organizationId}-${marketplaceSlug}`}
-                                            className="mt-2 border border-gray-200 shadow-sm"
-                                        >
-                                            <CardContent className="p-0">
-                                                <div className="space-y-2">
-                                                    <div className="grid grid-cols-12 gap-x-2 items-center px-3 py-2 border-b border-gray-200">
-                                                        <div className="col-span-1"></div>
-                                                        <div className="col-span-3 text-xs font-medium text-gray-600">Produto(S)</div>
-                                                        <div className="col-span-2 text-xs font-medium text-gray-600">Preço</div>
-                                                        <div className="col-span-2 text-xs font-medium text-gray-600">Dados</div>
-                                                        <div className="col-span-2 text-xs font-medium text-gray-600">Desempenho</div>
-                                                        <div className="col-span-2 text-xs font-medium text-gray-600 text-right">Ações</div>
-                                                    </div>
-
-                                                    {activeStatus === 'rascunhos' ? (
-                                                        <DraftsList
-                                                            drafts={drafts}
-                                                            selectedDraftIds={selectedDraftIds}
-                                                            onToggleSelect={(id) => setSelectedDraftIds(prev => {
-                                                                const s = new Set(prev);
-                                                                if (s.has(id)) { s.delete(id); } else { s.add(id); }
-                                                                return s;
-                                                            })}
-                                                            onDeleteDraft={handleDeleteDraft}
-                                                        />
-                                                    ) : sortedAds.length > 0 ? (
-                                                        sortedAds.map((ad) => {
-                                                            const itemRow = rawItems.find(r => String(r?.marketplace_item_id || r?.id) === String(ad.id));
-                                                            return (
-                                                                <ListingCard
-                                                                    key={ad.id}
-                                                                    ad={ad}
-                                                                    itemRow={itemRow}
-                                                                    isShopee={isShopee}
-                                                                    isSelected={selectedItems.has(ad.id)}
-                                                                    isExpanded={expandedVariations.has(ad.id)}
-                                                                    confirmPauseFor={confirmPauseFor}
-                                                                    onToggleSelect={() => setSelectedItems(prev => {
-                                                                        const s = new Set(prev);
-                                                                        if (s.has(ad.id)) { s.delete(ad.id); } else { s.add(ad.id); }
-                                                                        return s;
-                                                                    })}
-                                                                    onToggleExpansion={() => setExpandedVariations(prev => {
-                                                                        const s = new Set(prev);
-                                                                        if (s.has(ad.id)) { s.delete(ad.id); } else { s.add(ad.id); }
-                                                                        return s;
-                                                                    })}
-                                                                    onToggleStatus={handleToggleStatus}
-                                                                    onOpenStockEdit={(_, variationItems) => {
-                                                                        setStockModal({
-                                                                            itemId: String(ad.id),
-                                                                            variations: variationItems.map(v => ({ id: v.id, sku: v.sku, seller_stock_total: v.seller_stock_total })),
-                                                                        });
-                                                                    }}
-                                                                    onDuplicate={handleDuplicate}
-                                                                    onDeleteRequest={setConfirmDeleteItemId}
-                                                                    onSetConfirmPause={setConfirmPauseFor}
-                                                                    onSyncSingle={handleSyncSingle}
-                                                                    onOpenLinkPicker={({ ad: a, variationId, variationSku, variationTypes, pendingVariationIds }) => {
-                                                                        const queue = pendingVariationIds && pendingVariationIds.length > 0
-                                                                            ? pendingVariationIds
-                                                                            : (variationId ? [variationId] : []);
-                                                                        setPendingLinkQueue(queue);
-                                                                        const stepIndex = variationId ? Math.max(queue.indexOf(variationId), 0) + 1 : 1;
-                                                                        const resolvedSku =
-                                                                            variationSku ||
-                                                                            getVariationSkuFromItemRow(itemRow, variationId) ||
-                                                                            (a.sku && String(a.sku).trim()) ||
-                                                                            undefined;
-                                                                        const resolvedHints =
-                                                                            variationTypes && variationTypes.length > 0
-                                                                                ? variationTypes
-                                                                                : getVariationMatchHintsFromItemRow(itemRow, variationId);
-                                                                        setLinkPickerContext({
-                                                                            marketplace: a.marketplace,
-                                                                            marketplaceItemId: a.marketplaceId,
-                                                                            variationId,
-                                                                            adSku: resolvedSku,
-                                                                            adTitle: variationId ? `${a.title} (variação ${variationId})` : a.title,
-                                                                            adImage: a.image,
-                                                                            matchHints: resolvedHints,
-                                                                            pendingVariationIds: queue,
-                                                                            currentStep: stepIndex,
-                                                                            totalSteps: queue.length || 1,
-                                                                            progressLabel: `${stepIndex}/${queue.length || 1}`,
-                                                                        });
-                                                                    }}
-                                                                />
-                                                            );
-                                                        })
-                                                    ) : (
-                                                        <div className="p-10 text-center text-gray-500">
-                                                            {isLoading || (!marketplaceSlug && hasIntegration)
-                                                                ? 'Carregando...'
-                                                                : 'Nenhum anúncio encontrado.'}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </CardContent>
-                                        </Card>
-                                    </TabsContent>
-
-                                    <TabsContent key={`promocoes-${marketplaceSlug}`} value="promocoes" className="mt-0">
-                                        {organizationId && selectedDisplayName ? (
-                                            <PromotionsTab
-                                                key={`promotions-tab-${marketplaceSlug}`}
-                                                organizationId={organizationId}
-                                                marketplaceDisplayName={selectedDisplayName}
-                                            />
-                                        ) : (
-                                            <div className="bg-white rounded-xl border border-gray-200 p-6 text-gray-500 text-sm">
-                                                Selecione um marketplace para gerenciar promoções.
-                                            </div>
-                                        )}
-                                    </TabsContent>
-                                </Tabs>
-                            ) : (
-                                <div className="py-24 flex flex-col items-center justify-center">
-                                    <div className="text-lg font-semibold text-gray-700">CONECTE UM APLICATIVO</div>
-                                    <Button className="mt-4" onClick={() => navigate('/aplicativos')}>Ir para Aplicativos</Button>
-                                </div>
-                            )}
+                          {activeStatus === "rascunhos" ? (
+                            <DraftsList
+                              drafts={drafts}
+                              selectedDraftIds={selectedDraftIds}
+                              onToggleSelect={toggleSelectDraft}
+                              onDeleteDraft={handleDeleteDraft}
+                            />
+                          ) : sortedAds.length > 0 ? (
+                            sortedAds.map((ad) => {
+                              const itemRow = rawItems.find(
+                                (r) =>
+                                  String(r?.marketplace_item_id || r?.id) === String(ad.id),
+                              );
+                              return (
+                                <ListingCard
+                                  key={ad.id}
+                                  ad={ad}
+                                  itemRow={itemRow}
+                                  isShopee={isShopee}
+                                  isSelected={selectedItems.has(ad.id)}
+                                  isExpanded={expandedVariations.has(ad.id)}
+                                  confirmPauseFor={confirmPauseFor}
+                                  onToggleSelect={() => toggleSelectItem(ad.id)}
+                                  onToggleExpansion={() => toggleExpandVariation(ad.id)}
+                                  onToggleStatus={handleToggleStatus}
+                                  onOpenStockEdit={(_, variationItems) => {
+                                    setStockModal({
+                                      itemId: String(ad.id),
+                                      variations: variationItems.map((v) => ({
+                                        id: v.id,
+                                        sku: v.sku,
+                                        seller_stock_total: v.seller_stock_total,
+                                      })),
+                                    });
+                                  }}
+                                  onDuplicate={handleDuplicate}
+                                  onDeleteRequest={setConfirmDeleteItemId}
+                                  onSetConfirmPause={setConfirmPauseFor}
+                                  onSyncSingle={handleSyncSingle}
+                                  onOpenLinkPicker={({
+                                    ad: a,
+                                    variationId,
+                                    variationSku,
+                                    variationTypes,
+                                    pendingVariationIds,
+                                  }) =>
+                                    openLinkPicker({
+                                      ad: a,
+                                      variationId,
+                                      variationSku,
+                                      variationTypes,
+                                      pendingVariationIds,
+                                      itemRow,
+                                    })
+                                  }
+                                />
+                              );
+                            })
+                          ) : (
+                            <div className="p-10 text-center text-gray-500">
+                              {isLoading || (!marketplaceSlug && hasIntegration)
+                                ? "Carregando..."
+                                : "Nenhum anúncio encontrado."}
+                            </div>
+                          )}
                         </div>
-                    </main>
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  <TabsContent
+                    key={`promocoes-${marketplaceSlug}`}
+                    value="promocoes"
+                    className="mt-0"
+                  >
+                    {organizationId && selectedDisplayName ? (
+                      <PromotionsTab
+                        key={`promotions-tab-${marketplaceSlug}`}
+                        organizationId={organizationId}
+                        marketplaceDisplayName={selectedDisplayName}
+                      />
+                    ) : (
+                      <div className="bg-white rounded-xl border border-gray-200 p-6 text-gray-500 text-sm">
+                        Selecione um marketplace para gerenciar promoções.
+                      </div>
+                    )}
+                  </TabsContent>
+                </Tabs>
+              ) : (
+                <div className="py-24 flex flex-col items-center justify-center">
+                  <div className="text-lg font-semibold text-gray-700">CONECTE UM APLICATIVO</div>
+                  <Button className="mt-4" onClick={() => navigate("/aplicativos")}>
+                    Ir para Aplicativos
+                  </Button>
                 </div>
+              )}
             </div>
-        </SidebarProvider>
-    );
+          </main>
+        </div>
+      </div>
+    </SidebarProvider>
+  );
 }

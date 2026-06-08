@@ -1,842 +1,99 @@
 import { useState, useEffect, useRef } from "react";
-import * as forge from "node-forge";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import { uploadLogoFromFile, fetchCompany, fetchConnectedStores, companyKeys, mapCompanyRowToForm } from "@/services/company.service";
+import type { EmpresaData, ConnectedStore } from "@/services/company.service";
+import { useCnpjLookup } from "@/hooks/useCnpjLookup";
+import { useCertVerification } from "@/hooks/useCertVerification";
+import { useCompanyWizard } from "@/hooks/useCompanyWizard";
+import { useCompanySave } from "@/hooks/useCompanySave";
+import { useAuth } from "@/hooks/useAuth";
 import { StepIndicator } from "@/components/products/create/StepIndicator";
 import { NavigationButtons } from "@/components/products/create/NavigationButtons";
 import { CompanyStep1 } from "@/components/settings/company/CompanyStep1";
 import { CompanyStep2 } from "@/components/settings/company/CompanyStep2";
 import { CompanyStep3 } from "@/components/settings/company/CompanyStep3";
 import { CompanyStep4 } from "@/components/settings/company/CompanyStep4";
-import { supabase } from "@/integrations/supabase/client";
-import { toast } from "sonner";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalHeader } from "@/components/GlobalHeader";
-import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
 const steps = [
   { id: 1, title: "Configuração", description: "Dados da empresa" },
   { id: 2, title: "Certificado A1", description: "Certificado digital" },
   { id: 3, title: "NF-e", description: "Configurações fiscais" },
-  { id: 4, title: "Associações", description: "Lojas integradas" }
+  { id: 4, title: "Associações", description: "Lojas integradas" },
 ];
 
-interface EmpresaData {
-  razao_social: string;
-  cnpj: string;
-  tipo_empresa: string;
-  tributacao: string;
-  inscricao_estadual: string;
-  email: string;
-  cep: string;
-  cidade: string;
-  estado: string;
-  endereco: string;
-  numero: string;
-  bairro: string;
-  complemento?: string;
-  logo_url?: string;
-  certificado_a1_url?: string;
-  certificado_senha?: string;
-  certificado_validade?: string;
-  lojas_associadas: string[];
-  numero_serie: string;
-  proxima_nfe: number;
-  situacao_cnpj?: string; // novo campo para validação de situação
-}
-
-// Representa uma loja conectada via "Aplicativos"
-interface ConnectedStore {
-  id: string;          // id da integração (marketplace_integrations.id)
-  name: string;        // nome da loja (config.storeName)
-  marketplace: string; // nome do marketplace (ex.: "Mercado Livre")
-  logo?: string;       // URL do logo do app (apps_public_view.logo_url)
-}
+const INITIAL_EMPRESA: EmpresaData = {
+  razao_social: "", cnpj: "", tipo_empresa: "", tributacao: "",
+  inscricao_estadual: "", email: "", cep: "", cidade: "", estado: "",
+  endereco: "", numero: "", bairro: "", complemento: "", logo_url: "",
+  lojas_associadas: [], numero_serie: "", proxima_nfe: 0, situacao_cnpj: "",
+};
 
 export function NovaEmpresa() {
-  const [currentStep, setCurrentStep] = useState(1);
-  const [loading, setLoading] = useState(false);
-  const [isCnpjLoading, setIsCnpjLoading] = useState(false);
-  const [showErrors, setShowErrors] = useState(false);
-  const [cnpjBlocked, setCnpjBlocked] = useState(false);
-  const [cnpjBlockMessage, setCnpjBlockMessage] = useState("");
-  const debounceRef = useRef<number | null>(null);
-  const lastFetchedRef = useRef<string>("");
-  const pfxFileRef = useRef<File | null>(null);
-  const logoFileRef = useRef<File | null>(null);
-  type VerifyStatus = 'idle' | 'checking' | 'valid' | 'invalid';
-  const [certVerifyStatus, setCertVerifyStatus] = useState<VerifyStatus>('idle');
   const { organizationId, user, session } = useAuth();
   const [searchParams] = useSearchParams();
-  const [editCompanyId, setEditCompanyId] = useState<string | null>(null);
-  const [empresaData, setEmpresaData] = useState<EmpresaData>({
-    razao_social: "",
-    cnpj: "",
-    tipo_empresa: "",
-    tributacao: "",
-    inscricao_estadual: "",
-    email: "",
-    cep: "",
-    cidade: "",
-    estado: "",
-    endereco: "",
-    numero: "",
-    bairro: "",
-    complemento: "",
-    logo_url: "",
-    lojas_associadas: [],
-    numero_serie: "",
-    proxima_nfe: 0,
-    situacao_cnpj: "",
-  });
-  const [connectedStores, setConnectedStores] = useState<ConnectedStore[]>([]);
-  const [loadingStores, setLoadingStores] = useState(false);
-  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const navigate = useNavigate();
-
-  // returnToApp: after creating a company, return to the Apps QuickSetupModal
-  // with the new company pre-selected.
-  const returnToApp = searchParams.get("returnToApp");
-  const returnProviderKey = searchParams.get("providerKey");
-
-  const navigateAfterSave = (newCompanyId?: string) => {
-    if (returnToApp) {
-      const params = new URLSearchParams();
-      if (newCompanyId) params.set("company", newCompanyId);
-      // Navigate back to /aplicativos/conectados, App.tsx will open QuickSetupModal
-      // via the pending integration stored in sessionStorage
-      try {
-        sessionStorage.setItem(
-          `novura:pending_setup`,
-          JSON.stringify({ integrationId: returnToApp, providerKey: returnProviderKey }),
-        );
-      } catch {
-        // sessionStorage unavailable — user will need to configure manually
-      }
-      navigate(`/aplicativos/conectados?company=${newCompanyId ?? ""}`);
-      return;
-    }
-    navigate("/configuracoes");
-  };
-
-  const updateEmpresaData = (data: Partial<EmpresaData>) => {
+  const editCompanyId = searchParams.get("companyId");
+  const logoFileRef = useRef<File | null>(null);
+  const [empresaData, setEmpresaData] = useState<EmpresaData>(INITIAL_EMPRESA);
+  const updateEmpresaData = (data: Partial<EmpresaData>) =>
     setEmpresaData(prev => ({ ...prev, ...data }));
-  };
 
-  // Validação de dígito verificador de CNPJ
-  const isValidCNPJ = (cnpj: string) => {
-    const digits = (cnpj || "").replace(/\D/g, "");
-    if (digits.length !== 14) return false;
-    if (/^(\d)\1{13}$/.test(digits)) return false; // rejeita todos os dígitos iguais
-  
-    const calcDV = (length: number) => {
-      const weights = length === 12
-        ? [5,4,3,2,9,8,7,6,5,4,3,2]
-        : [6,5,4,3,2,9,8,7,6,5,4,3,2];
-      let sum = 0;
-      for (let i = 0; i < weights.length; i++) {
-        sum += parseInt(digits[i], 10) * weights[i];
-      }
-      const remainder = sum % 11;
-      return remainder < 2 ? 0 : 11 - remainder;
-    };
-  
-    const dv1 = calcDV(12);
-    if (dv1 !== parseInt(digits[12], 10)) return false;
-    const dv2 = calcDV(13);
-    if (dv2 !== parseInt(digits[13], 10)) return false;
-    return true;
-  };
-
-  // Normaliza texto da situação
-  const normalizeSituacao = (s: string) => {
-    const noAccents = String(s || "").normalize('NFD').replace(/\p{Diacritic}/gu, '');
-    return noAccents.trim().toUpperCase();
-  };
-
-  const getCnpjBlockInfo = (situacao: string) => {
-    const norm = normalizeSituacao(situacao);
-    const rules: { re: RegExp; msg: string }[] = [
-      { re: /BAIXAD[OA]/, msg: "Empresa foi encerrada. Um CNPJ baixado não pode ser reativado." },
-      { re: /\bNULA\b/, msg: "CNPJ inválido ou anulado pela Receita Federal, geralmente por fraude ou duplicidade." },
-      { re: /SUSPENS[OA]/, msg: "Empresa com pendências cadastrais/fiscais. É necessário regularizar para voltar a operar." },
-      { re: /INAPT[OA]/, msg: "CNPJ declarado inapto por omissão prolongada de declarações ou irregularidades." },
-      // Bloqueio total conforme solicitado
-      { re: /ATIVA.*NAO.*REGULAR/, msg: "CNPJ ATIVA NÃO REGULAR. Bloqueio total até regularização cadastral." },
-      { re: /PROCESSO.*BAIXA/, msg: "CNPJ EM PROCESSO DE BAIXA. Bloqueio total para emissão de NF-e." },
-      { re: /SITUACAO.*ESPECIAL/, msg: "CNPJ em SITUAÇÃO ESPECIAL. Bloqueio total até normalização." },
-    ];
-    for (const r of rules) {
-      if (r.re.test(norm)) return r.msg;
-    }
-    return null;
-  };
-
-  // Busca automática de dados pelo CNPJ via Edge Function
-  const fetchCompanyDataFromCNPJ = async (cnpjDigits: string): Promise<Partial<EmpresaData> | null> => {
-    setIsCnpjLoading(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("cnpj-lookup", {
-        body: { cnpj: cnpjDigits, days: 365 },
-      });
-      if (error) {
-        throw new Error(typeof error === "string" ? error : (error.message || "Erro na função cnpj-lookup"));
-      }
-      if (data?.ok && data?.data) {
-        return data.data as Partial<EmpresaData>;
-      }
-      throw new Error(data?.error || "Resposta inesperada da função cnpj-lookup");
-    } catch (err: any) {
-      console.error("Falha na consulta do CNPJ:", err);
-      const msg = String(err?.message || err);
-      if (msg.includes("Failed to send a request")) {
-        toast.error("Falha de rede ao acessar a Edge Function. Verifique se 'cnpj-lookup' está implantada no seu projeto Supabase.");
-      } else {
-        toast.error("Não foi possível consultar o CNPJ agora. Tente novamente.");
-      }
-      return null;
-    } finally {
-      setIsCnpjLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    const digits = (empresaData.cnpj || "").replace(/\D/g, "");
-    if (digits.length === 14) {
-      if (!isValidCNPJ(digits)) {
-        // Evita chamadas desnecessárias quando o CNPJ é inválido
-        toast.error("CNPJ inválido. Verifique os dígitos e tente novamente.");
-        return;
-      }
-      if (digits !== lastFetchedRef.current) {
-        if (debounceRef.current) window.clearTimeout(debounceRef.current);
-        debounceRef.current = window.setTimeout(async () => {
-          const result = await fetchCompanyDataFromCNPJ(digits);
-          if (result) {
-            updateEmpresaData(result);
-            lastFetchedRef.current = digits;
-            // Avalia situação e aplica bloqueio se necessário
-            const situRaw = String((result as any).situacao_cnpj || empresaData.situacao_cnpj || "");
-            const norm = normalizeSituacao(situRaw);
-            const msg = getCnpjBlockInfo(situRaw);
-            console.log("[CNPJ] avaliação situação", { situRaw, norm, msg });
-            if (msg) {
-              setCnpjBlocked(true);
-              setCnpjBlockMessage(msg);
-            } else {
-              setCnpjBlocked(false);
-              setCnpjBlockMessage("");
-            }
-            toast.success("Dados do CNPJ carregados automaticamente");
-          }
-        }, 600);
-      }
-    }
-    // Cleanup do debounce quando cnpj muda ou componente desmonta
-    return () => {
-      if (debounceRef.current) {
-        window.clearTimeout(debounceRef.current);
-        debounceRef.current = null;
-      }
-    };
-  }, [empresaData.cnpj]);
-
-  // Extract edit params from URL on mount only (no data fetch yet)
-  useEffect(() => {
-    const companyId = searchParams.get('companyId');
-    const stepParam = parseInt(searchParams.get('step') || '', 10);
-    if (companyId) {
-      setEditCompanyId(companyId);
-    }
-    if (!isNaN(stepParam) && stepParam >= 1 && stepParam <= 4) {
-      setCurrentStep(stepParam);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Load company data only after organizationId (auth context) is ready
-  useEffect(() => {
-    const companyId = searchParams.get('companyId');
-    if (companyId && organizationId) {
-      setEditCompanyId(companyId);
-      void loadCompany(companyId);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organizationId]);
-
-  // Carrega lojas conectadas (via Aplicativos) para uso no Step 3
-  useEffect(() => {
-    let cancelled = false;
-    const loadConnectedStores = async () => {
-      if (!organizationId) return;
-      setLoadingStores(true);
-      try {
-        // 1) Carrega catálogo de apps para obter logos
-        const { data: appsView, error: appsErr } = await supabase
-          .from('apps_public_view')
-          .select('*');
-
-        const appLogoByName = new Map<string, string>();
-        if (!appsErr && Array.isArray(appsView)) {
-          for (const row of appsView as any[]) {
-            if (row?.name && row?.logo_url) appLogoByName.set(row.name, row.logo_url);
-          }
-        }
-
-        // 2) Carrega integrações de marketplace para a organização
-        const { data: integrations, error: intErr } = await supabase
-          .from('marketplace_integrations')
-          .select('id, marketplace_name, config')
-          .eq('organizations_id', organizationId);
-
-        if (intErr) throw intErr;
-
-        const mapped: ConnectedStore[] = (integrations || []).map((row: any) => {
-          const displayName = row.marketplace_name === 'mercado_livre' ? 'Mercado Livre' : row.marketplace_name;
-          const storeName = row?.config?.storeName || 'Minha Loja';
-          const logo = appLogoByName.get(displayName);
-          return {
-            id: String(row.id),
-            name: String(storeName),
-            marketplace: String(displayName),
-            logo: logo ? String(logo) : undefined,
-          } as ConnectedStore;
-        });
-
-        if (!cancelled) setConnectedStores(mapped);
-      } catch (e) {
-        console.error('Falha ao carregar lojas conectadas:', e);
-        if (!cancelled) setConnectedStores([]);
-      } finally {
-        if (!cancelled) setLoadingStores(false);
-      }
-    };
-    loadConnectedStores();
-    return () => { cancelled = true; };
-  }, [organizationId]);
-
-  const loadCompany = async (companyId: string) => {
-    try {
-      let query = supabase
-        .from('companies')
-        .select('*')
-        .eq('id', companyId);
-      if (organizationId) {
-        query = query.eq('organization_id', organizationId);
-      }
-      const { data: company, error } = await query.maybeSingle();
-      if (error) throw error;
-      if (!company) {
-        toast.error('Empresa não encontrada. Verifique se você tem permissão para editá-la.');
-        return;
-      }
-
-      // Pre-mark CNPJ as already fetched so the auto-lookup debounce does NOT fire
-      const loadedCnpjDigits = String(company.cnpj || '').replace(/\D/g, '');
-      lastFetchedRef.current = loadedCnpjDigits;
-
-      const parseToBR = (iso: string) => {
-        const ymd = String(iso || '').slice(0, 10);
-        const [y, m, d] = ymd.split('-');
-        return (y && m && d) ? `${d}/${m}/${y}` : '';
-      };
-
-      // Map all fields in a single setState call to avoid double renders
-      setEmpresaData(prev => ({
-        ...prev,
-        razao_social: company.razao_social || "",
-        cnpj: company.cnpj || "",
-        tipo_empresa: company.tipo_empresa || "",
-        tributacao: company.tributacao || "",
-        inscricao_estadual: company.inscricao_estadual || "",
-        email: company.email || "",
-        cep: company.cep || "",
-        cidade: company.cidade || "",
-        estado: company.estado || "",
-        endereco: company.endereco || "",
-        numero: company.numero || "",
-        bairro: company.bairro || "",
-        complemento: company.complemento || "",
-        logo_url: company.logo_url || prev.logo_url,
-        lojas_associadas: Array.isArray(company.lojas_associadas)
-          ? (company.lojas_associadas as any[]).map(String)
-          : [],
-        numero_serie: company.numero_serie || "",
-        proxima_nfe: company.proxima_nfe || 1,
-        certificado_validade: company.certificado_validade
-          ? parseToBR(String(company.certificado_validade))
-          : prev.certificado_validade,
-        certificado_a1_url: company.certificado_a1_url || prev.certificado_a1_url,
-      }));
-    } catch (e) {
-      console.error('Falha ao carregar empresa para edição:', e);
-      toast.error('Erro ao carregar dados da empresa.');
-    }
-  };
-
-  const canProceed = () => {
-    switch (currentStep) {
-      case 1:
-        if (cnpjBlocked) return false;
-        return Boolean(
-          empresaData.razao_social &&
-          empresaData.cnpj &&
-          empresaData.tipo_empresa &&
-          empresaData.tributacao &&
-          empresaData.email &&
-          empresaData.cep &&
-          empresaData.cidade &&
-          empresaData.estado &&
-          empresaData.endereco &&
-          empresaData.numero &&
-          empresaData.bairro
-        );
-      case 2:
-        if (pfxFileRef.current) {
-          return certVerifyStatus === 'valid';
-        }
-        return true;
-      case 3:
-        return Boolean(empresaData.numero_serie && empresaData.proxima_nfe);
-      case 4:
-        return true; // Lojas são opcionais
-      default:
-        return true;
-    }
-  };
-
-  const handleNext = () => {
-    if (!canProceed()) {
-      setShowErrors(true);
-      const baseMsg = cnpjBlocked
-        ? `CNPJ em situação '${empresaData.situacao_cnpj || ""}'. Não é possível prosseguir.`
-        : "Preencha todos os campos obrigatórios antes de prosseguir.";
-      toast.error(baseMsg);
-      return;
-    }
-    setShowErrors(false);
-    if (currentStep < 4) {
-      setCurrentStep(prev => prev + 1);
-    } else if (currentStep === 4) {
-      handleSave();
-    }
-  };
-
-  const handleBack = () => {
-    if (currentStep > 1) {
-      setCurrentStep(prev => prev - 1);
-    }
-  };
-
-  const readFileAsBase64 = (file: File) => new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // Remove prefix data:...;base64,
-      const base64 = result.split(',')[1] || result;
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
+  const { data: companyRow } = useQuery({
+    queryKey: companyKeys.detail(editCompanyId || '', organizationId || ''),
+    queryFn: () => fetchCompany(editCompanyId!, organizationId!),
+    enabled: !!editCompanyId && !!organizationId,
+    staleTime: 5 * 60 * 1000,
   });
-
-  const formatDateBR = (d: Date) => {
-    const dd = String(d.getDate()).padStart(2, '0');
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const yyyy = d.getFullYear();
-    return `${dd}/${mm}/${yyyy}`;
-  };
-
-  const ddmmyyyyToISO = (s?: string | null) => {
-    const v = String(s || '').trim();
-    const m = v.match(/^([0-3]\d)\/(0\d|1[0-2])\/(\d{4})$/);
-    if (!m) return null;
-    const dd = m[1], mm = m[2], yyyy = m[3];
-    return `${yyyy}-${mm}-${dd}`;
-  };
-
-  const resizeImageToPNG = (file: File, maxW = 200, maxH = 200): Promise<Blob> => {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let w = img.naturalWidth || img.width;
-        let h = img.naturalHeight || img.height;
-        const ratio = Math.min(maxW / w, maxH / h, 1);
-        w = Math.max(1, Math.floor(w * ratio));
-        h = Math.max(1, Math.floor(h * ratio));
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return reject(new Error('Canvas context not available'));
-        ctx.drawImage(img, 0, 0, w, h);
-        canvas.toBlob((blob) => {
-          if (!blob) return reject(new Error('Failed to generate PNG blob'));
-          resolve(blob);
-        }, 'image/png', 1.0);
-      };
-      img.onerror = (e) => reject(e);
-      const reader = new FileReader();
-      reader.onload = () => {
-        img.src = String(reader.result || '');
-      };
-      reader.onerror = (e) => reject(e);
-      reader.readAsDataURL(file);
+  const { data: connectedStores = [], isLoading: loadingStores } = useQuery<ConnectedStore[]>({
+    queryKey: companyKeys.connectedStores(organizationId || ''),
+    queryFn: () => fetchConnectedStores(organizationId!),
+    enabled: !!organizationId,
+    staleTime: 5 * 60 * 1000,
+  });
+  const { cnpjBlocked, cnpjBlockMessage, isCnpjLoading, triggerLookup, lastFetchedRef } =
+    useCnpjLookup({ onResult: updateEmpresaData });
+  useEffect(() => { triggerLookup(empresaData.cnpj); }, [empresaData.cnpj]); // eslint-disable-line
+  useEffect(() => {
+    if (!companyRow) return;
+    lastFetchedRef.current = String(companyRow.cnpj || '').replace(/\D/g, '');
+    setEmpresaData(prev => ({ ...prev, ...mapCompanyRowToForm(companyRow as Record<string, unknown>, prev) }));
+  }, [companyRow]); // eslint-disable-line
+  const { certVerifyStatus, pfxFileRef, handlePfxSelected, handleVerifyCertPassword } =
+    useCertVerification({
+      senha: empresaData.certificado_senha || '',
+      onValidityFound: (dateBR) => updateEmpresaData({ certificado_validade: dateBR }),
     });
-  };
-
-  const uploadLogoToStorage = async (blob: Blob): Promise<string | null> => {
-    try {
-      const safeName = 'logo.png';
-      const folder = `${organizationId ? `org_${organizationId}` : 'org_anon'}/companies/${crypto.randomUUID()}`;
-      const path = `${folder}/${safeName}`;
-      // Prefer bucket existente; se falhar, tente outro nome
-      const tryBuckets = ['ad-images', 'company-logos'];
-      for (const bucket of tryBuckets) {
-        const { error: upErr } = await supabase.storage.from(bucket).upload(path, blob, { upsert: true, contentType: 'image/png' });
-        if (!upErr) {
-          const { data } = supabase.storage.from(bucket).getPublicUrl(path);
-          return data?.publicUrl || null;
-        }
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  };
-
   const handleLogoSelected = async (file: File | null) => {
     logoFileRef.current = file;
-    if (!file) {
-      updateEmpresaData({ logo_url: '' });
-      return;
-    }
+    if (!file) { updateEmpresaData({ logo_url: '' }); return; }
     try {
-      const preview = URL.createObjectURL(file);
-      updateEmpresaData({ logo_url: preview });
-      const pngBlob = await resizeImageToPNG(file, 200, 200);
-      const publicUrl = await uploadLogoToStorage(pngBlob);
-      if (publicUrl) {
-        updateEmpresaData({ logo_url: publicUrl });
-      }
-    } catch {
-      // mantém preview; usuário pode tentar novamente
-    }
+      updateEmpresaData({ logo_url: URL.createObjectURL(file) });
+      const publicUrl = await uploadLogoFromFile(file, organizationId);
+      if (publicUrl) updateEmpresaData({ logo_url: publicUrl });
+    } catch { /* mantém preview */ }
   };
+  const { handleSave, loading } = useCompanySave({
+    empresaData, editCompanyId, organizationId: organizationId || null,
+    session: session || null, pfxFileRef, user: user || null,
+  });
+  const { currentStep, setCurrentStep, showErrors, handleNext, handleBack, canProceed, closeDialogOpen, setCloseDialogOpen } =
+    useCompanyWizard({ empresaData, cnpjBlocked, certVerifyStatus, pfxFileRef, handleSave });
+  // Apply ?step=N URL param on mount
+  useEffect(() => {
+    const s = parseInt(searchParams.get('step') || '', 10);
+    if (!isNaN(s) && s >= 1 && s <= 4) setCurrentStep(s);
+  }, []); // eslint-disable-line
 
-  const handleVerifyCertPassword = async () => {
-    if (!pfxFileRef.current) {
-      toast.error('Selecione um arquivo .pfx para verificar');
-      return;
-    }
-    if (!empresaData.certificado_senha) {
-      toast.error('Informe a senha do certificado');
-      return;
-    }
-    try {
-      setCertVerifyStatus('checking');
-      const startedAt = Date.now();
-      const buf = await pfxFileRef.current.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let binary = '';
-      const chunk = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-      }
-      const asn1Obj = forge.asn1.fromDer(binary);
-      const p12 = forge.pkcs12.pkcs12FromAsn1(asn1Obj, empresaData.certificado_senha);
-      let notAfter: Date | undefined;
-      for (const sc of p12.safeContents) {
-        for (const bag of sc.safeBags) {
-          if (bag.type === forge.pki.oids.certBag && (bag as any).cert) {
-            const cert = (bag as any).cert as forge.pki.Certificate;
-            notAfter = cert.validity.notAfter;
-          }
-        }
-      }
-      const ensureMinDelay = async (start: number, minMs: number) => {
-        const elapsed = Date.now() - start;
-        if (elapsed < minMs) await new Promise((r) => setTimeout(r, minMs - elapsed));
-      };
-      if (notAfter) {
-        await ensureMinDelay(startedAt, 500);
-        setEmpresaData(prev => ({ ...prev, certificado_validade: formatDateBR(notAfter!) }));
-        setCertVerifyStatus('valid');
-        toast.success('Senha verificada e validade preenchida');
-      } else {
-        await ensureMinDelay(startedAt, 500);
-        setCertVerifyStatus('invalid');
-        toast.error('Não foi possível identificar a validade do certificado');
-      }
-    } catch (err) {
-      console.error('Falha ao verificar senha do PFX:', err);
-      // Garante feedback por pelo menos 500ms
-      await new Promise((r) => setTimeout(r, 500));
-      setCertVerifyStatus('invalid');
-      toast.error('Senha inválida ou arquivo .pfx não pôde ser lido');
-    }
-  };
-
-  const handleSave = async () => {
-    setLoading(true);
-    try {
-      // Garante usuário autenticado
-      const sessionUser = user; // via useAuth
-      if (!sessionUser) throw new Error('Usuário não autenticado');
-
-      // Evita inserir senha do certificado na tabela companies
-      const { certificado_senha, ...companyPayload } = empresaData as any;
-      // Normaliza enums para respeitar constraints do banco
-      const safeCompanyPayload = {
-        ...companyPayload,
-        tipo_empresa: normalizeTipoEmpresa(companyPayload.tipo_empresa),
-        tributacao: normalizeTributacao(companyPayload.tributacao),
-      };
-      if (editCompanyId) {
-        // Atualização
-        const updatePayload: any = {
-          razao_social: safeCompanyPayload.razao_social,
-          cnpj: safeCompanyPayload.cnpj,
-          tipo_empresa: safeCompanyPayload.tipo_empresa,
-          tributacao: safeCompanyPayload.tributacao,
-          inscricao_estadual: safeCompanyPayload.inscricao_estadual,
-          email: safeCompanyPayload.email,
-          cep: safeCompanyPayload.cep,
-          cidade: safeCompanyPayload.cidade,
-          estado: safeCompanyPayload.estado,
-          endereco: safeCompanyPayload.endereco,
-          numero: safeCompanyPayload.numero,
-          bairro: safeCompanyPayload.bairro,
-          complemento: safeCompanyPayload.complemento,
-          lojas_associadas: safeCompanyPayload.lojas_associadas,
-          numero_serie: safeCompanyPayload.numero_serie,
-          proxima_nfe: safeCompanyPayload.proxima_nfe,
-          certificado_validade: ddmmyyyyToISO(safeCompanyPayload.certificado_validade) || safeCompanyPayload.certificado_validade || null,
-          certificado_a1_url: safeCompanyPayload.certificado_a1_url || null,
-        };
-        if (organizationId) updatePayload.organization_id = organizationId;
-
-        const { data: updated, error: updErr } = await supabase
-          .from('companies')
-          .update(updatePayload)
-          .eq('id', editCompanyId)
-          .select('id, organization_id')
-          .single();
-
-        if (updErr) throw updErr;
-
-        // Atualiza metadados de certificado na companies caso presentes (sem senha)
-        if (!pfxFileRef.current && (empresaData.certificado_validade || empresaData.certificado_a1_url)) {
-          try {
-            const { error: certMetaErr } = await supabase
-              .from('companies')
-              .update({
-                certificado_validade: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
-                certificado_a1_url: empresaData.certificado_a1_url || null,
-              })
-              .eq('id', editCompanyId);
-            if (certMetaErr) console.warn('Falha ao atualizar metadados do certificado na companies:', certMetaErr.message);
-          } catch (e) {
-            console.warn('Exceção ao atualizar metadados do certificado na companies:', (e as any)?.message || e);
-          }
-        }
-
-        if (pfxFileRef.current) {
-          try {
-            const base64 = await readFileAsBase64(pfxFileRef.current);
-            const { error: fnError } = await supabase.functions.invoke('upload-company-certificate', {
-              body: {
-                company_id: updated.id,
-                organization_id: updated.organization_id || organizationId || null,
-                pfx_base64: base64,
-                file_name: pfxFileRef.current.name,
-                valid_to: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
-              },
-              headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
-            });
-            if (fnError) throw fnError;
-            // Atualiza companies com metadados após upload
-            try {
-              const { error: certMetaErr2 } = await supabase
-                .from('companies')
-                .update({
-                  certificado_validade: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
-                  certificado_a1_url: pfxFileRef.current.name || null,
-                })
-                .eq('id', editCompanyId);
-              if (certMetaErr2) console.warn('Falha ao refletir metadados do certificado na companies:', certMetaErr2.message);
-            } catch {}
-          } catch (fnErr) {
-            console.error('Falha ao salvar certificado com segurança:', fnErr);
-            toast.error('Empresa atualizada, mas houve erro ao salvar o certificado A1. Tente novamente.');
-          }
-        }
-
-        // Integra Focus NFe via update (PUT /v2/empresas/{id}) para refletir
-        // mudanças fiscais como série e próximo número de NF-e.
-        try {
-          let certBase64ForFocus: string | undefined;
-          if (pfxFileRef.current && empresaData.certificado_senha) {
-            certBase64ForFocus = await readFileAsBase64(pfxFileRef.current);
-          }
-          const { data: focusRes, error: focusErr } = await supabase.functions.invoke('focus-company-create', {
-            body: {
-              company_id: updated.id,
-              organization_id: updated.organization_id || organizationId || null,
-              mode: 'update',
-              dry_run: false,
-              arquivo_certificado_base64: certBase64ForFocus,
-              senha_certificado: certBase64ForFocus ? empresaData.certificado_senha : undefined,
-            },
-            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
-          });
-          if (focusErr) {
-            console.warn('Focus NFe integração (update) falhou:', (focusErr as any)?.message || focusErr);
-            toast.warning('Empresa atualizada. Integração com Focus NFe não foi concluída.');
-          } else if (focusRes?.ok) {
-            toast.success('Empresa atualizada e sincronizada com a Focus.');
-          } else {
-            toast.warning('Empresa atualizada. Focus respondeu com aviso.');
-          }
-        } catch (e) {
-          console.warn('Exceção ao integrar Focus NFe (update):', (e as any)?.message || e);
-          toast.warning('Empresa atualizada. Integração com Focus não pôde ser verificada.');
-        }
-
-        toast.success('Empresa atualizada com sucesso!');
-        navigateAfterSave();
-      } else {
-        // Inserção
-        const insertPayload: any = {
-          razao_social: safeCompanyPayload.razao_social,
-          cnpj: safeCompanyPayload.cnpj,
-          tipo_empresa: safeCompanyPayload.tipo_empresa,
-          tributacao: safeCompanyPayload.tributacao,
-          inscricao_estadual: safeCompanyPayload.inscricao_estadual,
-          email: safeCompanyPayload.email,
-          cep: safeCompanyPayload.cep,
-          cidade: safeCompanyPayload.cidade,
-          estado: safeCompanyPayload.estado,
-          endereco: safeCompanyPayload.endereco,
-          numero: safeCompanyPayload.numero,
-          bairro: safeCompanyPayload.bairro,
-          complemento: safeCompanyPayload.complemento,
-          lojas_associadas: safeCompanyPayload.lojas_associadas,
-          numero_serie: safeCompanyPayload.numero_serie,
-          proxima_nfe: safeCompanyPayload.proxima_nfe,
-          certificado_validade: ddmmyyyyToISO(safeCompanyPayload.certificado_validade) || safeCompanyPayload.certificado_validade || null,
-          certificado_a1_url: safeCompanyPayload.certificado_a1_url || null,
-        };
-        if (organizationId) insertPayload.organization_id = organizationId;
-
-        const { data: inserted, error: insertErr } = await supabase
-          .from('companies')
-          .insert([insertPayload])
-          .select('id, organization_id')
-          .single();
-
-        if (insertErr) throw insertErr;
-
-        // Atualiza metadados de certificado na companies caso presentes (sem senha)
-        if (!pfxFileRef.current && (empresaData.certificado_validade || empresaData.certificado_a1_url)) {
-          try {
-            const { error: certMetaErr } = await supabase
-              .from('companies')
-              .update({
-                certificado_validade: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
-                certificado_a1_url: empresaData.certificado_a1_url || null,
-              })
-              .eq('id', inserted.id);
-            if (certMetaErr) console.warn('Falha ao atualizar metadados do certificado na companies:', certMetaErr.message);
-          } catch (e) {
-            console.warn('Exceção ao atualizar metadados do certificado na companies:', (e as any)?.message || e);
-          }
-        }
-
-        // Opcional: se o usuário selecionou um PFX, envia para função segura com criptografia
-        if (pfxFileRef.current) {
-          try {
-            const base64 = await readFileAsBase64(pfxFileRef.current);
-            const { error: fnError } = await supabase.functions.invoke('upload-company-certificate', {
-              body: {
-                company_id: inserted.id,
-                organization_id: inserted.organization_id || organizationId || null,
-                pfx_base64: base64,
-                file_name: pfxFileRef.current.name,
-                valid_to: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
-              },
-              headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
-            });
-            if (fnError) throw fnError;
-            // Atualiza companies com metadados após upload
-            try {
-              const { error: certMetaErr2 } = await supabase
-                .from('companies')
-                .update({
-                  certificado_validade: ddmmyyyyToISO(empresaData.certificado_validade) || empresaData.certificado_validade || null,
-                  certificado_a1_url: pfxFileRef.current.name || null,
-                })
-                .eq('id', inserted.id);
-              if (certMetaErr2) console.warn('Falha ao refletir metadados do certificado na companies:', certMetaErr2.message);
-            } catch {}
-          } catch (fnErr) {
-            console.error('Falha ao salvar certificado com segurança:', fnErr);
-            // Não falha o cadastro da empresa, apenas alerta o usuário
-            toast.error('Empresa criada, mas houve erro ao salvar o certificado A1. Você pode tentar novamente nas configurações.');
-          }
-        }
-
-        // Integra Focus NFe (dry_run por padrão)
-        try {
-          let certBase64ForFocus: string | undefined;
-          if (pfxFileRef.current && empresaData.certificado_senha) {
-            certBase64ForFocus = await readFileAsBase64(pfxFileRef.current);
-          }
-          const { data: focusRes, error: focusErr } = await supabase.functions.invoke('focus-company-create', {
-            body: {
-              company_id: inserted.id,
-              organization_id: inserted.organization_id || organizationId || null,
-              dry_run: true,
-              arquivo_certificado_base64: certBase64ForFocus,
-              senha_certificado: certBase64ForFocus ? empresaData.certificado_senha : undefined,
-            },
-            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
-          });
-          if (focusErr) {
-            console.warn('Focus NFe integração (insert) falhou:', (focusErr as any)?.message || focusErr);
-            toast.warning('Empresa criada. Integração com Focus NFe não foi concluída (dry-run).');
-          } else if (focusRes?.ok) {
-            toast.success('Empresa criada e validada na Focus (dry-run).');
-          } else {
-            toast.warning('Empresa criada. Focus respondeu com aviso.');
-          }
-        } catch (e) {
-          console.warn('Exceção ao integrar Focus NFe (insert):', (e as any)?.message || e);
-          toast.warning('Empresa criada. Integração com Focus não pôde ser verificada.');
-        }
-
-        toast.success('Empresa cadastrada com sucesso!');
-        navigateAfterSave(inserted?.id);
-      }
-    } catch (error) {
-      console.error('Erro ao salvar empresa:', error);
-      toast.error('Erro ao salvar empresa');
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // ── Step renderer (intentional swap: case3→CompanyStep4, case4→CompanyStep3) ─
   const renderCurrentStep = () => {
     switch (currentStep) {
       case 1:
@@ -846,17 +103,8 @@ export function NovaEmpresa() {
           <CompanyStep2
             data={empresaData}
             updateData={updateEmpresaData}
-            onPfxSelected={(file) => {
-              pfxFileRef.current = file;
-              setCertVerifyStatus('idle');
-              if (file) {
-                setEmpresaData(prev => ({ ...prev, certificado_validade: '' }));
-              }
-            }}
-            onCertPasswordChange={(pwd) => {
-              setEmpresaData(prev => ({ ...prev, certificado_senha: pwd }));
-              setCertVerifyStatus('idle');
-            }}
+            onPfxSelected={(file) => handlePfxSelected(file, () => updateEmpresaData({ certificado_validade: '' }))}
+            onCertPasswordChange={(pwd) => updateEmpresaData({ certificado_senha: pwd })}
             onVerifyPassword={handleVerifyCertPassword}
             verifyStatus={certVerifyStatus}
           />
@@ -864,14 +112,7 @@ export function NovaEmpresa() {
       case 3:
         return <CompanyStep4 data={empresaData} updateData={updateEmpresaData} />; // NF-e agora no Step 3
       case 4:
-        return (
-          <CompanyStep3
-            data={empresaData}
-            updateData={updateEmpresaData}
-            connectedStores={connectedStores}
-            loadingStores={loadingStores}
-          />
-        );
+        return <CompanyStep3 data={empresaData} updateData={updateEmpresaData} connectedStores={connectedStores} loadingStores={loadingStores} />;
       default:
         return null;
     }
@@ -891,81 +132,44 @@ export function NovaEmpresa() {
                     <h1 className="text-3xl font-bold text-gray-900 mb-2">{editCompanyId ? 'Editar Empresa' : 'Adicionar Nova Empresa'}</h1>
                     <p className="text-gray-600">{editCompanyId ? 'Atualize os dados da empresa e renove o certificado A1' : 'Configure uma nova empresa para emissão de notas fiscais'}</p>
                   </div>
-                  <Button variant="outline" onClick={() => setCloseDialogOpen(true)}>
-                    Fechar formulário
-                  </Button>
+                  <Button variant="outline" onClick={() => setCloseDialogOpen(true)}>Fechar formulário</Button>
                 </div>
               </div>
-  
-              <StepIndicator
-                steps={steps}
-                currentStep={currentStep}
-                clickable={true}
-                maxVisitedStep={4}
-                onStepClick={(id) => setCurrentStep(id)}
-              />
-  
+
+              <StepIndicator steps={steps} currentStep={currentStep} clickable={true} maxVisitedStep={4} onStepClick={(id) => setCurrentStep(id)} />
+
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 relative">
                 {isCnpjLoading && (
                   <div className="absolute inset-0 bg-novura-primary/10 backdrop-blur-sm flex items-center justify-center z-10">
                     <div className="flex items-center gap-3 text-novura-primary">
-                      {/* Simple SVG spinner */}
-                      <svg className="animate-spin h-6 w-6 text-novura-primary" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                      </svg>
+                      <svg className="animate-spin h-6 w-6" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
                       <span>Consultando dados do CNPJ...</span>
                     </div>
                   </div>
                 )}
-
                 {cnpjBlocked && (
                   <div className="mb-6 rounded-md border border-red-300 bg-red-50 p-4">
-                    <p className="text-red-700 font-medium">
-                      CNPJ em situação {empresaData.situacao_cnpj || ""}
-                    </p>
-                    <p className="text-red-700 text-sm">
-                      {cnpjBlockMessage} Não podemos prosseguir com a emissão de NF-e com este CNPJ.
-                    </p>
+                    <p className="text-red-700 font-medium">CNPJ em situação {empresaData.situacao_cnpj || ""}</p>
+                    <p className="text-red-700 text-sm">{cnpjBlockMessage} Não podemos prosseguir com a emissão de NF-e com este CNPJ.</p>
                   </div>
                 )}
-
                 {renderCurrentStep()}
-
                 <div className="mt-8 flex items-center justify-between">
-                  <NavigationButtons
-                    currentStep={currentStep}
-                    maxSteps={4}
-                    productType="company"
-                    loading={loading}
-                    onNext={handleNext}
-                    onBack={handleBack}
-                    onSave={handleSave}
-                    canProceedCompany={canProceed}
-                    saveLabel={editCompanyId ? "Salvar alterações" : "Salvar Empresa"}
-                  />
+                  <NavigationButtons currentStep={currentStep} maxSteps={4} productType="company" loading={loading}
+                    onNext={handleNext} onBack={handleBack} onSave={handleSave} canProceedCompany={canProceed}
+                    saveLabel={editCompanyId ? "Salvar alterações" : "Salvar Empresa"} />
                 </div>
               </div>
-
               <AlertDialog open={closeDialogOpen} onOpenChange={setCloseDialogOpen}>
                 <AlertDialogContent>
                   <AlertDialogHeader>
                     <AlertDialogTitle>Fechar formulário?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Deseja salvar os dados antes de sair do formulário?
-                    </AlertDialogDescription>
+                    <AlertDialogDescription>Deseja salvar os dados antes de sair do formulário?</AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Continuar editando</AlertDialogCancel>
-                    <AlertDialogAction
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                      onClick={() => navigate('/configuracoes')}
-                    >
-                      Sair sem salvar
-                    </AlertDialogAction>
-                    <AlertDialogAction onClick={handleSave}>
-                      Salvar e sair
-                    </AlertDialogAction>
+                    <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => navigate('/configuracoes')}>Sair sem salvar</AlertDialogAction>
+                    <AlertDialogAction onClick={handleSave}>Salvar e sair</AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
@@ -978,22 +182,3 @@ export function NovaEmpresa() {
 }
 
 export default NovaEmpresa;
-
-// Normalização para atender constraints do banco
-const normalizeTipoEmpresa = (v: string) => {
-  const s = String(v || '').trim().toLowerCase();
-  if (s === 'matriz' || s === 'matríZ') return 'Matriz';
-  if (s === 'filial') return 'Filial';
-  // fallback seguro
-  return 'Matriz';
-};
-
-const normalizeTributacao = (v: string) => {
-  const s = String(v || '').trim().toLowerCase();
-  if (s === 'mei') return 'MEI';
-  if (s === 'simples nacional') return 'Simples Nacional';
-  if (s.includes('excesso') || s.includes('sublimite')) return 'Simples Nacional - Excesso de sublimite de receita bruta';
-  if (s === 'regime normal' || s === 'normal') return 'Regime Normal';
-  // fallback comum
-  return 'Simples Nacional';
-};

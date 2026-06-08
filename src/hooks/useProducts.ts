@@ -1,9 +1,18 @@
 // src/hooks/useProducts.ts
 
+/**
+ * §1 SIZE EXCEPTION: ~210 LOC (limit 150).
+ * Justified: file contains two legacy hooks (useProducts for fetching and useCreateProduct
+ * for creating) sharing the same module boundary. useCreateProduct was gutted to a TanStack
+ * adapter in this refactor pass (P-0). Migrating useProducts() data-fetch to a service
+ * layer is deferred to a follow-up pass. Pre-existing violation (was 252 LOC at BASE).
+ */
+
 import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { useProductSync } from '@/hooks/useProductSync';
+import { useCreateProductMutation } from '@/hooks/products/useCreateProductMutation';
 
 // Hook para buscar todos os produtos de um usuário
 export function useProducts() {
@@ -120,62 +129,19 @@ export function useProducts() {
 }
 
 // Hook para criar um novo produto
+// Thin TanStack Query adapter — preserves legacy { createProduct, loading, error } shape.
 export const useCreateProduct = () => {
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState(null);
+  const mutation = useCreateProductMutation();
 
-    const createProduct = async (productData: any) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const { data: authUserData } = await supabase.auth.getUser();
-        const authUserId = authUserData?.user?.id;
-        if (!authUserId) {
-          throw new Error('Sessão inválida ou expirada');
-        }
-        let payload: Record<string, unknown> = { ...productData, user_id: productData?.user_id ?? authUserId };
-        // Never let DB default fill parent_id for root product types (UNICO check + integrity)
-        const t = payload.type as string | undefined;
-        if (t === 'UNICO' || t === 'VARIACAO_PAI' || t === 'KIT') {
-          payload = { ...payload, parent_id: null };
-        }
-        if (!payload.company_id) {
-          try {
-            const { data: orgId } = await supabase.rpc('get_current_user_organization_id');
-            const organizationId = Array.isArray(orgId) ? orgId?.[0] : orgId;
-            if (organizationId) {
-              const { data: companiesForOrg } = await supabase
-                .from('companies')
-                .select('id')
-                .eq('organization_id', organizationId)
-                .order('is_active', { ascending: false })
-                .order('created_at', { ascending: true })
-                .limit(1);
-              const companyId = Array.isArray(companiesForOrg) && companiesForOrg.length > 0 ? String(companiesForOrg[0].id) : null;
-              if (companyId) {
-                payload = { ...payload, company_id: companyId };
-              }
-              // Preenche organizations_id diretamente no product
-              payload = { ...payload, organizations_id: organizationId };
-            }
-          } catch { /* noop */ }
-        }
-        const { data, error } = await supabase
-          .from('products')
-          .insert([payload])
-          .select()
-          .single();
-        if (error) throw error;
-        return data;
-      } catch (err: any) {
-        setError(err.message);
-        throw err;
-      } finally {
-        setLoading(false);
-      }
-    };
+  const createProduct = async (productData: any) => {
+    return mutation.mutateAsync(productData);
+  };
 
-    return { createProduct, loading, error };
+  return {
+    createProduct,
+    loading: mutation.isPending,
+    error: mutation.error ? (mutation.error as any).message ?? String(mutation.error) : null,
+  };
 };
 
 
