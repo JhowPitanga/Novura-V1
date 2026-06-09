@@ -17,8 +17,16 @@ export interface AccessContext {
 
 const CACHE_TTL_MS = ACCESS_CONTEXT_CACHE_TTL_MS;
 
+/** Prevents duplicate concurrent RPC calls for the same user (e.g. init race, rapid navigation). */
+const inflightFetches = new Map<string, Promise<AccessContext>>();
+
 function getCacheKey(userId: string): string {
   return `access_context:${userId}`;
+}
+
+/** Returns true when sessionStorage still holds a valid access context for the user. */
+export function isAccessContextCacheFresh(userId: string): boolean {
+  return getCachedAccessContext(userId) !== null;
 }
 
 export function clearAccessContextCache(userId: string): void {
@@ -67,11 +75,9 @@ export function cacheAccessContext(
   );
 }
 
-export async function fetchAccessContext(
+async function fetchAccessContextInternal(
   userId: string,
-  options?: { bypassCache?: boolean },
 ): Promise<AccessContext> {
-  if (options?.bypassCache) clearAccessContextCache(userId);
   const defaults: AccessContext = {
     organization_id: null,
     permissions: {},
@@ -123,6 +129,27 @@ export async function fetchAccessContext(
     module_switches: moduleSwitches,
   });
   return result;
+}
+
+export async function fetchAccessContext(
+  userId: string,
+  options?: { bypassCache?: boolean },
+): Promise<AccessContext> {
+  if (!options?.bypassCache) {
+    const cached = getCachedAccessContext(userId);
+    if (cached) return cached;
+  } else {
+    clearAccessContextCache(userId);
+  }
+
+  const existing = inflightFetches.get(userId);
+  if (existing) return existing;
+
+  const promise = fetchAccessContextInternal(userId).finally(() => {
+    inflightFetches.delete(userId);
+  });
+  inflightFetches.set(userId, promise);
+  return promise;
 }
 
 /** Recomputes switches from system_modules + organization_features (server-side truth). */

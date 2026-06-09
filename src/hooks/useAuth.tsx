@@ -9,6 +9,7 @@ import {
     ensurePublicUserRecord,
     bootstrapUserOrg,
     clearAccessContextCache,
+    isAccessContextCacheFresh,
     type AccessContext,
 } from '@/services/auth.service';
 import {
@@ -71,6 +72,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [authState, setAuthState] = useState<AuthState>(emptyAuthState);
     const { toast } = useToast();
     const initDoneRef = useRef(false);
+    const initPromiseRef = useRef<Promise<void> | null>(null);
+    const loadContextInFlightRef = useRef<Promise<void> | null>(null);
     const userRef = useRef<User | null>(null);
 
     useEffect(() => {
@@ -82,14 +85,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setAuthState(emptyAuthState);
             return;
         }
+
+        // Skip redundant network calls when cache is still valid (poll/focus/navigation).
+        if (!forceRefresh && isAccessContextCacheFresh(u.id)) {
+            const cached = await loadAccessContextService(u);
+            if (cached) {
+                setAuthState(applyAccessContext(cached));
+                return;
+            }
+        }
+
+        // Deduplicate concurrent loads for the same session (init race, rapid clicks).
+        if (loadContextInFlightRef.current) {
+            await loadContextInFlightRef.current;
+            return;
+        }
+
+        const task = (async () => {
+            try {
+                const ctx = forceRefresh
+                    ? await fetchAccessContext(u.id, { bypassCache: true })
+                    : await loadAccessContextService(u);
+                setAuthState(applyAccessContext(ctx));
+            } catch {
+                setAuthState({ ...emptyAuthState, permissions: {}, userRole: 'member' });
+            }
+        })();
+
+        loadContextInFlightRef.current = task;
         try {
-            if (forceRefresh) clearAccessContextCache(u.id);
-            const ctx = forceRefresh
-                ? await fetchAccessContext(u.id, { bypassCache: true })
-                : await loadAccessContextService(u);
-            setAuthState(applyAccessContext(ctx));
-        } catch {
-            setAuthState({ ...emptyAuthState, permissions: {}, userRole: 'member' });
+            await task;
+        } finally {
+            loadContextInFlightRef.current = null;
         }
     }, []);
 
@@ -163,7 +190,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         const pollIfVisible = () => {
             if (document.visibilityState !== 'visible') return;
-            loadContext(u, true).catch((e) => {
+            // Only hit the network when the session cache has expired.
+            if (isAccessContextCacheFresh(u.id)) return;
+            loadContext(u, false).catch((e) => {
                 console.warn('Failed to poll access context:', e);
             });
         };
@@ -191,32 +220,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, [user?.id, authState.organizationId, authState.globalRole, loadContext]);
 
     useEffect(() => {
+        const runInitOnce = (currentUser: User | null) => {
+            if (initDoneRef.current) return Promise.resolve();
+            if (initPromiseRef.current) return initPromiseRef.current;
+
+            initPromiseRef.current = (async () => {
+                await loadContext(currentUser);
+                setLoading(false);
+                initDoneRef.current = true;
+            })().finally(() => {
+                initPromiseRef.current = null;
+            });
+
+            return initPromiseRef.current;
+        };
+
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             (event, session) => {
                 setSession(session);
                 const currentUser = session?.user ?? null;
                 setUser(currentUser);
-                (async () => {
-                    if (!initDoneRef.current) {
-                        await loadContext(currentUser);
-                        setLoading(false);
-                        initDoneRef.current = true;
-                    } else if (event === 'SIGNED_IN' && currentUser) {
-                        await loadContext(currentUser, true);
-                    }
-                })();
+                if (!initDoneRef.current) {
+                    void runInitOnce(currentUser);
+                } else if (event === 'SIGNED_IN' && currentUser) {
+                    void loadContext(currentUser, true);
+                }
             }
         );
 
-        supabase.auth.getSession().then(async ({ data: { session } }) => {
+        supabase.auth.getSession().then(({ data: { session } }) => {
             setSession(session);
             const currentUser = session?.user ?? null;
             setUser(currentUser);
-            if (!initDoneRef.current) {
-                await loadContext(currentUser);
-                setLoading(false);
-                initDoneRef.current = true;
-            }
+            void runInitOnce(currentUser);
         });
 
         return () => subscription.unsubscribe();
