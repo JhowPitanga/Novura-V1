@@ -10,7 +10,9 @@ type Pic = string | { source?: string; url?: string };
 type Updates = {
   title?: string;
   price?: number | string;
-  available_quantity?: number | string;
+  // available_quantity removed: stock updates are now the exclusive
+  // responsibility of MercadoLivreStockProvider via mercado-livre-update-stock.
+  // See: docs/prds/PLANO-MIGRACAO-ADAPTADORES-UNIVERSAIS-ESTOQUE.md §5.1
   pictures?: Pic[];
   video_id?: string | number;
   video?: string | number;
@@ -82,7 +84,8 @@ serve(async (req) => {
     const mlPayload: Record<string, unknown> = {};
     if (updates.title != null) mlPayload.title = String(updates.title);
     if (updates.price != null) mlPayload.price = toNumberBRL(updates.price);
-    if (updates.available_quantity != null) mlPayload.available_quantity = Math.max(0, Number(updates.available_quantity) || 0);
+    // available_quantity intentionally omitted: stock is propagated exclusively
+    // by MercadoLivreStockProvider via the Motor Universal de Sincronizacao de Estoque.
     if (updates.pictures && Array.isArray(updates.pictures)) {
       mlPayload.pictures = updates.pictures.map((u) => typeof u === "string" ? { source: u } : u);
     }
@@ -227,7 +230,7 @@ serve(async (req) => {
 
     const merged: Record<string, unknown> = { ...baseRaw };
     if (mlPayload.title != null) merged.title = mlPayload.title;
-    if (mlPayload.available_quantity != null) merged.available_quantity = mlPayload.available_quantity;
+    // merged.available_quantity: not updated here — handled by MercadoLivreStockProvider.
     if (mlPayload.pictures != null) {
       const arr = Array.isArray(mlPayload.pictures) ? (mlPayload.pictures as Pic[]) : [];
       merged.pictures = arr.map((p) => typeof p === "string" ? { source: p } : p);
